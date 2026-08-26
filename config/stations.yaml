@@ -1,0 +1,39 @@
+# 天气预报 API 准确度评估 —— 站点与评估配置
+# 观测来源：环境气象数据服务平台 eia-data.com（各站"气象站基本信息"页，近 24h 逐小时实况）
+# 预报来源：Open-Meteo（先支持 ecmwf_ifs / ncep_gfs_global / dwd_icon_global 三模型）
+
+models:
+  - ecmwf_ifs
+  - ncep_gfs_global
+  - dwd_icon_global
+
+stations:
+  - id: wuzhou
+    name: 梧州气象站
+    lat: 23.4783
+    lon: 111.304
+    obs_url: http://eia-data.com/%E6%A2%A7%E5%B7%9E%E6%B0%94%E8%B1%A1%E7%AB%99%E5%9F%BA%E6%9C%AC%E4%BF%A1%E6%81%AF/
+  - id: bobai
+    name: 博白气象站
+    lat: 22.2981
+    lon: 109.99
+    obs_url: http://eia-data.com/%E5%8D%9A%E7%99%BD%E6%B0%94%E8%B1%A1%E7%AB%99%E5%9F%BA%E6%9C%AC%E4%BF%A1%E6%81%AF/
+  - id: pingnan
+    name: 平南气象站
+    lat: 23.5431
+    lon: 110.419
+    obs_url: http://eia-data.com/%E5%B9%B3%E5%8D%97%E6%B0%94%E8%B1%A1%E7%AB%99%E5%9F%BA%E6%9C%AC%E4%BF%A1%E6%81%AF/
+  - id: wanning
+    name: 万宁气象站
+    lat: 18.8006
+    lon: 110.327
+    obs_url: http://eia-data.com/%E4%B8%87%E5%AE%81%E6%B0%94%E8%B1%A1%E7%AB%99%E5%9F%BA%E6%9C%AC%E4%BF%A1%E6%81%AF/
+
+eval:
+  temp_accuracy_limits: [1, 2]          # ±1°C、±2°C 准确率
+  rain_threshold_mm: 0.1                 # 有无降水阈值（国内业务：≥0.1mm 记有降水日）
+  hourly_lead_days: 16                   # 逐小时评估最大时效（天），lead 1..384h
+  daily_max_offset_days: 16              # 按天评估最大日偏移（天），offset 1..16
+  day_boundary_hour: 0                   # 日界：0 = 北京时自然日 00:00-24:00
+  precip_offset_hours: 0                 # 观测 rain@t 与预报 precipitation@t 对齐偏移（小时），预设 0
+  min_sample: 5                          # 样本数低于此值视为"样本不足"，不出结论

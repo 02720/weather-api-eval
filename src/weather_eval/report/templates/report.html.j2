@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }}</title>
+<script src="{{ base }}vendor/echarts.min.js"></script>
+<script>if (typeof echarts === 'undefined') {
+  document.body.insertAdjacentHTML('afterbegin',
+    '<div style="background:#d64545;color:#fff;padding:10px 16px">图表库加载失败（ECharts 未找到），报告数值见下方明细表。</div>');
+}</script>
+<style>
+  :root { --bg:#f6f8fb; --card:#fff; --line:#e3e8ef; --text:#1f2733; --muted:#6b7785;
+          --blue:#2f6fed; --green:#1f9d55; --orange:#e8830c; --red:#d64545; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font-family:-apple-system,"PingFang SC","Microsoft YaHei",Segoe UI,Roboto,sans-serif; }
+  header { background:linear-gradient(135deg,#2f6fed,#1f9d55); color:#fff; padding:22px 28px; }
+  header h1 { margin:0 0 6px; font-size:22px; }
+  header .meta { font-size:13px; opacity:.95; }
+  .wrap { max-width:1180px; margin:0 auto; padding:20px 18px 60px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px;
+          padding:16px 18px; margin:16px 0; box-shadow:0 1px 3px rgba(20,30,50,.04); }
+  .card h2 { font-size:16px; margin:0 0 12px; color:#243; border-left:4px solid var(--blue); padding-left:8px; }
+  .desc { color:var(--muted); font-size:12.5px; margin:0 0 10px; }
+  .score-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:14px; }
+  .score-card { border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  .score-card .m { font-weight:600; font-size:14px; margin-bottom:8px; }
+  .kv { display:flex; justify-content:space-between; font-size:12.5px; padding:2px 0; }
+  .kv b { font-variant-numeric:tabular-nums; }
+  .bad { color:var(--red); } .good { color:var(--green); } .warn { color:var(--orange); }
+  .chart { width:100%; height:380px; }
+  .chart.tall { height:440px; }
+  table { border-collapse:collapse; width:100%; font-size:12.5px; }
+  th,td { border:1px solid var(--line); padding:6px 8px; text-align:center; }
+  th { background:#eef3fb; } td.l { text-align:left; }
+  select { padding:6px 10px; border:1px solid var(--line); border-radius:8px; font-size:13px; }
+  .note { color:var(--muted); font-size:12px; margin-top:8px; }
+  .pill { display:inline-block; background:#eef3fb; border-radius:999px; padding:2px 10px; font-size:12px; margin:2px 4px 2px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>{{ title }}</h1>
+  <div class="meta">
+    评估周期：{{ report.meta.period_label }} ｜ 窗口：{{ report.meta.start }} ~ {{ report.meta.end }}
+    ｜ 生成时间：{{ generated_at }}（北京时）<br>
+    模型：{% for m in report.meta.models %}<span class="pill">{{ m }}</span>{% endfor %}
+    站点：{% for s in report.meta.stations %}<span class="pill">{{ s }}</span>{% endfor %}
+  </div>
+</header>
+<div class="wrap">
+
+  <div class="card">
+    <h2>数据概况</h2>
+    <div class="kv"><span>观测覆盖率（窗口内有观测的小时占比）</span>
+      <b>{{ report.coverage.got_hours }} / {{ report.coverage.expected_hours }}
+      （{{ '—' if report.coverage.coverage_pct is none else report.coverage.coverage_pct ~ '%' }}）</b></div>
+    <div class="note">准确率阈值：温度 ±{{ report.meta.limits[0] }}°C、±{{ report.meta.limits[1] }}°C；
+      有无降水阈值：降水量 ≥ {{ report.meta.rain_threshold_mm }}mm；
+      样本数 &lt; {{ report.meta.min_sample }} 视为"样本不足"，不出结论。
+      温度 RMSE/MAE 单位 °C；降水指标：晴雨准确率/POD/空报率(FAR)/漏报率/TS/BIAS，TS 取值 0~1。</div>
+  </div>
+
+  <div class="card">
+    <h2>评分卡（按模型，覆盖全窗口）</h2>
+    <div id="scorecards" class="score-grid"></div>
+  </div>
+
+  <div class="card">
+    <h2>温度：±2°C 准确率随时效（逐小时 1~16 天桶）</h2>
+    <p class="desc">每条线为一个预报模型，横轴为起报后时效（天），纵轴为温度误差在 ±2°C 内的样本占比（%）。</p>
+    <div id="tempAcc" class="chart"></div>
+  </div>
+
+  <div class="card">
+    <h2>温度：RMSE 随时效（逐小时 1~16 天桶）</h2>
+    <div id="tempRmse" class="chart"></div>
+  </div>
+
+  <div class="card">
+    <h2>温度：RMSE 随逐小时时效（1~72h 曲线）</h2>
+    <p class="desc">更细粒度的逐小时曲线，用于观察前三天时效衰减。</p>
+    <div id="tempLead" class="chart"></div>
+  </div>
+
+  <div class="card">
+    <h2>降水：TS 评分随时效（逐小时 1~16 天桶）</h2>
+    <p class="desc">有无降水（≥{{ report.meta.rain_threshold_mm }}mm）的 TS（Threat Score，0~1）。</p>
+    <div id="precipTs" class="chart"></div>
+  </div>
+
+  <div class="card">
+    <h2>按天评估：日最高气温 / 最低气温 ±2°C 准确率（日偏移 1~16 天）</h2>
+    <div id="tempDailyMax" class="chart"></div>
+    <div id="tempDailyMin" class="chart" style="margin-top:10px;"></div>
+  </div>
+
+  <div class="card">
+    <h2>按天评估：日降水 TS 评分（日偏移 1~16 天）</h2>
+    <div id="precipDaily" class="chart"></div>
+    <div class="note" id="gradedNote"></div>
+  </div>
+
+  <div class="card">
+    <h2>分站对比：24h 温度 ±2°C 准确率</h2>
+    <div id="stationBar" class="chart"></div>
+  </div>
+
+  {% if report.meta.is_monthly %}
+  <div class="card">
+    <h2>月度排名</h2>
+    <div id="ranking"></div>
+    <h2 style="margin-top:18px;">逐日温度 ±2°C 准确率热力图（日期 × 模型）</h2>
+    <div id="heatmap" class="chart tall"></div>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <h2>预报 vs 观测 时间序列（最近 72 小时）</h2>
+    <div style="margin-bottom:10px;">
+      站点：
+      <select id="tsStation"></select>
+      模型：
+      <select id="tsModel"></select>
+    </div>
+    <div id="timeseries" class="chart tall"></div>
+    <div class="note">实线为观测（或选定模型预报）气温；柱为降水量（右轴，mm）。可切换站点/模型对比追踪能力。</div>
+  </div>
+
+  <div class="card">
+    <h2>明细指标表（逐小时 1~16 天桶）</h2>
+    <div id="detailTable"></div>
+  </div>
+
+</div>
+
+<script>
+const report = {{ report_json | safe }};
+const COLOR = {ecmwf_ifs:"#2f6fed", ncep_gfs_global:"#e8830c", dwd_icon_global:"#1f9d55"};
+function colorOf(m){ return COLOR[m] || "#888"; }
+function models(){ return report.meta.models; }
+function fmt(v, d=1){ return (v===null||v===undefined)?"—":Number(v).toFixed(d); }
+function pct(v){ return (v===null)?"—":(Number(v).toFixed(1)+"%"); }
+
+function lineChart(id, x, series, yName, opts={}){
+  const el = document.getElementById(id); if(!el) return;
+  try {
+    const ch = echarts.init(el);
+    ch.setOption({
+      tooltip:{trigger:"axis"},
+      legend:{top:0, type:"scroll"},
+      grid:{left:55, right:opts.right||30, top:40, bottom:40},
+      xAxis:{type:"category", data:x, name:opts.xName||""},
+      yAxis:{type:"value", name:yName, scale:true},
+      series: series
+    });
+    window.addEventListener("resize", ()=>ch.resize());
+  } catch(e){ console.error("chart", id, e); }
+}
+
+// ---- 评分卡 ----
+(function(){
+  const box = document.getElementById("scorecards");
+  const sc = report.scorecard;
+  // 找每个指标最佳
+  function best(key, sub, field, higher){
+    let bestM=null, bv=null;
+    models().forEach(m=>{ const v=(sc[m]&&sc[m][sub]&&sc[m][sub][field]); if(v===null||v===undefined) return;
+      if(bv===null || (higher? v>bv : v<bv)){ bv=v; bestM=m; } });
+    return bestM;
+  }
+  const bAcc = best("temp_24h","temp_24h","acc2",true);
+  const bRmse = best("temp_24h","temp_24h","rmse",false);
+  const bTs = best("precip_24h","precip_24h","ts",true);
+  const bPacc = best("precip_24h","precip_24h","acc",true);
+  models().forEach(m=>{
+    const t=sc[m].temp_24h, p=sc[m].precip_24h, t72=sc[m].temp_72h, p72=sc[m].precip_72h;
+    const cls=(f,v,bb)=> (v===null)?"":(m===bb?"good":"");
+    const card=document.createElement("div"); card.className="score-card";
+    card.innerHTML = `<div class="m" style="color:${colorOf(m)}">${m}</div>`+
+      `<div class="kv"><span>温度±2°C准确率(24h)</span><b class="${cls(0,t.acc2,bAcc)}">${pct(t.acc2)}</b></div>`+
+      `<div class="kv"><span>温度RMSE(24h)</span><b class="${cls(0,t.rmse,bRmse)}">${fmt(t.rmse)}°C</b></div>`+
+      `<div class="kv"><span>晴雨TS(24h)</span><b class="${cls(0,p.ts,bTs)}">${fmt(p.ts,3)}</b></div>`+
+      `<div class="kv"><span>晴雨准确率(24h)</span><b class="${cls(0,p.acc,bPacc)}">${pct(p.acc)}</b></div>`+
+      `<div class="kv"><span>温度±2°C准确率(72h)</span><b>${pct(t72.acc2)}</b></div>`+
+      `<div class="kv"><span>晴雨TS(72h)</span><b>${fmt(p72.ts,3)}</b></div>`+
+      `<div class="note">24h温度样本 ${t.n||0}｜24h降水样本 ${p.n||0}</div>`;
+    box.appendChild(card);
+  });
+})();
+
+// ---- 温度准确率/ RMSE 随时效（天桶） ----
+(function(){
+  const buckets = Object.keys(report.temp_hourly[models()[0]]);
+  const accSeries = models().map(m=>({name:m, type:"line", smooth:true,
+    itemStyle:{color:colorOf(m)}, data:buckets.map(b=>report.temp_hourly[m][b]?report.temp_hourly[m][b].acc2:null)}));
+  lineChart("tempAcc", buckets, accSeries, "±2°C准确率(%)");
+  const rmseSeries = models().map(m=>({name:m, type:"line", smooth:true,
+    itemStyle:{color:colorOf(m)}, data:buckets.map(b=>report.temp_hourly[m][b]?report.temp_hourly[m][b].rmse:null)}));
+  lineChart("tempRmse", buckets, rmseSeries, "RMSE(°C)");
+})();
+
+// ---- 温度逐小时 RMSE 曲线 ----
+(function(){
+  const hours = Object.keys(report.temp_lead_curve[models()[0]]); // "1h".."72h"
+  const series = models().map(m=>({name:m, type:"line", smooth:true,
+    itemStyle:{color:colorOf(m)}, data:hours.map(h=>report.temp_lead_curve[m][h]?report.temp_lead_curve[m][h].rmse:null)}));
+  lineChart("tempLead", hours, series, "RMSE(°C)", {xName:"时效(h)"});
+})();
+
+// ---- 降水 TS 随时效 ----
+(function(){
+  const buckets = Object.keys(report.precip_hourly[models()[0]]);
+  const series = models().map(m=>({name:m, type:"bar",
+    itemStyle:{color:colorOf(m)}, data:buckets.map(b=>report.precip_hourly[m][b]?report.precip_hourly[m][b].ts:null)}));
+  lineChart("precipTs", buckets, series, "TS");
+})();
+
+// ---- 按天温度 max/min ----
+(function(){
+  const offs = Object.keys(report.temp_daily[models()[0]]);
+  const maxS = models().map(m=>({name:m, type:"line", smooth:true,
+    itemStyle:{color:colorOf(m)}, data:offs.map(o=>report.temp_daily[m][o].max.acc2)}));
+  lineChart("tempDailyMax", offs, maxS, "最高气温±2°C准确率(%)");
+  const minS = models().map(m=>({name:m, type:"line", smooth:true,
+    itemStyle:{color:colorOf(m)}, data:offs.map(o=>report.temp_daily[m][o].min.acc2)}));
+  lineChart("tempDailyMin", offs, minS, "最低气温±2°C准确率(%)");
+})();
+
+// ---- 按天降水 TS ----
+(function(){
+  const offs = Object.keys(report.precip_daily[models()[0]]);
+  const series = models().map(m=>({name:m, type:"bar",
+    itemStyle:{color:colorOf(m)}, data:offs.map(o=>report.precip_daily[m][o].binary.ts)}));
+  lineChart("precipDaily", offs, series, "TS");
+  const note = document.getElementById("gradedNote");
+  note.textContent = "分级降水TS（日累计）：≥0.1mm(ts+1)、≥10mm(ts+2)、≥25mm(ts+3)，见明细表。样本不足时为空。";
+})();
+
+// ---- 分站 24h 温度准确率 ----
+(function(){
+ try{
+  const stations = report.meta.stations;
+  const series = models().map(m=>({name:m, type:"bar", itemStyle:{color:colorOf(m)},
+    data:stations.map(s=>report.per_station[s][m].temp.acc2)}));
+  lineChart("stationBar", stations, series, "±2°C准确率(%)");
+ }catch(e){console.error('stationBar',e);}
+})();
+
+// ---- 月度排名 + 热力图 ----
+{% if report.meta.is_monthly %}
+(function(){
+ try{
+  const rk = report.ranking || [];
+  const box = document.getElementById("ranking");
+  let html = '<table><thead><tr><th>排名</th><th>模型</th><th>综合得分</th><th>温度±2°C准确率(24h)</th><th>晴雨TS(24h)</th></tr></thead><tbody>';
+  rk.forEach((r,i)=>{ html+=`<tr><td>${i+1}</td><td class="l" style="color:${colorOf(r.model)}">${r.model}</td><td><b>${fmt(r.score)}</b></td><td>${pct(r.temp_acc2_24h)}</td><td>${fmt(r.precip_ts_24h,3)}</td></tr>`; });
+  html+="</tbody></table>"; box.innerHTML=html;
+  // heatmap
+  const cells = report.heatmap||[];
+  const dates = [...new Set(cells.map(c=>c.date))];
+  const ms = models();
+  const data = cells.map(c=>([dates.indexOf(c.date), ms.indexOf(c.model), c.acc2]));
+  const ch = echarts.init(document.getElementById("heatmap"));
+  ch.setOption({
+    tooltip:{position:"top", formatter:p=>`${dates[p.data[0]]} ${ms[p.data[1]]}<br>±2°C准确率 ${fmt(p.data[2])}%`},
+    grid:{left:90, right:20, top:20, bottom:60},
+    xAxis:{type:"category", data:dates, axisLabel:{rotate:60}},
+    yAxis:{type:"category", data:ms},
+    visualMap:{min:0, max:100, calculable:true, orient:"horizontal", left:"center", bottom:10, inRange:{color:["#d64545","#e8830c","#1f9d55"]}},
+      series:[{type:"heatmap", data:data,
+      label:{show:false},
+      emphasis:{itemStyle:{shadowBlur:6, shadowColor:"rgba(0,0,0,.3)"}}}]
+  });
+  window.addEventListener("resize", ()=>ch.resize());
+ }catch(e){console.error('monthly',e);}
+})();
+{% endif %}
+
+// ---- 时间序列 ----
+(function(){
+ try{
+  const stations = report.meta.stations;
+  const selS = document.getElementById("tsStation");
+  const selM = document.getElementById("tsModel");
+  stations.forEach(s=>{ const o=document.createElement("option"); o.value=s; o.text=s; selS.appendChild(o); });
+  models().forEach(m=>{ const o=document.createElement("option"); o.value=m; o.text=m; selM.appendChild(o); });
+  const ch = echarts.init(document.getElementById("timeseries"));
+  function draw(){
+    const s=selS.value, m=selM.value;
+    const ts = (report.timeseries[s]||{});
+    const obs = ts.obs||[];
+    const fcst = (ts.models&&ts.models[m])||[];
+    const times = obs.map(p=>p.t);
+    const obsT = obs.map(p=>p.temp);
+    const fcstT = fcst.map(p=>p.temp);
+    const rain = fcst.map(p=>p.rain);
+    ch.setOption({
+      tooltip:{trigger:"axis"},
+      legend:{top:0},
+      grid:{left:50, right:55, top:40, bottom:50},
+      xAxis:{type:"category", data:times, axisLabel:{rotate:50}},
+      yAxis:[{type:"value", name:"气温°C"}, {type:"value", name:"降水mm", position:"right"}],
+      series:[
+        {name:"观测气温", type:"line", data:obsT, itemStyle:{color:"#333"}, lineWidth:2},
+        {name:m+" 预报气温", type:"line", data:fcstT, itemStyle:{color:colorOf(m)}},
+        {name:m+" 降水量", type:"bar", yAxisIndex:1, data:rain, itemStyle:{color:"#7fb3ff"}}
+      ]
+    });
+  }
+  selS.onchange=draw; selM.onchange=draw; draw();
+  window.addEventListener("resize", ()=>ch.resize());
+ }catch(e){console.error('timeseries',e);}
+})();
+
+// ---- 明细表 ----
+(function(){
+  const buckets = Object.keys(report.temp_hourly[models()[0]]);
+  let html = '<table><thead><tr><th>时效</th>';
+  models().forEach(m=>{ html+=`<th class="l" style="color:${colorOf(m)}">${m} 温度RMSE</th><th>±2°C</th><th>TS</th><th>晴雨准确率</th><th>n</th>`; });
+  html+="</tr></thead><tbody>";
+  buckets.forEach(b=>{
+    html+=`<tr><td>${b}</td>`;
+    models().forEach(m=>{
+      const t=report.temp_hourly[m][b], p=report.precip_hourly[m][b];
+      const n = Math.max(t?t.n||0:0, p?p.n||0:0);
+      html+=`<td>${fmt(t?t.rmse:null)}</td><td>${pct(t?t.acc2:null)}</td><td>${fmt(p?p.ts:null,3)}</td><td>${pct(p?p.acc:null)}</td><td>${n}</td>`;
+    });
+    html+="</tr>";
+  });
+  html+="</tbody></table>";
+  document.getElementById("detailTable").innerHTML=html;
+})();
+</script>
+</body>
+</html>

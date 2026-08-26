@@ -1,0 +1,10 @@
+# 天气预报 API 准确度评估系统 —— 运行时依赖
+# 注意：cyeva 0.2.3 强制要求 Python 3.10-3.12、numpy>=2.1.2、pint==0.24.4
+# （pint 若为 0.24.3 会在当前 Python 上因 dataclass 兼容问题导入失败，务必 0.24.4）
+cyeva==0.2.3
+pint==0.24.4
+numpy==2.1.2
+requests>=2.31,<3
+beautifulsoup4>=4.12,<5
+jinja2>=3.1,<4
+pyyaml>=6.0,<7
