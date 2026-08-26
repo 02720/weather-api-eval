@@ -60,10 +60,10 @@ jobs:
         run: python -m weather_eval monthly ${{
           github.event.inputs.month != '' && format('--month {0}', github.event.inputs.month) || '' }}
 
-      - name: 提交数据与新报告
       - name: 变基远端最新提交（避免 push 被拒）
         run: git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
 
+      - name: 提交数据与新报告
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "chore: 自动评测数据更新"
