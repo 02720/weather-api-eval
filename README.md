@@ -8,6 +8,7 @@
 
 - **预报（Open-Meteo）**：`ecmwf_ifs`、`ncep_gfs_global`、`dwd_icon_global`（三个模型一次请求返回，后续可继续在 `config/stations.yaml` 增模型）。
 - **预报（彩云天气 Caiyun v2.6）**：模型名 `caiyun_v2_6`，Token 认证（环境变量 `CAIYUN_TOKEN`）。`fetch-forecast --source caiyun` 单独抓取，评估/报告逻辑与 Open-Meteo 完全一致。
+- **预报（和风天气 QWeather weather/v1）**：模型名 `qweather_v1`，API Key 认证（环境变量 `QWEATHER_API_KEY`，专属 API Host 见 `QWEATHER_API_HOST`）。`fetch-forecast --source qweather` 单独抓取；请求未来最多 240 小时逐小时（免费档可能被限制为 24 小时，日志会明示），评估/报告逻辑与其他源完全一致。
 - **观测（环境气象数据服务平台 eia-data.com）**：各气象站"气象站基本信息"页，服务端直出近 24 小时逐小时实况（气温、降水、气压、湿度、风）。
 - **评估框架**：`cyeva 0.2.3`（温度 RMSE/MAE/MBE/±1°C·±2°C 准确率；降水 0.1mm 晴雨二分类准确率/POD/空报率 FAR/漏报率/TS/BIAS，及分级降水 TS）。
 
@@ -21,7 +22,7 @@
 ## 环境要求
 
 - **Python 3.12.6**（cyeva 0.2.3 支持 3.10–3.12；`pint` 必须用 **0.24.4**，因为 cyeva 误钉的 0.24.3 在 3.12+ 上无法导入，见下方安装说明）。
-- 网络访问：Open-Meteo（HTTPS）、eia-data.com（HTTP）、彩云天气 API `api.caiyunapp.com`（HTTPS）。Open-Meteo 免费档约 1 万次/天，无需 key；**彩云需 Token**，从环境变量 `CAIYUN_TOKEN` 读取（测试 Token 见下方「彩云接入」）。
+- 网络访问：Open-Meteo（HTTPS）、eia-data.com（HTTP）、彩云天气 API `api.caiyunapp.com`（HTTPS）、和风天气 API `<你的专属 Host>.qweatherapi.com`（HTTPS）。Open-Meteo 免费档约 1 万次/天，无需 key；**彩云需 Token**，从环境变量 `CAIYUN_TOKEN` 读取；**和风需 API Key**，从环境变量 `QWEATHER_API_KEY` 读取。
 
 ## 快速开始（本地）
 
@@ -52,6 +53,16 @@ export CAIYUN_TOKEN="<在此填入你的彩云 Token>"
 python -m weather_eval fetch-forecast --source caiyun
 # 3) 生成报告时 caiyun_v2_6 已纳入对比（config 的 models 已含该模型）
 python -m weather_eval report
+
+# —— 和风天气（weather/v1）接入 ——
+# 1) 设置 API Key 与专属 API Host（控制台「设置」中查看；旧公共域名 devapi/
+#    api.qweather.com 自 2026 年起逐步停止服务）。Host 未设置时会退回 devapi 并告警。
+export QWEATHER_API_KEY="<在此填入你的和风 API Key>"
+export QWEATHER_API_HOST="abcxyz.qweatherapi.com"
+# 2) 抓取和风起报快照（独立于 Open-Meteo；默认请求未来 240 小时逐小时）
+python -m weather_eval fetch-forecast --source qweather
+# 3) 生成报告时 qweather_v1 已纳入对比（config 的 models 已含该模型）
+python -m weather_eval report
 ```
 
 常用命令：
@@ -61,9 +72,10 @@ python -m weather_eval report
 | `fetch-obs` | 抓取观测并归档（按时间戳去重） |
 | `fetch-forecast` | 抓取 Open-Meteo 起报快照并归档（幂等） |
 | `fetch-forecast --source caiyun` | 抓取彩云天气 v2.6 起报快照（需 `CAIYUN_TOKEN`） |
+| `fetch-forecast --source qweather` | 抓取和风天气起报快照（需 `QWEATHER_API_KEY`，建议同时设 `QWEATHER_API_HOST`） |
 | `report` | 生成本月至今的运行报告 + 更新门户 `reports/index.html` |
 | `monthly [--month YYYY-MM]` | 生成指定月份（默认上一自然月）的月度汇总报告 |
-| `all` | `fetch-obs` + `fetch-forecast` + `report`（GitHub Action 调用，不含彩云） |
+| `all` | `fetch-obs` + `fetch-forecast` + `report`（GitHub Action 调用，不含彩云/和风） |
 
 ## GitHub Actions 自动运行
 
@@ -88,7 +100,7 @@ python -m weather_eval report
 
 - **新增站点**：在 `config/stations.yaml` 的 `stations` 下加一项（`id`/`name`/`lat`/`lon`/`obs_url`，`obs_url` 为 eia-data 对应"气象站基本信息"页的 URL 编码）。
 - **新增模型**：在 `models` 下加入 Open-Meteo 支持的模型名（如 `cma_grapes_global`、`ukmo_global_deterministic_10km` 等）。
-- **新增预报源**：实现 `weather_eval/forecast/base.py` 的 `ForecastProvider` 接口（返回统一结构的起报快照），在 CLI 中切换即可，评估/报告逻辑无需改动。已内置示例 `forecast/caiyun.py`（`CaiyunProvider`）：`fetch-forecast --source caiyun` 抓取，Token 取自 `CAIYUN_TOKEN` 环境变量；其返回的 `caiyun_v2_6` 模型已加入 `models`，故 `report` 自动纳入对比。
+- **新增预报源**：实现 `weather_eval/forecast/base.py` 的 `ForecastProvider` 接口（返回统一结构的起报快照），在 CLI 中切换即可，评估/报告逻辑无需改动。已内置示例 `forecast/caiyun.py`（`CaiyunProvider`）：`fetch-forecast --source caiyun` 抓取，Token 取自 `CAIYUN_TOKEN` 环境变量；其返回的 `caiyun_v2_6` 模型已加入 `models`，故 `report` 自动纳入对比。和风天气同例（`forecast/qweather.py`，`QWeatherProvider`，模型名 `qweather_v1`）。
 
 ## 目录结构
 
@@ -98,7 +110,7 @@ src/weather_eval/
   timeutil.py             北京时工具
   config.py  storage.py   配置与 JSON 存档（原子写/去重/幂等）
   obs/                     观测源（eia-data 抓取解析）
-  forecast/                Open-Meteo / 彩云天气 快照器（base.py 抽象接口）
+  forecast/                Open-Meteo / 彩云天气 / 和风天气 快照器（base.py 抽象接口）
   evaluate.py             配对 + cyeva 指标 + 报告数据组装
   report/                  Jinja2 + ECharts 报告渲染
   __main__.py              CLI
@@ -119,6 +131,13 @@ tests/                    pytest（含 cyeva 手算对拍）
   - **长时效返回与 User-Agent 强相关**：本测试 Token 下，使用默认 `python-requests` UA 仅返回约 48 个逐小时点，而本项目固定 UA `weather-api-eval/0.1 (+https://github.com/)` 可返回完整 384 点（约 16 天）。提供方在返回点数明显少于请求时记录 WARNING 以暴露此类静默降级；**请勿随意改动该 UA**。
   - 彩云不做格点吸附，`location` 即请求坐标；响应该端点无 `elevation` 字段，快照中 `elevation` 记 `None`。
   - `fetch-forecast --source caiyun` 独立于 Open-Meteo，需手动运行（CI 默认 `all` 不含彩云，避免 Token 缺失导致失败）。彩云预报为"未来"时刻，故抓取当次即与历史观测 0 配对属正常；数值评估将在后续观测积累后自动填充。
+- **和风天气（weather/v1）接入约束**：
+  - 需 `QWEATHER_API_KEY`；建议同时设 `QWEATHER_API_HOST` 为控制台分配的专属 API Host——旧公共域名（devapi/api.qweather.com）自 2026 年起逐步停止服务，未设置 Host 时会退回 `devapi.qweather.com` 并记录 WARNING。API Key 经 `X-QW-Api-Key` 请求头传递，不出现在 URL 中。
+  - **坐标契约：小数不超过 2 位**。站点坐标（4 位小数）在请求前取整到 2 位；快照中 `grid_lat/grid_lon` 记录实际参与查询的取整坐标，`requested_lat/lon` 保留原值。
+  - **时间换算**：新版接口的 `forecastTime` 为 UTC（`Z` 结尾），提供方统一转换为北京时 naive 墙钟并**下取整到整点**后再与观测配对（同彩云口径）；旧版 v7 的 `fxTime` 已带 `+08:00` 偏移，同样处理。
+  - **时效与降级**：默认请求未来 240 小时逐小时。若凭据/主机尚未开通 weather/v1 路由，会**自动改用旧版 `/v7/weather/{24|72|168}h`** 并告警（免费开发版仅开放 24h 档）；返回点数少于请求时同样以 WARNING 明示。订阅档位决定该源的实际覆盖时效，报告中长时效"样本不足"属正常现象。
+  - 限速遵循官方建议对网络错误/5xx/429 做**指数退避**重试；鉴权/权限/参数类 4xx 不做无意义重试直接上抛，鉴权失败（401）给出可操作的错误信息。
+  - 同样独立于 Open-Meteo 抓取（CI 中以 `QWEATHER_API_KEY` Secret 存在与否决定是否执行），降水为当小时累计毫米、温度摄氏度，与其他源同口径。
 
 ## 评估方法说明（关于样本与时效）
 
@@ -155,3 +174,13 @@ tests/                    pytest（含 cyeva 手算对拍）
 - **Open-Meteo 误告警清理**：`models` 列表已含 `caiyun_v2_6`，原 `fetch-forecast`（Open-Meteo）会把它当作"响应缺失模型"刷警告。已在 Open-Meteo 分支过滤掉非其所属模型，消除噪声。
 - **鉴权与异常路径**：`status=failed`（如 `token is invalid`）与 HTTP 错误均被捕获并转为清晰错误；缺 `CAIYUN_TOKEN` 时构造即报错；缺失 `temperature`/`hourly` 等结构时早退报错而非产出空快照。
 - **长时效 lead 口径小偏差（已知、可接受）**：因时间戳下取整，`issue_iso` 取整点到小时，个别临近时效边界的样本 lead 可能被高估至多 ~59 分钟；与 Open-Meteo 同样取整到小时，口径一致，对天桶/逐小时曲线影响可忽略。
+
+## 和风天气接入：对抗式审查发现并修复的问题
+
+本次新增 `forecast/qweather.py` 与 CLI `--source qweather` 后，经对抗式独立审查发现以下问题并已处置：
+
+- **（P0）降水解析错误导致数据静默全丢**：新版接口的带单位量纲统一为 `{value, unit}` 嵌套对象——`precipitation.amount` **本身是对象**（`{"value":0.09,"unit":"mm"}`），初版实现把它当数字 `float()` 必然失败归 `None`。后果是该源逐小时降水全部为缺测、晴雨/TS 指标静默缺失且无任何报错。已改为统一的 `_metric_value` 解析（嵌套对象与标量双形态兼容），并把**单测 mock schema 改为官方真实结构**、新增标量兼容用例锁定双形态（此前 mock 用了简化结构致测试"假绿"放行该缺陷）。
+- **（P2）可选源步骤可拖垮主流程**：CI 中彩云/和风抓取位于核心 `all`（观测+报告+提交）之前，若 Key 已配但 Host 错/网络故障会令整个 job 失败、阻断主交付物。已为两个可选步骤加 `continue-on-error: true`（失败仅标注该步）；CLI 对独立源初始化失败改为清晰日志 + 非零退出而非裸 traceback。
+- **（P3）v7 档位选择文档口径**：请求时效 <24h 时旧版档位只能取最小档 24h（多余点由快照层截断），docstring 已修正为准确描述。
+- **（部分驳回）"401/403 一律快速失败不做降级"的建议未全盘采纳**：401 保持快速失败（账号级鉴权问题在两代端点必然同结果）；但 403 未纳入快速失败——免费凭据可能只是**尚未开通 weather/v1 路由**而 v7 可用，若贸然终止会错杀可降级场景。折中：403 触发降级的同时在 WARNING 中列出官方错误码的三类常见原因（额度不足/API Host 不符/无权限），若 v7 也失败则联合异常同时携带两侧状态码，根因仍可一步定位。
+- 其余核查项确认无误：UTC→北京时换算与下取整口径、坐标 ≤2 位小数契约（lat 在前）、`X-QW-Api-Key` 仅经请求头传递且日志/异常脱敏、hours 截断告警、去重排序、Open-Meteo 分支对新模型的排除链、快照幂等存储、既有彩云/Open-Meteo 测试零回归。

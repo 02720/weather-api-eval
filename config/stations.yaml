@@ -7,6 +7,7 @@ models:
   - ncep_gfs_global
   - dwd_icon_global
   - caiyun_v2_6          # 彩云天气 v2.6（fetch-forecast --source caiyun 抓取，Token 见环境变量 CAIYUN_TOKEN）
+  - qweather_v1          # 和风天气 weather/v1（fetch-forecast --source qweather 抓取，Key 见环境变量 QWEATHER_API_KEY）
 
 stations:
   - id: wuzhou

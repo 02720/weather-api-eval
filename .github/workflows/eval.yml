@@ -48,8 +48,10 @@ jobs:
           python -m pip install --no-deps cyeva==0.2.3
 
       - name: 抓取彩云预报（可选，需配置 CAIYUN_TOKEN Secret）
+        # 可选增强源：失败仅标注该步，不得阻断后续观测抓取、报告与提交。
         # Token 经由 Secret 注入到 env；未配置时由 shell 判断跳过，步骤仍成功，不影响现有流水线。
         # 注意：workflow 的 if: 条件里不允许使用 secrets 上下文，故用 run 内的 shell 判断。
+        continue-on-error: true
         env:
           CAIYUN_TOKEN: ${{ secrets.CAIYUN_TOKEN }}
           TZ: Asia/Shanghai
@@ -58,6 +60,21 @@ jobs:
             python -m weather_eval fetch-forecast --source caiyun
           else
             echo "未配置 CAIYUN_TOKEN Secret，跳过彩云抓取"
+          fi
+
+      - name: 抓取和风天气预报（可选，需配置 QWEATHER_API_KEY Secret）
+        # 和风 API Host 为每账号专属域名（控制台-设置可查），旧公共地址 2026 年起逐步停服；
+        # 未配置 QWEATHER_API_HOST 时代码会退回 devapi 并告警。API Key 缺失则整步跳过。
+        continue-on-error: true
+        env:
+          QWEATHER_API_KEY: ${{ secrets.QWEATHER_API_KEY }}
+          QWEATHER_API_HOST: ${{ secrets.QWEATHER_API_HOST }}
+          TZ: Asia/Shanghai
+        run: |
+          if [ -n "$QWEATHER_API_KEY" ]; then
+            python -m weather_eval fetch-forecast --source qweather
+          else
+            echo "未配置 QWEATHER_API_KEY Secret，跳过和风抓取"
           fi
 
       - name: 抓取观测 + 预报快照 + 生成本次运行报告

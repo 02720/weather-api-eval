@@ -20,8 +20,12 @@ from .config import load_config
 from .timeutil import now_beijing, ymd, parse_iso, floor_to_hour, ym
 from .storage import save_obs, save_forecast_snapshot
 from .obs import EiaDataObsSource
-from .forecast import OpenMeteoProvider, CaiyunProvider
+from .forecast import OpenMeteoProvider, CaiyunProvider, QWeatherProvider
 from .forecast.caiyun import DEFAULT_NAME as CAIYUN_DEFAULT_MODEL
+from .forecast.qweather import DEFAULT_NAME as QWEATHER_DEFAULT_MODEL
+# 非第三方模式名的"独立抓取源"，Open-Meteo 抓取分支必须排除，
+# 否则会被当作 Open-Meteo 响应里缺失的模型而刷警告。
+NON_OPENMETEO_MODELS = {CAIYUN_DEFAULT_MODEL, QWEATHER_DEFAULT_MODEL}
 from .evaluate import build_report
 from .report import write_run_report, write_monthly_report, write_index
 
@@ -57,16 +61,30 @@ def cmd_fetch_obs(args):
     return failures
 
 
+def _build_provider(source: str, cfg):
+    """按 --source 构造预报快照器及其模型列表。
+
+    独立源的凭据缺失属于配置错误：在构造期即失败并给出可操作提示，
+    而非带着 traceback 崩溃（此前缺 Token 时会直接抛出未捕获异常）。
+    """
+    if source == "caiyun":
+        prov = CaiyunProvider()
+        return prov, [prov.name]
+    if source == "qweather":
+        prov = QWeatherProvider()
+        return prov, [prov.name]
+    # Open-Meteo 无需凭据；仅交其自身模型，避免把 caiyun/qweather 当作缺失模型刷警告
+    return OpenMeteoProvider(), [m for m in cfg.models if m not in NON_OPENMETEO_MODELS]
+
+
 def cmd_fetch_forecast(args):
     cfg = load_config(args.config)
     source = getattr(args, "source", "open_meteo")
-    if source == "caiyun":
-        prov = CaiyunProvider()
-        model_list = [prov.name]
-    else:
-        prov = OpenMeteoProvider()
-        # 仅把"非彩云"的模型交给 Open-Meteo，避免把 caiyun_v2_6 当作缺失模型而刷警告
-        model_list = [m for m in cfg.models if m != CAIYUN_DEFAULT_MODEL]
+    try:
+        prov, model_list = _build_provider(source, cfg)
+    except Exception as e:  # noqa: BLE001
+        log.error("预报源 %s 初始化失败（请检查相应环境变量/凭据配置）: %s", source, e)
+        sys.exit(1)
     failures = 0
     for st in cfg.stations:
         try:
@@ -142,8 +160,12 @@ def main(argv=None):
 
     sub.add_parser("fetch-obs")
     p_fetch = sub.add_parser("fetch-forecast")
-    p_fetch.add_argument("--source", choices=["open_meteo", "caiyun"], default="open_meteo",
-                         help="预报源：open_meteo（默认）或 caiyun（v2.6 Token 认证，需 CAIYUN_TOKEN 环境变量）")
+    p_fetch.add_argument(
+        "--source", choices=["open_meteo", "caiyun", "qweather"], default="open_meteo",
+        help="预报源：open_meteo（默认）、caiyun（需 CAIYUN_TOKEN）或 qweather"
+             "（和风天气，API Key 认证，需 QWEATHER_API_KEY 环境变量，"
+             "可选 QWEATHER_API_HOST 指定专属 API Host）",
+    )
     sub.add_parser("report")
     pm = sub.add_parser("monthly")
     pm.add_argument("--month", default=None, help="YYYY-MM，默认上一自然月")
