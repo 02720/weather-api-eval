@@ -20,7 +20,7 @@ from .config import load_config
 from .timeutil import now_beijing, ymd, parse_iso, floor_to_hour, ym
 from .storage import save_obs, save_forecast_snapshot
 from .obs import EiaDataObsSource
-from .forecast import OpenMeteoProvider
+from .forecast import OpenMeteoProvider, CaiyunProvider
 from .evaluate import build_report
 from .report import write_run_report, write_monthly_report, write_index
 
@@ -58,11 +58,18 @@ def cmd_fetch_obs(args):
 
 def cmd_fetch_forecast(args):
     cfg = load_config(args.config)
-    prov = OpenMeteoProvider()
+    source = getattr(args, "source", "open_meteo")
+    if source == "caiyun":
+        prov = CaiyunProvider()
+        model_list = [prov.name]
+    else:
+        prov = OpenMeteoProvider()
+        # 仅把"非彩云"的模型交给 Open-Meteo，避免把 caiyun_v2_6 当作缺失模型而刷警告
+        model_list = [m for m in cfg.models if m != CaiyunProvider.DEFAULT_NAME]
     failures = 0
     for st in cfg.stations:
         try:
-            snap = prov.fetch_snapshot(st, cfg.models)
+            snap = prov.fetch_snapshot(st, model_list)
             for m in snap["models"]:
                 sub = dict(snap)
                 sub["models"] = [m]
@@ -133,7 +140,9 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("fetch-obs")
-    sub.add_parser("fetch-forecast")
+    p_fetch = sub.add_parser("fetch-forecast")
+    p_fetch.add_argument("--source", choices=["open_meteo", "caiyun"], default="open_meteo",
+                         help="预报源：open_meteo（默认）或 caiyun（v2.6 Token 认证，需 CAIYUN_TOKEN 环境变量）")
     sub.add_parser("report")
     pm = sub.add_parser("monthly")
     pm.add_argument("--month", default=None, help="YYYY-MM，默认上一自然月")

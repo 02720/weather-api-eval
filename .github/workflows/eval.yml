@@ -47,6 +47,14 @@ jobs:
           python -m pip install -r requirements.txt -r requirements-dev.txt
           python -m pip install --no-deps cyeva==0.2.3
 
+      - name: 抓取彩云预报（可选，需配置 CAIYUN_TOKEN Secret）
+        # 只有仓库设置了名为 CAIYUN_TOKEN 的 Secret 才会执行；没设置则自动跳过，不影响现有流水线
+        if: ${{ secrets.CAIYUN_TOKEN != '' }}
+        env:
+          CAIYUN_TOKEN: ${{ secrets.CAIYUN_TOKEN }}
+          TZ: Asia/Shanghai
+        run: python -m weather_eval fetch-forecast --source caiyun
+
       - name: 抓取观测 + 预报快照 + 生成本次运行报告
         env:
           TZ: Asia/Shanghai

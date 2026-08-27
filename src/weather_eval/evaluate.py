@@ -150,7 +150,7 @@ def temp_metrics(obs_vals, fcst_vals, limits, min_sample) -> dict:
     n = _valid_n(obs, fcst)
     out = {"n": n, "rmse": None, "mae": None, "mbe": None,
            **{f"acc{lim}": None for lim in limits}}
-    if n < min_sample:
+    if n < min_sample or n == 0:
         return out
     tc = TemperatureComparison(obs, fcst, unit="degC")
     out["rmse"] = _r(tc.calc_rmse())
@@ -166,7 +166,7 @@ def precip_binary_metrics(obs_vals, fcst_vals, threshold, min_sample) -> dict:
     fcst = np.asarray(fcst_vals, dtype=float)
     n = _valid_n(obs, fcst)
     out = {"n": n, "acc": None, "pod": None, "far": None, "miss": None, "ts": None, "bias": None}
-    if n < min_sample:
+    if n < min_sample or n == 0:
         return out
     pc = PrecipitationComparison(obs, fcst, unit="mm")
     out["acc"] = _r(pc.calc_threshold_accuracy_ratio(threshold=threshold, compare=">="))
@@ -183,7 +183,7 @@ def precip_graded_ts(obs_vals, fcst_vals, kind, levels, min_sample) -> dict:
     fcst = np.asarray(fcst_vals, dtype=float)
     n = _valid_n(obs, fcst)
     out = {"n": n, **{f"ts{lv}": None for lv in levels}}
-    if n < min_sample:
+    if n < min_sample or n == 0:
         return out
     pc = PrecipitationComparison(obs, fcst, unit="mm")
     for lv in levels:

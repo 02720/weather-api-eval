@@ -7,6 +7,7 @@
 ## 支持的来源
 
 - **预报（Open-Meteo）**：`ecmwf_ifs`、`ncep_gfs_global`、`dwd_icon_global`（三个模型一次请求返回，后续可继续在 `config/stations.yaml` 增模型）。
+- **预报（彩云天气 Caiyun v2.6）**：模型名 `caiyun_v2_6`，Token 认证（环境变量 `CAIYUN_TOKEN`）。`fetch-forecast --source caiyun` 单独抓取，评估/报告逻辑与 Open-Meteo 完全一致。
 - **观测（环境气象数据服务平台 eia-data.com）**：各气象站"气象站基本信息"页，服务端直出近 24 小时逐小时实况（气温、降水、气压、湿度、风）。
 - **评估框架**：`cyeva 0.2.3`（温度 RMSE/MAE/MBE/±1°C·±2°C 准确率；降水 0.1mm 晴雨二分类准确率/POD/空报率 FAR/漏报率/TS/BIAS，及分级降水 TS）。
 
@@ -20,7 +21,7 @@
 ## 环境要求
 
 - **Python 3.12.6**（cyeva 0.2.3 支持 3.10–3.12；`pint` 必须用 **0.24.4**，因为 cyeva 误钉的 0.24.3 在 3.12+ 上无法导入，见下方安装说明）。
-- 网络访问：Open-Meteo（HTTPS）、eia-data.com（HTTP）。Open-Meteo 免费档约 1 万次/天，无需 key。
+- 网络访问：Open-Meteo（HTTPS）、eia-data.com（HTTP）、彩云天气 API `api.caiyunapp.com`（HTTPS）。Open-Meteo 免费档约 1 万次/天，无需 key；**彩云需 Token**，从环境变量 `CAIYUN_TOKEN` 读取（测试 Token 见下方「彩云接入」）。
 
 ## 快速开始（本地）
 
@@ -41,6 +42,16 @@ python -m weather_eval fetch-forecast
 # 生成本月至今的运行报告
 python -m weather_eval report
 # 浏览：打开 reports/latest.html
+
+# —— 彩云天气（v2.6）接入 ——
+# 1) 设置 Token（仅从环境变量读取，**切勿提交到仓库**）
+#    彩云 Token 请通过环境变量 / 密钥管理（如 GitHub Actions Secret）注入；
+#    测试 Token 由维护者单独提供，不要硬编码或写入本文件。
+export CAIYUN_TOKEN="<在此填入你的彩云 Token>"
+# 2) 抓取彩云起报快照（独立于 Open-Meteo；评估/报告逻辑无需改动）
+python -m weather_eval fetch-forecast --source caiyun
+# 3) 生成报告时 caiyun_v2_6 已纳入对比（config 的 models 已含该模型）
+python -m weather_eval report
 ```
 
 常用命令：
@@ -48,10 +59,11 @@ python -m weather_eval report
 | 命令 | 作用 |
 |------|------|
 | `fetch-obs` | 抓取观测并归档（按时间戳去重） |
-| `fetch-forecast` | 抓取起报快照并归档（幂等） |
+| `fetch-forecast` | 抓取 Open-Meteo 起报快照并归档（幂等） |
+| `fetch-forecast --source caiyun` | 抓取彩云天气 v2.6 起报快照（需 `CAIYUN_TOKEN`） |
 | `report` | 生成本月至今的运行报告 + 更新门户 `reports/index.html` |
 | `monthly [--month YYYY-MM]` | 生成指定月份（默认上一自然月）的月度汇总报告 |
-| `all` | `fetch-obs` + `fetch-forecast` + `report`（GitHub Action 调用） |
+| `all` | `fetch-obs` + `fetch-forecast` + `report`（GitHub Action 调用，不含彩云） |
 
 ## GitHub Actions 自动运行
 
@@ -76,7 +88,7 @@ python -m weather_eval report
 
 - **新增站点**：在 `config/stations.yaml` 的 `stations` 下加一项（`id`/`name`/`lat`/`lon`/`obs_url`，`obs_url` 为 eia-data 对应"气象站基本信息"页的 URL 编码）。
 - **新增模型**：在 `models` 下加入 Open-Meteo 支持的模型名（如 `cma_grapes_global`、`ukmo_global_deterministic_10km` 等）。
-- **新增预报源**：实现 `weather_eval/forecast/base.py` 的 `ForecastProvider` 接口（返回统一结构的起报快照），在 CLI 中切换即可，评估/报告逻辑无需改动。
+- **新增预报源**：实现 `weather_eval/forecast/base.py` 的 `ForecastProvider` 接口（返回统一结构的起报快照），在 CLI 中切换即可，评估/报告逻辑无需改动。已内置示例 `forecast/caiyun.py`（`CaiyunProvider`）：`fetch-forecast --source caiyun` 抓取，Token 取自 `CAIYUN_TOKEN` 环境变量；其返回的 `caiyun_v2_6` 模型已加入 `models`，故 `report` 自动纳入对比。
 
 ## 目录结构
 
@@ -86,7 +98,7 @@ src/weather_eval/
   timeutil.py             北京时工具
   config.py  storage.py   配置与 JSON 存档（原子写/去重/幂等）
   obs/                     观测源（eia-data 抓取解析）
-  forecast/                Open-Meteo 快照器
+  forecast/                Open-Meteo / 彩云天气 快照器（base.py 抽象接口）
   evaluate.py             配对 + cyeva 指标 + 报告数据组装
   report/                  Jinja2 + ECharts 报告渲染
   __main__.py              CLI
@@ -101,6 +113,12 @@ tests/                    pytest（含 cyeva 手算对拍）
 - `pint` 锁定 **0.24.4**；若升级到其它版本可能导致 cyeva 导入失败或定义解析错误。
 - eia-data.com 页面结构若改版，抓取解析（`obs/eia_data.py`）需相应调整（已有 `wd` JSON 与 HTML 表格双路回退）。
 - Open-Meteo 免费档有速率限制，批量回溯请控制频率。
+- **彩云天气（v2.6）接入约束**：
+  - 需 `CAIYUN_TOKEN`；鉴权失败（如 `token is invalid`）会抛出清晰错误而非静默产出空数据。
+  - **逐小时时间戳锚定在请求时刻**（形如 `2026-08-27T15:10+08:00`，分钟随请求波动且带时区偏移），而观测落在整点。提供方已**下取整到整点**再与观测配对（逐小时量级下分钟偏差可忽略），否则会与整点观测全部错配、丢失样本。
+  - **长时效返回与 User-Agent 强相关**：本测试 Token 下，使用默认 `python-requests` UA 仅返回约 48 个逐小时点，而本项目固定 UA `weather-api-eval/0.1 (+https://github.com/)` 可返回完整 384 点（约 16 天）。提供方在返回点数明显少于请求时记录 WARNING 以暴露此类静默降级；**请勿随意改动该 UA**。
+  - 彩云不做格点吸附，`location` 即请求坐标；响应该端点无 `elevation` 字段，快照中 `elevation` 记 `None`。
+  - `fetch-forecast --source caiyun` 独立于 Open-Meteo，需手动运行（CI 默认 `all` 不含彩云，避免 Token 缺失导致失败）。彩云预报为"未来"时刻，故抓取当次即与历史观测 0 配对属正常；数值评估将在后续观测积累后自动填充。
 
 ## 评估方法说明（关于样本与时效）
 
@@ -126,3 +144,14 @@ tests/                    pytest（含 cyeva 手算对拍）
 - **依赖与 CI**：`cyeva==0.2.3` 用 `pip install --no-deps` 单独安装（绕过其误钉的 `pint==0.24.3`，否则与 `pint==0.24.4` 冲突且 0.24.3 在 3.12+ 无法导入）；`requirements.txt` 锁定 `numpy==2.1.2` 与兼容的 `pint==0.24.4` 并提供 cyeva 的真实运行依赖（pandas/scipy）；`pip install` 同时装 `requirements-dev.txt`；月度汇总改为**仅每月 1 号北京时 06:00 那次运行**触发（消除冗余重算）；提交前 `git pull --rebase` 防止 push 被拒；Python 锁定 3.12.6。
 
 > 审查中一条"多快照重复计数"的判断经核实为**误报**：连续数值预报检验本就按（起报, 有效时刻）独立样本、按真实时效分组，并非重复计数（见上节）。
+
+## 彩云天气接入：对抗式审查发现并修复的问题
+
+本次新增 `forecast/caiyun.py` 与 CLI `--source caiyun` 后，经对抗式审查发现以下问题并已修复：
+
+- **评估引擎空数组崩溃（系统级）**：`cyeva` 在样本数为 0 时会抛 `ArrayLengthNotEqualError`。原 `temp_metrics`/`precip_binary_metrics`/`precip_graded_ts` 仅在 `n < min_sample` 时早退，而 `min_sample=0` 的合法配置下空桶会直达 cyeva 崩溃。已在三处指标函数增加 `n == 0` 早退保护（`evaluate.py`），使"样本不足"在任何配置下都安全返回 `None`，不污染评估结果。
+- **时间戳整点对齐（关键正确性）**：彩云逐小时时间戳锚定在请求时刻（带 `+08:00` 偏移、分钟随请求波动），与整点观测无法精确配对。提供方将时间戳解析为北京时后**下取整到整点**再配对；若不下取整，整点观测会全部错配、导致彩云评估恒为"样本不足"。已用单测锁定下取整与去偏移行为。
+- **长时效静默降级（关键健壮性）**：经验证，彩云对该 Token 的返回长度与 `User-Agent` 强相关——默认 `python-requests` UA 仅返回约 48 点，固定 UA 才返回完整 384 点。此降级**无任何报错**，会静默丢失约 14 天样本。已在提供方固定该 UA，并在返回点数明显少于请求时记录 WARNING 暴露降级；并以单测锁定"请求 384 步 + 固定 UA"的请求契约。
+- **Open-Meteo 误告警清理**：`models` 列表已含 `caiyun_v2_6`，原 `fetch-forecast`（Open-Meteo）会把它当作"响应缺失模型"刷警告。已在 Open-Meteo 分支过滤掉非其所属模型，消除噪声。
+- **鉴权与异常路径**：`status=failed`（如 `token is invalid`）与 HTTP 错误均被捕获并转为清晰错误；缺 `CAIYUN_TOKEN` 时构造即报错；缺失 `temperature`/`hourly` 等结构时早退报错而非产出空快照。
+- **长时效 lead 口径小偏差（已知、可接受）**：因时间戳下取整，`issue_iso` 取整点到小时，个别临近时效边界的样本 lead 可能被高估至多 ~59 分钟；与 Open-Meteo 同样取整到小时，口径一致，对天桶/逐小时曲线影响可忽略。
