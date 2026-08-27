@@ -25,6 +25,10 @@ concurrency:
 jobs:
   eval:
     runs-on: ubuntu-latest
+    # 仓库采用 src 布局，且未做 pip 打包；运行 python -m weather_eval 需把 src 加入导入路径
+    # （与 pyproject.toml 中 pytest 的 pythonpath=["src"] 保持一致）。
+    env:
+      PYTHONPATH: ${{ github.workspace }}/src
     steps:
       - name: 检出
         uses: actions/checkout@v4

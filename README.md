@@ -31,6 +31,9 @@ source .venv/bin/activate
 pip install -r requirements.txt -r requirements-dev.txt
 pip install --no-deps cyeva==0.2.3
 
+# 仓库是 src 布局且未做 pip 打包，需把 src 加入导入路径（与 CI 一致）
+export PYTHONPATH="$PWD/src"
+
 # 抓取 4 站近 24h 观测
 python -m weather_eval fetch-obs
 # 抓取 3 模型起报快照（未来 16 天逐小时）
