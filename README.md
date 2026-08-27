@@ -40,9 +40,9 @@ export PYTHONPATH="$PWD/src"
 python -m weather_eval fetch-obs
 # 抓取 3 模型起报快照（未来 16 天逐小时）
 python -m weather_eval fetch-forecast
-# 生成本月至今的运行报告
+# 用本月至今的累计数据更新主报告（每次覆盖，不堆文件）
 python -m weather_eval report
-# 浏览：打开 reports/latest.html
+# 浏览：打开 reports/index.html（GitHub Pages 部署后即网站首页）
 
 # —— 彩云天气（v2.6）接入 ——
 # 1) 设置 Token（仅从环境变量读取，**切勿提交到仓库**）
@@ -73,8 +73,8 @@ python -m weather_eval report
 | `fetch-forecast` | 抓取 Open-Meteo 起报快照并归档（幂等） |
 | `fetch-forecast --source caiyun` | 抓取彩云天气 v2.6 起报快照（需 `CAIYUN_TOKEN`） |
 | `fetch-forecast --source qweather` | 抓取和风天气起报快照（需 `QWEATHER_API_KEY`，建议同时设 `QWEATHER_API_HOST`） |
-| `report` | 生成本月至今的运行报告 + 更新门户 `reports/index.html` |
-| `monthly [--month YYYY-MM]` | 生成指定月份（默认上一自然月）的月度汇总报告 |
+| `report` | 用"本月 1 号至今"的累计数据更新主报告 `reports/index.html`（覆盖写，不堆文件） |
+| `monthly [--month YYYY-MM]` | 把某月冻结为月度归档 `reports/monthly/YYYY-MM.html`（默认上一自然月） |
 | `all` | `fetch-obs` + `fetch-forecast` + `report`（GitHub Action 调用，不含彩云/和风） |
 
 ## GitHub Actions 自动运行
@@ -83,11 +83,18 @@ python -m weather_eval report
 2. 仓库 **Settings → Pages → Build and deployment → Source 选 "GitHub Actions"**。
 3. 工作流 `.github/workflows/eval.yml` 已配置：
    - **定时**：北京时每天 **6:00 / 13:00 / 20:00**（cron `0 5,12,22 * * *` UTC）。
-   - 每次运行抓取观测+预报、生成本次报告、提交数据/报告、部署 Pages。
-   - **每月 1 号北京时**自动对该月做汇总，生成月度报告（也可手动 `workflow_dispatch` 指定 `month`）。
-4. 报告在线地址：`https://<用户名>.github.io/<仓库名>/`（Pages 自动发布 `reports/` 目录）。
+   - 每次运行抓取观测+预报，并用本月累计数据**覆盖更新主报告** `reports/index.html`（Pages 首页），提交数据后部署。
+   - **每月 1 号北京时**自动把上一自然月冻结为月度归档 `reports/monthly/YYYY-MM.html`（也可手动 `workflow_dispatch` 指定 `month`）。
+4. 报告在线地址：`https://<用户名>.github.io/<仓库名>/`（Pages 自动发布 `reports/` 目录，首页即最新主报告）。
 
 > 每次运行仅抓取近 24h 观测，因此单次失败不会丢数据（下次运行自动回补 24h 窗口）。
+
+## 报告体系（怎么看报告）
+
+- **主报告 `reports/index.html`**：网站首页，展示"本月至今"的**累积**评估结果，每次 Action 运行自动覆盖更新。页面按"结论先行"组织：顶部一句话冠军结论 → 30 秒新手引导 → 预报源排行榜 → 气温/降水/实况对比/热力图/分站图表（每张图配"💡 怎么看"导读）→ 进阶数据（默认折叠）→ 名词小词典。
+- **月度归档 `reports/monthly/YYYY-MM.html`**：每月 1 号把上月冻结存档，永不改动；`monthly` 命令在归档后会立即重建一次主报告，让新归档在当次部署就出现在首页页脚的归档列表里。
+- 数据本体在 `data/`（观测/起报快照）里持续积累，报告只是"当前累计数据的一个视图"——所以不存在"每次运行一份报告"的文件堆叠。
+- 注意：每月 1 号主报告会切换为新月份的评估窗口，页面短暂回到"样本积累中"状态属正常现象（上月的完整结果已冻结在归档里）。
 
 ## 关于"首份完整月报"
 
@@ -115,7 +122,7 @@ src/weather_eval/
   report/                  Jinja2 + ECharts 报告渲染
   __main__.py              CLI
 data/                     观测档案 / 预报快照（git 跟踪）
-reports/                  运行报告 / 月度报告 / 门户（git 跟踪，部署 Pages）
+reports/                  index.html 主报告 / monthly 月度归档 / vendor ECharts 本地副本（git 跟踪，部署 Pages）
 tests/                    pytest（含 cyeva 手算对拍）
 ```
 
@@ -150,6 +157,18 @@ tests/                    pytest（含 cyeva 手算对拍）
 > 观测来源（eia-data.com）返回的时间被当作**北京时（UTC+8，无夏令时）**处理，与 Open-Meteo 的 `timezone=Asia/Shanghai` 时间轴一致；配对基于绝对时间戳串，故不存在时区错位。
 
 > **关于每天 3 次运行与起报快照**：Open-Meteo 的时间轴从"当地当日 00:00"起返回未来 16 天逐小时序列。因此按 `issue_iso`（时间轴首点）去重后，**每个（站点 × 模型 × 当日）只会归档一份快照**（当日首次成功抓取的那份；若该次失败，后续 13/20 点运行会自动补上）。三次日运行的更多价值在于：刷新观测、更早发现抓取异常、以及更频繁地出具报告。
+
+## 报告系统重设计（2026-08）：对抗式审查发现并修复的问题
+
+本次把"每次运行一份报告"重构为"单一累积主报告 + 月度归档"后，经通用子智能体对抗式审查，发现以下问题并已修复：
+
+- **（P0）热力图颜色编码错位**：热力图 data 由三元组改为四元组（追加样本数 n）后未指定 `visualMap.dimension`，ECharts 默认取最后一个维度着色——颜色实际编码的是**样本数**而非准确率，翻车日会因样本多而显示绿色。已显式指定 `dimension:2`。
+- **（P0）对比图空态卡死**："预报 vs 实况"切到无观测站点时用 `textContent` 清空容器，切回时 `echarts.init` 幂等复用已脱离 DOM 的旧实例，图表永久停留在"暂无数据"提示上。已改为 dispose + 恢复容器 + 重建实例，并用含"无观测站点"的合成数据在浏览器实测空态 ⇄ 有数据往复。
+- **（P1）归档页时间语义误导**：月度冻结页的"数据更新至"显示的是生成时刻（如 8 月归档显示 8-27），已改为显示数据窗口末尾（`meta.end`），页脚保留墙钟生成时间。
+- **（P1）归档页对比图结构性缺失预报线**：原实现取"全局最新快照"画预报线，月度归档时最新快照在归档月之后、与观测窗口零交集。已改为"对每个时刻取当时已发布的最新一版预报"（按起报升序覆盖 + 只用窗口结束前发布的快照），主报告与归档页的预报线都能全程覆盖 72h 窗口。
+- **（P1）归档列表延迟与测试缺口**：`monthly` 命令现在归档后立即重建主报告，新月报当次部署即出现在首页页脚；补充了 ranking 无条件计算与 `write_monthly_report` 的回归测试，清理恒真断言。
+- **（P2）注入面统一与原子写**：所有内联 `<script>` 的 JSON（含站点中文名等新增 blob）统一走 `</`→`<\/` 转义；index/归档落盘改为临时文件 + 原子 rename（防半文件被 CI 提交部署）。另修复 ECharts 加载失败提示横幅在 `<head>` 中执行时 `document.body` 为 null 导致横幅自身抛错的陈年问题（移入 DOMContentLoaded）。
+- **（P2）文案与可访问性**：综合得分公式在排行榜注明口径（含温度误差换算分 `100−RMSE×5`）；冠军横幅措辞改为"提前 1 天以内（1~24 小时）"；样本不足的排名卡不再发奖牌；归档页皇冠显示"当月最准"；下拉框补 label 关联；明细表注明 n 的取值口径；工作流步骤名与新行为对齐。
 
 ## 对抗式审查已修复的问题
 

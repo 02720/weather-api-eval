@@ -1,73 +1,136 @@
-"""HTML 报告渲染：Jinja2 模板 + ECharts（仓库内本地副本）。"""
+"""HTML 报告渲染：Jinja2 模板 + ECharts（仓库内本地副本）。
+
+报告体系（2026-08 重设计，面向非专业读者）：
+
+- ``reports/index.html``           **主报告（本月至今累积）**。每次 Action 运行覆盖更新，
+  GitHub Pages 首页打开即是它 —— 数据在 ``data/`` 里持续积累，报告只是当前累计数据
+  的一个"视图"，没必要每次运行留一份文件（那是旧版 reports/runs/ 的做法，已废弃）。
+- ``reports/monthly/YYYY-MM.html`` **月度归档**。每月 1 号把上个月的数据冻结成一份
+  永久档案；主报告页脚会自动列出所有归档链接。
+
+模板里所有面向读者的措辞都按"小白能看懂"的标准撰写，图表配"怎么看"提示，
+页面底部内置名词词典；改动文案请保持同一风格。
+"""
 from __future__ import annotations
 
 import json
 import os
+import tempfile
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
 
-from ..timeutil import now_beijing, ymd
+from ..timeutil import now_beijing
 
 TPL_DIR = Path(__file__).resolve().parent / "templates"
-REPORTS_ROOT = Path(os.environ.get(
-    "WEATHER_EVAL_REPORTS_ROOT",
-    Path(__file__).resolve().parents[3] / "reports",
-))
 env = Environment(loader=FileSystemLoader(str(TPL_DIR)), autoescape=True)
 
+# 模型的中文显示名：原始 id（如 ecmwf_ifs）对读者不友好，
+# 页面上的排行榜、图表图例统一用这里的名字；未收录的模型回退为原始 id。
+MODEL_LABELS = {
+    "ecmwf_ifs": "欧洲 ECMWF",
+    "ncep_gfs_global": "美国 GFS",
+    "dwd_icon_global": "德国 ICON",
+    "caiyun_v2_6": "彩云天气",
+    "qweather_v1": "和风天气",
+}
 
-def render_report_html(report_data: dict, title: str | None = None, base: str = "./") -> str:
-    """base：相对本报告文件到 reports/ 根的路径前缀（根目录 ./ ，子目录 ../ ）。"""
+# 每个模型的固定配色（图表/排行榜共用，全站一致，方便读者形成"颜色=模型"的记忆）。
+MODEL_COLORS = {
+    "ecmwf_ifs": "#2563eb",      # 蓝
+    "ncep_gfs_global": "#f59e0b",  # 橙
+    "dwd_icon_global": "#10b981",  # 绿
+    "caiyun_v2_6": "#8b5cf6",    # 紫
+    "qweather_v1": "#ef4444",    # 红
+}
+
+
+def _reports_root() -> Path:
+    """报告输出根目录；每次调用动态读环境变量，便于测试用 monkeypatch 重定向。"""
+    return Path(os.environ.get(
+        "WEATHER_EVAL_REPORTS_ROOT",
+        Path(__file__).resolve().parents[3] / "reports",
+    ))
+
+
+def _list_archives(root: Path) -> list[str]:
+    """扫描月度归档目录，返回月份列表（新→旧，如 ["2026-08", "2026-07"]）。"""
+    monthly_dir = root / "monthly"
+    if not monthly_dir.exists():
+        return []
+    return sorted((p.stem for p in monthly_dir.glob("*.html")), reverse=True)
+
+
+def _js_json(obj) -> str:
+    """序列化为 JSON 并转义 </：防止数据中的 </script> 提前闭合内联脚本。
+    对所有内联进 <script> 的 JSON 统一走这里（与 storage 的原子写一样，
+    是"写进仓库的每一份产物都要过"的基础防护）。"""
+    return json.dumps(obj, ensure_ascii=False).replace("</", "<\\/")
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """临时文件 + 原子 rename 落盘，避免中途失败留下半截 HTML
+    （半文件会被 git-auto-commit 收走并部署到 Pages）。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def render_report_html(report_data: dict, title: str | None = None,
+                       base: str = "./", archives: list[str] | None = None,
+                       station_labels: dict[str, str] | None = None) -> str:
+    """渲染一份报告 HTML。
+
+    base：本报告文件到 reports/ 根的相对前缀（根目录 ./ ，monthly/ 子目录 ../ ），
+          用于定位 vendor/echarts.min.js 与归档链接。
+    archives：月度归档月份列表，显示在页脚"月度归档"区。
+    station_labels：站点 id → 中文名（如 wuzhou → 梧州气象站），缺省时页面显示 id。
+    """
     tpl = env.get_template("report.html.j2")
-    # 内联 JSON 时转义 </ 防止 </script> 提前闭合导致脚本注入/提前终止
-    report_json = json.dumps(report_data, ensure_ascii=False).replace("</", "<\\/")
+    report_json = _js_json(report_data)
+    labels_json = _js_json(MODEL_LABELS)
+    colors_json = _js_json(MODEL_COLORS)
     return tpl.render(
         report=report_data,
         report_json=report_json,
-        title=title or "天气预报 API 准确度评估报告",
+        model_labels=MODEL_LABELS,
+        model_labels_json=labels_json,
+        model_colors_json=colors_json,
+        station_labels=station_labels or {},
+        station_labels_json=_js_json(station_labels or {}),
+        archives=archives or [],
+        title=title or "天气预报准确度检验报告",
         generated_at=now_beijing().strftime("%Y-%m-%d %H:%M"),
         base=base,
     )
 
 
-def write_run_report(report_data: dict) -> Path:
-    REPORTS_ROOT.mkdir(parents=True, exist_ok=True)
-    runs_dir = REPORTS_ROOT / "runs"
-    runs_dir.mkdir(parents=True, exist_ok=True)
-    period = report_data["meta"]["period_label"]
-    stamp = now_beijing().strftime("%Y%m%d-%H%M")
-    out = runs_dir / f"{period}-{stamp}.html"
-    out.write_text(render_report_html(report_data, base="../"), encoding="utf-8")
-    latest = REPORTS_ROOT / "latest.html"
-    latest.write_text(render_report_html(report_data, base="./"), encoding="utf-8")
+def write_live_report(report_data: dict, station_labels: dict[str, str] | None = None) -> Path:
+    """写主报告：覆盖 reports/index.html（Pages 首页）。每次运行都基于当月全部数据重算。"""
+    root = _reports_root()
+    root.mkdir(parents=True, exist_ok=True)
+    out = root / "index.html"
+    _atomic_write_text(out, render_report_html(report_data, base="./",
+                                               archives=_list_archives(root),
+                                               station_labels=station_labels))
     return out
 
 
-def write_monthly_report(report_data: dict) -> Path:
-    REPORTS_ROOT.mkdir(parents=True, exist_ok=True)
-    monthly_dir = REPORTS_ROOT / "monthly"
+def write_monthly_report(report_data: dict, station_labels: dict[str, str] | None = None) -> Path:
+    """写月度归档：reports/monthly/YYYY-MM.html，写后不再变动（冻结档案）。"""
+    root = _reports_root()
+    monthly_dir = root / "monthly"
     monthly_dir.mkdir(parents=True, exist_ok=True)
     month = report_data["meta"]["period_label"]
     out = monthly_dir / f"{month}.html"
-    out.write_text(render_report_html(report_data, title=f"月度评估报告 {month}", base="../"), encoding="utf-8")
-    return out
-
-
-def write_index() -> Path:
-    """生成报告门户 index.html：列出 runs 与 monthly 下的报告。"""
-    REPORTS_ROOT.mkdir(parents=True, exist_ok=True)
-    runs, monthly = [], []
-    runs_dir = REPORTS_ROOT / "runs"
-    if runs_dir.exists():
-        for p in sorted(runs_dir.glob("*.html"), reverse=True):
-            runs.append(p.name)
-    monthly_dir = REPORTS_ROOT / "monthly"
-    if monthly_dir.exists():
-        for p in sorted(monthly_dir.glob("*.html"), reverse=True):
-            monthly.append(p.name)
-    tpl = env.get_template("index.html.j2")
-    html = tpl.render(runs=runs, monthly=monthly, generated_at=now_beijing().strftime("%Y-%m-%d %H:%M"))
-    out = REPORTS_ROOT / "index.html"
-    out.write_text(html, encoding="utf-8")
+    _atomic_write_text(out, render_report_html(
+        report_data, title=f"{month} 月度归档 · 天气预报准确度检验报告",
+        base="../", archives=_list_archives(root),
+        station_labels=station_labels))
     return out

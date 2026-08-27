@@ -323,10 +323,8 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     # ---- 覆盖率 ----
     coverage = _coverage(station_ids, start_dt, end_dt)
 
-    # ---- 月度排名（可选） ----
-    ranking = None
-    if is_monthly:
-        ranking = _ranking(scorecard)
+    # ---- 综合排名：主报告与月度归档都展示"冠军榜"，故无条件计算 ----
+    ranking = _ranking(scorecard)
 
     return {
         "meta": {
@@ -356,6 +354,14 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
 
 
 def _build_timeseries(station_ids, models, ts_start, end_dt) -> dict:
+    """最近 72h 的"预报 vs 实况"叠图数据。
+
+    预报线的取值口径：对每个时刻，取**当时已发布的最新一版预报**（按起报时间
+    升序遍历快照，后发布的覆盖同一时刻的旧值；时效即处于 1~24h 内）。
+    只使用"发布时间不晚于窗口末尾"的快照——月度归档时排除归档之后新抓的
+    快照，保证归档页与当时可见的预报一致、且时间轴有交集（若始终取全局
+    最新快照，归档页的预报线会整段缺失）。
+    """
     out: dict[str, Any] = {}
     for sid in station_ids:
         obs_map = load_obs(sid)
@@ -366,25 +372,29 @@ def _build_timeseries(station_ids, models, ts_start, end_dt) -> dict:
             if vt < ts_start or vt > end_dt:
                 continue
             series.append({"t": tstr, "temp": rec.get("temp"), "rain": rec.get("rain")})
-        # 每个模型：从该站最近一次快照取对应时间点的预报
         model_series: dict[str, list] = {m: [] for m in models}
         out[sid] = {"obs": series, "models": model_series}
-    # 仅当存在快照时填预报（保持简单：用各模型最近快照按时间匹配）
     for sid in station_ids:
         for m in models:
-            snaps = list_forecast_snapshots(sid, m)
-            if not snaps:
+            snaps = list_forecast_snapshots(sid, m)  # 已按起报时间升序
+            tmap: dict[str, tuple] = {}
+            for snap in snaps:
+                if parse_iso(snap["issue_iso"]) > end_dt:
+                    continue
+                if m not in snap["data"]:
+                    continue
+                arr_t = snap["data"][m]["temperature_2m"]
+                arr_p = snap["data"][m]["precipitation"]
+                for i, t in enumerate(snap["hourly_time"]):
+                    tmap[t] = (arr_t[i], arr_p[i])  # 后发布的覆盖同刻旧值
+            if not tmap:
                 continue
-            latest = snaps[-1]
-            tmap = {t: (latest["data"][m]["temperature_2m"][i],
-                       latest["data"][m]["precipitation"][i])
-                    for i, t in enumerate(latest["hourly_time"])}
             arr = []
             for pt in out[sid]["obs"]:
-                if pt["t"] in tmap:
-                    arr.append({"t": pt["t"], "temp": tmap[pt["t"]][0], "rain": tmap[pt["t"]][1]})
-                else:
-                    arr.append({"t": pt["t"], "temp": None, "rain": None})
+                v = tmap.get(pt["t"])
+                arr.append({"t": pt["t"],
+                            "temp": v[0] if v else None,
+                            "rain": v[1] if v else None})
             out[sid]["models"][m] = arr
     return out
 

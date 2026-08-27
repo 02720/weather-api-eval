@@ -77,7 +77,7 @@ jobs:
             echo "未配置 QWEATHER_API_KEY Secret，跳过和风抓取"
           fi
 
-      - name: 抓取观测 + 预报快照 + 生成本次运行报告
+      - name: 抓取观测 + 预报快照 + 更新主报告（本月累计，覆盖写 index.html）
         env:
           TZ: Asia/Shanghai
         run: python -m weather_eval all
@@ -88,7 +88,7 @@ jobs:
           echo "day=$(TZ=Asia/Shanghai date +%d)" >> "$GITHUB_OUTPUT"
           echo "hour=$(TZ=Asia/Shanghai date +%H)" >> "$GITHUB_OUTPUT"
 
-      - name: 月度汇总（每月1号北京时 06:00 那次运行，或手动指定 month）
+      - name: 月度归档（每月1号北京时 06:00 那次运行，或手动指定 month；归档后重建主报告同步归档列表）
         if: >-
           github.event_name == 'workflow_dispatch' ||
           (github.event_name == 'schedule' && steps.bj.outputs.day == '01' && steps.bj.outputs.hour == '06')

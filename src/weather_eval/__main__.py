@@ -3,18 +3,21 @@
 用法：
   python -m weather_eval fetch-obs                抓取 4 站近 24h 实况并归档
   python -m weather_eval fetch-forecast           抓取 3 模型起报快照并归档
-  python -m weather_eval report                   生成本月至今运行报告
-  python -m weather_eval monthly [--month YYYY-MM] 生成月度汇总报告
-  python -m weather_eval all                       抓取观测+预报+生成本次运行报告（GitHub Action 调用）
+  python -m weather_eval report                   用本月至今数据更新主报告 reports/index.html
+  python -m weather_eval monthly [--month YYYY-MM] 生成月度归档报告 reports/monthly/YYYY-MM.html
+  python -m weather_eval all                       抓取观测+预报+更新主报告（GitHub Action 调用）
+
+报告体系（2026-08 重设计）：
+  index.html 是"本月至今"的累积视图，每次运行覆盖更新（不再保留每次运行一份的 runs/）；
+  monthly/ 每月归档一份冻结的历史月份，主报告页脚自动列出归档链接。
 """
 from __future__ import annotations
 
 import argparse
 import calendar
 import logging
-import re
 import sys
-from datetime import timedelta, datetime
+from datetime import timedelta
 
 from .config import load_config
 from .timeutil import now_beijing, ymd, parse_iso, floor_to_hour, ym
@@ -27,7 +30,7 @@ from .forecast.qweather import DEFAULT_NAME as QWEATHER_DEFAULT_MODEL
 # 否则会被当作 Open-Meteo 响应里缺失的模型而刷警告。
 NON_OPENMETEO_MODELS = {CAIYUN_DEFAULT_MODEL, QWEATHER_DEFAULT_MODEL}
 from .evaluate import build_report
-from .report import write_run_report, write_monthly_report, write_index
+from .report import write_live_report, write_monthly_report
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("weather_eval")
@@ -101,46 +104,34 @@ def cmd_fetch_forecast(args):
     return failures
 
 
-def _prune_runs(keep_days: int = 60) -> None:
-    """清理 reports/runs 中超过 keep_days 天的旧报告，避免无限增长。"""
-    from .report.render import REPORTS_ROOT
-    runs_dir = REPORTS_ROOT / "runs"
-    if not runs_dir.exists():
-        return
-    cutoff = datetime.now() - timedelta(days=keep_days)
-    stamp_re = re.compile(r"(\d{8}-\d{4})$")
-    for p in runs_dir.glob("*.html"):
-        m = stamp_re.search(p.stem)
-        if not m:
-            continue
-        try:
-            if datetime.strptime(m.group(1), "%Y%m%d-%H%M") < cutoff:
-                p.unlink()
-        except ValueError:
-            continue
-
-
-def cmd_report(args):
-    cfg = load_config(args.config)
+def _update_live_report(cfg):
+    """用"本月 1 号至今"的累计数据重建主报告 reports/index.html（覆盖写）。"""
     now = floor_to_hour(now_beijing())
     month = ym(now)  # YYYY-MM
     start = parse_iso(f"{month}-01T00:00")
     data = build_report(cfg.station_ids, cfg.models, cfg.eval, start, now, period_label=month)
-    out = write_run_report(data)
-    _prune_runs()
-    write_index()
-    log.info("运行报告已生成: %s", out)
+    out = write_live_report(data, station_labels={s.id: s.name for s in cfg.stations})
+    return month, out
+
+
+def cmd_report(args):
+    cfg = load_config(args.config)
+    month, out = _update_live_report(cfg)
+    log.info("主报告已更新（%s 累积至今）: %s", month, out)
 
 
 def cmd_monthly(args):
+    """把某个自然月冻结为月度归档 reports/monthly/YYYY-MM.html（默认上一自然月）。"""
     cfg = load_config(args.config)
     month = args.month or _default_month()
     start, end = _month_window(month)
     data = build_report(cfg.station_ids, cfg.models, cfg.eval, start, end,
                         period_label=month, is_monthly=True)
-    out = write_monthly_report(data)
-    write_index()
-    log.info("月度报告已生成: %s", out)
+    out = write_monthly_report(data, station_labels={s.id: s.name for s in cfg.stations})
+    log.info("月度归档已生成: %s", out)
+    # 归档列表是主报告渲染时快照的：立即重建一次主报告，
+    # 让新归档在本次部署就出现在首页页脚，而不是等下一次定时运行。
+    _update_live_report(cfg)
 
 
 def cmd_all(args):
