@@ -40,7 +40,7 @@ def write_run_report(report_data: dict) -> Path:
     out = runs_dir / f"{period}-{stamp}.html"
     out.write_text(render_report_html(report_data, base="../"), encoding="utf-8")
     latest = REPORTS_ROOT / "latest.html"
-    latest.write_text(out.read_text(encoding="utf-8"), encoding="utf-8")
+    latest.write_text(render_report_html(report_data, base="./"), encoding="utf-8")
     return out
 
 
