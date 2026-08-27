@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>月度评估报告 2026-07</title>
+<script src="../vendor/echarts.min.js"></script>
+<script>if (typeof echarts === 'undefined') {
+  document.body.insertAdjacentHTML('afterbegin',
+    '<div style="background:#d64545;color:#fff;padding:10px 16px">图表库加载失败（ECharts 未找到），报告数值见下方明细表。</div>');
+}</script>
+<style>
+  :root { --bg:#f6f8fb; --card:#fff; --line:#e3e8ef; --text:#1f2733; --muted:#6b7785;
+          --blue:#2f6fed; --green:#1f9d55; --orange:#e8830c; --red:#d64545; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font-family:-apple-system,"PingFang SC","Microsoft YaHei",Segoe UI,Roboto,sans-serif; }
+  header { background:linear-gradient(135deg,#2f6fed,#1f9d55); color:#fff; padding:22px 28px; }
+  header h1 { margin:0 0 6px; font-size:22px; }
+  header .meta { font-size:13px; opacity:.95; }
+  .wrap { max-width:1180px; margin:0 auto; padding:20px 18px 60px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px;
+          padding:16px 18px; margin:16px 0; box-shadow:0 1px 3px rgba(20,30,50,.04); }
+  .card h2 { font-size:16px; margin:0 0 12px; color:#243; border-left:4px solid var(--blue); padding-left:8px; }
+  .desc { color:var(--muted); font-size:12.5px; margin:0 0 10px; }
+  .score-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:14px; }
+  .score-card { border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  .score-card .m { font-weight:600; font-size:14px; margin-bottom:8px; }
+  .kv { display:flex; justify-content:space-between; font-size:12.5px; padding:2px 0; }
+  .kv b { font-variant-numeric:tabular-nums; }
+  .bad { color:var(--red); } .good { color:var(--green); } .warn { color:var(--orange); }
+  .chart { width:100%; height:380px; }
+  .chart.tall { height:440px; }
+  table { border-collapse:collapse; width:100%; font-size:12.5px; }
+  th,td { border:1px solid var(--line); padding:6px 8px; text-align:center; }
+  th { background:#eef3fb; } td.l { text-align:left; }
+  select { padding:6px 10px; border:1px solid var(--line); border-radius:8px; font-size:13px; }
+  .note { color:var(--muted); font-size:12px; margin-top:8px; }
+  .pill { display:inline-block; background:#eef3fb; border-radius:999px; padding:2px 10px; font-size:12px; margin:2px 4px 2px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>月度评估报告 2026-07</h1>
+  <div class="meta">
+    评估周期：2026-07 ｜ 窗口：2026-07-01 00:00 ~ 2026-07-31 23:00
+    ｜ 生成时间：2026-08-27 13:21（北京时）<br>
+    模型：<span class="pill">ecmwf_ifs</span><span class="pill">ncep_gfs_global</span><span class="pill">dwd_icon_global</span>
+    站点：<span class="pill">wuzhou</span><span class="pill">bobai</span><span class="pill">pingnan</span><span class="pill">wanning</span>
+  </div>
+</header>
+<div class="wrap">
+
+  <div class="card">
+    <h2>数据概况</h2>
+    <div class="kv"><span>观测覆盖率（窗口内有观测的小时占比）</span>
+      <b>0 / 2976
+      （0.0%）</b></div>
+    <div class="note">准确率阈值：温度 ±1°C、±2°C；
+      有无降水阈值：降水量 ≥ 0.1mm；
+      样本数 &lt; 5 视为"样本不足"，不出结论。
+      温度 RMSE/MAE 单位 °C；降水指标：晴雨准确率/POD/空报率(FAR)/漏报率/TS/BIAS，TS 取值 0~1。</div>
+  </div>
+
+  <div class="card">
+    <h2>评分卡（按模型，覆盖全窗口）</h2>
+    <div id="scorecards" class="score-grid"></div>
+  </div>
+
+  <div class="card">
+    <h2>温度：±2°C 准确率随时效（逐小时 1~16 天桶）</h2>
+    <p class="desc">每条线为一个预报模型，横轴为起报后时效（天），纵轴为温度误差在 ±2°C 内的样本占比（%）。</p>
+    <div id="tempAcc" class="chart"></div>
+  </div>
+
+  <div class="card">
+    <h2>温度：RMSE 随时效（逐小时 1~16 天桶）</h2>
+    <div id="tempRmse" class="chart"></div>
+  </div>
+
+  <div class="card">
+    <h2>温度：RMSE 随逐小时时效（1~72h 曲线）</h2>
+    <p class="desc">更细粒度的逐小时曲线，用于观察前三天时效衰减。</p>
+    <div id="tempLead" class="chart"></div>
+  </div>
+
+  <div class="card">
+    <h2>降水：TS 评分随时效（逐小时 1~16 天桶）</h2>
+    <p class="desc">有无降水（≥0.1mm）的 TS（Threat Score，0~1）。</p>
+    <div id="precipTs" class="chart"></div>
+  </div>
+
+  <div class="card">
+    <h2>按天评估：日最高气温 / 最低气温 ±2°C 准确率（日偏移 1~16 天）</h2>
+    <div id="tempDailyMax" class="chart"></div>
+    <div id="tempDailyMin" class="chart" style="margin-top:10px;"></div>
+  </div>
+
+  <div class="card">
+    <h2>按天评估：日降水 TS 评分（日偏移 1~16 天）</h2>
+    <div id="precipDaily" class="chart"></div>
+    <div class="note" id="gradedNote"></div>
+  </div>
+
+  <div class="card">
+    <h2>分站对比：24h 温度 ±2°C 准确率</h2>
+    <div id="stationBar" class="chart"></div>
+  </div>
+
+  
+  <div class="card">
+    <h2>月度排名</h2>
+    <div id="ranking"></div>
+    <h2 style="margin-top:18px;">逐日温度 ±2°C 准确率热力图（日期 × 模型）</h2>
+    <div id="heatmap" class="chart tall"></div>
+  </div>
+  
+
+  <div class="card">
+    <h2>预报 vs 观测 时间序列（最近 72 小时）</h2>
+    <div style="margin-bottom:10px;">
+      站点：
+      <select id="tsStation"></select>
+      模型：
+      <select id="tsModel"></select>
+    </div>
+    <div id="timeseries" class="chart tall"></div>
+    <div class="note">实线为观测（或选定模型预报）气温；柱为降水量（右轴，mm）。可切换站点/模型对比追踪能力。</div>
+  </div>
+
+  <div class="card">
+    <h2>明细指标表（逐小时 1~16 天桶）</h2>
+    <div id="detailTable"></div>
+  </div>
+
+</div>
+
+<script>
+const report = {"meta": {"period_label": "2026-07", "is_monthly": true, "start": "2026-07-01 00:00", "end": "2026-07-31 23:00", "generated_at": "2026-07-31 23:00", "models": ["ecmwf_ifs", "ncep_gfs_global", "dwd_icon_global"], "stations": ["wuzhou", "bobai", "pingnan", "wanning"], "limits": [1, 2], "rain_threshold_mm": 0.1, "min_sample": 5}, "coverage": {"expected_hours": 2976, "got_hours": 0, "coverage_pct": 0.0}, "scorecard": {"ecmwf_ifs": {"temp_24h": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "temp_72h": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "precip_24h": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "precip_72h": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}}, "ncep_gfs_global": {"temp_24h": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "temp_72h": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "precip_24h": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "precip_72h": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}}, "dwd_icon_global": {"temp_24h": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "temp_72h": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "precip_24h": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "precip_72h": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}}}, "temp_hourly": {"ecmwf_ifs": {"1d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "2d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "3d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "4d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "5d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "6d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "7d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "8d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "9d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "10d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "11d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "12d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "13d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "14d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "15d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "16d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "ncep_gfs_global": {"1d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "2d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "3d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "4d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "5d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "6d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "7d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "8d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "9d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "10d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "11d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "12d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "13d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "14d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "15d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "16d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "dwd_icon_global": {"1d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "2d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "3d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "4d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "5d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "6d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "7d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "8d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "9d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "10d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "11d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "12d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "13d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "14d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "15d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "16d": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}}, "precip_hourly": {"ecmwf_ifs": {"1d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "2d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "3d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "4d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "5d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "6d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "7d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "8d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "9d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "10d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "11d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "12d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "13d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "14d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "15d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "16d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}}, "ncep_gfs_global": {"1d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "2d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "3d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "4d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "5d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "6d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "7d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "8d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "9d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "10d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "11d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "12d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "13d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "14d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "15d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "16d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}}, "dwd_icon_global": {"1d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "2d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "3d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "4d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "5d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "6d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "7d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "8d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "9d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "10d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "11d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "12d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "13d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "14d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "15d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "16d": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}}}, "temp_lead_curve": {"ecmwf_ifs": {"1h": null, "2h": null, "3h": null, "4h": null, "5h": null, "6h": null, "7h": null, "8h": null, "9h": null, "10h": null, "11h": null, "12h": null, "13h": null, "14h": null, "15h": null, "16h": null, "17h": null, "18h": null, "19h": null, "20h": null, "21h": null, "22h": null, "23h": null, "24h": null, "25h": null, "26h": null, "27h": null, "28h": null, "29h": null, "30h": null, "31h": null, "32h": null, "33h": null, "34h": null, "35h": null, "36h": null, "37h": null, "38h": null, "39h": null, "40h": null, "41h": null, "42h": null, "43h": null, "44h": null, "45h": null, "46h": null, "47h": null, "48h": null, "49h": null, "50h": null, "51h": null, "52h": null, "53h": null, "54h": null, "55h": null, "56h": null, "57h": null, "58h": null, "59h": null, "60h": null, "61h": null, "62h": null, "63h": null, "64h": null, "65h": null, "66h": null, "67h": null, "68h": null, "69h": null, "70h": null, "71h": null, "72h": null}, "ncep_gfs_global": {"1h": null, "2h": null, "3h": null, "4h": null, "5h": null, "6h": null, "7h": null, "8h": null, "9h": null, "10h": null, "11h": null, "12h": null, "13h": null, "14h": null, "15h": null, "16h": null, "17h": null, "18h": null, "19h": null, "20h": null, "21h": null, "22h": null, "23h": null, "24h": null, "25h": null, "26h": null, "27h": null, "28h": null, "29h": null, "30h": null, "31h": null, "32h": null, "33h": null, "34h": null, "35h": null, "36h": null, "37h": null, "38h": null, "39h": null, "40h": null, "41h": null, "42h": null, "43h": null, "44h": null, "45h": null, "46h": null, "47h": null, "48h": null, "49h": null, "50h": null, "51h": null, "52h": null, "53h": null, "54h": null, "55h": null, "56h": null, "57h": null, "58h": null, "59h": null, "60h": null, "61h": null, "62h": null, "63h": null, "64h": null, "65h": null, "66h": null, "67h": null, "68h": null, "69h": null, "70h": null, "71h": null, "72h": null}, "dwd_icon_global": {"1h": null, "2h": null, "3h": null, "4h": null, "5h": null, "6h": null, "7h": null, "8h": null, "9h": null, "10h": null, "11h": null, "12h": null, "13h": null, "14h": null, "15h": null, "16h": null, "17h": null, "18h": null, "19h": null, "20h": null, "21h": null, "22h": null, "23h": null, "24h": null, "25h": null, "26h": null, "27h": null, "28h": null, "29h": null, "30h": null, "31h": null, "32h": null, "33h": null, "34h": null, "35h": null, "36h": null, "37h": null, "38h": null, "39h": null, "40h": null, "41h": null, "42h": null, "43h": null, "44h": null, "45h": null, "46h": null, "47h": null, "48h": null, "49h": null, "50h": null, "51h": null, "52h": null, "53h": null, "54h": null, "55h": null, "56h": null, "57h": null, "58h": null, "59h": null, "60h": null, "61h": null, "62h": null, "63h": null, "64h": null, "65h": null, "66h": null, "67h": null, "68h": null, "69h": null, "70h": null, "71h": null, "72h": null}}, "temp_daily": {"ecmwf_ifs": {"1d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "2d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "3d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "4d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "5d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "6d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "7d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "8d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "9d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "10d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "11d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "12d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "13d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "14d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "15d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "16d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}}, "ncep_gfs_global": {"1d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "2d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "3d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "4d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "5d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "6d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "7d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "8d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "9d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "10d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "11d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "12d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "13d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "14d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "15d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "16d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}}, "dwd_icon_global": {"1d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "2d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "3d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "4d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "5d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "6d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "7d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "8d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "9d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "10d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "11d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "12d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "13d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "14d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "15d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}, "16d": {"max": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "min": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}}}}, "precip_daily": {"ecmwf_ifs": {"1d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "2d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "3d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "4d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "5d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "6d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "7d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "8d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "9d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "10d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "11d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "12d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "13d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "14d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "15d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "16d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}}, "ncep_gfs_global": {"1d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "2d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "3d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "4d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "5d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "6d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "7d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "8d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "9d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "10d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "11d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "12d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "13d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "14d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "15d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "16d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}}, "dwd_icon_global": {"1d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "2d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "3d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "4d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "5d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "6d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "7d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "8d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "9d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "10d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "11d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "12d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "13d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "14d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "15d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}, "16d": {"binary": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}, "graded": {"n": 0, "ts+1": null, "ts+2": null, "ts+3": null}}}}, "per_station": {"wuzhou": {"ecmwf_ifs": {"temp": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "precip": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}}, "ncep_gfs_global": {"temp": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "precip": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}}, "dwd_icon_global": {"temp": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "precip": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}}}, "bobai": {"ecmwf_ifs": {"temp": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "precip": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}}, "ncep_gfs_global": {"temp": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "precip": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}}, "dwd_icon_global": {"temp": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "precip": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}}}, "pingnan": {"ecmwf_ifs": {"temp": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "precip": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}}, "ncep_gfs_global": {"temp": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "precip": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}}, "dwd_icon_global": {"temp": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "precip": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}}}, "wanning": {"ecmwf_ifs": {"temp": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "precip": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}}, "ncep_gfs_global": {"temp": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "precip": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}}, "dwd_icon_global": {"temp": {"n": 0, "rmse": null, "mae": null, "mbe": null, "acc1": null, "acc2": null}, "precip": {"n": 0, "acc": null, "pod": null, "far": null, "miss": null, "ts": null, "bias": null}}}}, "timeseries": {"wuzhou": {"obs": [], "models": {"ecmwf_ifs": [], "ncep_gfs_global": [], "dwd_icon_global": []}}, "bobai": {"obs": [], "models": {"ecmwf_ifs": [], "ncep_gfs_global": [], "dwd_icon_global": []}}, "pingnan": {"obs": [], "models": {"ecmwf_ifs": [], "ncep_gfs_global": [], "dwd_icon_global": []}}, "wanning": {"obs": [], "models": {"ecmwf_ifs": [], "ncep_gfs_global": [], "dwd_icon_global": []}}}, "heatmap": [], "ranking": [{"model": "ecmwf_ifs", "score": null, "temp_acc2_24h": null, "precip_ts_24h": null}, {"model": "ncep_gfs_global", "score": null, "temp_acc2_24h": null, "precip_ts_24h": null}, {"model": "dwd_icon_global", "score": null, "temp_acc2_24h": null, "precip_ts_24h": null}]};
+const COLOR = {ecmwf_ifs:"#2f6fed", ncep_gfs_global:"#e8830c", dwd_icon_global:"#1f9d55"};
+function colorOf(m){ return COLOR[m] || "#888"; }
+function models(){ return report.meta.models; }
+function fmt(v, d=1){ return (v===null||v===undefined)?"—":Number(v).toFixed(d); }
+function pct(v){ return (v===null)?"—":(Number(v).toFixed(1)+"%"); }
+
+function lineChart(id, x, series, yName, opts={}){
+  const el = document.getElementById(id); if(!el) return;
+  try {
+    const ch = echarts.init(el);
+    ch.setOption({
+      tooltip:{trigger:"axis"},
+      legend:{top:0, type:"scroll"},
+      grid:{left:55, right:opts.right||30, top:40, bottom:40},
+      xAxis:{type:"category", data:x, name:opts.xName||""},
+      yAxis:{type:"value", name:yName, scale:true},
+      series: series
+    });
+    window.addEventListener("resize", ()=>ch.resize());
+  } catch(e){ console.error("chart", id, e); }
+}
+
+// ---- 评分卡 ----
+(function(){
+  const box = document.getElementById("scorecards");
+  const sc = report.scorecard;
+  // 找每个指标最佳
+  function best(key, sub, field, higher){
+    let bestM=null, bv=null;
+    models().forEach(m=>{ const v=(sc[m]&&sc[m][sub]&&sc[m][sub][field]); if(v===null||v===undefined) return;
+      if(bv===null || (higher? v>bv : v<bv)){ bv=v; bestM=m; } });
+    return bestM;
+  }
+  const bAcc = best("temp_24h","temp_24h","acc2",true);
+  const bRmse = best("temp_24h","temp_24h","rmse",false);
+  const bTs = best("precip_24h","precip_24h","ts",true);
+  const bPacc = best("precip_24h","precip_24h","acc",true);
+  models().forEach(m=>{
+    const t=sc[m].temp_24h, p=sc[m].precip_24h, t72=sc[m].temp_72h, p72=sc[m].precip_72h;
+    const cls=(f,v,bb)=> (v===null)?"":(m===bb?"good":"");
+    const card=document.createElement("div"); card.className="score-card";
+    card.innerHTML = `<div class="m" style="color:${colorOf(m)}">${m}</div>`+
+      `<div class="kv"><span>温度±2°C准确率(24h)</span><b class="${cls(0,t.acc2,bAcc)}">${pct(t.acc2)}</b></div>`+
+      `<div class="kv"><span>温度RMSE(24h)</span><b class="${cls(0,t.rmse,bRmse)}">${fmt(t.rmse)}°C</b></div>`+
+      `<div class="kv"><span>晴雨TS(24h)</span><b class="${cls(0,p.ts,bTs)}">${fmt(p.ts,3)}</b></div>`+
+      `<div class="kv"><span>晴雨准确率(24h)</span><b class="${cls(0,p.acc,bPacc)}">${pct(p.acc)}</b></div>`+
+      `<div class="kv"><span>温度±2°C准确率(72h)</span><b>${pct(t72.acc2)}</b></div>`+
+      `<div class="kv"><span>晴雨TS(72h)</span><b>${fmt(p72.ts,3)}</b></div>`+
+      `<div class="note">24h温度样本 ${t.n||0}｜24h降水样本 ${p.n||0}</div>`;
+    box.appendChild(card);
+  });
+})();
+
+// ---- 温度准确率/ RMSE 随时效（天桶） ----
+(function(){
+  const buckets = Object.keys(report.temp_hourly[models()[0]]);
+  const accSeries = models().map(m=>({name:m, type:"line", smooth:true,
+    itemStyle:{color:colorOf(m)}, data:buckets.map(b=>report.temp_hourly[m][b]?report.temp_hourly[m][b].acc2:null)}));
+  lineChart("tempAcc", buckets, accSeries, "±2°C准确率(%)");
+  const rmseSeries = models().map(m=>({name:m, type:"line", smooth:true,
+    itemStyle:{color:colorOf(m)}, data:buckets.map(b=>report.temp_hourly[m][b]?report.temp_hourly[m][b].rmse:null)}));
+  lineChart("tempRmse", buckets, rmseSeries, "RMSE(°C)");
+})();
+
+// ---- 温度逐小时 RMSE 曲线 ----
+(function(){
+  const hours = Object.keys(report.temp_lead_curve[models()[0]]); // "1h".."72h"
+  const series = models().map(m=>({name:m, type:"line", smooth:true,
+    itemStyle:{color:colorOf(m)}, data:hours.map(h=>report.temp_lead_curve[m][h]?report.temp_lead_curve[m][h].rmse:null)}));
+  lineChart("tempLead", hours, series, "RMSE(°C)", {xName:"时效(h)"});
+})();
+
+// ---- 降水 TS 随时效 ----
+(function(){
+  const buckets = Object.keys(report.precip_hourly[models()[0]]);
+  const series = models().map(m=>({name:m, type:"bar",
+    itemStyle:{color:colorOf(m)}, data:buckets.map(b=>report.precip_hourly[m][b]?report.precip_hourly[m][b].ts:null)}));
+  lineChart("precipTs", buckets, series, "TS");
+})();
+
+// ---- 按天温度 max/min ----
+(function(){
+  const offs = Object.keys(report.temp_daily[models()[0]]);
+  const maxS = models().map(m=>({name:m, type:"line", smooth:true,
+    itemStyle:{color:colorOf(m)}, data:offs.map(o=>report.temp_daily[m][o].max.acc2)}));
+  lineChart("tempDailyMax", offs, maxS, "最高气温±2°C准确率(%)");
+  const minS = models().map(m=>({name:m, type:"line", smooth:true,
+    itemStyle:{color:colorOf(m)}, data:offs.map(o=>report.temp_daily[m][o].min.acc2)}));
+  lineChart("tempDailyMin", offs, minS, "最低气温±2°C准确率(%)");
+})();
+
+// ---- 按天降水 TS ----
+(function(){
+  const offs = Object.keys(report.precip_daily[models()[0]]);
+  const series = models().map(m=>({name:m, type:"bar",
+    itemStyle:{color:colorOf(m)}, data:offs.map(o=>report.precip_daily[m][o].binary.ts)}));
+  lineChart("precipDaily", offs, series, "TS");
+  const note = document.getElementById("gradedNote");
+  note.textContent = "分级降水TS（日累计）：≥0.1mm(ts+1)、≥10mm(ts+2)、≥25mm(ts+3)，见明细表。样本不足时为空。";
+})();
+
+// ---- 分站 24h 温度准确率 ----
+(function(){
+ try{
+  const stations = report.meta.stations;
+  const series = models().map(m=>({name:m, type:"bar", itemStyle:{color:colorOf(m)},
+    data:stations.map(s=>report.per_station[s][m].temp.acc2)}));
+  lineChart("stationBar", stations, series, "±2°C准确率(%)");
+ }catch(e){console.error('stationBar',e);}
+})();
+
+// ---- 月度排名 + 热力图 ----
+
+(function(){
+ try{
+  const rk = report.ranking || [];
+  const box = document.getElementById("ranking");
+  let html = '<table><thead><tr><th>排名</th><th>模型</th><th>综合得分</th><th>温度±2°C准确率(24h)</th><th>晴雨TS(24h)</th></tr></thead><tbody>';
+  rk.forEach((r,i)=>{ html+=`<tr><td>${i+1}</td><td class="l" style="color:${colorOf(r.model)}">${r.model}</td><td><b>${fmt(r.score)}</b></td><td>${pct(r.temp_acc2_24h)}</td><td>${fmt(r.precip_ts_24h,3)}</td></tr>`; });
+  html+="</tbody></table>"; box.innerHTML=html;
+  // heatmap
+  const cells = report.heatmap||[];
+  const dates = [...new Set(cells.map(c=>c.date))];
+  const ms = models();
+  const data = cells.map(c=>([dates.indexOf(c.date), ms.indexOf(c.model), c.acc2]));
+  const ch = echarts.init(document.getElementById("heatmap"));
+  ch.setOption({
+    tooltip:{position:"top", formatter:p=>`${dates[p.data[0]]} ${ms[p.data[1]]}<br>±2°C准确率 ${fmt(p.data[2])}%`},
+    grid:{left:90, right:20, top:20, bottom:60},
+    xAxis:{type:"category", data:dates, axisLabel:{rotate:60}},
+    yAxis:{type:"category", data:ms},
+    visualMap:{min:0, max:100, calculable:true, orient:"horizontal", left:"center", bottom:10, inRange:{color:["#d64545","#e8830c","#1f9d55"]}},
+      series:[{type:"heatmap", data:data,
+      label:{show:false},
+      emphasis:{itemStyle:{shadowBlur:6, shadowColor:"rgba(0,0,0,.3)"}}}]
+  });
+  window.addEventListener("resize", ()=>ch.resize());
+ }catch(e){console.error('monthly',e);}
+})();
+
+
+// ---- 时间序列 ----
+(function(){
+ try{
+  const stations = report.meta.stations;
+  const selS = document.getElementById("tsStation");
+  const selM = document.getElementById("tsModel");
+  stations.forEach(s=>{ const o=document.createElement("option"); o.value=s; o.text=s; selS.appendChild(o); });
+  models().forEach(m=>{ const o=document.createElement("option"); o.value=m; o.text=m; selM.appendChild(o); });
+  const ch = echarts.init(document.getElementById("timeseries"));
+  function draw(){
+    const s=selS.value, m=selM.value;
+    const ts = (report.timeseries[s]||{});
+    const obs = ts.obs||[];
+    const fcst = (ts.models&&ts.models[m])||[];
+    const times = obs.map(p=>p.t);
+    const obsT = obs.map(p=>p.temp);
+    const fcstT = fcst.map(p=>p.temp);
+    const rain = fcst.map(p=>p.rain);
+    ch.setOption({
+      tooltip:{trigger:"axis"},
+      legend:{top:0},
+      grid:{left:50, right:55, top:40, bottom:50},
+      xAxis:{type:"category", data:times, axisLabel:{rotate:50}},
+      yAxis:[{type:"value", name:"气温°C"}, {type:"value", name:"降水mm", position:"right"}],
+      series:[
+        {name:"观测气温", type:"line", data:obsT, itemStyle:{color:"#333"}, lineWidth:2},
+        {name:m+" 预报气温", type:"line", data:fcstT, itemStyle:{color:colorOf(m)}},
+        {name:m+" 降水量", type:"bar", yAxisIndex:1, data:rain, itemStyle:{color:"#7fb3ff"}}
+      ]
+    });
+  }
+  selS.onchange=draw; selM.onchange=draw; draw();
+  window.addEventListener("resize", ()=>ch.resize());
+ }catch(e){console.error('timeseries',e);}
+})();
+
+// ---- 明细表 ----
+(function(){
+  const buckets = Object.keys(report.temp_hourly[models()[0]]);
+  let html = '<table><thead><tr><th>时效</th>';
+  models().forEach(m=>{ html+=`<th class="l" style="color:${colorOf(m)}">${m} 温度RMSE</th><th>±2°C</th><th>TS</th><th>晴雨准确率</th><th>n</th>`; });
+  html+="</tr></thead><tbody>";
+  buckets.forEach(b=>{
+    html+=`<tr><td>${b}</td>`;
+    models().forEach(m=>{
+      const t=report.temp_hourly[m][b], p=report.precip_hourly[m][b];
+      const n = Math.max(t?t.n||0:0, p?p.n||0:0);
+      html+=`<td>${fmt(t?t.rmse:null)}</td><td>${pct(t?t.acc2:null)}</td><td>${fmt(p?p.ts:null,3)}</td><td>${pct(p?p.acc:null)}</td><td>${n}</td>`;
+    });
+    html+="</tr>";
+  });
+  html+="</tbody></table>";
+  document.getElementById("detailTable").innerHTML=html;
+})();
+</script>
+</body>
+</html>
