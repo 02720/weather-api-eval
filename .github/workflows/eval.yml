@@ -30,15 +30,18 @@ jobs:
         uses: actions/checkout@v4
 
       - name: 配置 Python 3.12.6
-        # 注：cyeva 0.2.3 + pint 0.24.4 在当前最新 3.12 补丁上有 dataclass 兼容问题，
-        # 经验证 3.12.6 可正常导入；请勿随意升级到更高 3.12 补丁。
+        # cyeva 0.2.3 在 Python 3.12 上可用；但其元数据错误地把 pint 钉死为 ==0.24.3，
+        # 而 pint 0.24.3 在 3.12+ 上因 dataclass 问题无法导入。故用 --no-deps 单独安装
+        # cyeva，再由 requirements.txt 提供兼容的 pint==0.24.4（见该文件顶部说明）。
         uses: actions/setup-python@v5
         with:
           python-version: "3.12.6"
           cache: pip
 
       - name: 安装依赖
-        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+        run: |
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+          python -m pip install --no-deps cyeva==0.2.3
 
       - name: 抓取观测 + 预报快照 + 生成本次运行报告
         env:

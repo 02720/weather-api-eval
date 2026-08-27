@@ -19,7 +19,7 @@
 
 ## 环境要求
 
-- **Python 3.12.6**（重要：cyeva 0.2.3 + pint 0.24.4 在更高 3.12 补丁上有 dataclass 兼容问题，已验证 3.12.6 可用）。
+- **Python 3.12.6**（cyeva 0.2.3 支持 3.10–3.12；`pint` 必须用 **0.24.4**，因为 cyeva 误钉的 0.24.3 在 3.12+ 上无法导入，见下方安装说明）。
 - 网络访问：Open-Meteo（HTTPS）、eia-data.com（HTTP）。Open-Meteo 免费档约 1 万次/天，无需 key。
 
 ## 快速开始（本地）
@@ -27,7 +27,9 @@
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+# cyeva 用 --no-deps 单独安装（放最后，绕过其错误的 pint==0.24.3 约束）；先装 requirements 提供兼容的 pint==0.24.4
+pip install -r requirements.txt -r requirements-dev.txt
+pip install --no-deps cyeva==0.2.3
 
 # 抓取 4 站近 24h 观测
 python -m weather_eval fetch-obs
@@ -118,6 +120,6 @@ tests/                    pytest（含 cyeva 手算对拍）
 - **抓取健康度**：页面 200 但解析到 0 条时视为失败并上抛，CLI 汇总失败数且以**非零退出码**结束（GitHub Action 因此标红）；表格回退只选"观测表"（按表头含气温+降水量签名），避免误抓预报表；编码改用 requests 探测。
 - **存储健壮性**：预报快照改为**按月合并单文件 + fcntl 文件锁**（解决数千小文件的性能与并发丢失更新）；JSON 读取容错（损坏文件跳过不拖垮整体）；原子写权限修正为 0644。
 - **报告渲染**：ECharts 改为**仓库内本地副本**（`reports/vendor/echarts.min.js`），解决中国大陆 CDN 不可达与单点故障；内联 JSON 做 `</` 转义防脚本注入；开启 Jinja autoescape（仅 JSON 块 `|safe`）；热力图缺样本不再显示为 0%；覆盖率 None 友好显示；各图表块加 try/catch。
-- **依赖与 CI**：`requirements.txt` 锁定 `numpy==2.1.2`；`pip install` 同时装 `requirements-dev.txt`；月度汇总改为**仅每月 1 号北京时 06:00 那次运行**触发（消除冗余重算）；提交前 `git pull --rebase` 防止 push 被拒；Python 锁定 3.12.6（规避更高补丁上 cyeva+pint 的 dataclass 导入问题）。
+- **依赖与 CI**：`cyeva==0.2.3` 用 `pip install --no-deps` 单独安装（绕过其误钉的 `pint==0.24.3`，否则与 `pint==0.24.4` 冲突且 0.24.3 在 3.12+ 无法导入）；`requirements.txt` 锁定 `numpy==2.1.2` 与兼容的 `pint==0.24.4` 并提供 cyeva 的真实运行依赖（pandas/scipy）；`pip install` 同时装 `requirements-dev.txt`；月度汇总改为**仅每月 1 号北京时 06:00 那次运行**触发（消除冗余重算）；提交前 `git pull --rebase` 防止 push 被拒；Python 锁定 3.12.6。
 
 > 审查中一条"多快照重复计数"的判断经核实为**误报**：连续数值预报检验本就按（起报, 有效时刻）独立样本、按真实时效分组，并非重复计数（见上节）。

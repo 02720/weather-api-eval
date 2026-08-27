@@ -1,9 +1,19 @@
 # 天气预报 API 准确度评估系统 —— 运行时依赖
-# 注意：cyeva 0.2.3 强制要求 Python 3.10-3.12、numpy>=2.1.2、pint==0.24.4
-# （pint 若为 0.24.3 会在当前 Python 上因 dataclass 兼容问题导入失败，务必 0.24.4）
-cyeva==0.2.3
+#
+# 关键：cyeva 0.2.3 的元数据把 pint 钉死为 ==0.24.3，而 pint 0.24.3 在 Python 3.12+
+# 上会因 @dataclass(frozen=True) 继承问题导入失败（已实测）；实际可用的是 pint 0.24.4。
+# 由于 pip 的依赖解析器不允许「cyeva==0.2.3 + pint==0.24.4」同时出现，cyeva 不能与本文件
+# 里其它对 pint 的约束一起被一次性解析。因此 cyeva 用下面的独立命令安装（--no-deps 跳过其
+# 错误的 pint 约束），再由本文件显式提供兼容的 pint==0.24.4 及其余运行依赖：
+#
+#     python -m pip install --no-deps cyeva==0.2.3
+#     python -m pip install -r requirements.txt -r requirements-dev.txt
+#
+# 下面 pandas/scipy 是 cyeva 的真实运行依赖（因其用 --no-deps 安装，需在此显式列出）。
 pint==0.24.4
 numpy==2.1.2
+pandas>=2.2.3
+scipy>=1.14.1
 requests>=2.31,<3
 beautifulsoup4>=4.12,<5
 jinja2>=3.1,<4
