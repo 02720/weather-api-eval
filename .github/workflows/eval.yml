@@ -48,12 +48,17 @@ jobs:
           python -m pip install --no-deps cyeva==0.2.3
 
       - name: 抓取彩云预报（可选，需配置 CAIYUN_TOKEN Secret）
-        # 只有仓库设置了名为 CAIYUN_TOKEN 的 Secret 才会执行；没设置则自动跳过，不影响现有流水线
-        if: ${{ secrets.CAIYUN_TOKEN != '' }}
+        # Token 经由 Secret 注入到 env；未配置时由 shell 判断跳过，步骤仍成功，不影响现有流水线。
+        # 注意：workflow 的 if: 条件里不允许使用 secrets 上下文，故用 run 内的 shell 判断。
         env:
           CAIYUN_TOKEN: ${{ secrets.CAIYUN_TOKEN }}
           TZ: Asia/Shanghai
-        run: python -m weather_eval fetch-forecast --source caiyun
+        run: |
+          if [ -n "$CAIYUN_TOKEN" ]; then
+            python -m weather_eval fetch-forecast --source caiyun
+          else
+            echo "未配置 CAIYUN_TOKEN Secret，跳过彩云抓取"
+          fi
 
       - name: 抓取观测 + 预报快照 + 生成本次运行报告
         env:
