@@ -478,5 +478,25 @@
     "rain": 2.4,
     "wind_speed": 0.8,
     "wind_dir": 259.0
+  },
+  "2026-08-27T23:00": {
+    "time": "2026-08-27T23:00",
+    "source": "wd",
+    "temp": 26.4,
+    "pressure": 994.4,
+    "humidity": 97.0,
+    "rain": 0.0,
+    "wind_speed": 0.7,
+    "wind_dir": 274.0
+  },
+  "2026-08-27T22:00": {
+    "time": "2026-08-27T22:00",
+    "source": "wd",
+    "temp": 26.5,
+    "pressure": 994.0,
+    "humidity": 97.0,
+    "rain": 0.0,
+    "wind_speed": 0.9,
+    "wind_dir": 212.0
   }
 }
