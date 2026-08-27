@@ -13,6 +13,13 @@ def test_model_key_multi_and_single():
     assert _model_key({"temperature_2m_x": "°C"}, "temperature_2m", "ecmwf_ifs") is None
 
 
+def test_model_key_bare_key_only_for_single_model():
+    """裸键回退仅限单模型请求：多模型响应若混入裸键，不得让多模型共享同一数组。"""
+    units = {"temperature_2m": "°C"}  # 混入裸键的多模型响应（理论情形）
+    assert _model_key(units, "temperature_2m", "ecmwf_ifs", allow_bare=False) is None
+    assert _model_key(units, "temperature_2m", "ecmwf_ifs", allow_bare=True) == "temperature_2m"
+
+
 def test_fetch_snapshot_multi_model():
     payload = {
         "latitude": 23.5, "longitude": 111.3, "elevation": 100,

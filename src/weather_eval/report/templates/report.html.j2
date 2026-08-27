@@ -378,7 +378,7 @@ window.addEventListener("DOMContentLoaded", function () {
 </div>
 
 <footer>
-  生成时间：{{ generated_at }}（北京时）｜ 预报源：Open-Meteo（ECMWF / GFS / ICON）· 彩云天气 · 和风天气 ｜
+  生成时间：{{ generated_at }}（北京时）｜ 预报源：Open-Meteo（多模型）· 彩云天气 · 和风天气 · 中科天机 ｜
   实况：环境气象数据服务平台 eia-data.com<br>
   本页由 GitHub Actions 自动生成，每天 3 次更新；仅供学习参考，出行请以官方气象部门预报为准。
 </footer>
@@ -520,7 +520,8 @@ try {
         (p.data[2]===null ? "样本不足" : fmt(p.data[2])+"%") + `（样本 ${p.data[3]||0}）`},
       grid:{left:110, right:24, top:14, bottom:64},
       xAxis:{type:"category", data:dates.map(d=>d.slice(5)), axisLabel:{rotate:45}},
-      yAxis:{type:"category", data:ms.map(labelOf)},
+      // 模型多时（19 个）行标签可能被 110px 左边距裁切：限宽 + 截断提示
+      yAxis:{type:"category", data:ms.map(labelOf), axisLabel:{width:100, overflow:"truncate"}},
       visualMap:{min:0, max:100, dimension:2, calculable:true, orient:"horizontal", left:"center", bottom:4,
                  text:["准","翻车"], inRange:{color:["#ef4444","#fbbf24","#22c55e"]}},
       series:[{type:"heatmap", data,
@@ -553,8 +554,9 @@ function initAdvanced() {
     makeChart("chartTempDailyMin", lineOption(xo,
       models().map(m => lineSeries(m, offs.map(o => report.temp_daily[m][o] ? report.temp_daily[m][o].min.acc2 : null))),
       "最低气温准确率(%)"));
+    // 模型多（19 个）时 16 桶并排柱每柱仅数像素不可读：改折线
     makeChart("chartPrecipDaily", lineOption(xo,
-      models().map(m => barSeries(m, offs.map(o => report.precip_daily[m][o] ? report.precip_daily[m][o].binary.ts : null))),
+      models().map(m => lineSeries(m, offs.map(o => report.precip_daily[m][o] ? report.precip_daily[m][o].binary.ts : null))),
       "晴雨 TS 评分"));
     const hours = Object.keys(report.temp_lead_curve[models()[0]] || {});
     makeChart("chartTempLead", lineOption(hours.map(h => h.replace("h","")),

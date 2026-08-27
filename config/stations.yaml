@@ -1,13 +1,30 @@
 # 天气预报 API 准确度评估 —— 站点与评估配置
 # 观测来源：环境气象数据服务平台 eia-data.com（各站"气象站基本信息"页，近 24h 逐小时实况）
-# 预报来源：Open-Meteo（先支持 ecmwf_ifs / ncep_gfs_global / dwd_icon_global 三模型）
+# 预报来源：Open-Meteo（多模型一次请求）、彩云天气、和风天气、中科天机（均为独立抓取源，见 models 注释）
 
 models:
   - ecmwf_ifs
   - ncep_gfs_global
   - dwd_icon_global
+  # —— Open-Meteo 新增模型（2026-08）——
+  - best_match                 # Open-Meteo 最优匹配（多模型择优合成）
+  - cma_grapes_global          # 中国 CMA GRAPES 全球
+  - cmc_gem_gdps               # 加拿大 GEM 全球
+  - jma_gsm                    # 日本 JMA GSM
+  - ukmo_global_deterministic_10km  # 英国 UKMO 全球 10km
+  - ecmwf_ifs025               # ECMWF IFS 0.25°（新代号，与 ecmwf_ifs 并行归档）
+  - ecmwf_aifs025_single       # ECMWF AIFS 0.25° 单次 AI 模式
+  - ncep_aigfs025              # NCEP AI-GFS 0.25°（AI 模式）
+  - ncep_hgefs025_ensemble_mean  # NCEP HGEFS 0.25° 集合均值
+  # —— 独立预报源 ——
   - caiyun_v2_6          # 彩云天气 v2.6（fetch-forecast --source caiyun 抓取，Token 见环境变量 CAIYUN_TOKEN）
   - qweather_v1          # 和风天气 weather/v1（fetch-forecast --source qweather 抓取，Key 见环境变量 QWEATHER_API_KEY）
+  # —— 中科天机（fetch-forecast --source tianji 抓取，网页接口，无需凭据）——
+  - tj_km_fusion         # 公里级融合（nextgen）
+  - tj_t2_early          # 天机2/DA（T2-Early，快速同化）
+  - tj_t2                # 天机2/ND（T2）
+  - tj_t1                # 天机1/ND（T1，AI 驱动）
+  - tj_t1h_ai            # T1H-AI（T1-AI 高分辨率版）
 
 stations:
   - id: wuzhou

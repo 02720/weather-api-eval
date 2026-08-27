@@ -6,9 +6,10 @@
 
 ## 支持的来源
 
-- **预报（Open-Meteo）**：`ecmwf_ifs`、`ncep_gfs_global`、`dwd_icon_global`（三个模型一次请求返回，后续可继续在 `config/stations.yaml` 增模型）。
+- **预报（Open-Meteo）**：`ecmwf_ifs`、`ncep_gfs_global`、`dwd_icon_global`、`best_match`、`cma_grapes_global`、`cmc_gem_gdps`、`jma_gsm`、`ukmo_global_deterministic_10km`、`ecmwf_ifs025`、`ecmwf_aifs025_single`、`ncep_aigfs025`、`ncep_hgefs025_ensemble_mean`（一次请求返回全部模型，后续可在 `config/stations.yaml` 继续增删）。
 - **预报（彩云天气 Caiyun v2.6）**：模型名 `caiyun_v2_6`，Token 认证（环境变量 `CAIYUN_TOKEN`）。`fetch-forecast --source caiyun` 单独抓取，评估/报告逻辑与 Open-Meteo 完全一致。
 - **预报（和风天气 QWeather weather/v1）**：模型名 `qweather_v1`，API Key 认证（环境变量 `QWEATHER_API_KEY`，专属 API Host 见 `QWEATHER_API_HOST`）。`fetch-forecast --source qweather` 单独抓取；请求未来最多 240 小时逐小时（免费档可能被限制为 24 小时，日志会明示），评估/报告逻辑与其他源完全一致。
+- **预报（中科天机 TianJi，网页接口抓取）**：模型 `tj_km_fusion`（公里级融合）、`tj_t2_early`（天机2/DA，即 T2-Early）、`tj_t2`（天机2/ND，即 T2）、`tj_t1`（天机1/ND，即 T1）、`tj_t1h_ai`（T1H-AI，即 T1-AI）。数据来自 `www.tjweather.com/vis/` 可视化页面背后的单点查询接口（游客态可用、无需凭据）；`fetch-forecast --source tianji` 单独抓取。起报为北京时每天 08/20 时两轮，t2/融合系 240h、t1 系 360h 逐小时。
 - **观测（环境气象数据服务平台 eia-data.com）**：各气象站"气象站基本信息"页，服务端直出近 24 小时逐小时实况（气温、降水、气压、湿度、风）。
 - **评估框架**：`cyeva 0.2.3`（温度 RMSE/MAE/MBE/±1°C·±2°C 准确率；降水 0.1mm 晴雨二分类准确率/POD/空报率 FAR/漏报率/TS/BIAS，及分级降水 TS）。
 
@@ -17,12 +18,12 @@
 - **逐小时**：按起报后时效分 1–16 个「天桶」；温度 RMSE/MAE/MBE/±1°C/±2°C 准确率；降水 0.1mm 晴雨二分类指标。另含 1–72h 逐小时 RMSE 曲线。
 - **按天**：北京时自然日（00:00–24:00）聚合日最高/最低气温、日降水量；按"有效日 − 起报日"的日偏移 1–16 天分组，评估日最高/最低气温 ±2°C 准确率与日降水 TS。
 - 所有指标附样本数 n；**n < 5 视为"样本不足"，不出结论**。
-- 降水口径对齐假设：观测 `rain@t`（t−1h→t 累计）对应 Open-Meteo `precipitation@t`（前 1 小时累计），偏移量在配置中可改。
+- 降水口径对齐假设：观测 `rain@t`（t−1h→t 累计）对应 Open-Meteo `precipitation@t`（前 1 小时累计）、中科天机 `pratesfc@t`（逐小时降水率 mm/h，作为前 1 小时累计的近似），偏移量在配置中可改。
 
 ## 环境要求
 
 - **Python 3.12.6**（cyeva 0.2.3 支持 3.10–3.12；`pint` 必须用 **0.24.4**，因为 cyeva 误钉的 0.24.3 在 3.12+ 上无法导入，见下方安装说明）。
-- 网络访问：Open-Meteo（HTTPS）、eia-data.com（HTTP）、彩云天气 API `api.caiyunapp.com`（HTTPS）、和风天气 API `<你的专属 Host>.qweatherapi.com`（HTTPS）。Open-Meteo 免费档约 1 万次/天，无需 key；**彩云需 Token**，从环境变量 `CAIYUN_TOKEN` 读取；**和风需 API Key**，从环境变量 `QWEATHER_API_KEY` 读取。
+- 网络访问：Open-Meteo（HTTPS）、eia-data.com（HTTP）、彩云天气 API `api.caiyunapp.com`（HTTPS）、和风天气 API `<你的专属 Host>.qweatherapi.com`（HTTPS）、中科天机 `www.tjweather.com`（HTTPS）。Open-Meteo 免费档约 1 万次/天，无需 key；**彩云需 Token**，从环境变量 `CAIYUN_TOKEN` 读取；**和风需 API Key**，从环境变量 `QWEATHER_API_KEY` 读取；**中科天机无需凭据**（抓取其网页可视化的单点查询接口，属非官方契约，若页面改版需相应调整）。
 
 ## 快速开始（本地）
 
@@ -38,7 +39,7 @@ export PYTHONPATH="$PWD/src"
 
 # 抓取 4 站近 24h 观测
 python -m weather_eval fetch-obs
-# 抓取 3 模型起报快照（未来 16 天逐小时）
+# 抓取 12 个 Open-Meteo 模型起报快照（未来 16 天逐小时）
 python -m weather_eval fetch-forecast
 # 用本月至今的累计数据更新主报告（每次覆盖，不堆文件）
 python -m weather_eval report
@@ -63,6 +64,12 @@ export QWEATHER_API_HOST="abcxyz.qweatherapi.com"
 python -m weather_eval fetch-forecast --source qweather
 # 3) 生成报告时 qweather_v1 已纳入对比（config 的 models 已含该模型）
 python -m weather_eval report
+
+# —— 中科天机（网页接口抓取，无需凭据）——
+# 抓取 5 个模型起报快照（北京时 08/20 时两轮起报，t2/融合系 240h、t1 系 360h）
+python -m weather_eval fetch-forecast --source tianji
+# 生成报告时 tj_* 模型已纳入对比（config 的 models 已含）
+python -m weather_eval report
 ```
 
 常用命令：
@@ -73,9 +80,10 @@ python -m weather_eval report
 | `fetch-forecast` | 抓取 Open-Meteo 起报快照并归档（幂等） |
 | `fetch-forecast --source caiyun` | 抓取彩云天气 v2.6 起报快照（需 `CAIYUN_TOKEN`） |
 | `fetch-forecast --source qweather` | 抓取和风天气起报快照（需 `QWEATHER_API_KEY`，建议同时设 `QWEATHER_API_HOST`） |
+| `fetch-forecast --source tianji` | 抓取中科天机起报快照（网页接口抓取，无需凭据） |
 | `report` | 用"本月 1 号至今"的累计数据更新主报告 `reports/index.html`（覆盖写，不堆文件） |
 | `monthly [--month YYYY-MM]` | 把某月冻结为月度归档 `reports/monthly/YYYY-MM.html`（默认上一自然月） |
-| `all` | `fetch-obs` + `fetch-forecast` + `report`（GitHub Action 调用，不含彩云/和风） |
+| `all` | `fetch-obs` + `fetch-forecast` + `report`（GitHub Action 调用；彩云/和风/中科天机为独立可选步骤） |
 
 ## GitHub Actions 自动运行
 
@@ -106,8 +114,8 @@ python -m weather_eval report
 ## 扩展
 
 - **新增站点**：在 `config/stations.yaml` 的 `stations` 下加一项（`id`/`name`/`lat`/`lon`/`obs_url`，`obs_url` 为 eia-data 对应"气象站基本信息"页的 URL 编码）。
-- **新增模型**：在 `models` 下加入 Open-Meteo 支持的模型名（如 `cma_grapes_global`、`ukmo_global_deterministic_10km` 等）。
-- **新增预报源**：实现 `weather_eval/forecast/base.py` 的 `ForecastProvider` 接口（返回统一结构的起报快照），在 CLI 中切换即可，评估/报告逻辑无需改动。已内置示例 `forecast/caiyun.py`（`CaiyunProvider`）：`fetch-forecast --source caiyun` 抓取，Token 取自 `CAIYUN_TOKEN` 环境变量；其返回的 `caiyun_v2_6` 模型已加入 `models`，故 `report` 自动纳入对比。和风天气同例（`forecast/qweather.py`，`QWeatherProvider`，模型名 `qweather_v1`）。
+- **新增模型**：Open-Meteo 模型直接在 `models` 下加入其模型名；中科天机模型在 `forecast/tianji.py` 的 `MODEL_SPECS` 登记映射（mode/production/factorCode）后再加入 `models`。
+- **新增预报源**：实现 `weather_eval/forecast/base.py` 的 `ForecastProvider` 接口（返回统一结构的起报快照），在 CLI 中切换即可，评估/报告逻辑无需改动。已内置示例 `forecast/caiyun.py`（`CaiyunProvider`）：`fetch-forecast --source caiyun` 抓取，Token 取自 `CAIYUN_TOKEN` 环境变量；其返回的 `caiyun_v2_6` 模型已加入 `models`，故 `report` 自动纳入对比。和风天气同例（`forecast/qweather.py`，`QWeatherProvider`，模型名 `qweather_v1`）。中科天机同例（`forecast/tianji.py`，`TianjiProvider`）：因各模式最新可用起报轮次可能不同步，其 `fetch_snapshot` 返回**按模型独立的快照列表**（各自 issue_iso 与时间轴），CLI 已兼容 dict（共享时间轴，逐模型拆分）与 list（独立快照）两种返回形态。
 
 ## 目录结构
 
@@ -117,7 +125,7 @@ src/weather_eval/
   timeutil.py             北京时工具
   config.py  storage.py   配置与 JSON 存档（原子写/去重/幂等）
   obs/                     观测源（eia-data 抓取解析）
-  forecast/                Open-Meteo / 彩云天气 / 和风天气 快照器（base.py 抽象接口）
+  forecast/                Open-Meteo / 彩云天气 / 和风天气 / 中科天机 快照器（base.py 抽象接口）
   evaluate.py             配对 + cyeva 指标 + 报告数据组装
   report/                  Jinja2 + ECharts 报告渲染
   __main__.py              CLI
@@ -145,6 +153,13 @@ tests/                    pytest（含 cyeva 手算对拍）
   - **时效与降级**：默认请求未来 240 小时逐小时。若凭据/主机尚未开通 weather/v1 路由，会**自动改用旧版 `/v7/weather/{24|72|168}h`** 并告警（免费开发版仅开放 24h 档）；返回点数少于请求时同样以 WARNING 明示。订阅档位决定该源的实际覆盖时效，报告中长时效"样本不足"属正常现象。
   - 限速遵循官方建议对网络错误/5xx/429 做**指数退避**重试；鉴权/权限/参数类 4xx 不做无意义重试直接上抛，鉴权失败（401）给出可操作的错误信息。
   - 同样独立于 Open-Meteo 抓取（CI 中以 `QWEATHER_API_KEY` Secret 存在与否决定是否执行），降水为当小时累计毫米、温度摄氏度，与其他源同口径。
+- **中科天机（网页接口抓取）接入约束**：
+  - 接口为 `www.tjweather.com/vis/` 可视化页面的单点查询（`/meteorological/spas/single-point/query`），**非官方开放 API**：游客态无需鉴权，但该契约可能随页面改版变化（参数/要素码见 `forecast/tianji.py` 顶部 docstring，均经 2026-08 线上实测）；CI 中以 `continue-on-error` 可选步骤运行，失败不阻断主流程。
+  - **起报轮次与回退**：北京时每天 08/20 时两轮；最新轮次有发布延迟且各模式进度不同步（对未发布轮次查询返回 200 但数据为空）。提供方逐模式向过去回退探测（最多 4 轮）取首个非空轮次，并按模式缓存（跨站点复用）。
+  - **时间语义**：请求参数 `baseTime` 与响应 `forecastTimeString` 均为**北京时** `YYYYMMDDHH`（服务端回显的 ISO 时间为 UTC，恒差 8h）；逐小时序列从起报后 1 小时开始，起报当刻不在序列中。
+  - **快照粒度**：各模式最新可用起报可能不同步，为避免 lead 分组被跨模式错位污染，`TianjiProvider.fetch_snapshot` 返回**按模型独立的快照列表**（各自 issue_iso），CLI 逐份存档（`save_forecast_snapshot` 按 站×模型×起报 幂等）。
+  - **降水口径**：`pratesfc` 为逐小时降水率（mm/h），作为"前 1 小时累计"的近似与观测配对（同 Open-Meteo `precipitation` 假设）；公里级融合产品温度/降水使用不同产品网格码（`c1km`/`c2_5km`）。
+  - **模型名对应**：`tj_km_fusion`=公里级融合（nextgen）、`tj_t2_early`=天机2/DA（T2-Early）、`tj_t2`=天机2/ND（T2）、`tj_t1`=天机1/ND（T1，其本身即 AI 驱动，站点无非 AI t1 轮次）、`tj_t1h_ai`=T1H-AI（T1-AI 高分辨率版）。
 
 ## 评估方法说明（关于样本与时效）
 
@@ -203,3 +218,17 @@ tests/                    pytest（含 cyeva 手算对拍）
 - **（P3）v7 档位选择文档口径**：请求时效 <24h 时旧版档位只能取最小档 24h（多余点由快照层截断），docstring 已修正为准确描述。
 - **（部分驳回）"401/403 一律快速失败不做降级"的建议未全盘采纳**：401 保持快速失败（账号级鉴权问题在两代端点必然同结果）；但 403 未纳入快速失败——免费凭据可能只是**尚未开通 weather/v1 路由**而 v7 可用，若贸然终止会错杀可降级场景。折中：403 触发降级的同时在 WARNING 中列出官方错误码的三类常见原因（额度不足/API Host 不符/无权限），若 v7 也失败则联合异常同时携带两侧状态码，根因仍可一步定位。
 - 其余核查项确认无误：UTC→北京时换算与下取整口径、坐标 ≤2 位小数契约（lat 在前）、`X-QW-Api-Key` 仅经请求头传递且日志/异常脱敏、hours 截断告警、去重排序、Open-Meteo 分支对新模型的排除链、快照幂等存储、既有彩云/Open-Meteo 测试零回归。
+
+## 中科天机接入与 Open-Meteo 扩容：对抗式审查发现并修复的问题
+
+本次新增 `forecast/tianji.py`（中科天机 5 模型，网页接口抓取）与 Open-Meteo 9 个新模型（合计 12 个 OM 模型，config 共 19 个模型）后，经两路独立对抗式审查发现以下问题并已修复：
+
+- **（P0）单模型失败拖垮整站**：`fetch_snapshot` 模型循环中任一模型抛错（产品下线、探测穷尽、瞬时网络错误）都会冲出循环，同站其余模型已抓到的快照全部丢弃，且"每轮只存最新可用起报"意味着丢失的轮次永久缺档。已改为 per-model 容错：失败的模型告警后跳过、返回成功子集，仅全部模型失败才上抛；已知失败模型在同次运行内跳过，避免后续站点重复 4 轮探测（每站最多浪费 16 次请求）。
+- **（P0）抓取失败退出码恒 0**：`main()` 分发表丢弃命令返回值，单独运行 `fetch-forecast` 即使 4 站全失败也以 0 退出——CI 的 `continue-on-error` 步骤（彩云/和风/中科天机）连"失败标注"都不会出现，失败完全静默。已让返回的失败数反映到退出码（`sys.exit(1)`），与 `all` 的既有行为对齐。
+- **（P1）降水产品线静默缺失且幂等锁死**：公里级融合的温度（`c1km`）与降水（`c2_5km`）是两条独立产品线，发布可能不同步；探测只用温度要素，降水为空时会静默存档一份降水全 None 的快照且无任何日志。已增加 WARNING（温度照常入库、该轮降水计为缺测、评估显示"样本不足"），并顺带增加"温度序列全部缺测"的契约漂移告警。
+- **（P2）HTTP 500 + 业务错误码被当瞬时故障重试**：该服务把参数/产品类确定性错误包在 HTTP 500 + `{"code":11001,...}` 里返回，原实现一律按 5xx 退避重试 4 次。已改为：能解析出业务错误码（或 4xx）视为确定性失败直接上抛，真 5xx/网络错误才重试；最终错误附响应体摘要便于定位契约漂移；timeout 改为 (connect, read) 元组。
+- **（P2）其他加固**：起报探测命中序列直接复用（省 1 次请求/模型）；回读校验响应 `baseTimeString` 与请求一致（防服务端"静默就近替换"导致 lead 错位）；缓存轮次意外空时作废重探；Open-Meteo `_model_key` 的裸键回退限定单模型请求（防多模型响应混入裸键时多模型共享同一数组）；config 无任何 tj_* 模型时在构造期即报错；`storage` 读取补齐 JSON 损坏容错（与模块文档承诺一致，损坏文件告警跳过不拖垮报告）；`ForecastProvider` 契约文档更新（dict 与 list[dict] 两种返回形态）。
+- **（P2）报告可读性**：模型扩到 19 个后，逐日降水 TS 的 16 桶并排柱每柱仅数像素，改折线；热力图行标签限宽截断；页脚来源文案与实际模型清单对齐。
+- **测试防"假绿"加固**：请求契约用例以硬编码的线上实测参数表（mode×production×factorCode 共 10 组）校验每次请求，`MODEL_SPECS` 映射漂移即红；另补探测穷尽、部分模型失败、降水空序列、月末/年末轮次边界、500 分类重试、CLI list 分支存档、Open-Meteo 裸键限定、storage 损坏容错等回归用例。
+- **（已核查无误）**：TJ 独立快照与评估引擎的按目录读取/下标配对交互（跨模型起报不同步不污染 lead 分组）、`candidate_base_times` 的 08/20 时与跨天边界、同日两轮快照文件名无碰撞、cyeva 对含 NaN 对样本的剔除正确性（与手工掩膜对拍一致）、19 模型的标签/配色全覆盖且 JS 有兜底色。
+- **（记录不修）**：Open-Meteo 12 模型单请求在任一模型名将来失效时会级联失败（当前 12 个名字经线上实测全部有效，属前瞻性风险）；明细指标表 19 模型横向滚动偏长；`best_match` 当前择优结果与 `ecmwf_ifs` 数值一致属数据源现象；快照文件线性增长的中期归档策略。

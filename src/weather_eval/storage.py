@@ -5,11 +5,13 @@
   data/forecasts/{station_id}/{model}/{issue}.json  起报快照（幂等）
   data/metrics/{period}/{file}.json              评估结果（可选缓存）
 
-写入采用"临时文件 + 原子 rename"避免半文件；读取容错（缺失返回空）。
+写入采用"临时文件 + 原子 rename"避免半文件；读取容错：损坏文件（git 冲突残留、
+外部改写等导致 JSONDecodeError）告警并跳过，不拖垮整体评估/报告。
 """
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 from pathlib import Path
@@ -17,11 +19,25 @@ from typing import Any
 
 from .timeutil import ym, ymd
 
+logger = logging.getLogger(__name__)
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _root() -> Path:
     return Path(os.environ.get("WEATHER_EVAL_DATA_ROOT", PROJECT_ROOT / "data"))
+
+
+def _load_json(path: Path) -> Any | None:
+    """读取 JSON；损坏文件告警并返回 None（调用方按缺失处理，不让单文件拖垮整体）。"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return None
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
+        logger.warning("存档文件损坏，已跳过: %s (%s)", path, e)
+        return None
 
 
 def _atomic_write_json(path: Path, obj: Any) -> None:
@@ -47,10 +63,7 @@ def save_obs(station_id: str, records: list[dict]) -> int:
     updated = 0
     for month, rec_map in months.items():
         path = _root() / "obs" / station_id / f"{month}.json"
-        existing: dict = {}
-        if path.exists():
-            with open(path, "r", encoding="utf-8") as f:
-                existing = json.load(f)
+        existing: dict = _load_json(path) or {}
         for k, v in rec_map.items():
             if k not in existing or v != existing[k]:
                 updated += 1
@@ -68,8 +81,9 @@ def load_obs(station_id: str, month: str | None = None) -> dict[str, dict]:
     for p in sorted(base.glob("*.json")):
         if month and p.stem != month:
             continue
-        with open(p, "r", encoding="utf-8") as f:
-            result.update(json.load(f))
+        data = _load_json(p)
+        if isinstance(data, dict):
+            result.update(data)
     return result
 
 
@@ -94,8 +108,9 @@ def list_forecast_snapshots(station_id: str, model: str) -> list[dict]:
         return []
     out = []
     for p in sorted(base.glob("*.json")):
-        with open(p, "r", encoding="utf-8") as f:
-            out.append(json.load(f))
+        snap = _load_json(p)
+        if isinstance(snap, dict):
+            out.append(snap)
     return out
 
 

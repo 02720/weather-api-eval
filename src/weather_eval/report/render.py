@@ -31,8 +31,22 @@ MODEL_LABELS = {
     "ecmwf_ifs": "欧洲 ECMWF",
     "ncep_gfs_global": "美国 GFS",
     "dwd_icon_global": "德国 ICON",
+    "best_match": "OM 最优匹配",
+    "cma_grapes_global": "中国 GRAPES",
+    "cmc_gem_gdps": "加拿大 GEM",
+    "jma_gsm": "日本 GSM",
+    "ukmo_global_deterministic_10km": "英国 UKMO",
+    "ecmwf_ifs025": "ECMWF IFS 0.25°",
+    "ecmwf_aifs025_single": "ECMWF AIFS(AI)",
+    "ncep_aigfs025": "NCEP AI-GFS",
+    "ncep_hgefs025_ensemble_mean": "NCEP HGEFS 集合",
     "caiyun_v2_6": "彩云天气",
     "qweather_v1": "和风天气",
+    "tj_km_fusion": "天机·公里级融合",
+    "tj_t2_early": "天机2/DA (T2-Early)",
+    "tj_t2": "天机2/ND (T2)",
+    "tj_t1": "天机1 (T1)",
+    "tj_t1h_ai": "T1H-AI (T1-AI)",
 }
 
 # 每个模型的固定配色（图表/排行榜共用，全站一致，方便读者形成"颜色=模型"的记忆）。
@@ -40,8 +54,22 @@ MODEL_COLORS = {
     "ecmwf_ifs": "#2563eb",      # 蓝
     "ncep_gfs_global": "#f59e0b",  # 橙
     "dwd_icon_global": "#10b981",  # 绿
+    "best_match": "#0ea5e9",     # 天蓝
+    "cma_grapes_global": "#dc2626",  # 深红
+    "cmc_gem_gdps": "#eab308",   # 黄
+    "jma_gsm": "#f97316",        # 橙红
+    "ukmo_global_deterministic_10km": "#14b8a6",  # 青
+    "ecmwf_ifs025": "#3b82f6",   # 亮蓝
+    "ecmwf_aifs025_single": "#6366f1",  # 靛蓝
+    "ncep_aigfs025": "#a855f7",  # 亮紫
+    "ncep_hgefs025_ensemble_mean": "#d946ef",  # 品红
     "caiyun_v2_6": "#8b5cf6",    # 紫
     "qweather_v1": "#ef4444",    # 红
+    "tj_km_fusion": "#e11d48",   # 玫红
+    "tj_t2_early": "#22c55e",    # 亮绿
+    "tj_t2": "#84cc16",          # 黄绿
+    "tj_t1": "#f472b6",          # 粉
+    "tj_t1h_ai": "#c084fc",      # 浅紫
 }
 
 

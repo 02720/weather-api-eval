@@ -77,6 +77,14 @@ jobs:
             echo "未配置 QWEATHER_API_KEY Secret，跳过和风抓取"
           fi
 
+      - name: 抓取中科天机预报（可选，网页接口抓取，无需凭据）
+        # 可选增强源：接口为 tjweather.com 可视化页面的单点查询（游客态可用，无官方 SLA），
+        # 失败仅标注该步，不得阻断后续观测抓取、报告与提交。
+        continue-on-error: true
+        env:
+          TZ: Asia/Shanghai
+        run: python -m weather_eval fetch-forecast --source tianji
+
       - name: 抓取观测 + 预报快照 + 更新主报告（本月累计，覆盖写 index.html）
         env:
           TZ: Asia/Shanghai

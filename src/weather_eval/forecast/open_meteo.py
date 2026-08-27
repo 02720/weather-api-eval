@@ -20,12 +20,16 @@ ENDPOINT = "https://api.open-meteo.com/v1/forecast"
 HEADERS = {"User-Agent": "weather-api-eval/0.1 (+https://github.com/)"}
 
 
-def _model_key(hourly_units: dict, base: str, model: str) -> str | None:
-    """在多模型/单模型两种返回形态下，找到 base 变量对应的真实键名。"""
+def _model_key(hourly_units: dict, base: str, model: str, allow_bare: bool = True) -> str | None:
+    """在多模型/单模型两种返回形态下，找到 base 变量对应的真实键名。
+
+    多模型请求（allow_bare=False）只接受带模型后缀的键：裸键回退仅对单模型请求
+    开放，否则若多模型响应里混入裸键，会让多个模型静默映射到同一数组。
+    """
     suffixed = f"{base}_{model}"
     if suffixed in hourly_units:
         return suffixed
-    if base in hourly_units:
+    if allow_bare and base in hourly_units:
         return base
     return None
 
@@ -68,10 +72,11 @@ class OpenMeteoProvider(ForecastProvider):
             raise RuntimeError(f"Open-Meteo 站点 {station.id} 返回空时间序列")
 
         issue_iso = times[0]  # 起报时刻 = 响应共享时间轴首点（北京时），与 hourly_time 同口径
+        allow_bare = len(models) == 1  # 仅单模型请求允许裸键回退（见 _model_key）
         data: dict[str, dict] = {}
         for model in models:
-            tkey = _model_key(hourly_units, "temperature_2m", model)
-            pkey = _model_key(hourly_units, "precipitation", model)
+            tkey = _model_key(hourly_units, "temperature_2m", model, allow_bare=allow_bare)
+            pkey = _model_key(hourly_units, "precipitation", model, allow_bare=allow_bare)
             if tkey is None or pkey is None:
                 logger.warning("模型 %s 在返回中缺失，跳过", model)
                 continue

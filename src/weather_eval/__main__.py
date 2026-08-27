@@ -2,7 +2,10 @@
 
 用法：
   python -m weather_eval fetch-obs                抓取 4 站近 24h 实况并归档
-  python -m weather_eval fetch-forecast           抓取 3 模型起报快照并归档
+  python -m weather_eval fetch-forecast           抓取 Open-Meteo 多模型起报快照并归档
+  python -m weather_eval fetch-forecast --source caiyun    抓取彩云天气 v2.6 起报
+  python -m weather_eval fetch-forecast --source qweather  抓取和风天气起报
+  python -m weather_eval fetch-forecast --source tianji    抓取中科天机起报（网页接口，无需凭据）
   python -m weather_eval report                   用本月至今数据更新主报告 reports/index.html
   python -m weather_eval monthly [--month YYYY-MM] 生成月度归档报告 reports/monthly/YYYY-MM.html
   python -m weather_eval all                       抓取观测+预报+更新主报告（GitHub Action 调用）
@@ -10,6 +13,10 @@
 报告体系（2026-08 重设计）：
   index.html 是"本月至今"的累积视图，每次运行覆盖更新（不再保留每次运行一份的 runs/）；
   monthly/ 每月归档一份冻结的历史月份，主报告页脚自动列出归档链接。
+
+快照粒度说明：Open-Meteo/彩云/和风的一次抓取共享同一条时间轴与起报口径，按模型拆分
+存档；中科天机各模式最新可用起报轮次可能不同步（发布进度独立），故其提供方直接按
+模型返回独立快照（各自 issue_iso 与时间轴），保证时效（lead）分组不被跨模式错位污染。
 """
 from __future__ import annotations
 
@@ -23,12 +30,13 @@ from .config import load_config
 from .timeutil import now_beijing, ymd, parse_iso, floor_to_hour, ym
 from .storage import save_obs, save_forecast_snapshot
 from .obs import EiaDataObsSource
-from .forecast import OpenMeteoProvider, CaiyunProvider, QWeatherProvider
+from .forecast import OpenMeteoProvider, CaiyunProvider, QWeatherProvider, TianjiProvider
 from .forecast.caiyun import DEFAULT_NAME as CAIYUN_DEFAULT_MODEL
 from .forecast.qweather import DEFAULT_NAME as QWEATHER_DEFAULT_MODEL
+from .forecast.tianji import MODEL_SPECS as TJ_MODEL_SPECS
 # 非第三方模式名的"独立抓取源"，Open-Meteo 抓取分支必须排除，
 # 否则会被当作 Open-Meteo 响应里缺失的模型而刷警告。
-NON_OPENMETEO_MODELS = {CAIYUN_DEFAULT_MODEL, QWEATHER_DEFAULT_MODEL}
+NON_OPENMETEO_MODELS = {CAIYUN_DEFAULT_MODEL, QWEATHER_DEFAULT_MODEL, *TJ_MODEL_SPECS}
 from .evaluate import build_report
 from .report import write_live_report, write_monthly_report
 
@@ -76,7 +84,15 @@ def _build_provider(source: str, cfg):
     if source == "qweather":
         prov = QWeatherProvider()
         return prov, [prov.name]
-    # Open-Meteo 无需凭据；仅交其自身模型，避免把 caiyun/qweather 当作缺失模型刷警告
+    if source == "tianji":
+        # 中科天机无需凭据；仅交其自身模型（config 中以 tj_ 前缀区分）
+        tjs = [m for m in cfg.models if m in TJ_MODEL_SPECS]
+        if not tjs:
+            raise RuntimeError(
+                "config models 中未配置任何中科天机模型（tj_*），无法抓取该源"
+            )
+        return TianjiProvider(), tjs
+    # Open-Meteo 无需凭据；仅交其自身模型，避免把 caiyun/qweather/tianji 当作缺失模型刷警告
     return OpenMeteoProvider(), [m for m in cfg.models if m not in NON_OPENMETEO_MODELS]
 
 
@@ -92,12 +108,22 @@ def cmd_fetch_forecast(args):
     for st in cfg.stations:
         try:
             snap = prov.fetch_snapshot(st, model_list)
-            for m in snap["models"]:
-                sub = dict(snap)
-                sub["models"] = [m]
-                sub["data"] = {m: snap["data"][m]}
-                save_forecast_snapshot(st.id, m, sub)
-            log.info("站点 %s 起报 %s 已存档（模型 %s）", st.id, snap["issue_iso"], snap["models"])
+            if isinstance(snap, dict):
+                # 共享时间轴的多模型快照（Open-Meteo/彩云/和风）：按模型拆为独立存档单元
+                subs = []
+                for m in snap["models"]:
+                    sub = dict(snap)
+                    sub["models"] = [m]
+                    sub["data"] = {m: snap["data"][m]}
+                    subs.append(sub)
+            else:
+                # 中科天机：各模式最新可用起报可能不同步，提供方直接返回按模型独立的快照列表
+                # （每份各自 issue_iso 与时间轴），保证时效（lead）分组不被跨模式错位污染。
+                subs = list(snap)
+            for sub in subs:
+                save_forecast_snapshot(st.id, sub["models"][0], sub)
+            log.info("站点 %s 起报已存档 %d 份（模型 %s）",
+                     st.id, len(subs), [s["models"][0] for s in subs])
         except Exception as e:  # noqa: BLE001
             failures += 1
             log.error("站点 %s 预报抓取失败: %s", st.id, e)
@@ -152,10 +178,10 @@ def main(argv=None):
     sub.add_parser("fetch-obs")
     p_fetch = sub.add_parser("fetch-forecast")
     p_fetch.add_argument(
-        "--source", choices=["open_meteo", "caiyun", "qweather"], default="open_meteo",
-        help="预报源：open_meteo（默认）、caiyun（需 CAIYUN_TOKEN）或 qweather"
-             "（和风天气，API Key 认证，需 QWEATHER_API_KEY 环境变量，"
-             "可选 QWEATHER_API_HOST 指定专属 API Host）",
+        "--source", choices=["open_meteo", "caiyun", "qweather", "tianji"], default="open_meteo",
+        help="预报源：open_meteo（默认）、caiyun（需 CAIYUN_TOKEN）、qweather"
+             "（和风天气，需 QWEATHER_API_KEY 环境变量，可选 QWEATHER_API_HOST 指定专属"
+             " API Host）或 tianji（中科天机，网页接口抓取，无需凭据）",
     )
     sub.add_parser("report")
     pm = sub.add_parser("monthly")
@@ -163,13 +189,18 @@ def main(argv=None):
     sub.add_parser("all")
 
     args = p.parse_args(argv)
-    {
+    rc = {
         "fetch-obs": cmd_fetch_obs,
         "fetch-forecast": cmd_fetch_forecast,
         "report": cmd_report,
         "monthly": cmd_monthly,
         "all": cmd_all,
     }[args.cmd](args)
+    # 抓取类命令的失败数必须反映到退出码：否则单独运行 fetch-forecast 失败也会
+    # 以 0 退出，CI 的 continue-on-error 步骤（彩云/和风/中科天机）连"失败标注"都不会出现。
+    if rc:
+        log.error("本次运行有 %d 项失败", rc)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
