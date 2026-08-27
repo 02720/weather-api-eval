@@ -171,6 +171,46 @@ def test_token_redacted_in_errors(caplog):
     assert all(sentinel not in r.message for r in caplog.records)
 
 
+def test_cmd_fetch_forecast_open_meteo_excludes_caiyun(monkeypatch):
+    """open_meteo 分支不应把 caiyun_v2_6 传给 Open-Meteo（此前误用
+    CaiyunProvider.DEFAULT_NAME 类属性导致 AttributeError 崩溃）。"""
+    import weather_eval.__main__ as m
+
+    captured = {}
+
+    class FakeOM:
+        def fetch_snapshot(self, station, models):
+            captured["models"] = list(models)
+            return {
+                "issue_iso": "2026-08-27T00:00", "station_id": station.id,
+                "source": "open-meteo", "models": list(models),
+                "grid_lat": 0.0, "grid_lon": 0.0, "elevation": 0.0,
+                "hourly_time": [],
+                "data": {mm: {"temperature_2m": [], "precipitation": []} for mm in models},
+            }
+
+    monkeypatch.setattr(m, "OpenMeteoProvider", lambda: FakeOM())
+    monkeypatch.setattr(m, "save_forecast_snapshot", lambda *a, **k: True)
+
+    class Station:
+        id = "s1"
+        lat = 23.0
+        lon = 111.0
+
+    class Cfg:
+        models = ["ecmwf_ifs", "caiyun_v2_6"]
+        stations = [Station()]
+
+    monkeypatch.setattr(m, "load_config", lambda cfg: Cfg())
+
+    class Args:
+        source = "open_meteo"
+        config = None
+
+    m.cmd_fetch_forecast(Args())
+    assert captured["models"] == ["ecmwf_ifs"]
+
+
 # ----------------------------------------------------------------- 端到端
 def test_end_to_end_with_obs(tmp_path, monkeypatch):
     """彩云快照与整点观测完美匹配 -> 温度±2°C 准确率100%、降水TS=1。"""

@@ -21,6 +21,7 @@ from .timeutil import now_beijing, ymd, parse_iso, floor_to_hour, ym
 from .storage import save_obs, save_forecast_snapshot
 from .obs import EiaDataObsSource
 from .forecast import OpenMeteoProvider, CaiyunProvider
+from .forecast.caiyun import DEFAULT_NAME as CAIYUN_DEFAULT_MODEL
 from .evaluate import build_report
 from .report import write_run_report, write_monthly_report, write_index
 
@@ -65,7 +66,7 @@ def cmd_fetch_forecast(args):
     else:
         prov = OpenMeteoProvider()
         # 仅把"非彩云"的模型交给 Open-Meteo，避免把 caiyun_v2_6 当作缺失模型而刷警告
-        model_list = [m for m in cfg.models if m != CaiyunProvider.DEFAULT_NAME]
+        model_list = [m for m in cfg.models if m != CAIYUN_DEFAULT_MODEL]
     failures = 0
     for st in cfg.stations:
         try:
