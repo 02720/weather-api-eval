@@ -8,17 +8,22 @@
      读者不需要任何气象/统计背景；
   3. 一页即全部 —— 本页（index.html）每次运行覆盖更新，永远展示"本月至今"
      的累积结果；历史月份见页脚"月度归档"。
+  4. 23 家预报源不再"一张图全画" —— 所有对比图的系列一律按排行榜排序，
+     默认只画前 8 名，右上角可一键切到"全部"；要看全部指标用指标下拉切换，
+     用明细表看全量数值。
+  5. 指标全集 —— cyeva 的温度/降水指标全部计算并展示（主图 + 明细表分层）。
 
   页面结构（自上而下）：
     Hero 横幅            标题 + 一句话结论（本月冠军）
-    🌱 30秒看懂本报告    4 个核心概念的小白解释
-    🏅 预报源排行榜      奖牌卡片，综合得分排名
-    🌡️ 气温预报          准确率/误差随时效曲线
-    🌧️ 降水预报          晴雨 TS 随时效
+    🌱 30秒看懂本报告    5 个核心概念的小白解释
+    🏅 预报源排行榜      奖牌卡片，综合得分排名（温度分/降水分分解）
+    📉 得分随时效衰减    综合/温度/降水三个维度的得分趋势（排行榜的"趋势版"）
+    🌡️ 气温预报          指标下拉：准确率/误差/相关系数 随时效
+    🌧️ 降水预报          指标下拉：TS/ETS/POD/FAR/BIAS/雨量误差 随时效
     🔍 预报 vs 实况      最近 72 小时叠加对比图（可切换站点/模型）
-    🗓️ 每日热力图        哪天准、哪天翻车一目了然
+    🗓️ 每日热力图        哪天准、哪天翻车一目了然（行按排行榜排序）
     📍 分站对比          同一预报在不同站点的表现
-    🧪 进阶数据          折叠区：按天评估 / 精细曲线 / 明细表
+    🧪 进阶数据          折叠区：按天评估 / 分级降水 / 精细曲线 / 全指标明细表×2
     📖 名词小词典        所有术语的大白话解释
     🗂️ 归档 + 机制说明   月度归档链接、报告生成机制
 ============================================================================ #}
@@ -85,14 +90,14 @@ window.addEventListener("DOMContentLoaded", function () {
           color:#1e40af; font-size:13px; padding:9px 14px; margin:10px 0 0; }
   .hint b { color:#1e3a8a; }
 
-  /* ---------- 30 秒看懂：4 个核心概念卡 ---------- */
-  .guide-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; }
+  /* ---------- 30 秒看懂：核心概念卡 ---------- */
+  .guide-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px; }
   .guide-item { border:1px solid var(--line); border-radius:12px; padding:14px 16px; background:#f8fafc; }
   .guide-item .t { font-weight:700; font-size:14.5px; margin-bottom:6px; }
   .guide-item .d { font-size:13px; color:#334155; }
 
   /* ---------- 排行榜：奖牌卡片 ---------- */
-  .rank-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:14px; }
+  .rank-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:14px; }
   .rank-card { position:relative; border:1.5px solid var(--line); border-radius:14px;
                padding:16px 16px 12px; transition:transform .15s ease; }
   .rank-card:hover { transform:translateY(-2px); }
@@ -105,20 +110,39 @@ window.addEventListener("DOMContentLoaded", function () {
   .rank-name .id { display:block; font-weight:400; font-size:11.5px; color:var(--muted); }
   .rank-score { font-size:30px; font-weight:800; font-variant-numeric:tabular-nums; line-height:1.1; }
   .rank-score small { font-size:12px; font-weight:400; color:var(--muted); }
+  /* 综合得分的温度/降水分解条：让"这分是怎么来的"一眼可见 */
+  .score-bars { margin:10px 0 2px; }
+  .sbar { display:flex; align-items:center; gap:8px; font-size:11.5px; color:#334155;
+          padding:2px 0; }
+  .sbar .track { flex:1; height:7px; border-radius:4px; background:#eef2f7; overflow:hidden; }
+  .sbar .track i { display:block; height:100%; border-radius:4px;
+                   background:linear-gradient(90deg,#3b82f6,#2563eb); }
+  .sbar .track i.rain { background:linear-gradient(90deg,#22d3ee,#0891b2); }
+  /* 样本不足的维度：轨道铺灰斜纹，宽度 0 与"有分但为 0 分"区分开 */
+  .sbar .track.na { background:repeating-linear-gradient(45deg,#f1f5f9,#f1f5f9 4px,#e2e8f0 4px,#e2e8f0 8px); }
+  .sbar b { min-width:34px; text-align:right; font-variant-numeric:tabular-nums; }
   .rank-kv { display:flex; justify-content:space-between; font-size:12.5px; color:#334155;
              padding:3px 0; border-top:1px dashed var(--line); }
   .rank-kv:first-of-type { border-top:none; margin-top:8px; }
   .rank-kv b { font-variant-numeric:tabular-nums; }
   .rank-note { font-size:11.5px; color:var(--muted); margin-top:8px; }
 
-  /* ---------- 图表容器 ---------- */
+  /* ---------- 图表容器与控制条（指标下拉 + 前8/全部分段开关） ---------- */
   .chart { width:100%; height:360px; margin-top:6px; }
   .chart.tall { height:420px; }
   .chart-empty { display:flex; align-items:center; justify-content:center; height:200px;
                  color:var(--muted); background:#f8fafc; border:1px dashed var(--line);
                  border-radius:12px; font-size:13.5px; }
-  select { padding:7px 12px; border:1px solid var(--line); border-radius:9px; font-size:13.5px;
-           background:#fff; margin:0 6px 10px 0; }
+  .chart-controls { display:flex; flex-wrap:wrap; align-items:center; gap:10px;
+                    margin:4px 0 8px; }
+  .chart-controls label { font-size:13px; color:#334155; }
+  select { padding:6px 10px; border:1px solid var(--line); border-radius:9px; font-size:13px;
+           background:#fff; margin:0 2px; max-width:220px; }
+  .seg { display:inline-flex; border:1px solid var(--line); border-radius:9px; overflow:hidden; }
+  .seg button { border:none; background:#fff; color:var(--muted); font-size:12.5px;
+                padding:6px 12px; cursor:pointer; }
+  .seg button + button { border-left:1px solid var(--line); }
+  .seg button.on { background:var(--blue); color:#fff; }
 
   /* ---------- 进阶折叠区 ---------- */
   details.card { padding:0; overflow:hidden; }
@@ -131,10 +155,18 @@ window.addEventListener("DOMContentLoaded", function () {
   details.card .body { padding:0 22px 22px; border-top:1px solid var(--line); }
   details.card h3 { font-size:15.5px; margin:20px 0 4px; }
 
-  /* ---------- 明细表 ---------- */
-  table { border-collapse:collapse; width:100%; font-size:12.5px; }
-  th,td { border:1px solid var(--line); padding:6px 8px; text-align:center; }
-  th { background:#f1f5f9; } td.l,th.l { text-align:left; }
+  /* ---------- 明细表：模型名列吸顶左贴，横向滚动不丢行名 ---------- */
+  table { border-collapse:collapse; width:100%; font-size:12px; }
+  th,td { border:1px solid var(--line); padding:5px 7px; text-align:center; white-space:nowrap; }
+  th { background:#f1f5f9; }
+  th.g { background:#e8eefb; }
+  td.l,th.l { text-align:left; }
+  th.sticky, td.sticky { position:sticky; left:0; background:#fff; z-index:1;
+                         border-right:2px solid var(--line); }
+  th.sticky { background:#f1f5f9; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%;
+         margin-right:6px; vertical-align:1px; }
+  .num { font-variant-numeric:tabular-nums; }
 
   /* ---------- 名词小词典 ---------- */
   .glossary { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr));
@@ -164,6 +196,7 @@ window.addEventListener("DOMContentLoaded", function () {
     .hero h1 { font-size:26px; }
     .card { padding:18px 16px; }
     .chart { height:300px; }
+    select { max-width:160px; }
   }
 </style>
 </head>
@@ -191,14 +224,16 @@ window.addEventListener("DOMContentLoaded", function () {
       <span class="chip">🔄 数据截至 {{ report.meta.end }}</span>
       <span class="chip">📍 {{ report.meta.stations|length }} 个观测站</span>
       <span class="chip">🛰️ {{ report.meta.models|length }} 家预报源</span>
+      <span class="chip">🧮 温度 9 项 · 降水 11 项 · 分级 11 档</span>
       <span class="chip">✅ 实况覆盖率 {{ '—' if report.coverage.coverage_pct is none else '%.0f%%'|format(report.coverage.coverage_pct) }}</span>
     </div>
     {% if champ %}
     <!-- 全页唯一的"一句话结论"：小白只看这一句也够 -->
     <div class="champion">🏆 {{ report.meta.period_label }} 月{% if not report.meta.is_monthly %}至今{% endif %}综合表现最好的是
       <b>{{ model_labels.get(champ.model, champ.model) }}</b>
-      <div class="sub">提前 1 天以内（1~24 小时）的预报：温度准确率 {{ pct(champ.temp_acc2_24h) }}（误差 ≤2°C 即算准）·
-        晴雨评分 TS {{ num(champ.precip_ts_24h, 2) }}（0~1，越高越好）· 综合得分 {{ num(champ.score, 1) }}</div>
+      <div class="sub">提前 1 天以内（1~24 小时）的预报：综合得分 {{ num(champ.score, 1) }}（温度 {{ num(champ.temp_score, 1) }} 分 + 降水 {{ num(champ.precip_score, 1) }} 分）·
+        温度准确率 {{ pct(champ.temp_acc2_24h) }}（误差 ≤2°C 即算准）· 晴雨评分 TS {{ num(champ.precip_ts_24h, 2) }}（0~1，越高越好）。
+        各家得分如何随"预报提前量"衰减，见下方<a href="#score-trend" style="color:#dbeafe">📉 得分随时效衰减</a>。</div>
     </div>
     {% else %}
     <div class="champion">🌱 数据积累中——样本攒够后，这里会显示本月的"预报冠军"。</div>
@@ -211,12 +246,14 @@ window.addEventListener("DOMContentLoaded", function () {
   <!-- ==================== 新手引导：30 秒看懂 ==================== -->
   <section class="card">
     <h2>🌱 30 秒看懂本报告</h2>
-    <p class="desc">只需记住 4 个概念，遇到别的术语可直达页面底部 <a href="#glossary">📖 名词小词典</a>。</p>
+    <p class="desc">只需记住 5 个概念，遇到别的术语可直达页面底部 <a href="#glossary">📖 名词小词典</a>。</p>
     <div class="guide-grid">
       <div class="guide-item"><div class="t">⏱️ 时效 = 提前量</div>
         <div class="d">预报是<b>提前多久</b>做的。提前 1 天大家都准，提前 10 天谁都难——本报告比的是谁"衰减得慢"。</div></div>
+      <div class="guide-item"><div class="t">🏅 综合得分</div>
+        <div class="d"><b>温度分</b>（准确率+误差）与<b>降水分</b>（晴雨表现）各算一个 0~100 的分，再取平均。一项"瘸腿"拿不了高分。</div></div>
       <div class="guide-item"><div class="t">🌡️ 温度准确率（±2°C）</div>
-        <div class="d">预报温度与实况相差 <b>不超过 2°C</b> 就算报准。这个比例<b>越高越好</b>，100% = 满分。</div></div>
+        <div class="d">预报温度与实况相差 <b>不超过 2°C</b> 就算报准。比例<b>越高越好</b>，100% = 满分。</div></div>
       <div class="guide-item"><div class="t">📉 温度误差（RMSE）</div>
         <div class="d">温度平均<b>报错了多少 °C</b>，<b>越小越好</b>，0 = 完美。它对"偶尔离谱的大误差"更敏感。</div></div>
       <div class="guide-item"><div class="t">🌧️ 晴雨评分（TS）</div>
@@ -227,9 +264,11 @@ window.addEventListener("DOMContentLoaded", function () {
   <!-- ==================== 排行榜（服务端渲染，打开即见） ==================== -->
   <section class="card">
     <h2>🏅 预报源排行榜</h2>
-    <p class="desc">按"提前 1 天（24 小时）以内"的预报表现打分排名。综合得分（0~100，越高越好）= 四项均分：
-      温度±2°C准确率 ｜ 温度误差换算分（100 − RMSE×5，即误差 0°C 记 100 分、20°C 记 0 分）｜ 晴雨TS×100 ｜ 晴雨准确率；
-      样本不足的指标不计入均分。</p>
+    <p class="desc">按"提前 1 天（24 小时）以内"的预报表现打分排名（更长时效的走势见下一节）。
+      综合得分（0~100，越高越好）= 温度分与降水分的均分：
+      <b>温度分</b> = 温度±2°C准确率 与 误差换算分（100 − RMSE×5，误差 0°C 记 100 分、20°C 记 0 分）的均分；
+      <b>降水分</b> = 晴雨TS×100 与 晴雨准确率 的均分。样本不足的项不计入均分——
+      单一要素缺数据的源按可用维度计分照常参评，缺失维度显示 —（灰纹条）。</p>
     {% if ranking %}
     <div class="rank-grid">
       {% for row in ranking %}
@@ -247,6 +286,14 @@ window.addEventListener("DOMContentLoaded", function () {
         {% else %}
         <div class="rank-score">{{ '%.1f'|format(row.score) }}<small> 分</small></div>
         {% endif %}
+        <div class="score-bars">
+          <div class="sbar"><span>🌡️ 温度</span>
+            <div class="track {{ 'na' if row.temp_score is none }}"><i style="width:{{ 0 if row.temp_score is none else row.temp_score }}%"></i></div>
+            <b>{{ num(row.temp_score, 1) }}</b></div>
+          <div class="sbar"><span>🌧️ 降水</span>
+            <div class="track {{ 'na' if row.precip_score is none }}"><i class="rain" style="width:{{ 0 if row.precip_score is none else row.precip_score }}%"></i></div>
+            <b>{{ num(row.precip_score, 1) }}</b></div>
+        </div>
         <div class="rank-kv"><span>🌡️ 温度准确率(24h)</span><b>{{ pct(t24.get('acc2')) }}</b></div>
         <div class="rank-kv"><span>📉 温度误差 RMSE</span><b>{{ '—' if t24.get('rmse') is none else '%.2f°C'|format(t24.get('rmse')) }}</b></div>
         <div class="rank-kv"><span>🌧️ 晴雨评分 TS</span><b>{{ num(p24.get('ts'), 2) }}</b></div>
@@ -259,33 +306,72 @@ window.addEventListener("DOMContentLoaded", function () {
     {% endif %}
   </section>
 
+  <!-- ==================== 得分随时效衰减（排行榜的"趋势版"） ==================== -->
+  <section class="card" id="score-trend">
+    <h2>📉 得分随时效衰减：谁"掉秤"掉得慢？</h2>
+    <p class="desc">排行榜只看"提前 1 天"，这一节把<b>每一档提前量（第 1~16 天）的得分</b>都算出来画成曲线。
+      同一套打分公式（综合 = 温度分 + 降水分），切换下方维度：</p>
+    <div class="chart-controls">
+      <div class="seg" id="scoreTrendTab">
+        <button class="on" data-key="overall">综合得分</button>
+        <button data-key="temp">温度得分</button>
+        <button data-key="precip">降水得分</button>
+      </div>
+      <div class="seg" id="scoreTrendRange">
+        <button class="on" data-show="top">前 8 名</button>
+        <button data-show="all">全部</button>
+      </div>
+    </div>
+    <div id="chartScoreTrend" class="chart"></div>
+    <p class="hint">💡 <b>怎么看：</b>所有曲线都会往右掉（提前量越大、预报越难），<b>谁掉得慢、谁在右边还站得高</b>，
+      谁的中长期预报就更可靠。某条线中途断掉 = 该时效"样本不足"（还没有那么多天的数据，攒着攒着就有了）。</p>
+  </section>
+
   <!-- ==================== 分区一：气温 ==================== -->
   <section class="card">
     <h2>🌡️ 气温预报准不准？</h2>
-    <p class="desc">横轴是"预报提前量"（往右 = 预报更久以后的天气），每条线是一家预报源。</p>
-    <div id="chartTempAcc" class="chart"></div>
-    <p class="hint">💡 <b>怎么看：</b>线<b>越高</b>越好。所有线都会往右下掉（预报越远越没准头），
-      谁掉得慢、谁在右边还高高在上，谁的中长期预报就更可靠。</p>
-    <div id="chartTempRmse" class="chart"></div>
-    <p class="hint">💡 <b>怎么看：</b>与上图相反，线<b>越低</b>越好。读数可以直接理解成"温度平均报错多少度"。</p>
+    <p class="desc">横轴是"预报提前量"（往右 = 预报更久以后的天气），每条线是一家预报源，按排行榜顺序排列。
+      右侧指标下拉可切换温度的全部指标。</p>
+    <div class="chart-controls">
+      <label for="tempMetricSel">指标</label>
+      <select id="tempMetricSel" aria-label="选择温度指标"></select>
+      <div class="seg" id="tempRangeSeg">
+        <button class="on" data-show="top">前 8 名</button>
+        <button data-show="all">全部</button>
+      </div>
+    </div>
+    <div id="chartTempMetrics" class="chart"></div>
+    <p class="hint">💡 <b>怎么看：</b>准确率/相关系数<b>越高越好</b>，RMSE/MAE/MBE <b>越低越好</b>。
+      所有线都会往右掉（预报越远越没准头），谁掉得慢、谁在右边还高高在上，谁的中长期预报就更可靠。
+      默认只画<b>前 8 名</b>（23 家全画会糊成一团），点右侧"全部"或图例可自行增减。</p>
   </section>
 
   <!-- ==================== 分区二：降水 ==================== -->
   <section class="card">
     <h2>🌧️ 下雨预报准不准？</h2>
-    <p class="desc">把"降水量 ≥ {{ report.meta.rain_threshold_mm }}mm"记为"有雨"，考察各家"报有雨/没雨"的综合表现（TS 评分，0~1）。</p>
-    <div id="chartPrecipTs" class="chart"></div>
-    <p class="hint">💡 <b>怎么看：</b>柱子<b>越高</b>越好。降水比温度难报得多——TS 到 0.3~0.5 已属正常水平，
-      各家普遍不高不代表示报错了，而是下雨本身就难预测。</p>
+    <p class="desc">把"降水量 ≥ {{ report.meta.rain_threshold_mm }}mm"记为"有雨"。指标下拉可切换降水的全部指标
+      （晴雨评分族 + 降水量误差族）。分级降水（小/中/大/暴雨）见页面下方"进阶数据"。</p>
+    <div class="chart-controls">
+      <label for="precipMetricSel">指标</label>
+      <select id="precipMetricSel" aria-label="选择降水指标"></select>
+      <div class="seg" id="precipRangeSeg">
+        <button class="on" data-show="top">前 8 名</button>
+        <button data-show="all">全部</button>
+      </div>
+    </div>
+    <div id="chartPrecipMetrics" class="chart"></div>
+    <p class="hint">💡 <b>怎么看：</b>TS / ETS / 准确率 / 命中率<b>越高越好</b>；空报率、漏报率<b>越低越好</b>；
+      频率偏差 BIAS 越接近 1 越好（&gt;1 = 爱报雨，&lt;1 = 不爱报雨）。
+      降水比温度难报得多——TS 到 0.3~0.5 已属正常水平，各家普遍不高不是报错了，而是下雨本身就难预测。</p>
   </section>
 
   <!-- ==================== 分区三：预报 vs 实况 ==================== -->
   <section class="card">
     <h2>🔍 亲眼对比：预报 vs 实况（最近 72 小时）</h2>
     <p class="desc">不看指标，直接用眼睛检验：黑线是气象站实测气温，彩线是预报（取每个时刻当时已发布的最新一版），蓝柱是预报降水量（右轴）。</p>
-    <div>
-      <label for="tsStation">站点：</label><select id="tsStation" aria-label="选择站点"></select>
-      <label for="tsModel">预报源：</label><select id="tsModel" aria-label="选择预报源"></select>
+    <div class="chart-controls">
+      <label for="tsStation">站点</label><select id="tsStation" aria-label="选择站点"></select>
+      <label for="tsModel">预报源</label><select id="tsModel" aria-label="选择预报源"></select>
     </div>
     <div id="chartTs" class="chart tall"></div>
     <p class="hint">💡 <b>怎么看：</b>彩线越贴近黑线越准。可以切换不同站点和预报源，
@@ -295,16 +381,25 @@ window.addEventListener("DOMContentLoaded", function () {
   <!-- ==================== 分区四：逐日热力图 ==================== -->
   <section class="card">
     <h2>🗓️ 每日表现热力图</h2>
-    <p class="desc">每个格子 = 某一天 × 某家预报源当天的温度准确率（±2°C）。</p>
+    <p class="desc">每个格子 = 某一天 × 某家预报源当天的温度准确率（±2°C）。行按排行榜名次排列（第一名在最上）。</p>
     <div id="chartHeat" class="chart"></div>
     <p class="hint">💡 <b>怎么看：</b><b>绿色</b> = 当天报得准，<b>红色</b> = 当天翻车，空白 = 数据不足。
-      如果某天<b>整列发红</b>，说明那天所有预报源都没报准——往往是天气突变（如冷空气、突发降雨），不是某一家的锅。</p>
+      如果某天<b>整列发红</b>，说明那天所有预报源都没报准——往往是天气突变（如冷空气、突发降雨），不是某一家的锅；
+      若某一行常年偏红，说明这一家整体拉胯。</p>
   </section>
 
   <!-- ==================== 分区五：分站对比 ==================== -->
   <section class="card">
     <h2>📍 各站点表现对比</h2>
-    <p class="desc">同样是"提前 1 天"的温度预报，对比各家在不同气象站的准确率。</p>
+    <p class="desc">同样是"提前 1 天"的预报，对比各家在不同气象站的表现。</p>
+    <div class="chart-controls">
+      <label for="stationMetricSel">指标</label>
+      <select id="stationMetricSel" aria-label="选择分站指标"></select>
+      <div class="seg" id="stationRangeSeg">
+        <button class="on" data-show="top">前 8 名</button>
+        <button data-show="all">全部</button>
+      </div>
+    </div>
     <div id="chartStation" class="chart"></div>
     <p class="hint">💡 <b>怎么看：</b>同一预报源在不同站点表现可能有差异（地形、气候不同）。
       如果你只关心某个城市，找到对应的柱子比一比即可。</p>
@@ -312,20 +407,75 @@ window.addEventListener("DOMContentLoaded", function () {
 
   <!-- ==================== 进阶数据（默认折叠，保持主页清爽） ==================== -->
   <details class="card" id="advanced">
-    <summary>🧪 进阶数据：按天评估 · 72 小时精细曲线 · 全部指标明细</summary>
+    <summary>🧪 进阶数据：按天评估 · 分级降水 · 精细曲线 · 全指标明细表</summary>
     <div class="body">
-      <h3>按天评估：日最高气温 / 最低气温准确率（日偏移 1~16 天）</h3>
+      <h3>按天评估：日最高 / 最低气温准确率（日偏移 1~16 天）</h3>
       <p class="desc">把一天浓缩成两个数（最高/最低温），按"预报的是起报后第几天"分组。</p>
+      <div class="chart-controls">
+        <div class="seg" id="tempDailyRangeSeg">
+          <button class="on" data-show="top">前 8 名</button>
+          <button data-show="all">全部</button>
+        </div>
+      </div>
       <div id="chartTempDailyMax" class="chart"></div>
       <div id="chartTempDailyMin" class="chart"></div>
-      <h3>按天评估：日降水晴雨 TS（日偏移 1~16 天）</h3>
+
+      <h3>按天评估：日降水指标（日偏移 1~16 天）</h3>
+      <div class="chart-controls">
+        <label for="precipDailySel">指标</label>
+        <select id="precipDailySel" aria-label="选择按天降水指标"></select>
+        <div class="seg" id="precipDailyRangeSeg">
+          <button class="on" data-show="top">前 8 名</button>
+          <button data-show="all">全部</button>
+        </div>
+      </div>
       <div id="chartPrecipDaily" class="chart"></div>
+
+      <h3>分级降水分：日降水 TS（按 24 小时累计雨量分档）</h3>
+      <p class="desc">不只看"下没下"，还看"下多大"：≥0.1mm（小雨以上）、≥10mm（中雨以上）、≥25mm（大雨以上）、
+        ≥50mm（暴雨以上）、≥100mm（大暴雨以上）、≥250mm（特大暴雨以上）。</p>
+      <div class="chart-controls">
+        <label for="gradedOffsetSel">日偏移</label>
+        <select id="gradedOffsetSel" aria-label="选择日偏移"></select>
+        <div class="seg" id="gradedRangeSeg">
+          <button class="on" data-show="top">前 8 名</button>
+          <button data-show="all">全部</button>
+        </div>
+      </div>
+      <div id="chartPrecipGraded" class="chart"></div>
+      <p class="hint">💡 <b>怎么看：</b>雨越大越难报对，所以各档 TS 逐级走低是正常规律；
+        某家在"大雨以上"还能保持高分，说明它对强降雨更有判断力。空缺 = 该档样本不足。</p>
+
       <h3>温度误差精细曲线（提前 1~72 小时，逐小时）</h3>
       <p class="desc">比天桶更细的颗粒度，用来观察前三天的误差衰减。</p>
+      <div class="chart-controls">
+        <label for="leadMetricSel">指标</label>
+        <select id="leadMetricSel" aria-label="选择精细曲线指标"></select>
+        <div class="seg" id="leadRangeSeg">
+          <button class="on" data-show="top">前 8 名</button>
+          <button data-show="all">全部</button>
+        </div>
+      </div>
       <div id="chartTempLead" class="chart"></div>
-      <h3>明细指标表（逐小时 1~16 天桶）</h3>
-      <p class="desc">n = 参与计算的"预报-实况"样本对数（取温度/降水两个口径中的较大者）；n &lt; {{ report.meta.min_sample }} 时视为样本不足，显示 —。</p>
-      <div id="detailTable" style="overflow-x:auto"></div>
+
+      <h3>明细表 ①：逐小时口径全指标（按提前量选一天）</h3>
+      <p class="desc">cyeva 温度 9 项 + 降水 16 项（晴雨 8 项 / 雨量误差 3 项 / 1h 雨强分级 TS 5 档）。
+        n温 / n降 = 温度 / 降水列各自的有效样本对数（两者可能不同：降水缺测通常更多）；某一口径 n &lt;
+        {{ report.meta.min_sample }} 时该组指标视为样本不足，显示 —。
+        表格可左右滚动，模型列固定在左侧。</p>
+      <div class="chart-controls">
+        <label for="hourlyBucketSel">时效</label>
+        <select id="hourlyBucketSel" aria-label="选择时效"></select>
+      </div>
+      <div id="detailTableHourly" style="overflow-x:auto"></div>
+
+      <h3>明细表 ②：按天口径全指标（按日偏移选一天）</h3>
+      <p class="desc">日最高/最低气温全套指标 + 日降水全套指标（含 24h 累计分档 TS）。</p>
+      <div class="chart-controls">
+        <label for="dailyOffsetSel">日偏移</label>
+        <select id="dailyOffsetSel" aria-label="选择日偏移"></select>
+      </div>
+      <div id="detailTableDaily" style="overflow-x:auto"></div>
     </div>
   </details>
 
@@ -337,17 +487,27 @@ window.addEventListener("DOMContentLoaded", function () {
       <div><dt>起报 / 起报快照</dt><dd>预报发布的那一刻叫"起报"。我们把每次起报的"未来 16 天逐小时预报"原样存档封存，等真实天气发生后再对账——预报不能事后改，检验才算数。</dd></div>
       <div><dt>时效（lead）</dt><dd>有效时刻 − 起报时刻，即"提前多久做的预报"。"3 天时效" = 提前 3 天报的。</dd></div>
       <div><dt>天桶</dt><dd>把时效按天分组：提前 1~24 小时算"第 1 天桶"，25~48 小时算"第 2 天桶"，以此类推。</dd></div>
+      <div><dt>综合得分 / 温度分 / 降水分</dt><dd>把多个指标压缩成一个 0~100 的总分方便排名。温度分 = 温度±2°C准确率与误差换算分（100−RMSE×5）的均分；降水分 = 晴雨TS×100 与晴雨准确率的均分；综合得分 = 两者均分。</dd></div>
       <div><dt>RMSE（均方根误差）</dt><dd>温度误差的"典型大小"，单位 °C，越小越好。比起 MAE，它对偶尔的大误差惩罚更重。</dd></div>
       <div><dt>MAE（平均绝对误差）</dt><dd>每次预报误差绝对值的平均，单位 °C，越小越好。最朴素的"平均差多少度"。</dd></div>
       <div><dt>MBE（平均偏差）</dt><dd>预报 − 实况的平均值。正数 = 习惯性报偏高，负数 = 报偏低，接近 0 最好。</dd></div>
+      <div><dt>RSS（残差平方和）</dt><dd>所有样本误差的平方加总（°C²）。是 RMSE 的"未开方、未平均"版本，样本越多天然越大，只适合同一样本数的横向对比。</dd></div>
+      <div><dt>χ²（卡方）</dt><dd>误差平方的平均（°C²），即 MSE。与 RMSE 的关系：RMSE = √χ²。越小越好。</dd></div>
+      <div><dt>相关系数 r</dt><dd>预报与实况起伏的同步程度（−1~1）。越接近 1，预报越能跟上天气的"节奏"；接近 0 = 报了个寂寞。</dd></div>
+      <div><dt>回归斜率</dt><dd>以预报为横轴、实况为纵轴做回归的斜率。&gt;1 = 预报的起伏幅度偏小（该热不热该冷不冷）；&lt;1 = 预报反应过激；=1 最理想。</dd></div>
       <div><dt>准确率（±1°C / ±2°C）</dt><dd>预报与实况相差不超过 1°C（或 2°C）的样本占比，越高越好。</dd></div>
       <div><dt>晴雨</dt><dd>把降水简化成是非题：降水量 ≥ {{ report.meta.rain_threshold_mm }}mm 算"有雨"，否则"无雨"。</dd></div>
       <div><dt>晴雨准确率</dt><dd>上述是非题"答对"的比例（报有雨确实下了 + 报没雨确实没下），越高越好。</dd></div>
       <div><dt>命中率（POD）</dt><dd>实际真的下雨的次数里，预报也报雨的比例。越高 = 漏报越少。</dd></div>
       <div><dt>空报率（FAR）</dt><dd>预报说会下雨的次数里，实际没下的比例。越低越好（"狼来了"次数）。</dd></div>
+      <div><dt>空报频率（POFD）</dt><dd>实际没下雨的次数里，预报却报了雨的比例（与空报率分母不同）。越低越好。</dd></div>
       <div><dt>漏报率</dt><dd>实际下雨但预报没报出来的比例，越低越好。与命中率互补：漏报率 = 1 − POD。</dd></div>
       <div><dt>TS 评分</dt><dd>命中 ÷（命中 + 空报 + 漏报），0~1。降水检验最常用的综合分，同时奖励报中、惩罚误报。</dd></div>
+      <div><dt>ETS 评分</dt><dd>对 TS 做"随机命中校正"的版本（0~1）。考虑"瞎蒙也能蒙对一部分"，ETS 更公平：瞎蒙的预报 ETS≈0，好预报才为正。</dd></div>
       <div><dt>频率偏差（BIAS）</dt><dd>报雨次数 ÷ 实际下雨次数。=1 频率正好；&gt;1 爱报雨；&lt;1 不爱报雨。</dd></div>
+      <div><dt>雨量误差（RMSE / MAE / MBE）</dt><dd>不只看下没下，还看预报的降水量数值差多少（mm），越小越好。降水数值比晴雨难报得多。</dd></div>
+      <div><dt>雨强分级（1h 口径）</dt><dd>按每小时雨量分档检验：小雨(0.1~1.9mm/h)、中雨(2~4.9)、大雨(5~9.9)、暴雨(10~19.9)、大暴雨(≥20)。每档可算全套晴雨类指标。</dd></div>
+      <div><dt>累计分级（24h 口径）</dt><dd>按日累计雨量"达到某档以上"检验：≥0.1（小雨以上）、≥10（中雨以上）、≥25（大雨以上）、≥50（暴雨以上）、≥100（大暴雨以上）、≥250mm（特大暴雨以上）。</dd></div>
       <div><dt>样本数 n</dt><dd>参与指标计算的"预报-实况"对数。n &lt; {{ report.meta.min_sample }} 时本报告判"样本不足"，不下结论（显示 —）。</dd></div>
       <div><dt>观测覆盖率</dt><dd>评估窗口内成功抓到实况的小时占比。覆盖率低会让指标样本变少。</dd></div>
       <div><dt>月度归档</dt><dd>每月 1 号把上个月的结果冻结成一份永久档案（见下方归档区），之后不再变动。</dd></div>
@@ -370,7 +530,7 @@ window.addEventListener("DOMContentLoaded", function () {
     <ol class="steps">
       <li>每天 06:00 / 13:00 / 20:00（北京时）自动抓取 {{ report.meta.stations|length }} 个气象站的实况，以及各家预报源当时发布的起报数据。</li>
       <li>预报一旦发布立即原样封存，等真实天气发生后逐小时对账——先封存、后验证，杜绝"事后改预报"。</li>
-      <li>本页指标每次都用当月积累的全部数据重新计算（评估计算由开源库 cyeva 完成），所以打开永远是"本月至今"的最新结果。</li>
+      <li>本页指标每次都用当月积累的全部数据重新计算（评估计算由开源库 cyeva 完成：温度 9 项、降水晴雨 8 项 + 雨量误差 3 项 + 分级 11 档），所以打开永远是"本月至今"的最新结果。</li>
       <li>每月 1 号把上个月冻结成月度归档，永久可查。</li>
     </ol>
   </section>
@@ -378,7 +538,7 @@ window.addEventListener("DOMContentLoaded", function () {
 </div>
 
 <footer>
-  生成时间：{{ generated_at }}（北京时）｜ 预报源：Open-Meteo（多模型）· 彩云天气 · 和风天气 · 中科天机 ｜
+  生成时间：{{ generated_at }}（北京时）｜ 预报源：Open-Meteo（多模型）· 彩云天气 · 和风天气 · 中科天机 · 伏羲 · 风乌 · 中科星图 ｜
   实况：环境气象数据服务平台 eia-data.com<br>
   本页由 GitHub Actions 自动生成，每天 3 次更新；仅供学习参考，出行请以官方气象部门预报为准。
 </footer>
@@ -388,6 +548,11 @@ window.addEventListener("DOMContentLoaded", function () {
  * 报告数据与绘图逻辑
  * 数据由 Python 端 evaluate.py 计算后以 JSON 内联；本脚本只负责"画出来"。
  * 每个图表块都套 try/catch：任何一张图出错都不影响页面其余部分。
+ *
+ * 多源拥挤的统一解法（23 家预报源）：
+ *   - 系列顺序一律按排行榜名次（rankedModels），第一名排最前；
+ *   - 默认只画"前 8 名"（TOP_N），其余通过图例/分段开关自行添加；
+ *   - 指标维度用下拉切换，一张图承载一个指标族。
  * ========================================================================== */
 const report = {{ report_json | safe }};
 const MODEL_LABEL = {{ model_labels_json | safe }};    // 模型 id → 中文名
@@ -399,38 +564,72 @@ const stationOf = s => STATION_LABEL[s] || s;
 const PALETTE = ["#2563eb","#f59e0b","#10b981","#8b5cf6","#ef4444","#0ea5e9"];
 const colorOf = m => MODEL_COLOR[m] || PALETTE[report.meta.models.indexOf(m) % PALETTE.length] || "#64748b";
 
-const models  = () => report.meta.models;
 const fmt = (v, d=1) => (v===null||v===undefined) ? "—" : Number(v).toFixed(d);
 const pct = v => (v===null||v===undefined) ? "—" : Number(v).toFixed(1)+"%";
 // 时间轴标签压缩："2026-08-27T15:00" → "08/27 15时"，避免横轴文字挤爆
 const fmtT = t => t.slice(5,10).replace("-","/") + " " + t.slice(11,13) + "时";
 
-// 所有图表实例登记在这里，窗口缩放时统一自适应
+/* ---------------- 模型顺序与"前 8 名"体系 ---------------- */
+const ranking = report.ranking || [];
+// 图表系列顺序 = 排行榜名次（无分的排后面）
+const rankedModels = ranking.length ? ranking.map(r => r.model) : report.meta.models;
+const scoredModels = ranking.filter(r => r.score !== null && r.score !== undefined)
+                            .map(r => r.model);
+const TOP_N = 8;
+const topModels = scoredModels.slice(0, TOP_N);
+const isTop = m => topModels.indexOf(m) !== -1;
+
+function legendSelected(showAll) {
+  const sel = {};
+  rankedModels.forEach(m => { sel[labelOf(m)] = showAll || isTop(m); });
+  return sel;
+}
+
+/* ---------------- 图表基础设施 ---------------- */
 const charts = [];
 function makeChart(id, option) {
   const el = document.getElementById(id);
-  if (!el || typeof echarts === "undefined") return;
+  if (!el || typeof echarts === "undefined") return null;
   const ch = echarts.init(el);
   ch.setOption(option);
   charts.push(ch);
+  return ch;
 }
 window.addEventListener("resize", () => charts.forEach(c => c.resize()));
 
-// 通用折线/柱状图骨架
-function lineOption(x, series, yName, opts={}) {
+// 通用折线骨架（多模型对比专用：图例默认只选前 8 名）
+function modelLineOption(x, series, yName, opts={}) {
   return {
     tooltip:{trigger:"axis"},
-    legend:{top:0, type:"scroll"},
-    grid:{left:60, right:30, top:42, bottom:44},
-    xAxis:{type:"category", data:x, name:opts.xName||""},
-    yAxis:{type:"value", name:yName, scale:true},
+    legend:{top:0, type:"scroll", selected:legendSelected(false),
+            textStyle:{fontSize:11}},
+    grid:{left:62, right:30, top:46, bottom:44},
+    xAxis:{type:"category", data:x, name:opts.xName||"",
+           axisLabel:{rotate: x.length > 10 ? 30 : 0}},
+    yAxis:{type:"value", name:yName, scale:!!opts.scale},
     series
   };
 }
 const lineSeries = (m, data) => ({name:labelOf(m), type:"line", smooth:true,
-  connectNulls:false, itemStyle:{color:colorOf(m)}, data});
-const barSeries  = (m, data) => ({name:labelOf(m), type:"bar",
-  itemStyle:{color:colorOf(m)}, data});
+  connectNulls:false, itemStyle:{color:colorOf(m)},
+  lineStyle:{width: isTop(m) ? 2 : 1.2}, emphasis:{focus:"series"}, data});
+
+// "前 8 名 / 全部"分段开关：绑定一组按钮与某个图表实例
+function wireRangeSeg(segId, chart) {
+  const seg = document.getElementById(segId);
+  if (!seg || !chart) return;
+  // 按钮文案带上实际家数
+  const topBtn = seg.querySelector('button[data-show="top"]');
+  const allBtn = seg.querySelector('button[data-show="all"]');
+  if (topBtn && scoredModels.length) topBtn.textContent = "前 " + Math.min(TOP_N, scoredModels.length) + " 名";
+  if (allBtn) allBtn.textContent = "全部 " + rankedModels.length + " 家";
+  seg.querySelectorAll("button").forEach(btn => {
+    btn.addEventListener("click", () => {
+      seg.querySelectorAll("button").forEach(b => b.classList.toggle("on", b === btn));
+      chart.setOption({legend:{selected: legendSelected(btn.dataset.show === "all")}});
+    });
+  });
+}
 
 // 数据为空时把图容器换成提示文案（月初数据积累期常见）
 function emptyNote(id, text) {
@@ -438,26 +637,110 @@ function emptyNote(id, text) {
   if (el) { el.className = "chart-empty"; el.textContent = text; }
 }
 
-/* ---------------- 气温：准确率 / RMSE 随时效（天桶） ---------------- */
-try {
-  const buckets = Object.keys(report.temp_hourly[models()[0]] || {});
-  const x = buckets.map(b => "提前" + b.replace("d","") + "天");
-  makeChart("chartTempAcc", lineOption(x,
-    models().map(m => lineSeries(m, buckets.map(b => report.temp_hourly[m][b] ? report.temp_hourly[m][b].acc2 : null))),
-    "温度准确率(%)"));
-  makeChart("chartTempRmse", lineOption(x,
-    models().map(m => lineSeries(m, buckets.map(b => report.temp_hourly[m][b] ? report.temp_hourly[m][b].rmse : null))),
-    "温度误差 RMSE(°C)"));
-} catch(e) { console.error("tempAcc/tempRmse", e); }
+/* ---------------- 指标元数据（下拉选项 = 指标全集） ---------------- */
+const TEMP_METRICS = [
+  {key:"acc2",  label:"±2°C 准确率", axis:"准确率(%)",   scale:false},
+  {key:"acc1",  label:"±1°C 准确率", axis:"准确率(%)",   scale:false},
+  {key:"rmse",  label:"RMSE 误差",   axis:"RMSE(°C)",    scale:true},
+  {key:"mae",   label:"MAE 误差",    axis:"MAE(°C)",     scale:true},
+  {key:"mbe",   label:"MBE 平均偏差",axis:"MBE(°C)",     scale:true},
+  {key:"r",     label:"相关系数 r",  axis:"相关系数",     scale:true},
+  {key:"slope", label:"回归斜率",    axis:"斜率",         scale:true},
+];
+const PRECIP_METRICS = [
+  {key:"ts",    label:"晴雨 TS 评分",  axis:"TS(0~1)",        scale:false},
+  {key:"ets",   label:"晴雨 ETS 评分", axis:"ETS",             scale:false},
+  {key:"acc",   label:"晴雨准确率",    axis:"准确率(%)",       scale:false},
+  {key:"pod",   label:"命中率 POD",    axis:"命中率(%)",       scale:false},
+  {key:"far",   label:"空报率 FAR",    axis:"空报率(%)",       scale:false},
+  {key:"miss",  label:"漏报率",        axis:"漏报率(%)",       scale:false},
+  {key:"farate",label:"空报频率 POFD", axis:"空报频率(%)",     scale:false},
+  {key:"bias",  label:"频率偏差 BIAS", axis:"BIAS(报雨/实雨)", scale:true},
+  {key:"rmse",  label:"雨量 RMSE",     axis:"RMSE(mm)",        scale:true},
+  {key:"mae",   label:"雨量 MAE",      axis:"MAE(mm)",         scale:true},
+  {key:"mbe",   label:"雨量 MBE",      axis:"MBE(mm)",         scale:true},
+];
 
-/* ---------------- 降水：晴雨 TS 随时效 ---------------- */
+// 填充一个 <select> 的选项
+function fillSelect(selId, metrics, def) {
+  const sel = document.getElementById(selId);
+  if (!sel) return null;
+  metrics.forEach(mt => {
+    const o = document.createElement("option");
+    o.value = mt.key; o.text = mt.label;
+    sel.appendChild(o);
+  });
+  if (def) sel.value = def;
+  return sel;
+}
+
+// 通用"指标下拉 + 模型折线"图：切换指标时更新 y 轴与系列数据
+function metricLineChart(cfg) {
+  // cfg: {el, selId, segId, metrics, x, valueFn(m, i, key), def}
+  const sel = fillSelect(cfg.selId, cfg.metrics, cfg.def);
+  const el = document.getElementById(cfg.el);
+  if (!sel || !el || typeof echarts === "undefined") return;
+  function metOf(k) { return cfg.metrics.find(x => x.key === k) || cfg.metrics[0]; }
+  function seriesOf(k) {
+    return rankedModels.map(m => lineSeries(m, cfg.x.map((_, i) => cfg.valueFn(m, i, k))));
+  }
+  const ch = echarts.init(el);
+  charts.push(ch);
+  const base = metOf(sel.value);
+  ch.setOption(modelLineOption(cfg.x, seriesOf(sel.value), base.axis, {scale:base.scale, xName:cfg.xName}));
+  sel.onchange = () => {
+    const mt = metOf(sel.value);
+    ch.setOption({yAxis:{name:mt.axis, scale:!!mt.scale}, series:seriesOf(sel.value)});
+  };
+  wireRangeSeg(cfg.segId, ch);
+}
+
+/* ---------------- 得分随时效衰减（综合/温度/降水三个维度） ---------------- */
 try {
-  const buckets = Object.keys(report.precip_hourly[models()[0]] || {});
+  const buckets = Object.keys(report.score_trend.overall[rankedModels[0]] || {});
   const x = buckets.map(b => "提前" + b.replace("d","") + "天");
-  makeChart("chartPrecipTs", lineOption(x,
-    models().map(m => barSeries(m, buckets.map(b => report.precip_hourly[m][b] ? report.precip_hourly[m][b].ts : null))),
-    "晴雨 TS 评分"));
-} catch(e) { console.error("precipTs", e); }
+  const el = document.getElementById("chartScoreTrend");
+  if (!buckets.length || !el) {
+    emptyNote("chartScoreTrend", "数据积累中：得分趋势需要至少几个时效桶的样本");
+  } else {
+    const ch = makeChart("chartScoreTrend", modelLineOption(x,
+      rankedModels.map(m => lineSeries(m, buckets.map(b => report.score_trend.overall[m][b]))),
+      "综合得分(0~100)", {scale:false}));
+    const tab = document.getElementById("scoreTrendTab");
+    tab.querySelectorAll("button").forEach(btn => {
+      btn.addEventListener("click", () => {
+        if (!ch) return;   // echarts 加载失败时 makeChart 返回 null，切换不应抛错
+        tab.querySelectorAll("button").forEach(b => b.classList.toggle("on", b === btn));
+        const key = btn.dataset.key;
+        ch.setOption({yAxis:{name: key === "temp" ? "温度得分(0~100)" :
+                             key === "precip" ? "降水得分(0~100)" : "综合得分(0~100)", scale:false},
+                      series: rankedModels.map(m =>
+                        lineSeries(m, buckets.map(b => (report.score_trend[key][m]||{})[b])))});
+      });
+    });
+    wireRangeSeg("scoreTrendRange", ch);
+  }
+} catch(e) { console.error("scoreTrend", e); }
+
+/* ---------------- 温度：全指标随时效（天桶） ---------------- */
+try {
+  const buckets = Object.keys(report.temp_hourly[rankedModels[0]] || {});
+  const x = buckets.map(b => "提前" + b.replace("d","") + "天");
+  if (!buckets.length) { emptyNote("chartTempMetrics", "数据积累中"); }
+  else metricLineChart({el:"chartTempMetrics", selId:"tempMetricSel", segId:"tempRangeSeg",
+    metrics:TEMP_METRICS, x, def:"acc2",
+    valueFn:(m, i, k) => { const d = report.temp_hourly[m][buckets[i]]; return d ? d[k] : null; }});
+} catch(e) { console.error("tempMetrics", e); }
+
+/* ---------------- 降水：全指标随时效（天桶） ---------------- */
+try {
+  const buckets = Object.keys(report.precip_hourly[rankedModels[0]] || {});
+  const x = buckets.map(b => "提前" + b.replace("d","") + "天");
+  if (!buckets.length) { emptyNote("chartPrecipMetrics", "数据积累中"); }
+  else metricLineChart({el:"chartPrecipMetrics", selId:"precipMetricSel", segId:"precipRangeSeg",
+    metrics:PRECIP_METRICS, x, def:"ts",
+    valueFn:(m, i, k) => { const d = report.precip_hourly[m][buckets[i]]; return d ? d[k] : null; }});
+} catch(e) { console.error("precipMetrics", e); }
 
 /* ---------------- 预报 vs 实况（最近 72 小时，可切换站点/模型） ----------------
  * 注意：这张图有"空态 ↔ 有数据"的往复（切换站点时某站可能暂无实况），
@@ -468,7 +751,7 @@ try {
   const selS = document.getElementById("tsStation");
   const selM = document.getElementById("tsModel");
   report.meta.stations.forEach(s => { const o=document.createElement("option"); o.value=s; o.text=stationOf(s); selS.appendChild(o); });
-  models().forEach(m => { const o=document.createElement("option"); o.value=m; o.text=labelOf(m); selM.appendChild(o); });
+  rankedModels.forEach(m => { const o=document.createElement("option"); o.value=m; o.text=labelOf(m); selM.appendChild(o); });
   const tsEl = document.getElementById("chartTs");
   let tsChart = null;   // 常驻唯一实例；空态时 dispose 置空
   function drawTs() {
@@ -505,22 +788,25 @@ try {
   drawTs();
 } catch(e) { console.error("timeseries", e); }
 
-/* ---------------- 每日 × 模型 温度准确率热力图 ---------------- */
+/* ---------------- 每日 × 模型 温度准确率热力图（行按排行榜排序） ---------------- */
 try {
   const cells = report.heatmap || [];
   if (!cells.length) {
     emptyNote("chartHeat", "数据积累中，过几天再来就有热力图了");
   } else {
     const dates = [...new Set(cells.map(c => c.date))];
-    const ms = models();
-    const data = cells.map(c => [dates.indexOf(c.date), ms.indexOf(c.model), c.acc2, c.n]);
+    const ms = rankedModels;
+    const data = cells.filter(c => ms.indexOf(c.model) !== -1)
+                      .map(c => [dates.indexOf(c.date), ms.indexOf(c.model), c.acc2, c.n]);
+    const el = document.getElementById("chartHeat");
+    // 行数多时容器相应加高，避免每行被压扁到不可读
+    el.style.height = Math.max(360, 19 * ms.length + 150) + "px";
     makeChart("chartHeat", {
       tooltip:{position:"top", formatter:p =>
         `${dates[p.data[0]]} · ${labelOf(ms[p.data[1]])}<br>温度准确率：` +
         (p.data[2]===null ? "样本不足" : fmt(p.data[2])+"%") + `（样本 ${p.data[3]||0}）`},
       grid:{left:110, right:24, top:14, bottom:64},
       xAxis:{type:"category", data:dates.map(d=>d.slice(5)), axisLabel:{rotate:45}},
-      // 模型多时（19 个）行标签可能被 110px 左边距裁切：限宽 + 截断提示
       yAxis:{type:"category", data:ms.map(labelOf), axisLabel:{width:100, overflow:"truncate"}},
       visualMap:{min:0, max:100, dimension:2, calculable:true, orient:"horizontal", left:"center", bottom:4,
                  text:["准","翻车"], inRange:{color:["#ef4444","#fbbf24","#22c55e"]}},
@@ -531,12 +817,18 @@ try {
   }
 } catch(e) { console.error("heatmap", e); }
 
-/* ---------------- 分站对比：24h 温度准确率 ---------------- */
+/* ---------------- 分站对比：24h 温度准确率 / 晴雨 TS ---------------- */
 try {
   const stations = report.meta.stations;
-  makeChart("chartStation", lineOption(stations.map(stationOf),
-    models().map(m => barSeries(m, stations.map(s => (report.per_station[s]||{})[m] ? report.per_station[s][m].temp.acc2 : null))),
-    "温度准确率(%)"));
+  metricLineChart({el:"chartStation", selId:"stationMetricSel", segId:"stationRangeSeg",
+    metrics:[{key:"temp",   label:"温度 ±2°C 准确率", axis:"温度准确率(%)", scale:false},
+             {key:"precip", label:"晴雨 TS 评分",      axis:"晴雨 TS 评分",  scale:false}],
+    x:stations.map(stationOf), def:"temp",
+    valueFn:(m, i, k) => {
+      const d = (report.per_station[stations[i]] || {})[m];
+      if (!d) return null;
+      return k === "temp" ? (d.temp || {}).acc2 : (d.precip || {}).ts;
+    }});
 } catch(e) { console.error("stationBar", e); }
 
 /* ---------------- 进阶区：折叠内的图表等首次展开时再初始化 ----------------
@@ -546,46 +838,151 @@ function initAdvanced() {
   if (advancedInited) return;
   advancedInited = true;
   try {
-    const offs = Object.keys(report.temp_daily[models()[0]] || {});
+    const offs = Object.keys(report.temp_daily[rankedModels[0]] || {});
     const xo = offs.map(o => "第" + o.replace("d","") + "天");
-    makeChart("chartTempDailyMax", lineOption(xo,
-      models().map(m => lineSeries(m, offs.map(o => report.temp_daily[m][o] ? report.temp_daily[m][o].max.acc2 : null))),
-      "最高气温准确率(%)"));
-    makeChart("chartTempDailyMin", lineOption(xo,
-      models().map(m => lineSeries(m, offs.map(o => report.temp_daily[m][o] ? report.temp_daily[m][o].min.acc2 : null))),
-      "最低气温准确率(%)"));
-    // 模型多（19 个）时 16 桶并排柱每柱仅数像素不可读：改折线
-    makeChart("chartPrecipDaily", lineOption(xo,
-      models().map(m => lineSeries(m, offs.map(o => report.precip_daily[m][o] ? report.precip_daily[m][o].binary.ts : null))),
-      "晴雨 TS 评分"));
-    const hours = Object.keys(report.temp_lead_curve[models()[0]] || {});
-    makeChart("chartTempLead", lineOption(hours.map(h => h.replace("h","")),
-      models().map(m => lineSeries(m, hours.map(h => report.temp_lead_curve[m][h] ? report.temp_lead_curve[m][h].rmse : null))),
-      "RMSE(°C)", {xName:"提前量(小时)"}));
+    const chMax = makeChart("chartTempDailyMax", modelLineOption(xo,
+      rankedModels.map(m => lineSeries(m, offs.map(o => {
+        const d = report.temp_daily[m][o]; return d && d.max ? d.max.acc2 : null; }))),
+      "最高气温准确率(%)", {scale:false}));
+    const chMin = makeChart("chartTempDailyMin", modelLineOption(xo,
+      rankedModels.map(m => lineSeries(m, offs.map(o => {
+        const d = report.temp_daily[m][o]; return d && d.min ? d.min.acc2 : null; }))),
+      "最低气温准确率(%)", {scale:false}));
+    // 日最高/最低两张图共用同一组"前 8 / 全部"开关
+    (function(){
+      const seg = document.getElementById("tempDailyRangeSeg");
+      if (!seg) return;
+      const topBtn = seg.querySelector('button[data-show="top"]');
+      const allBtn = seg.querySelector('button[data-show="all"]');
+      if (topBtn && scoredModels.length) topBtn.textContent = "前 " + Math.min(TOP_N, scoredModels.length) + " 名";
+      if (allBtn) allBtn.textContent = "全部 " + rankedModels.length + " 家";
+      seg.querySelectorAll("button").forEach(btn => {
+        btn.addEventListener("click", () => {
+          seg.querySelectorAll("button").forEach(b => b.classList.toggle("on", b === btn));
+          const sel = legendSelected(btn.dataset.show === "all");
+          [chMax, chMin].forEach(ch => ch && ch.setOption({legend:{selected: sel}}));
+        });
+      });
+    })();
+    // 按天降水：与逐小时降水共用指标全集
+    metricLineChart({el:"chartPrecipDaily", selId:"precipDailySel", segId:"precipDailyRangeSeg",
+      metrics:PRECIP_METRICS, x:xo, def:"ts",
+      valueFn:(m, i, k) => { const d = report.precip_daily[m][offs[i]]; return d ? d[k] : null; }});
+
+    // 分级降水分 TS：x = 24h 累计雨级，日偏移可选（切偏移只更新系列数据）
+    const GRADE_LEVS = ["+1","+2","+3","+4","+5","+6"];
+    const GRADE_LABELS = ["≥0.1mm","≥10mm","≥25mm","≥50mm","≥100mm","≥250mm"];
+    const offSel = document.getElementById("gradedOffsetSel");
+    offs.forEach(o => { const op=document.createElement("option"); op.value=o;
+      op.text="第"+o.replace("d","")+"天"; offSel.appendChild(op); });
+    function gradedSeries(o) {
+      return rankedModels.map(m => lineSeries(m, GRADE_LEVS.map(lv => {
+        const d = report.precip_daily[m][o];
+        return d && d.graded && d.graded[lv] ? d.graded[lv].ts : null;
+      })));
+    }
+    const gradedChart = makeChart("chartPrecipGraded", modelLineOption(GRADE_LABELS,
+      gradedSeries(offSel.value), "分级 TS(0~1)", {scale:false}));
+    offSel.onchange = () => gradedChart && gradedChart.setOption({series: gradedSeries(offSel.value)});
+    wireRangeSeg("gradedRangeSeg", gradedChart);
+
+    // 72h 逐小时精细曲线
+    const hours = Object.keys(report.temp_lead_curve[rankedModels[0]] || {});
+    metricLineChart({el:"chartTempLead", selId:"leadMetricSel", segId:"leadRangeSeg",
+      metrics:[{key:"rmse", label:"温度 RMSE(°C)", axis:"RMSE(°C)", scale:true},
+               {key:"acc2", label:"温度 ±2°C 准确率(%)", axis:"准确率(%)", scale:false}],
+      x:hours.map(h => h.replace("h","")), xName:"提前量(小时)", def:"rmse",
+      valueFn:(m, i, k) => { const d = report.temp_lead_curve[m][hours[i]]; return d ? d[k] : null; }});
   } catch(e) { console.error("advanced", e); }
+  try { buildDetailTables(); } catch(e) { console.error("detailTables", e); }
 }
 try {
   document.getElementById("advanced").addEventListener("toggle", initAdvanced);
 } catch(e) { console.error("advanced toggle", e); }
 
-/* ---------------- 明细指标表（纯 HTML，无需等展开） ---------------- */
-try {
-  const buckets = Object.keys(report.temp_hourly[models()[0]] || {});
-  let html = '<table><thead><tr><th>时效</th>';
-  models().forEach(m => { html += `<th class="l" style="color:${colorOf(m)}">${labelOf(m)}<br>RMSE</th><th>±2°C准确率</th><th>晴雨TS</th><th>晴雨准确率</th><th>n</th>`; });
-  html += "</tr></thead><tbody>";
-  buckets.forEach(b => {
-    html += `<tr><td>提前${b.replace("d","")}天</td>`;
-    models().forEach(m => {
-      const t = report.temp_hourly[m][b], p = report.precip_hourly[m][b];
-      const n = Math.max(t ? t.n||0 : 0, p ? p.n||0 : 0);
-      html += `<td>${fmt(t?t.rmse:null)}</td><td>${pct(t?t.acc2:null)}</td><td>${fmt(p?p.ts:null,2)}</td><td>${pct(p?p.acc:null)}</td><td>${n}</td>`;
+/* ---------------- 明细表（纯 HTML，无需等展开；首展时构建） ---------------- */
+const f2 = v => (v===null||v===undefined) ? "—" : Number(v).toFixed(2);
+const f1 = v => (v===null||v===undefined) ? "—" : Number(v).toFixed(1);
+const pf = v => (v===null||v===undefined) ? "—" : Number(v).toFixed(1)+"%";
+
+function modelCell(m) {
+  return `<td class="l sticky"><span class="dot" style="background:${colorOf(m)}"></span>${labelOf(m)}</td>`;
+}
+
+function buildDetailTables() {
+  const HOURLY_GRADE_LABELS = {1:"小", 2:"中", 3:"大", 4:"暴", 5:"大暴"};
+  // ---- 表① 逐小时口径 ----
+  const buckets = Object.keys(report.temp_hourly[rankedModels[0]] || {});
+  const bSel = document.getElementById("hourlyBucketSel");
+  buckets.forEach(b => { const o=document.createElement("option"); o.value=b;
+    o.text="提前"+b.replace("d","")+"天"; bSel.appendChild(o); });
+  function tableHourly() {
+    const b = bSel.value;
+    let html = '<table><thead><tr>' +
+      '<th class="l sticky" rowspan="2">模型</th><th rowspan="2">n温</th><th rowspan="2">n降</th>' +
+      '<th class="g" colspan="9">温度(°C)</th><th class="g" colspan="8">降水 · 晴雨</th>' +
+      '<th class="g" colspan="3">雨量误差(mm)</th><th class="g" colspan="5">分级TS · 1h雨强</th></tr>' +
+      '<tr><th>RMSE</th><th>MAE</th><th>MBE</th><th>±1°C</th><th>±2°C</th><th>r</th><th>斜率</th><th>RSS</th><th>χ²</th>' +
+      '<th>准确率</th><th>POD</th><th>空报</th><th>漏报</th><th>TS</th><th>ETS</th><th>BIAS</th><th>空报频率</th>' +
+      '<th>RMSE</th><th>MAE</th><th>MBE</th>' +
+      Object.values(HOURLY_GRADE_LABELS).map(l => `<th>${l}</th>`).join("") +
+      '</tr></thead><tbody>';
+    rankedModels.forEach(m => {
+      const t = report.temp_hourly[m][b] || {};
+      const p = report.precip_hourly[m][b] || {};
+      const g = p.graded || {};
+      const gs = lv => (g[lv] ? f2(g[lv].ts) : "—");
+      html += `<tr>${modelCell(m)}<td class="num">${t.n||0}</td><td class="num">${p.n||0}</td>` +
+        `<td>${f2(t.rmse)}</td><td>${f2(t.mae)}</td><td>${f2(t.mbe)}</td><td>${pf(t.acc1)}</td><td>${pf(t.acc2)}</td>` +
+        `<td>${f2(t.r)}</td><td>${f2(t.slope)}</td><td>${f2(t.rss)}</td><td>${f2(t.chi2)}</td>` +
+        `<td>${pf(p.acc)}</td><td>${pf(p.pod)}</td><td>${pf(p.far)}</td><td>${pf(p.miss)}</td>` +
+        `<td>${f2(p.ts)}</td><td>${f2(p.ets)}</td><td>${f2(p.bias)}</td><td>${pf(p.farate)}</td>` +
+        `<td>${f2(p.rmse)}</td><td>${f2(p.mae)}</td><td>${f2(p.mbe)}</td>` +
+        `<td>${gs("1")}</td><td>${gs("2")}</td><td>${gs("3")}</td><td>${gs("4")}</td><td>${gs("5")}</td></tr>`;
     });
-    html += "</tr>";
-  });
-  html += "</tbody></table>";
-  document.getElementById("detailTable").innerHTML = html;
-} catch(e) { console.error("detailTable", e); }
+    html += '</tbody></table>';
+    document.getElementById("detailTableHourly").innerHTML = html;
+  }
+  bSel.onchange = tableHourly;
+  tableHourly();
+
+  // ---- 表② 按天口径 ----
+  const offs = Object.keys(report.temp_daily[rankedModels[0]] || {});
+  const oSel = document.getElementById("dailyOffsetSel");
+  offs.forEach(o => { const op=document.createElement("option"); op.value=o;
+    op.text="第"+o.replace("d","")+"天"; oSel.appendChild(op); });
+  const DAILY_GRADE_LABELS = {"+1":"≥0.1","+2":"≥10","+3":"≥25","+4":"≥50","+5":"≥100","+6":"≥250"};
+  function tableDaily() {
+    const o = oSel.value;
+    let html = '<table><thead><tr>' +
+      '<th class="l sticky" rowspan="2">模型</th><th rowspan="2">n温</th><th rowspan="2">n降</th>' +
+      '<th class="g" colspan="2">日最高(°C)</th><th class="g" colspan="2">日最低(°C)</th>' +
+      '<th class="g" colspan="8">日降水 · 晴雨</th><th class="g" colspan="3">雨量误差(mm)</th>' +
+      '<th class="g" colspan="6">分级TS · 24h累计(mm)</th></tr>' +
+      '<tr><th>±2°C</th><th>RMSE</th><th>±2°C</th><th>RMSE</th>' +
+      '<th>准确率</th><th>POD</th><th>空报</th><th>漏报</th><th>TS</th><th>ETS</th><th>BIAS</th><th>空报频率</th>' +
+      '<th>RMSE</th><th>MAE</th><th>MBE</th>' +
+      Object.values(DAILY_GRADE_LABELS).map(l => `<th>${l}</th>`).join("") +
+      '</tr></thead><tbody>';
+    rankedModels.forEach(m => {
+      const td = report.temp_daily[m][o] || {};
+      const mx = td.max || {}, mn = td.min || {};
+      const p = report.precip_daily[m][o] || {};
+      const g = p.graded || {};
+      const gs = lv => (g[lv] ? f2(g[lv].ts) : "—");
+      html += `<tr>${modelCell(m)}<td class="num">${Math.max(mx.n||0, mn.n||0)}</td><td class="num">${p.n||0}</td>` +
+        `<td>${pf(mx.acc2)}</td><td>${f2(mx.rmse)}</td><td>${pf(mn.acc2)}</td><td>${f2(mn.rmse)}</td>` +
+        `<td>${pf(p.acc)}</td><td>${pf(p.pod)}</td><td>${pf(p.far)}</td><td>${pf(p.miss)}</td>` +
+        `<td>${f2(p.ts)}</td><td>${f2(p.ets)}</td><td>${f2(p.bias)}</td><td>${pf(p.farate)}</td>` +
+        `<td>${f2(p.rmse)}</td><td>${f2(p.mae)}</td><td>${f2(p.mbe)}</td>` +
+        `<td>${gs("+1")}</td><td>${gs("+2")}</td><td>${gs("+3")}</td><td>${gs("+4")}</td><td>${gs("+5")}</td><td>${gs("+6")}</td></tr>`;
+    });
+    html += '</tbody></table>';
+    document.getElementById("detailTableDaily").innerHTML = html;
+  }
+  oSel.onchange = tableDaily;
+  tableDaily();
+}
 </script>
 </body>
 </html>

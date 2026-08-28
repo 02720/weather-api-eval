@@ -48,8 +48,13 @@ def test_render_monthly_html_nonempty(tmp_path, monkeypatch):
     # ranking 无条件计算（主报告的冠军横幅/排行榜依赖它）
     assert data["ranking"] and data["ranking"][0]["score"] is not None
     assert isinstance(data["heatmap"], list) and len(data["heatmap"]) > 0
-    # 渲染不抛异常且含图表容器
-    assert 'id="chartTempAcc"' in html and 'id="chartHeat"' in html
+    # 得分趋势（排行榜的"趋势版"）与全指标图表容器
+    assert data["score_trend"]["overall"]["ecmwf_ifs"]["1d"] is not None
+    assert 'id="chartScoreTrend"' in html
+    assert 'id="chartTempMetrics"' in html and 'id="chartHeat"' in html
+    # 全指标明细表容器与得分分解条
+    assert 'id="detailTableHourly"' in html and 'id="detailTableDaily"' in html
+    assert "score-bars" in html
 
 
 def test_write_live_report_overwrites_index(tmp_path, monkeypatch):
