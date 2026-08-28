@@ -14,6 +14,7 @@
 - **预报（伏羲确定性 FuXi-Det，数据服务 API）**：模型名 `fuxi_det`。数据来自 `fuxi-ai.cn/fuxi-data` 页面的数据服务网关（**需登录后于该页获取查询 Token**，经环境变量 `FUXI_DATA_TOKEN` 注入）；`fetch-forecast --source fuxi_data` 单独抓取。0.1° 分辨率、每天 00/06/12/18 UTC 四轮。
 - **预报（风乌 FengWu-GHR-9km，网页接口抓取）**：模型名 `fengwu_ghr_9km`。数据来自 `fengwuai.com/simple-query` 页面的公开查询 API；`fetch-forecast --source fengwu` 单独抓取。游客态 3 小时步长、起报后 166h；**填 `FENGWU_API_KEY`（经 `Authorization: Bearer` 头传递）可解锁逐小时 360h 完整时效**。原生 6 小时累计降水的展开口径见「已知约束」。
 - **预报（中科星图 GeoVis，官方 API）**：模型名 `geovis_v1`。《全国城市逐小时预报》产品（专业版 120h，自动按 专业→进阶→基础 档位回退），**需 Token**（datacloud.geovisearth.com 注册 + 开发者认证，环境变量 `GEVIS_TOKEN`）；`fetch-forecast --source geovis` 单独抓取。
+- **预报（AccuWeather，官方 API）**：模型名 `accuweather_v1`。Locations API 解析最近城市 + Forecast API v1 逐小时预报（免费档 50 次/天，超订阅档位自动回退），**需 API Key**（developer.accuweather.com 创建应用，环境变量 `ACCUWEATHER_API_KEY`）；`fetch-forecast --source accuweather` 单独抓取。注意其定位是"最近城市吸附"而非格点，且服务条款对数据用途有限制（详见「已知约束」）。
 - **观测（环境气象数据服务平台 eia-data.com）**：各气象站"气象站基本信息"页，服务端直出近 24 小时逐小时实况（气温、降水、气压、湿度、风）。
 - **评估框架**：`cyeva 0.2.3`（温度 9 项：RMSE/MAE/MBE/RSS/χ²/±1°C·±2°C 准确率/相关系数 r/回归斜率；降水 11 项：晴雨二分类 8 项（准确率/POD/空报率 FAR/空报频率 POFD/漏报率/TS/ETS/频率偏差 BIAS）+ 雨量连续量 3 项（RMSE/MAE/MBE）；另逐小时雨强 5 档与 24h 累计 6 档的分级指标，每档 7 项）。
 
@@ -28,7 +29,7 @@
 ## 环境要求
 
 - **Python 3.12.6**（cyeva 0.2.3 支持 3.10–3.12；`pint` 必须用 **0.24.4**，因为 cyeva 误钉的 0.24.3 在 3.12+ 上无法导入，见下方安装说明）。
-- 网络访问：Open-Meteo（HTTPS）、eia-data.com（HTTP）、彩云天气 API `api.caiyunapp.com`（HTTPS）、和风天气 API `<你的专属 Host>.qweatherapi.com`（HTTPS）、中科天机 `www.tjweather.com`（HTTPS）。Open-Meteo 免费档约 1 万次/天，无需 key；**彩云需 Token**，从环境变量 `CAIYUN_TOKEN` 读取；**和风需 API Key**，从环境变量 `QWEATHER_API_KEY` 读取；**中科天机无需凭据**（抓取其网页可视化的单点查询接口，属非官方契约，若页面改版需相应调整）。
+- 网络访问：Open-Meteo（HTTPS）、eia-data.com（HTTP）、彩云天气 API `api.caiyunapp.com`（HTTPS）、和风天气 API `<你的专属 Host>.qweatherapi.com`（HTTPS）、中科天机 `www.tjweather.com`（HTTPS）、AccuWeather `dataservice.accuweather.com`（HTTPS）。Open-Meteo 免费档约 1 万次/天，无需 key；**彩云需 Token**，从环境变量 `CAIYUN_TOKEN` 读取；**和风需 API Key**，从环境变量 `QWEATHER_API_KEY` 读取；**中科天机无需凭据**（抓取其网页可视化的单点查询接口，属非官方契约，若页面改版需相应调整）；**AccuWeather 需 API Key**，从环境变量 `ACCUWEATHER_API_KEY` 读取（免费档 50 次/天，本源每站每轮 2 次调用）。
 
 ## 快速开始（本地）
 
@@ -91,6 +92,10 @@ python -m weather_eval fetch-forecast --source fuxi_data
 # —— 中科星图（需注册 + 开发者认证获取 Token）——
 export GEVIS_TOKEN="<datacloud.geovisearth.com 控制台获取>"
 python -m weather_eval fetch-forecast --source geovis
+
+# —— AccuWeather（developer.accuweather.com 创建应用获取 Key；免费档 50 次/天）——
+export ACCUWEATHER_API_KEY="<developer.accuweather.com 控制台获取>"
+python -m weather_eval fetch-forecast --source accuweather
 ```
 
 常用命令：
@@ -106,9 +111,10 @@ python -m weather_eval fetch-forecast --source geovis
 | `fetch-forecast --source fuxi_data` | 抓取伏羲确定性 FuXi-Det 起报快照（需 `FUXI_DATA_TOKEN`） |
 | `fetch-forecast --source fengwu` | 抓取风乌 GHR-9km 起报快照（游客态 7 天；`FENGWU_API_KEY` 可选延长） |
 | `fetch-forecast --source geovis` | 抓取中科星图逐小时预报起报快照（需 `GEVIS_TOKEN`） |
+| `fetch-forecast --source accuweather` | 抓取 AccuWeather 逐小时预报起报快照（需 `ACCUWEATHER_API_KEY`，免费档 50 次/天） |
 | `report` | 用"本月 1 号至今"的累计数据更新主报告 `reports/index.html`（覆盖写，不堆文件） |
 | `monthly [--month YYYY-MM]` | 把某月冻结为月度归档 `reports/monthly/YYYY-MM.html`（默认上一自然月） |
-| `all` | `fetch-obs` + `fetch-forecast` + `report`（GitHub Action 调用；彩云/和风/中科天机/伏羲/风乌/中科星图为独立可选步骤） |
+| `all` | `fetch-obs` + `fetch-forecast` + `report`（GitHub Action 调用；彩云/和风/中科天机/伏羲/风乌/中科星图/AccuWeather 为独立可选步骤） |
 
 ## GitHub Actions 自动运行
 
@@ -125,7 +131,7 @@ python -m weather_eval fetch-forecast --source geovis
 ## 报告体系（怎么看报告）
 
 - **主报告 `reports/index.html`**：网站首页，展示"本月至今"的**累积**评估结果，每次 Action 运行自动覆盖更新。页面按"结论先行"组织：顶部一句话冠军结论 → 30 秒新手引导 → 预报源排行榜（综合得分 = 温度分+降水分，卡片内含分解条）→ **得分随时效衰减趋势图（综合/温度/降水三个维度切换）** → 气温/降水（指标下拉切换全部指标）/实况对比/热力图/分站图表（每张图配"💡 怎么看"导读）→ 进阶数据（默认折叠：按天评估/分级降水/精细曲线/全指标明细表×2）→ 名词小词典。
-- **23 家预报源的图表拥挤问题**：所有多源对比图的系列一律按排行榜名次排序、默认只画前 8 名，右上角"前 8 名/全部"分段开关切换；指标维度用下拉切换（一张图承载一个指标族），全量数值见进阶区的两张全指标明细表（模型列吸顶、可横向滚动）。
+- **全量预报源的图表拥挤问题**：所有多源对比图的系列一律按排行榜名次排序、默认只画前 8 名，右上角"前 8 名/全部"分段开关切换；指标维度用下拉切换（一张图承载一个指标族），全量数值见进阶区的两张全指标明细表（模型列吸顶、可横向滚动）。
 - **月度归档 `reports/monthly/YYYY-MM.html`**：每月 1 号把上月冻结存档，永不改动；`monthly` 命令在归档后会立即重建一次主报告，让新归档在当次部署就出现在首页页脚的归档列表里。
 - 数据本体在 `data/`（观测/起报快照）里持续积累，报告只是"当前累计数据的一个视图"——所以不存在"每次运行一份报告"的文件堆叠。
 - 注意：每月 1 号主报告会切换为新月份的评估窗口，页面短暂回到"样本积累中"状态属正常现象（上月的完整结果已冻结在归档里）。
@@ -141,7 +147,7 @@ python -m weather_eval fetch-forecast --source geovis
 
 - **新增站点**：在 `config/stations.yaml` 的 `stations` 下加一项（`id`/`name`/`lat`/`lon`/`obs_url`，`obs_url` 为 eia-data 对应"气象站基本信息"页的 URL 编码）。
 - **新增模型**：Open-Meteo 模型直接在 `models` 下加入其模型名；中科天机模型在 `forecast/tianji.py` 的 `MODEL_SPECS` 登记映射（mode/production/factorCode）后再加入 `models`。
-- **新增预报源**：实现 `weather_eval/forecast/base.py` 的 `ForecastProvider` 接口（返回统一结构的起报快照），在 CLI 中切换即可，评估/报告逻辑无需改动。已内置示例 `forecast/caiyun.py`（`CaiyunProvider`）：`fetch-forecast --source caiyun` 抓取，Token 取自 `CAIYUN_TOKEN` 环境变量；其返回的 `caiyun_v2_6` 模型已加入 `models`，故 `report` 自动纳入对比。和风天气同例（`forecast/qweather.py`，`QWeatherProvider`，模型名 `qweather_v1`）。中科天机同例（`forecast/tianji.py`，`TianjiProvider`）：因各模式最新可用起报轮次可能不同步，其 `fetch_snapshot` 返回**按模型独立的快照列表**（各自 issue_iso 与时间轴），CLI 已兼容 dict（共享时间轴，逐模型拆分）与 list（独立快照）两种返回形态。
+- **新增预报源**：实现 `weather_eval/forecast/base.py` 的 `ForecastProvider` 接口（返回统一结构的起报快照），在 CLI 中切换即可，评估/报告逻辑无需改动。已内置示例 `forecast/caiyun.py`（`CaiyunProvider`）：`fetch-forecast --source caiyun` 抓取，Token 取自 `CAIYUN_TOKEN` 环境变量；其返回的 `caiyun_v2_6` 模型已加入 `models`，故 `report` 自动纳入对比。和风天气同例（`forecast/qweather.py`，`QWeatherProvider`，模型名 `qweather_v1`）。中科天机同例（`forecast/tianji.py`，`TianjiProvider`）：因各模式最新可用起报轮次可能不同步，其 `fetch_snapshot` 返回**按模型独立的快照列表**（各自 issue_iso 与时间轴），CLI 已兼容 dict（共享时间轴，逐模型拆分）与 list（独立快照）两种返回形态。官方 Key 型 API 的近例还有 `forecast/geovis.py` 与 `forecast/accuweather.py`（后者演示了档位梯子回退、账号级失败熔断与单位自适应三种可复用模式）。
 
 ## 目录结构
 
@@ -151,7 +157,7 @@ src/weather_eval/
   timeutil.py             北京时工具
   config.py  storage.py   配置与 JSON 存档（原子写/去重/幂等）
   obs/                     观测源（eia-data 抓取解析）
-  forecast/                Open-Meteo / 彩云天气 / 和风天气 / 中科天机 快照器（base.py 抽象接口）
+  forecast/                Open-Meteo / 彩云天气 / 和风天气 / 中科天机 / 伏羲 / 风乌 / 中科星图 / AccuWeather 快照器（base.py 抽象接口）
   evaluate.py             配对 + cyeva 指标 + 报告数据组装
   report/                  Jinja2 + ECharts 报告渲染
   __main__.py              CLI
@@ -206,6 +212,16 @@ tests/                    pytest（含 cyeva 手算对拍）
   - **时间语义**：`fc_time`/`start` 为 `yyyyMMddHH` 当地时间（Asia/Shanghai），直接按北京时处理；数据从查询时刻起报（`start` 即起报时刻），每天更新 7 次——同一抓取时刻重复查询会得到相同 start，按 issue 幂等去重。
   - **缺测语义**：官方异常值 999999（含 9999/99999 变体）→ None；`tem`=℃、`pre`=该小时降水量 mm（与观测 rain@t 直接同口径，无需近似）。
   - token 走 URL query 参数（官方契约），网络异常入日志前已做掩码，不泄漏凭据。
+- **AccuWeather（官方 API）接入约束**：
+  - **合规提示（接入前请自行评估）**：AccuWeather 服务条款（Terms of Use）含有限制性条款——不得将其数据用于"对 AccuWeather 或其服务/产品进行贬损、评级、排名、评审或其他评估"，缓存/存档期限亦有限制。本项目（公开的排名报告 + 起报快照永久存档）与该条款存在潜在冲突；是否接入、以何种方式公开使用请使用者自行权衡并承担相应责任。
+  - 需 `ACCUWEATHER_API_KEY`（developer.accuweather.com 创建应用获取）。**免费档 50 次/天**，超限返回 503（偶发 403）；配额账本：每站每轮 2 次调用（1 次定位 + 1 次预报），4 站 × 3 轮/天 ≈ 24 次，免费档每轮另有最多 3 次档位探测（合计约 33 次/天，付费档无探测开销）。503 与"档位梯子全被拒"均按账号级确定性失败熔断——同次运行内后续站点直接失败、不再烧退避/重探（若实为瞬时故障，下次运行自愈）。
+  - **定位是"最近城市吸附"而非格点**：站点坐标先经 Locations API `geoposition/search`（`q` 为**纬度,经度**，与和风 v7 相反）解析为最近城市的 locationKey，预报代表该城市而非站点点位。快照留档 `grid_lat/grid_lon`（城市坐标）、`location_key/location_name` 与 `location_distance_km`（haversine 吸附距离）——该源得分解读时须知"样本代表最近城市"。
+  - **时效档位与订阅回退**：官方档位 1/12/24/48/72/120 小时，请求超出订阅的档位返回 403/400。按 120→72→48→24→12→1 逐级下探（geovis 同款），成功档位进程内缓存、跨站点复用；**有意不做跨运行持久化**（省下的探测配额有限，而 git 自动提交会把瞬时降级永久封顶）——每次运行从默认档重探，双向自愈。实际使用的档位记入快照 `tier` 字段，实际拿到的点数记入 `hours` 字段（被截断时小于 tier）。
+  - **时间语义**：`DateTime` 为 ISO8601 带当地时区偏移（含 `+08` 两数字形态），统一转北京时并**下取整整点**（同彩云/和风口径）。
+  - **数值口径**：`details=true` 才返回 `TotalLiquid`（该小时液态降水总量；`metric=true` 时 ℃/mm）。响应自带 `Unit` 字段，按单位自适应换算（F→℃、inch→mm），未声明单位按公制处理、未知单位按缺测——均以 WARNING 留痕，绝不静默把华氏度当摄氏度入库。
+  - **降水移位假设（承重）**：官方字段文档未明示逐小时累计的区间方向；综合"1hour 产品语义、官网当前小时块前瞻展示、观测字段显式命名 PastHour 而预报字段无此标注"判定 `TotalLiquid@t` 覆盖 **(t, t+1h]**（小时段起点在 t）。观测 rain@t 口径为 (t−1h, t]，故快照 `precipitation@t := TotalLiquid@(t−1h)` 整体后移 1 小时入库（按整点键映射实现，序列缺口不错配邻窗降水；代价是首点降水记 None、末点降水被丢弃）。假设与依据在快照 `precip_alignment` 字段留档；**若日后发现该源降水相对观测系统性滞后 1 小时（整体前移 1h 反而更准时），应优先复核此假设**。
+  - apikey 走 URL query 参数（官方契约、无 header 方式），URL 必然含 key——所有日志/异常入 CI 日志前已做掩码。
+  - CI 中为 `continue-on-error` 可选步骤（Secret 缺失时跳过，抓取失败仅标注该步）。
 
 ## 评估方法说明（关于样本与时效）
 
@@ -308,3 +324,15 @@ tests/                    pytest（含 cyeva 手算对拍）
   - （P1）单一要素模型的得分分解条原以 0% 宽度渲染缺项维度，与"综合分=可用维度分"矛盾：已改为灰纹轨道 + —，排行榜说明同步写明"按可用维度计分照常参评"。
   - （P2）ECharts 加载失败时得分趋势图的维度切换按钮会抛错：已加空实例防护。
   - （已核查无误）：舍入语义（双方同为 np.round(x,2)、>= 方向）、分级 lev 参数合法性与异常兜底、linregress 解包顺序（slope, intercept, r, p）、得分条宽度恒在 [0,100]、热力图行序与高度时机、天桶键一致性、月度归档全 None 数据路径、内联 JS 语法（node --check）。
+
+## AccuWeather 接入：对抗式审查发现并修复的问题
+
+本次新增 `forecast/accuweather.py`（模型名 `accuweather_v1`，config 共 24 个模型）与 CLI `--source accuweather` 后，经两路独立对抗式审查（提供方正确性 / 集成运维面，全部缺陷先实证复现再修复）发现并处置：
+
+- **（P2，两路独立命中）档位状态文件会被 git 自动提交共享，瞬时降级永久封顶时效**：初版把"首次成功的时效档位"持久化到 `data/state/accuweather_hourly_tier.json` 以省免费档的重复探测配额；但该文件随 `file_pattern: "data reports"` 被自动提交后，某次瞬时 403（如配额以 403 形态耗尽）导致的下探结果会被永久固化，此后所有运行都从低位起探、该源评估时效被静默压低且无向上重探路径。已改为**整体移除跨运行持久化**：档位仅在进程内缓存（跨站点复用），每次运行从默认档重探——免费档多花约 9 次/天（总用量约 33 次，仍在 50 次内），换来双向自愈与零状态毒化面。
+- **（P2）配额以 403 形态耗尽时穷尽整条档位梯子**：梯子把 400/403 一律当"订阅未开放"逐级下探，若配额以 403 形态出现，每站要烧 1 次定位 + 6 次预报探测，且因梯子穷尽无成功档位可缓存，同次运行每个站点都会重复整条梯子（实测 4 站 28 次调用）。已加**梯子穷尽熔断**：全档位被拒即置运行级标志，后续站点 0 次请求快速失败（与 503 配额熔断同构，均为账号级确定性失败；瞬时故障下次运行自愈）。
+- **（P3）快照 `hours` 字段原记"请求档位"而非"实际点数"**：响应被截断时元数据虚高（如请求 120h 实得 3 点仍记 hours=120）。已拆分为 `tier`（实际使用的档位）与 `hours`（实际拿到的时间点数）两字段。
+- **（P3）`Value=null` 但已声明 `Unit` 的缺测条目被误报"未声明单位"**：单位统计原按返回键聚合，缺测条目落入空键分支触发误导性告警。已改为只有真实解释过数值（换算/假设/拒绝）的条目才计入单位统计，并以"全缺测 + 已声明单位不得报未声明单位"的断言锁定。
+- **（P1 假设留档）降水 -1h 移位方向无法对真值校准**：`TotalLiquid@t` 覆盖 (t, t+1h] 的判定依据官方 1hour 产品语义、官网当前小时块前瞻展示、观测字段显式命名 PastHour 三条证据，但审查确认端到端测试只证明"实现与意图自洽"、不构成对真值校准（免费档无真实 Key 可录制）。已把假设、依据与复核信号写入 docstring / 快照 `precip_alignment` 字段 / README 约束节；并补"未移位口径下晴雨 TS 崩为 0"的对照测试，锁定移位确为承重假设——**若日后该源降水相对观测系统性滞后 1 小时，应优先翻转移位方向**。
+- **（记录不修）**：geoposition search 成功响应的形态（单对象）以官方文档为准、无真实 Key 无法录制回放夹具，契约漂移时已有含响应摘要的可诊断错误兜底；429 未按配额处理（AccuWeather 实际以 503 表达超限，无影响）。
+- **（已核查无误）**：CLI 分发/排除链/退出码与既有源语义一致；`--source accuweather` 的模型过滤与"全站失败→退出码 1"；503 熔断不改变失败计数；401 快速失败不做档位回退；F→℃/inch→mm 换算数学与 NaN/bool/null/非 dict 全分支归 None；`+08:00`/`+08`/`Z` 等偏移形态转北京时下取整；降水移位的缺口防错配与跨月边界；haversine 数值；Key 经 query 的全日志脱敏；无数据模型在排行榜沉底、不进图表与明细表（与 fuxi_det 同路径）；24 模型标签配色齐备且 JS 有兜底色；模板动态计数落在 HTML 上下文、autoescape 下安全；CI 步骤位置/Secret 门控/continue-on-error/并发组正确；`WEATHER_EVAL_DATA_ROOT` 测试隔离完整；快照按 issue 幂等。

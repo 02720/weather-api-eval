@@ -51,6 +51,7 @@ MODEL_LABELS = {
     "fuxi_det": "伏羲确定性 (FuXi-Det)",
     "fengwu_ghr_9km": "风乌 GHR-9km",
     "geovis_v1": "中科星图逐小时",
+    "accuweather_v1": "AccuWeather 逐小时",
 }
 
 # 每个模型的固定配色（图表/排行榜共用，全站一致，方便读者形成"颜色=模型"的记忆）。
@@ -78,6 +79,7 @@ MODEL_COLORS = {
     "fuxi_det": "#06b6d4",       # 青
     "fengwu_ghr_9km": "#f43f5e", # 玫红偏红
     "geovis_v1": "#6b7280",      # 灰
+    "accuweather_v1": "#b45309", # 棕橙（AccuWeather 橙红系，与现有橙/红均拉开明度）
 }
 
 

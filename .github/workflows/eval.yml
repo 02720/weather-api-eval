@@ -127,6 +127,21 @@ jobs:
             echo "未配置 GEVIS_TOKEN Secret，跳过中科星图抓取"
           fi
 
+      - name: 抓取 AccuWeather 逐小时预报（可选，需配置 ACCUWEATHER_API_KEY Secret）
+        # Key 经 developer.accuweather.com 创建应用获取；免费档 50 次/天（每站每轮
+        # 2 次调用），可用档位状态缓存在 data/state/ 由各次运行共享以省配额。
+        # 未配置则跳过；503（配额耗尽/过载）重试穷尽后本步失败但不阻断主流程。
+        continue-on-error: true
+        env:
+          ACCUWEATHER_API_KEY: ${{ secrets.ACCUWEATHER_API_KEY }}
+          TZ: Asia/Shanghai
+        run: |
+          if [ -n "$ACCUWEATHER_API_KEY" ]; then
+            python -m weather_eval fetch-forecast --source accuweather
+          else
+            echo "未配置 ACCUWEATHER_API_KEY Secret，跳过 AccuWeather 抓取"
+          fi
+
       - name: 抓取观测 + 预报快照 + 更新主报告（本月累计，覆盖写 index.html）
         env:
           TZ: Asia/Shanghai

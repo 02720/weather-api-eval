@@ -30,6 +30,8 @@ models:
   - fuxi_det             # 伏羲确定性 FuXi-Det（--source fuxi_data，需环境变量 FUXI_DATA_TOKEN）
   - fengwu_ghr_9km       # 风乌 GHR-9km（--source fengwu，可选 FENGWU_API_KEY 延长预报时效）
   - geovis_v1            # 中科星图全国逐小时预报（--source geovis，需环境变量 GEVIS_TOKEN）
+  # —— AccuWeather（2026-08 新增独立源）——
+  - accuweather_v1       # AccuWeather 逐小时预报（--source accuweather，需环境变量 ACCUWEATHER_API_KEY；免费档 50 次/天，最近城市吸附语义）
 
 stations:
   - id: wuzhou
