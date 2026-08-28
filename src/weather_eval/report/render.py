@@ -47,6 +47,10 @@ MODEL_LABELS = {
     "tj_t2": "天机2/ND (T2)",
     "tj_t1": "天机1 (T1)",
     "tj_t1h_ai": "T1H-AI (T1-AI)",
+    "fuxi_c88": "伏羲中期 (FuXi-C88)",
+    "fuxi_det": "伏羲确定性 (FuXi-Det)",
+    "fengwu_ghr_9km": "风乌 GHR-9km",
+    "geovis_v1": "中科星图逐小时",
 }
 
 # 每个模型的固定配色（图表/排行榜共用，全站一致，方便读者形成"颜色=模型"的记忆）。
@@ -70,6 +74,10 @@ MODEL_COLORS = {
     "tj_t2": "#84cc16",          # 黄绿
     "tj_t1": "#f472b6",          # 粉
     "tj_t1h_ai": "#c084fc",      # 浅紫
+    "fuxi_c88": "#0d9488",       # 深青
+    "fuxi_det": "#06b6d4",       # 青
+    "fengwu_ghr_9km": "#f43f5e", # 玫红偏红
+    "geovis_v1": "#6b7280",      # 灰
 }
 
 

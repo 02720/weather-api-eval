@@ -25,6 +25,11 @@ models:
   - tj_t2                # 天机2/ND（T2）
   - tj_t1                # 天机1/ND（T1，AI 驱动）
   - tj_t1h_ai            # T1H-AI（T1-AI 高分辨率版）
+  # —— 伏羲/风乌/中科星图（2026-08 新增独立源）——
+  - fuxi_c88             # 伏羲中期 FuXi-C88（--source fuxi，fuxi-ai.cn 可视化接口抓取，无需凭据）
+  - fuxi_det             # 伏羲确定性 FuXi-Det（--source fuxi_data，需环境变量 FUXI_DATA_TOKEN）
+  - fengwu_ghr_9km       # 风乌 GHR-9km（--source fengwu，可选 FENGWU_API_KEY 延长预报时效）
+  - geovis_v1            # 中科星图全国逐小时预报（--source geovis，需环境变量 GEVIS_TOKEN）
 
 stations:
   - id: wuzhou

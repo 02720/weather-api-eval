@@ -9,7 +9,11 @@
 - **预报（Open-Meteo）**：`ecmwf_ifs`、`ncep_gfs_global`、`dwd_icon_global`、`best_match`、`cma_grapes_global`、`cmc_gem_gdps`、`jma_gsm`、`ukmo_global_deterministic_10km`、`ecmwf_ifs025`、`ecmwf_aifs025_single`、`ncep_aigfs025`、`ncep_hgefs025_ensemble_mean`（一次请求返回全部模型，后续可在 `config/stations.yaml` 继续增删）。
 - **预报（彩云天气 Caiyun v2.6）**：模型名 `caiyun_v2_6`，Token 认证（环境变量 `CAIYUN_TOKEN`）。`fetch-forecast --source caiyun` 单独抓取，评估/报告逻辑与 Open-Meteo 完全一致。
 - **预报（和风天气 QWeather weather/v1）**：模型名 `qweather_v1`，API Key 认证（环境变量 `QWEATHER_API_KEY`，专属 API Host 见 `QWEATHER_API_HOST`）。`fetch-forecast --source qweather` 单独抓取；请求未来最多 240 小时逐小时（免费档可能被限制为 24 小时，日志会明示），评估/报告逻辑与其他源完全一致。
-- **预报（中科天机 TianJi，网页接口抓取）**：模型 `tj_km_fusion`（公里级融合）、`tj_t2_early`（天机2/DA，即 T2-Early）、`tj_t2`（天机2/ND，即 T2）、`tj_t1`（天机1/ND，即 T1）、`tj_t1h_ai`（T1H-AI，即 T1-AI）。数据来自 `www.tjweather.com/vis/` 可视化页面背后的单点查询接口（游客态可用、无需凭据）；`fetch-forecast --source tianji` 单独抓取。起报为北京时每天 08/20 时两轮，t2/融合系 240h、t1 系 360h 逐小时。
+- **预报（中科天机 TianJi，网页接口抓取）**：模型名 `tj_km_fusion`（公里级融合）、`tj_t2_early`（天机2/DA，即 T2-Early）、`tj_t2`（天机2/ND，即 T2）、`tj_t1`（天机1/ND，即 T1）、`tj_t1h_ai`（T1H-AI，即 T1-AI）。数据来自 `www.tjweather.com/vis/` 可视化页面背后的单点查询接口（游客态可用、无需凭据）；`fetch-forecast --source tianji` 单独抓取。起报为北京时每天 08/20 时两轮，t2/融合系 240h、t1 系 360h 逐小时。
+- **预报（伏羲中期 FuXi-C88，网页接口抓取）**：模型名 `fuxi_c88`。数据来自 `fuxi-ai.cn/visual/weather` 可视化页面背后的自有网关（游客态可用、无需凭据）；`fetch-forecast --source fuxi` 单独抓取。逐小时 360 点（15 天），每天 00/12 UTC（北京时 08/20 时）两轮，发布滞后约 1 天属正常。
+- **预报（伏羲确定性 FuXi-Det，数据服务 API）**：模型名 `fuxi_det`。数据来自 `fuxi-ai.cn/fuxi-data` 页面的数据服务网关（**需登录后于该页获取查询 Token**，经环境变量 `FUXI_DATA_TOKEN` 注入）；`fetch-forecast --source fuxi_data` 单独抓取。0.1° 分辨率、每天 00/06/12/18 UTC 四轮。
+- **预报（风乌 FengWu-GHR-9km，网页接口抓取）**：模型名 `fengwu_ghr_9km`。数据来自 `fengwuai.com/simple-query` 页面的公开查询 API；`fetch-forecast --source fengwu` 单独抓取。游客态 3 小时步长、起报后 166h；**填 `FENGWU_API_KEY`（经 `Authorization: Bearer` 头传递）可解锁逐小时 360h 完整时效**。原生 6 小时累计降水的展开口径见「已知约束」。
+- **预报（中科星图 GeoVis，官方 API）**：模型名 `geovis_v1`。《全国城市逐小时预报》产品（专业版 120h，自动按 专业→进阶→基础 档位回退），**需 Token**（datacloud.geovisearth.com 注册 + 开发者认证，环境变量 `GEVIS_TOKEN`）；`fetch-forecast --source geovis` 单独抓取。
 - **观测（环境气象数据服务平台 eia-data.com）**：各气象站"气象站基本信息"页，服务端直出近 24 小时逐小时实况（气温、降水、气压、湿度、风）。
 - **评估框架**：`cyeva 0.2.3`（温度 RMSE/MAE/MBE/±1°C·±2°C 准确率；降水 0.1mm 晴雨二分类准确率/POD/空报率 FAR/漏报率/TS/BIAS，及分级降水 TS）。
 
@@ -41,6 +45,7 @@ export PYTHONPATH="$PWD/src"
 python -m weather_eval fetch-obs
 # 抓取 12 个 Open-Meteo 模型起报快照（未来 16 天逐小时）
 python -m weather_eval fetch-forecast
+# 彩云/和风/中科天机/伏羲/风乌/中科星图为独立源，按上一节命令单独抓取
 # 用本月至今的累计数据更新主报告（每次覆盖，不堆文件）
 python -m weather_eval report
 # 浏览：打开 reports/index.html（GitHub Pages 部署后即网站首页）
@@ -70,6 +75,21 @@ python -m weather_eval report
 python -m weather_eval fetch-forecast --source tianji
 # 生成报告时 tj_* 模型已纳入对比（config 的 models 已含）
 python -m weather_eval report
+
+# —— 伏羲中期 FuXi-C88（网页接口抓取，无需凭据）——
+python -m weather_eval fetch-forecast --source fuxi
+
+# —— 风乌 FengWu-GHR-9km（游客态 7 天/3h 步长；填 Key 延长时效）——
+export FENGWU_API_KEY="<可选：风乌开放平台 Key，解锁逐小时 360h>"
+python -m weather_eval fetch-forecast --source fengwu
+
+# —— 伏羲确定性 FuXi-Det（需 fuxi-data 页面登录后获取的查询 Token）——
+export FUXI_DATA_TOKEN="<登录 fuxi-ai.cn/fuxi-data 后页面获取>"
+python -m weather_eval fetch-forecast --source fuxi_data
+
+# —— 中科星图（需注册 + 开发者认证获取 Token）——
+export GEVIS_TOKEN="<datacloud.geovisearth.com 控制台获取>"
+python -m weather_eval fetch-forecast --source geovis
 ```
 
 常用命令：
@@ -81,9 +101,13 @@ python -m weather_eval report
 | `fetch-forecast --source caiyun` | 抓取彩云天气 v2.6 起报快照（需 `CAIYUN_TOKEN`） |
 | `fetch-forecast --source qweather` | 抓取和风天气起报快照（需 `QWEATHER_API_KEY`，建议同时设 `QWEATHER_API_HOST`） |
 | `fetch-forecast --source tianji` | 抓取中科天机起报快照（网页接口抓取，无需凭据） |
+| `fetch-forecast --source fuxi` | 抓取伏羲中期 FuXi-C88 起报快照（fuxi-ai.cn 可视化接口，无需凭据） |
+| `fetch-forecast --source fuxi_data` | 抓取伏羲确定性 FuXi-Det 起报快照（需 `FUXI_DATA_TOKEN`） |
+| `fetch-forecast --source fengwu` | 抓取风乌 GHR-9km 起报快照（游客态 7 天；`FENGWU_API_KEY` 可选延长） |
+| `fetch-forecast --source geovis` | 抓取中科星图逐小时预报起报快照（需 `GEVIS_TOKEN`） |
 | `report` | 用"本月 1 号至今"的累计数据更新主报告 `reports/index.html`（覆盖写，不堆文件） |
 | `monthly [--month YYYY-MM]` | 把某月冻结为月度归档 `reports/monthly/YYYY-MM.html`（默认上一自然月） |
-| `all` | `fetch-obs` + `fetch-forecast` + `report`（GitHub Action 调用；彩云/和风/中科天机为独立可选步骤） |
+| `all` | `fetch-obs` + `fetch-forecast` + `report`（GitHub Action 调用；彩云/和风/中科天机/伏羲/风乌/中科星图为独立可选步骤） |
 
 ## GitHub Actions 自动运行
 
@@ -160,6 +184,26 @@ tests/                    pytest（含 cyeva 手算对拍）
   - **快照粒度**：各模式最新可用起报可能不同步，为避免 lead 分组被跨模式错位污染，`TianjiProvider.fetch_snapshot` 返回**按模型独立的快照列表**（各自 issue_iso），CLI 逐份存档（`save_forecast_snapshot` 按 站×模型×起报 幂等）。
   - **降水口径**：`pratesfc` 为逐小时降水率（mm/h），作为"前 1 小时累计"的近似与观测配对（同 Open-Meteo `precipitation` 假设）；公里级融合产品温度/降水使用不同产品网格码（`c1km`/`c2_5km`）。
   - **模型名对应**：`tj_km_fusion`=公里级融合（nextgen）、`tj_t2_early`=天机2/DA（T2-Early）、`tj_t2`=天机2/ND（T2）、`tj_t1`=天机1/ND（T1，其本身即 AI 驱动，站点无非 AI t1 轮次）、`tj_t1h_ai`=T1H-AI（T1-AI 高分辨率版）。
+- **伏羲中期（FuXi-C88，网页接口抓取）接入约束**：
+  - 接口为 `fuxi-ai.cn/visual/weather` 可视化页面背后的自有网关（`/gw/weather/api/v1/weather/queryWeatherTile` + `queryWeatherInfo`），**非官方开放契约**：游客态无需鉴权，但参数/结构可能随页面改版变化（契约细节见 `forecast/fuxi.py` 顶部 docstring，均经 2026-08 线上实测 + 前端 JS 逆向）；CI 中 `continue-on-error` 可选步骤。
+  - **起报锚点是隐性契约**：点位响应只有 step 1..360、无绝对时间，起报时刻取自 tile 接口的 `startTime`（`YYYYMMDDHH`，**UTC 语义**，北京时 = +8h；由前端 `moment.utc().local()` 解析方式与"step1 辐射≈0"的实测共同佐证）。时刻 = 北京时起报 + step 小时。tile 与点位是两个接口，理论存在读到不同轮次的极小竞态，无从校验。
+  - **数值口径**：响应值为字符串（须 float 化）；`t2m` 已是 ℃；`tp` 页面图例为 mm/h（逐小时降水率），作为"前 1 小时累计"的近似与观测配对（同 pratesfc 口径）。**注意**数据服务 `/models` 元数据把 c88 的 tp 标为 "Total precipitation, mm"——两条产品线口径可能不同，若日后对比发现该源日降水系统性偏大 ~6 倍，应优先复核此处。
+  - **发布滞后**：c88 可视化产品线发布明显滞后（实测 15 时最新锚点仍是前一日 12Z 轮），且接口无起报参数、无法回退探测——属产品形态，非故障。
+- **伏羲确定性（FuXi-Det，数据服务 API）接入约束**：
+  - 需 `FUXI_DATA_TOKEN`（登录 `fuxi-ai.cn/fuxi-data` 页面后由页面换取的查询 Token，经 `Authorization` 头传递、**无 Bearer 前缀**）；401 时给出可操作错误信息，不会静默产出空数据。
+  - **只接 FuXi-Det**：伏羲中期（FuXi-C88）必须走可视化接口（`--source fuxi`），两条产品线的接口、坐标网格与单位口径都不同，不得混接。
+  - **起报探测**：`initTime/isAvail` 游客可用，`initTime` 只传 UTC 日期（`YYYY-MM-DD`），返回该日可用 UTC 小时列表；从 UTC 今天向过去回退最多 4 天，取首个非空日的最大小时。`queryWeatherInfo` 的 `initTime` 为 **UTC** `YYYY-MM-DD HH:00:00`（页面小时按钮带 "z" 后缀）。
+  - **单位自适应**：响应 `units` 数组按 `var_names` 定位 t2m——声明 K 则减 273.15 转 ℃；未声明单位时告警并按 ℃ 处理，且数值普遍呈开尔文量级（>150）时额外触发口径漂移预警。降水 `tp` 单位 mm；**累计窗口官方未说明**，当前按"逐时刻值 ≈ 前 1 小时累计"配对，并内置单调性哨兵（若序列近乎单调不减——自起报累计的典型形态——会 WARNING 提示口径存疑）。
+- **风乌（FengWu-GHR-9km，网页接口抓取）接入约束**：
+  - 游客态可用但**服务端截断至起报后 166h、3 小时步长**（56 点）；填 `FENGWU_API_KEY`（`Authorization: Bearer` 头）解锁逐小时 360h。Key 无效（401）立即报错而非回退游客时效。
+  - **时间分辨率处理**：温度对 3h 采样**线性插值**到逐小时（有 Key 时退化为恒等）；不外推首末采样之外。
+  - **6 小时降水处理**：原生 `tp6h` 为截至该时刻的 6h 累计（窗口 (t-6h, t]，由 ssrd1h/ssr6h 并存与 ERA5 惯例推证）。因 3h 采样使相邻窗口重叠 3h，直接逐窗均摊会重复计总量——采用**相位平铺子集**（以首个采样为相位、每 6h 取一个窗口端点，窗口两两无缝拼接），每窗累计均摊 /6 到其 6 个小时：总量严格守恒（日降水 BIAS 不失真）、口径与 pratesfc 一致；代价是中间采样的信息被弃用、且 6h 均摊对 0.1mm 晴雨阈值偏保守（短时强降水被摊薄），属已知局限。展开口径在快照 `expansion` 字段留档。
+  - 起报以 `availability.api_end_time`（最新可查起报）为首选，查询 400 时向过去逐轮（-6h）回退最多 4 轮；响应坐标为 9km 网格吸附值（作为 grid_lat/lon 留档）。
+- **中科星图（GeoVis，官方 API）接入约束**：
+  - 需 `GEVIS_TOKEN`（注册 + 开发者认证）；档位按 专业(120h)→进阶(48h)→基础(24h) 自动回退，实际档位记入快照 `tier` 字段（账号级缓存，跨站点复用）。
+  - **时间语义**：`fc_time`/`start` 为 `yyyyMMddHH` 当地时间（Asia/Shanghai），直接按北京时处理；数据从查询时刻起报（`start` 即起报时刻），每天更新 7 次——同一抓取时刻重复查询会得到相同 start，按 issue 幂等去重。
+  - **缺测语义**：官方异常值 999999（含 9999/99999 变体）→ None；`tem`=℃、`pre`=该小时降水量 mm（与观测 rain@t 直接同口径，无需近似）。
+  - token 走 URL query 参数（官方契约），网络异常入日志前已做掩码，不泄漏凭据。
 
 ## 评估方法说明（关于样本与时效）
 
@@ -232,3 +276,18 @@ tests/                    pytest（含 cyeva 手算对拍）
 - **测试防"假绿"加固**：请求契约用例以硬编码的线上实测参数表（mode×production×factorCode 共 10 组）校验每次请求，`MODEL_SPECS` 映射漂移即红；另补探测穷尽、部分模型失败、降水空序列、月末/年末轮次边界、500 分类重试、CLI list 分支存档、Open-Meteo 裸键限定、storage 损坏容错等回归用例。
 - **（已核查无误）**：TJ 独立快照与评估引擎的按目录读取/下标配对交互（跨模型起报不同步不污染 lead 分组）、`candidate_base_times` 的 08/20 时与跨天边界、同日两轮快照文件名无碰撞、cyeva 对含 NaN 对样本的剔除正确性（与手工掩膜对拍一致）、19 模型的标签/配色全覆盖且 JS 有兜底色。
 - **（记录不修）**：Open-Meteo 12 模型单请求在任一模型名将来失效时会级联失败（当前 12 个名字经线上实测全部有效，属前瞻性风险）；明细指标表 19 模型横向滚动偏长；`best_match` 当前择优结果与 `ecmwf_ifs` 数值一致属数据源现象；快照文件线性增长的中期归档策略。
+
+## 伏羲/风乌/中科星图接入：对抗式审查发现并修复的问题
+
+本次新增 4 个预报源（`fuxi.py`/`fuxi_data.py`/`fengwu.py`/`geovis.py`，config 共 23 个模型）后，经独立对抗式审查（全部缺陷先实证复现再修复）发现并修复：
+
+- **（P0）fuxi_data 毒化时间串可拖垮全链路报告**：`_parse_utc_ts` 无法解析的时刻原本会产出**空串时间键**入库（`['']` 是 truthy，防御拦不住），评估引擎 `parse_iso("")` 抛错且无容错——一条毒化快照即可让 `report`/`monthly`/`all` 对**所有站点所有模型**的报告生成永久崩溃（空快照还被存档幂等锁死）。已改为：时间解析升级为容忍毫秒/小写 z/零偏移（`fromisoformat` 统一路径），仍无法解析的**整列剔除**（时间轴与数值逐列对齐），并以单测锁定。
+- **（P1）geovis 9999 缺测变体漏过**：`MISSING_TOL=99990` 拦不住国内气象常见的 9999 缺测码，9999℃ 会污染日最高温与 RMSE。已降阈值至 9999 并补用例。
+- **（P1）geovis token 泄漏面**：token 走 URL query（官方契约），requests 网络异常消息携带完整 URL（含 token 明文）入日志（GitHub Actions 日志公开可见）。已对 `last_err`/body 摘要做统一掩码，单测断言日志无 token。
+- **（P1）fengwu 401 被当"起报不可查"逐轮回退**：Key 无效是账号级错误，回退 4 轮毫无意义且最终错误消息误导（"最近 4 个起报轮次均不可查"）。已改为 401/其他非 400 的 4xx 立即上抛，仅 400 参与起报回退；单测断言查询次数为 1。
+- **（P1）fuxi_data/geovis 4xx 被吞后无意义重试**：`_Rejected` 缺少专门分支、落入 `except Exception` 退避重试（4 站最多浪费 84s + 配额）。已补 `except _Rejected: raise`（与 fuxi.py 对齐），补 400-无重试用例。
+- **（P1）fuxi_data 单位缺失静默按 ℃ 处理**：`units` 缺失时 K 值（≈300）不换算直接入库。已加"未提供单位"WARNING + 开尔文量级哨兵（未声明 K 但数值普遍 >150 → 口径漂移预警）。
+- **（P1）fuxi/geovis 空时间轴快照静默入库并被幂等锁死**：响应非空但字段全非法时 `time=[]` 无异常通过，存档后同 issue 永久跳过、正常数据进不来。已在两处入库前校验 `time` 非空（fuxi_data/fengwu 原有防御），补回归用例。
+- **（P2）加固**：fuxi_data 轮次取 `max(hours, key=int)`（不再依赖零填充字典序）；`isAvail` 无 msgCode 且无 data 的响应不再当"该日无数据"静默回退；fengwu 数值解析统一 NaN/inf/非法串 → None（与其余源同口径）、重复时刻去重统一保留首见、`parse_iso_z` 对非零时区偏移显式拒绝（防 +08:00 结尾被静默误读整体错 8h）。
+- **（记录不修）**：fuxi tile 锚点缓存会把"tile↔点位轮次竞态"窗口从单站扩大到整批站点（进程生命周期短、概率极低，docstring 已留档）；各新源缓存无 tianji 式"作废重探"自愈（同上）；风乌游客态 3h 步长导致降水评估样本天然只有逐小时口径的 1/3 覆盖密度（产品形态）。
+- **（已核查无误）**：fuxi UTC 锚点换算与跨月边界、fengwu 6h 降水平铺子集的总量守恒数学（逐点推演 + 守恒单测）、fuxi_data 起报探测跨日回退、geovis 档位回退与账号级缓存、CLI 分发/排除链/退出码、23 模型标签配色齐备、存档幂等无 issue 碰撞。

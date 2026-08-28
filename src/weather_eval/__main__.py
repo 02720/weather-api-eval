@@ -6,6 +6,10 @@
   python -m weather_eval fetch-forecast --source caiyun    抓取彩云天气 v2.6 起报
   python -m weather_eval fetch-forecast --source qweather  抓取和风天气起报
   python -m weather_eval fetch-forecast --source tianji    抓取中科天机起报（网页接口，无需凭据）
+  python -m weather_eval fetch-forecast --source fuxi      抓取伏羲中期 FuXi-C88 起报（网页接口，无需凭据）
+  python -m weather_eval fetch-forecast --source fuxi_data 抓取伏羲确定性 FuXi-Det 起报（需 FUXI_DATA_TOKEN）
+  python -m weather_eval fetch-forecast --source fengwu    抓取风乌 FengWu-GHR-9km 起报（可选 FENGWU_API_KEY）
+  python -m weather_eval fetch-forecast --source geovis    抓取中科星图逐小时预报起报（需 GEVIS_TOKEN）
   python -m weather_eval report                   用本月至今数据更新主报告 reports/index.html
   python -m weather_eval monthly [--month YYYY-MM] 生成月度归档报告 reports/monthly/YYYY-MM.html
   python -m weather_eval all                       抓取观测+预报+更新主报告（GitHub Action 调用）
@@ -30,13 +34,30 @@ from .config import load_config
 from .timeutil import now_beijing, ymd, parse_iso, floor_to_hour, ym
 from .storage import save_obs, save_forecast_snapshot
 from .obs import EiaDataObsSource
-from .forecast import OpenMeteoProvider, CaiyunProvider, QWeatherProvider, TianjiProvider
+from .forecast import (
+    OpenMeteoProvider, CaiyunProvider, QWeatherProvider, TianjiProvider,
+    FuxiC88Provider, FuxiDetProvider, FengWuProvider, GevisProvider,
+)
 from .forecast.caiyun import DEFAULT_NAME as CAIYUN_DEFAULT_MODEL
 from .forecast.qweather import DEFAULT_NAME as QWEATHER_DEFAULT_MODEL
 from .forecast.tianji import MODEL_SPECS as TJ_MODEL_SPECS
+from .forecast.fuxi import MODEL_NAME as FUXI_C88_MODEL
+from .forecast.fuxi_data import MODEL_NAME as FUXI_DET_MODEL
+from .forecast.fengwu import MODEL_NAME as FENGWU_MODEL
+from .forecast.geovis import MODEL_NAME as GEVIS_MODEL
 # 非第三方模式名的"独立抓取源"，Open-Meteo 抓取分支必须排除，
 # 否则会被当作 Open-Meteo 响应里缺失的模型而刷警告。
-NON_OPENMETEO_MODELS = {CAIYUN_DEFAULT_MODEL, QWEATHER_DEFAULT_MODEL, *TJ_MODEL_SPECS}
+NON_OPENMETEO_MODELS = {
+    CAIYUN_DEFAULT_MODEL, QWEATHER_DEFAULT_MODEL, *TJ_MODEL_SPECS,
+    FUXI_C88_MODEL, FUXI_DET_MODEL, FENGWU_MODEL, GEVIS_MODEL,
+}
+# 各独立源的模型集合（config 中按此过滤，防止把别家的模型传进去刷缺失警告）
+SOURCE_MODELS: dict[str, set[str]] = {
+    "fuxi": {FUXI_C88_MODEL},
+    "fuxi_data": {FUXI_DET_MODEL},
+    "fengwu": {FENGWU_MODEL},
+    "geovis": {GEVIS_MODEL},
+}
 from .evaluate import build_report
 from .report import write_live_report, write_monthly_report
 
@@ -92,7 +113,21 @@ def _build_provider(source: str, cfg):
                 "config models 中未配置任何中科天机模型（tj_*），无法抓取该源"
             )
         return TianjiProvider(), tjs
-    # Open-Meteo 无需凭据；仅交其自身模型，避免把 caiyun/qweather/tianji 当作缺失模型刷警告
+    if source in SOURCE_MODELS:
+        wanted = [m for m in cfg.models if m in SOURCE_MODELS[source]]
+        if not wanted:
+            raise RuntimeError(
+                f"config models 中未配置任何 {source} 源模型（{sorted(SOURCE_MODELS[source])}），"
+                "无法抓取该源"
+            )
+        prov = {
+            "fuxi": FuxiC88Provider,          # 伏羲中期：可视化接口，游客可用
+            "fuxi_data": FuxiDetProvider,     # 伏羲确定性：数据服务，需 FUXI_DATA_TOKEN
+            "fengwu": FengWuProvider,         # 风乌 GHR-9km：可选 FENGWU_API_KEY
+            "geovis": GevisProvider,          # 中科星图：需 GEVIS_TOKEN
+        }[source]()
+        return prov, wanted
+    # Open-Meteo 无需凭据；仅交其自身模型，避免把独立源模型当作缺失模型刷警告
     return OpenMeteoProvider(), [m for m in cfg.models if m not in NON_OPENMETEO_MODELS]
 
 
@@ -178,10 +213,14 @@ def main(argv=None):
     sub.add_parser("fetch-obs")
     p_fetch = sub.add_parser("fetch-forecast")
     p_fetch.add_argument(
-        "--source", choices=["open_meteo", "caiyun", "qweather", "tianji"], default="open_meteo",
+        "--source", choices=["open_meteo", "caiyun", "qweather", "tianji",
+                             "fuxi", "fuxi_data", "fengwu", "geovis"],
+        default="open_meteo",
         help="预报源：open_meteo（默认）、caiyun（需 CAIYUN_TOKEN）、qweather"
-             "（和风天气，需 QWEATHER_API_KEY 环境变量，可选 QWEATHER_API_HOST 指定专属"
-             " API Host）或 tianji（中科天机，网页接口抓取，无需凭据）",
+             "（需 QWEATHER_API_KEY）、tianji（网页接口，无需凭据）、fuxi（伏羲中期"
+             " FuXi-C88，网页接口，无需凭据）、fuxi_data（伏羲确定性 FuXi-Det，需 "
+             "FUXI_DATA_TOKEN）、fengwu（FengWu-GHR-9km，可选 FENGWU_API_KEY 延长"
+             "时效）、geovis（中科星图，需 GEVIS_TOKEN）",
     )
     sub.add_parser("report")
     pm = sub.add_parser("monthly")

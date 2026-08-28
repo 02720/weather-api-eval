@@ -85,6 +85,48 @@ jobs:
           TZ: Asia/Shanghai
         run: python -m weather_eval fetch-forecast --source tianji
 
+      - name: 抓取伏羲中期 FuXi-C88 预报（可选，fuxi-ai.cn 可视化接口抓取，无需凭据）
+        # 网页接口抓取（非官方开放契约），失败仅标注该步，不阻断主流程。
+        continue-on-error: true
+        env:
+          TZ: Asia/Shanghai
+        run: python -m weather_eval fetch-forecast --source fuxi
+
+      - name: 抓取风乌 FengWu-GHR-9km 预报（可选，游客态 7 天；配置 Key 后延长时效）
+        # 游客态即可抓取（3h 步长、起报后 166h）；配置 FENGWU_API_KEY Secret
+        # 后经 Bearer 头传递，解锁逐小时 360h 完整时效。
+        continue-on-error: true
+        env:
+          FENGWU_API_KEY: ${{ secrets.FENGWU_API_KEY }}
+          TZ: Asia/Shanghai
+        run: python -m weather_eval fetch-forecast --source fengwu
+
+      - name: 抓取伏羲确定性 FuXi-Det 预报（可选，需配置 FUXI_DATA_TOKEN Secret）
+        # Token 经 fuxi-ai.cn/fuxi-data 页面（登录后）获取；未配置则跳过。
+        continue-on-error: true
+        env:
+          FUXI_DATA_TOKEN: ${{ secrets.FUXI_DATA_TOKEN }}
+          TZ: Asia/Shanghai
+        run: |
+          if [ -n "$FUXI_DATA_TOKEN" ]; then
+            python -m weather_eval fetch-forecast --source fuxi_data
+          else
+            echo "未配置 FUXI_DATA_TOKEN Secret，跳过伏羲确定性抓取"
+          fi
+
+      - name: 抓取中科星图逐小时预报（可选，需配置 GEVIS_TOKEN Secret）
+        # Token 经 datacloud.geovisearth.com 注册 + 开发者认证获取；未配置则跳过。
+        continue-on-error: true
+        env:
+          GEVIS_TOKEN: ${{ secrets.GEVIS_TOKEN }}
+          TZ: Asia/Shanghai
+        run: |
+          if [ -n "$GEVIS_TOKEN" ]; then
+            python -m weather_eval fetch-forecast --source geovis
+          else
+            echo "未配置 GEVIS_TOKEN Secret，跳过中科星图抓取"
+          fi
+
       - name: 抓取观测 + 预报快照 + 更新主报告（本月累计，覆盖写 index.html）
         env:
           TZ: Asia/Shanghai
