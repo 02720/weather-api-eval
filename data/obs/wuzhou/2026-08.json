@@ -638,5 +638,45 @@
     "rain": 0.0,
     "wind_speed": 1.5,
     "wind_dir": 37.0
+  },
+  "2026-08-28T17:00": {
+    "time": "2026-08-28T17:00",
+    "source": "wd",
+    "temp": 33.3,
+    "pressure": 985.5,
+    "humidity": 64.0,
+    "rain": 0.0,
+    "wind_speed": 0.9,
+    "wind_dir": 259.0
+  },
+  "2026-08-28T16:00": {
+    "time": "2026-08-28T16:00",
+    "source": "wd",
+    "temp": 32.3,
+    "pressure": 985.7,
+    "humidity": 68.0,
+    "rain": 0.0,
+    "wind_speed": 1.7,
+    "wind_dir": 142.0
+  },
+  "2026-08-28T15:00": {
+    "time": "2026-08-28T15:00",
+    "source": "wd",
+    "temp": 32.0,
+    "pressure": 986.6,
+    "humidity": 65.0,
+    "rain": 0.0,
+    "wind_speed": 1.1,
+    "wind_dir": 148.0
+  },
+  "2026-08-28T14:00": {
+    "time": "2026-08-28T14:00",
+    "source": "wd",
+    "temp": 31.6,
+    "pressure": 987.4,
+    "humidity": 70.0,
+    "rain": 0.0,
+    "wind_speed": 1.2,
+    "wind_dir": 204.0
   }
 }
