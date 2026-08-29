@@ -75,19 +75,59 @@ def test_min_sample_suppresses():
     assert m["n"] == 2
 
 
-def test_scores():
-    # 温度分：±2°C 准确率与 100−RMSE×5 的均分
+def test_scores_weighted_multi_metric():
+    # 温度分：只有 acc2/rmse 时（权重各 0.25）等价于两者均分
     t = {"acc2": 90.0, "rmse": 1.0}
     assert temp_score(t) == (90.0 + 95.0) / 2
-    # 降水分：TS×100 与准确率的均分
+    # 全项在位：按 TEMP_SCORE_PARTS 权重加权
+    t_full = {"acc2": 80, "rmse": 2.0, "r": 0.9, "acc1": 60,
+              "mae": 1.5, "mbe": 0.5, "slope": 1.1}
+    # 子分：80, 90, 90, 60, 92.5, 95, 90；权重 .25/.25/.15/.10/.10/.10/.05
+    assert abs(temp_score(t_full) - 85.25) < 1e-9
+    # 降水分：TS×100(.30) 与 准确率(.15) 的加权 -> (15+12)/0.45
     p = {"ts": 0.5, "acc": 80.0}
-    assert precip_score(p) == (50.0 + 80.0) / 2
+    assert precip_score(p) == 60.0
+    # 子分截断到 [0,100]：ETS 为负记 0 分，不拖成负总分
+    assert precip_score({"ets": -0.5, "acc": 100.0}) == (0.0 * 0.25 + 100.0 * 0.15) / 0.40
+    # RMSE 大到换算分为负时截断为 0
+    assert temp_score({"rmse": 30.0}) == 0.0
+    # 缺项按剩余权重归一：只有 r 时常数为 r×100
+    assert temp_score({"r": 0.8}) == 80.0
     # 综合分 = 两者均分
-    assert overall_score(t, p) == (92.5 + 65.0) / 2
+    assert overall_score(t, p) == (92.5 + 60.0) / 2
     # 缺项不计：只有温度分时综合分 = 温度分
     assert overall_score(t, {"ts": None, "acc": None}) == 92.5
     # 全缺 -> None
     assert overall_score({}, {}) is None
+
+
+def test_score_parts_contract():
+    # 权重表契约：指标键、权重和为 1、每项带白话标签与换算函数
+    from weather_eval.evaluate import PRECIP_SCORE_PARTS, TEMP_SCORE_PARTS
+    for parts, keys in (
+        (TEMP_SCORE_PARTS, {"acc2", "rmse", "r", "acc1", "mae", "mbe", "slope"}),
+        (PRECIP_SCORE_PARTS, {"ts", "ets", "acc", "pod", "far", "bias"}),
+    ):
+        assert {k for k, *_ in parts} == keys
+        assert abs(sum(w for _k, w, *_ in parts) - 1.0) < 1e-9
+        for _k, _w, label, mp, fn in parts:
+            assert label and mp and callable(fn)
+
+
+def test_score_clamps_and_dimension_conventions():
+    # 换算方向与截断的守卫：任一翻脸即红
+    assert temp_score({"r": -0.5}) == 0.0            # r 为负 -> 截断 0
+    assert temp_score({"slope": 0.0}) == 0.0         # 斜率 0（幅度全丢）-> 0 分
+    assert temp_score({"slope": 1.0}) == 100.0       # 斜率恰为 1 -> 满分
+    assert temp_score({"mbe": -2.5}) == 75.0         # |MBE| 双向对称（负偏差同样扣分）
+    assert precip_score({"ts": 0.0}) == 0.0          # TS=0 不因截断变 None
+    assert precip_score({"bias": 4.6}) == 0.0        # BIAS 极端 -> 截断 0
+    assert precip_score({"bias": 1.0}) == 100.0      # 频率偏差恰为 1 -> 满分
+    # far 是百分比(0~100)的关键约定：100 − 100/3 ≈ 66.7；
+    # 若上游漂移成比值(0~1)，这里会得到 ≈100 分，即暴露量纲回归
+    assert abs(precip_score({"far": 100.0 / 3}) - (100.0 - 100.0 / 3)) < 0.01
+    # far 缺项（如从不报雨的源）按剩余权重归一，不整行出局
+    assert precip_score({"far": None, "ts": 0.5}) == 50.0
 
 
 def test_build_report_end_to_end(tmp_path, monkeypatch):
@@ -142,13 +182,21 @@ def test_build_report_end_to_end(tmp_path, monkeypatch):
     assert "s1" in data["timeseries"]
     assert isinstance(data["heatmap"], list)
 
-    # 排行榜：分数分解 + 排序稳定
-    ranking = data["ranking"]
-    assert ranking and ranking[0]["model"] == "ecmwf_ifs"
-    row = ranking[0]
+    # 分时效排行榜：行结构与名次（唯一有数据模型应排第一且分数与评分卡一致）
+    from weather_eval.evaluate import overall_score
+    lb1 = data["leaderboards"]["1d"]
+    assert lb1 and lb1[0]["model"] == "ecmwf_ifs"
+    row = lb1[0]
     assert row["score"] is not None and row["temp_score"] is not None and row["precip_score"] is not None
-    assert abs(row["score"] - row["temp_score"]) <= 100.0  # 分数在 0~100 内
     assert 0 <= row["score"] <= 100 and 0 <= row["temp_score"] <= 100
+    # 榜单分数与 24h 评分卡（同一样本总体）完全一致，冠军横幅与榜单不分叉
+    sc = data["scorecard"]["ecmwf_ifs"]
+    assert row["score"] == overall_score(sc["temp_24h"], sc["precip_24h"])
+    assert row["acc2"] == sc["temp_24h"]["acc2"] and row["ts"] == sc["precip_24h"]["ts"]
+    # 全部时效桶都有榜单行（无数据的桶行内分数为 None、沉底）
+    assert len(data["leaderboards"]) == 16
+    assert all(len(rows) == 1 for rows in data["leaderboards"].values())
+    assert data["leaderboards"]["5d"][0]["score"] is None
 
     # 得分趋势：综合 = 温度/降水的均分，且逐桶键齐备
     st = data["score_trend"]
@@ -170,5 +218,5 @@ def test_build_report_empty_is_safe(tmp_path, monkeypatch):
     # 无数据时不崩溃，指标均为 None/空，得分为 None
     assert data["scorecard"]["ecmwf_ifs"]["temp_24h"]["n"] == 0
     assert data["temp_hourly"]["ecmwf_ifs"]["1d"]["rmse"] is None
-    assert data["ranking"][0]["score"] is None
+    assert data["leaderboards"]["1d"][0]["score"] is None
     assert data["score_trend"]["overall"]["ecmwf_ifs"]["1d"] is None

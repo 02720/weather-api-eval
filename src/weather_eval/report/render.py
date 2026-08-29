@@ -20,6 +20,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
 
+from ..evaluate import PRECIP_SCORE_PARTS, TEMP_SCORE_PARTS
 from ..timeutil import now_beijing
 
 TPL_DIR = Path(__file__).resolve().parent / "templates"
@@ -141,6 +142,12 @@ def _atomic_write_text(path: Path, text: str) -> None:
             os.remove(tmp)
 
 
+def _score_parts_rows(parts) -> list[dict]:
+    """把得分构成表转成模板可渲染的行（权重百分比 + 白话换算说明）；函数本体不序列化。"""
+    return [{"key": k, "weight": w, "pct": round(w * 100), "label": label, "map": mp}
+            for (k, w, label, mp, _fn) in parts]
+
+
 def render_report_html(report_data: dict, title: str | None = None,
                        base: str = "./", archives: list[str] | None = None,
                        station_labels: dict[str, str] | None = None) -> str:
@@ -162,6 +169,8 @@ def render_report_html(report_data: dict, title: str | None = None,
         model_labels_json=labels_json,
         model_colors_json=colors_json,
         model_families_json=_js_json(MODEL_FAMILIES),
+        score_temp_parts=_score_parts_rows(TEMP_SCORE_PARTS),
+        score_precip_parts=_score_parts_rows(PRECIP_SCORE_PARTS),
         station_labels=station_labels or {},
         station_labels_json=_js_json(station_labels or {}),
         archives=archives or [],

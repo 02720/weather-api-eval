@@ -12,10 +12,15 @@
   （≥0.1/≥10/≥25/≥50/≥100/≥250mm，即小雨..特大暴雨以上）每级 7 项指标。
 所有指标附样本数 n；n < min_sample 视为"样本不足"不出结论（置 None）。
 
-得分体系（排行榜与时效趋势共用）：
-- 温度得分(0~100) = mean(±2°C 准确率, 100−RMSE×5)，缺项不计；
-- 降水分(0~100) = mean(晴雨TS×100, 晴雨准确率)，缺项不计；
-- 综合得分 = mean(温度得分, 降水分)，缺项不计（与旧四项均分公式在数据齐全时等值）。
+得分体系（排行榜、分时效榜单与时效趋势共用，2026-08-29 多指标加权重构）：
+- 把预报质量拆成互不重复的维度，每维度取代表性指标换算成 0~100 的子分后加权平均：
+  温度 7 项入分（±2°C/±1°C 准确率、RMSE/MAE 换算分、相关系数、|MBE| 偏差分、回归斜率分），
+  降水 6 项入分（TS/ETS×100、晴雨准确率、POD、100−FAR、|BIAS−1| 偏差分）；
+  各子分截断到 [0,100]，缺项按剩余权重归一（不让单一缺项把整行踢出局）。
+  不入分的指标及理由见 TEMP/PRECIP_SCORE_PARTS 注释与 README。
+- 综合得分 = mean(温度得分, 降水分)，缺项不计。
+- 分时效排行榜（leaderboards）：每个天桶一份按综合分排序的完整行（含分数与
+  榜面关键指标 acc2/rmse/ts/ets/n），主报告表格排行榜与冠军横幅共用这一份数据。
 """
 from __future__ import annotations
 
@@ -261,29 +266,79 @@ def precip_metrics(obs_vals, fcst_vals, threshold, min_sample,
 
 
 # ----------------------------------------------------------------- 得分体系
+# 设计（第一性原理）：先拆维度、再选代表指标、后加权——不把互相冗余的指标重复计账。
+# 每项以 (指标键, 权重, 白话标签, 换算说明, 换算函数) 描述：换算函数把指标映射到
+# 0~100 的子分（统一截断到 [0,100]），权重决定该维度对总分的话语权。
+#
+# 温度（5 个维度、7 项入分）：
+#   报准比例 acc2/acc1 · 误差幅度 RMSE/MAE · 起伏节奏 r · 系统偏差 |MBE| · 幅度校准 slope。
+#   不入分：RSS 与 χ² —— χ²=RMSE²、RSS=n×χ²，是样本量的函数而非预报技巧，只进明细表。
+# 降水（5 个维度、6 项入分）：
+#   晴雨综合技巧 TS/ETS · 答对率 acc · 命中 POD · 空报 FAR · 频率无偏 BIAS。
+#   不入分：漏报率（=100−POD，纯冗余）、空报频率 POFD（与 FAR 同族仅分母不同）、
+#   雨量 RMSE/MAE/MBE（连续雨量误差由个别强降水时段主导、随样本期气候波动大，
+#   跨源横向比较不公平，只进明细表）。晴雨准确率在干燥气候下天然偏高，故仅给低权重。
+TEMP_SCORE_PARTS = (
+    ("acc2", 0.25, "±2°C 准确率", "百分比直接入分",
+     lambda v: v),
+    ("rmse", 0.25, "RMSE 误差换算分", "100 − RMSE×5（0°C 记 100 分，每多 0.2°C 扣 1 分）",
+     lambda v: 100 - v * 5),
+    ("r", 0.15, "相关系数 r", "r×100（起伏节奏的同步程度）",
+     lambda v: v * 100),
+    ("acc1", 0.10, "±1°C 准确率", "百分比直接入分（更严格的命中口径）",
+     lambda v: v),
+    ("mae", 0.10, "MAE 误差换算分", "100 − MAE×5（典型误差，对偶发大误差不敏感）",
+     lambda v: 100 - v * 5),
+    ("mbe", 0.10, "偏差换算分", "100 − |MBE|×10（无系统性偏高/偏低 = 满分）",
+     lambda v: 100 - abs(v) * 10),
+    ("slope", 0.05, "回归斜率换算分", "100 − |斜率−1|×100（冷热幅度恰如其分 = 满分）",
+     lambda v: 100 - abs(v - 1) * 100),
+)
+PRECIP_SCORE_PARTS = (
+    ("ts", 0.30, "晴雨 TS 评分", "TS×100（报中/空报/漏报一账清）",
+     lambda v: v * 100),
+    ("ets", 0.25, "晴雨 ETS 评分", "ETS×100（对“瞎蒙也能蒙对”做过校正）",
+     lambda v: v * 100),
+    ("acc", 0.15, "晴雨准确率", "百分比直接入分（干燥期天然偏高，故权重低）",
+     lambda v: v),
+    ("pod", 0.15, "命中率 POD", "百分比直接入分（漏报少）",
+     lambda v: v),
+    ("far", 0.10, "空报率换算分", "100 − FAR（不喊“狼来了” = 满分）",
+     lambda v: 100 - v),
+    ("bias", 0.05, "频率偏差换算分", "100 − |BIAS−1|×100（报雨频率恰如其分 = 满分）",
+     lambda v: 100 - abs(v - 1) * 100),
+)
+
+
+def _clamp100(v: float) -> float:
+    return max(0.0, min(100.0, v))
+
+
+def _weighted_score(parts, metrics: dict) -> float | None:
+    """按 (键, 权重, …, 换算函数) 表加权平均；缺项不计并按剩余权重归一。"""
+    num = den = 0.0
+    for key, w, _label, _map, fn in parts:
+        v = metrics.get(key)
+        if v is None:
+            continue
+        num += w * _clamp100(fn(v))
+        den += w
+    return round(num / den, 2) if den else None
+
+
 def _mean_or_none(vals: list[float]) -> float | None:
     vals = [v for v in vals if v is not None]
     return round(sum(vals) / len(vals), 2) if vals else None
 
 
 def temp_score(t: dict) -> float | None:
-    """温度得分(0~100)：±2°C 准确率 与 误差换算分(100−RMSE×5) 的均分，缺项不计。"""
-    parts = []
-    if t.get("acc2") is not None:
-        parts.append(t["acc2"])
-    if t.get("rmse") is not None:
-        parts.append(max(0.0, 100 - t["rmse"] * 5))
-    return _mean_or_none(parts)
+    """温度得分(0~100)：7 项指标按 TEMP_SCORE_PARTS 权重加权，缺项按剩余权重归一。"""
+    return _weighted_score(TEMP_SCORE_PARTS, t)
 
 
 def precip_score(p: dict) -> float | None:
-    """降水分(0~100)：晴雨TS×100 与 晴雨准确率 的均分，缺项不计。"""
-    parts = []
-    if p.get("ts") is not None:
-        parts.append(p["ts"] * 100)
-    if p.get("acc") is not None:
-        parts.append(p["acc"])
-    return _mean_or_none(parts)
+    """降水分(0~100)：6 项指标按 PRECIP_SCORE_PARTS 权重加权，缺项按剩余权重归一。"""
+    return _weighted_score(PRECIP_SCORE_PARTS, p)
 
 
 def overall_score(t: dict, p: dict) -> float | None:
@@ -407,8 +462,10 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     # ---- 覆盖率 ----
     coverage = _coverage(station_ids, start_dt, end_dt)
 
-    # ---- 综合排名：主报告与月度归档都展示"冠军榜"，故无条件计算 ----
-    ranking = _ranking(scorecard)
+    # ---- 分时效排行榜：每个天桶一份排名行（表格排行榜、冠军横幅与趋势图共用同一套得分） ----
+    # scorecard 的 24h 池（lead 1..24）与天桶 "1d" 是同一样本总体，实证数值一致，
+    # 故不再单独维护 ranking，冠军横幅直接读 leaderboards["1d"]。
+    leaderboards = _lead_leaderboards(models, temp_hourly, precip_hourly, hourly_lead_days)
 
     # ---- 得分随时效衰减（综合/温度/降水，天桶 1..N）：排行榜的"趋势版" ----
     score_trend = _score_trend(models, temp_hourly, precip_hourly, hourly_lead_days)
@@ -436,7 +493,7 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
         "per_station": per_station,
         "timeseries": timeseries,
         "heatmap": heatmap,
-        "ranking": ranking,
+        "leaderboards": leaderboards,
         "score_trend": score_trend,
     }
 
@@ -521,22 +578,32 @@ def _coverage(station_ids, start_dt, end_dt) -> dict:
     }
 
 
-def _ranking(scorecard: dict) -> list[dict]:
-    """主榜按"提前 1 天（24h）"口径打分；温度分/降水分给出综合分的分解。"""
-    rows = []
-    for m, sc in scorecard.items():
-        t = sc["temp_24h"]
-        p = sc["precip_24h"]
-        rows.append({
-            "model": m,
-            "score": overall_score(t, p),
-            "temp_score": temp_score(t),
-            "precip_score": precip_score(p),
-            "temp_acc2_24h": t.get("acc2"),
-            "precip_ts_24h": p.get("ts"),
-        })
-    rows.sort(key=lambda x: (x["score"] is None, -(x["score"] or 0)))
-    return rows
+def _lead_leaderboards(models, temp_hourly, precip_hourly, hourly_lead_days) -> dict:
+    """分时效排行榜：每个天桶（第 1..N 天）一份按综合分排序的完整行。
+
+    行内同时携带得分（与"得分随时效衰减"趋势图同一套公式，保证榜单与曲线永不分叉）
+    和榜面直接可读的关键指标（±2°C 准确率 / RMSE / TS / ETS / 样本数）。
+    行序即名次（综合分降序、None 沉底）；前端表格切换时效/排序只重排，不重算。
+    """
+    boards: dict[str, list[dict]] = {}
+    for b in range(1, hourly_lead_days + 1):
+        bk = f"{b}d"
+        rows = []
+        for m in models:
+            t = temp_hourly[m].get(bk) or {}
+            p = precip_hourly[m].get(bk) or {}
+            rows.append({
+                "model": m,
+                "score": overall_score(t, p),
+                "temp_score": temp_score(t),
+                "precip_score": precip_score(p),
+                "acc2": t.get("acc2"), "rmse": t.get("rmse"),
+                "ts": p.get("ts"), "ets": p.get("ets"),
+                "n": t.get("n", 0), "n_precip": p.get("n", 0),
+            })
+        rows.sort(key=lambda x: (x["score"] is None, -(x["score"] or 0)))
+        boards[bk] = rows
+    return boards
 
 
 def _score_trend(models, temp_hourly, precip_hourly, hourly_lead_days) -> dict:
