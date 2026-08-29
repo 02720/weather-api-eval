@@ -130,7 +130,7 @@ def _build_provider(source: str, cfg):
             "fuxi_data": FuxiDetProvider,     # 伏羲确定性：数据服务，需 FUXI_DATA_TOKEN
             "fengwu": FengWuProvider,         # 风乌 GHR-9km：可选 FENGWU_API_KEY
             "geovis": GevisProvider,          # 中科星图：需 GEVIS_TOKEN
-            "accuweather": AccuWeatherProvider,  # AccuWeather：需 ACCUWEATHER_API_KEY（免费档 50 次/天）
+            "accuweather": AccuWeatherProvider,  # AccuWeather：需 ACCUWEATHER_API_KEY（Enterprise 入口）
         }[source]()
         return prov, wanted
     # Open-Meteo 无需凭据；仅交其自身模型，避免把独立源模型当作缺失模型刷警告
@@ -228,7 +228,7 @@ def main(argv=None):
              " FuXi-C88，网页接口，无需凭据）、fuxi_data（伏羲确定性 FuXi-Det，需 "
              "FUXI_DATA_TOKEN）、fengwu（FengWu-GHR-9km，可选 FENGWU_API_KEY 延长"
              "时效）、geovis（中科星图，需 GEVIS_TOKEN）、accuweather（AccuWeather"
-             "，需 ACCUWEATHER_API_KEY，免费档 50 次/天）",
+             " Enterprise，需 ACCUWEATHER_API_KEY）",
     )
     sub.add_parser("report")
     pm = sub.add_parser("monthly")

@@ -14,7 +14,7 @@
 - **预报（伏羲确定性 FuXi-Det，数据服务 API）**：模型名 `fuxi_det`。数据来自 `fuxi-ai.cn/fuxi-data` 页面的数据服务网关（**需登录后于该页获取查询 Token**，经环境变量 `FUXI_DATA_TOKEN` 注入）；`fetch-forecast --source fuxi_data` 单独抓取。0.1° 分辨率、每天 00/06/12/18 UTC 四轮。
 - **预报（风乌 FengWu-GHR-9km，网页接口抓取）**：模型名 `fengwu_ghr_9km`。数据来自 `fengwuai.com/simple-query` 页面的公开查询 API；`fetch-forecast --source fengwu` 单独抓取。游客态 3 小时步长、起报后 166h；**填 `FENGWU_API_KEY`（经 `Authorization: Bearer` 头传递）可解锁逐小时 360h 完整时效**。原生 6 小时累计降水的展开口径见「已知约束」。
 - **预报（中科星图 GeoVis，官方 API）**：模型名 `geovis_v1`。《全国城市逐小时预报》产品（专业版 120h，自动按 专业→进阶→基础 档位回退），**需 Token**（datacloud.geovisearth.com 注册 + 开发者认证，环境变量 `GEVIS_TOKEN`）；`fetch-forecast --source geovis` 单独抓取。
-- **预报（AccuWeather，官方 API）**：模型名 `accuweather_v1`。Locations API 解析最近城市 + Forecast API v1 逐小时预报（免费档 50 次/天，超订阅档位自动回退），**需 API Key**（developer.accuweather.com 创建应用，环境变量 `ACCUWEATHER_API_KEY`）；`fetch-forecast --source accuweather` 单独抓取。注意其定位是"最近城市吸附"而非格点，且服务条款对数据用途有限制（详见「已知约束」）。
+- **预报（AccuWeather，官方 API）**：模型名 `accuweather_v1`。Locations API 解析最近城市 + Forecast API v1 逐小时预报（**2026-08-29 起 Enterprise 入口** `api.accuweather.com`，超订阅档位自动回退），**需 API Key**（Enterprise 订阅签发，环境变量 `ACCUWEATHER_API_KEY`）；`fetch-forecast --source accuweather` 单独抓取。注意其定位是"最近城市吸附"而非格点，且服务条款对数据用途有限制（详见「已知约束」）。
 - **观测（环境气象数据服务平台 eia-data.com）**：各气象站"气象站基本信息"页，服务端直出近 24 小时逐小时实况（气温、降水、气压、湿度、风）。
 - **评估框架**：`cyeva 0.2.3`（温度 9 项：RMSE/MAE/MBE/RSS/χ²/±1°C·±2°C 准确率/相关系数 r/回归斜率；降水 11 项：晴雨二分类 8 项（准确率/POD/空报率 FAR/空报频率 POFD/漏报率/TS/ETS/频率偏差 BIAS）+ 雨量连续量 3 项（RMSE/MAE/MBE）；另逐小时雨强 5 档与 24h 累计 6 档的分级指标，每档 7 项）。
 
@@ -29,7 +29,7 @@
 ## 环境要求
 
 - **Python 3.12.6**（cyeva 0.2.3 支持 3.10–3.12；`pint` 必须用 **0.24.4**，因为 cyeva 误钉的 0.24.3 在 3.12+ 上无法导入，见下方安装说明）。
-- 网络访问：Open-Meteo（HTTPS）、eia-data.com（HTTP）、彩云天气 API `api.caiyunapp.com`（HTTPS）、和风天气 API `<你的专属 Host>.qweatherapi.com`（HTTPS）、中科天机 `www.tjweather.com`（HTTPS）、AccuWeather `dataservice.accuweather.com`（HTTPS）。Open-Meteo 免费档约 1 万次/天，无需 key；**彩云需 Token**，从环境变量 `CAIYUN_TOKEN` 读取；**和风需 API Key**，从环境变量 `QWEATHER_API_KEY` 读取；**中科天机无需凭据**（抓取其网页可视化的单点查询接口，属非官方契约，若页面改版需相应调整）；**AccuWeather 需 API Key**，从环境变量 `ACCUWEATHER_API_KEY` 读取（免费档 50 次/天，本源每站每轮 2 次调用）。
+- 网络访问：Open-Meteo（HTTPS）、eia-data.com（HTTP）、彩云天气 API `api.caiyunapp.com`（HTTPS）、和风天气 API `<你的专属 Host>.qweatherapi.com`（HTTPS）、中科天机 `www.tjweather.com`（HTTPS）、AccuWeather Enterprise `api.accuweather.com`（HTTPS）。Open-Meteo 免费档约 1 万次/天，无需 key；**彩云需 Token**，从环境变量 `CAIYUN_TOKEN` 读取；**和风需 API Key**，从环境变量 `QWEATHER_API_KEY` 读取；**中科天机无需凭据**（抓取其网页可视化的单点查询接口，属非官方契约，若页面改版需相应调整）；**AccuWeather 需 API Key**，从环境变量 `ACCUWEATHER_API_KEY` 读取（Enterprise 订阅 Key，本源每站每轮 2 次调用）。
 
 ## 快速开始（本地）
 
@@ -93,8 +93,8 @@ python -m weather_eval fetch-forecast --source fuxi_data
 export GEVIS_TOKEN="<datacloud.geovisearth.com 控制台获取>"
 python -m weather_eval fetch-forecast --source geovis
 
-# —— AccuWeather（developer.accuweather.com 创建应用获取 Key；免费档 50 次/天）——
-export ACCUWEATHER_API_KEY="<developer.accuweather.com 控制台获取>"
+# —— AccuWeather（2026-08-29 起 Enterprise 入口；Key 由订阅签发 sales@accuweather.com）——
+export ACCUWEATHER_API_KEY="<Enterprise 订阅 Key>"
 python -m weather_eval fetch-forecast --source accuweather
 ```
 
@@ -111,7 +111,7 @@ python -m weather_eval fetch-forecast --source accuweather
 | `fetch-forecast --source fuxi_data` | 抓取伏羲确定性 FuXi-Det 起报快照（需 `FUXI_DATA_TOKEN`） |
 | `fetch-forecast --source fengwu` | 抓取风乌 GHR-9km 起报快照（游客态 7 天；`FENGWU_API_KEY` 可选延长） |
 | `fetch-forecast --source geovis` | 抓取中科星图逐小时预报起报快照（需 `GEVIS_TOKEN`） |
-| `fetch-forecast --source accuweather` | 抓取 AccuWeather 逐小时预报起报快照（需 `ACCUWEATHER_API_KEY`，免费档 50 次/天） |
+| `fetch-forecast --source accuweather` | 抓取 AccuWeather 逐小时预报起报快照（需 `ACCUWEATHER_API_KEY`，Enterprise 入口） |
 | `report` | 用"本月 1 号至今"的累计数据更新主报告 `reports/index.html`（覆盖写，不堆文件） |
 | `monthly [--month YYYY-MM]` | 把某月冻结为月度归档 `reports/monthly/YYYY-MM.html`（默认上一自然月） |
 | `all` | `fetch-obs` + `fetch-forecast` + `report`（GitHub Action 调用；彩云/和风/中科天机/伏羲/风乌/中科星图/AccuWeather 为独立可选步骤） |
@@ -214,13 +214,13 @@ tests/                    pytest（含 cyeva 手算对拍）
   - token 走 URL query 参数（官方契约），网络异常入日志前已做掩码，不泄漏凭据。
 - **AccuWeather（官方 API）接入约束**：
   - **合规提示（接入前请自行评估）**：AccuWeather 服务条款（Terms of Use）含有限制性条款——不得将其数据用于"对 AccuWeather 或其服务/产品进行贬损、评级、排名、评审或其他评估"，缓存/存档期限亦有限制。本项目（公开的排名报告 + 起报快照永久存档）与该条款存在潜在冲突；是否接入、以何种方式公开使用请使用者自行权衡并承担相应责任。
-  - 需 `ACCUWEATHER_API_KEY`（developer.accuweather.com 创建应用获取）。**免费档 50 次/天**，超限返回 503（偶发 403）；配额账本：每站每轮 2 次调用（1 次定位 + 1 次预报），4 站 × 3 轮/天 ≈ 24 次，免费档每轮另有最多 3 次档位探测（合计约 33 次/天，付费档无探测开销）。503 与"档位梯子全被拒"均按账号级确定性失败熔断——同次运行内后续站点直接失败、不再烧退避/重探（若实为瞬时故障，下次运行自愈）。
+  - 需 `ACCUWEATHER_API_KEY`。**2026-08-29 起走 Enterprise 入口**（生产 `api.accuweather.com`、开发 `apidev.accuweather.com`，构造参数 `base_url` 切换；鉴权为 apikey query 参数），Key 由 Enterprise 订阅签发（sales@accuweather.com，非自助创建），配额与合同挂钩——超限官方形态 HTTP 409（不退避立即熔断），503 按瞬时过载退避。配额账本：每站每轮 2 次调用（1 次定位 + 1 次预报），4 站 × 3 轮/天 ≈ 24 次，档位探测进程内仅一轮（最坏 5 次；订阅正常开放 240h 时为 0）。409/503 穷尽与"档位梯子全被拒"均按账号级确定性失败熔断——同次运行内后续站点直接失败、不再烧退避/重探（若实为瞬时故障，下次运行自愈）。
   - **定位是"最近城市吸附"而非格点**：站点坐标先经 Locations API `geoposition/search`（`q` 为**纬度,经度**，与和风 v7 相反）解析为最近城市的 locationKey，预报代表该城市而非站点点位。快照留档 `grid_lat/grid_lon`（城市坐标）、`location_key/location_name` 与 `location_distance_km`（haversine 吸附距离）——该源得分解读时须知"样本代表最近城市"。
-  - **时效档位与订阅回退**：官方档位 1/12/24/48/72/120 小时，请求超出订阅的档位返回 403/400。按 120→72→48→24→12→1 逐级下探（geovis 同款），成功档位进程内缓存、跨站点复用；**有意不做跨运行持久化**（省下的探测配额有限，而 git 自动提交会把瞬时降级永久封顶）——每次运行从默认档重探，双向自愈。实际使用的档位记入快照 `tier` 字段，实际拿到的点数记入 `hours` 字段（被截断时小于 tier）。
+  - **时效档位与订阅回退**：Enterprise 官方档位 1/12/24/72/120/240/360 小时（**无 48**），请求超出订阅的档位返回 403/400。**默认请求 240h（~10 天；2026-08-29 真实 Key 实测订阅最高开放档，评估链路 `hourly_lead_days: 16` 天可完整覆盖）**，按 240→120→72→24→12→1 逐级下探（geovis 同款；订阅升级后调大 `hours` 即可用满 360h），成功档位进程内缓存、跨站点复用；**有意不做跨运行持久化**（省下的探测配额有限，而 git 自动提交会把瞬时降级永久封顶）——每次运行从默认档重探，双向自愈。实际使用的档位记入快照 `tier` 字段，实际拿到的点数记入 `hours` 字段（被截断时小于 tier）。
   - **时间语义**：`DateTime` 为 ISO8601 带当地时区偏移（含 `+08` 两数字形态），统一转北京时并**下取整整点**（同彩云/和风口径）。
   - **数值口径**：`details=true` 才返回 `TotalLiquid`（该小时液态降水总量；`metric=true` 时 ℃/mm）。响应自带 `Unit` 字段，按单位自适应换算（F→℃、inch→mm），未声明单位按公制处理、未知单位按缺测——均以 WARNING 留痕，绝不静默把华氏度当摄氏度入库。
   - **降水移位假设（承重）**：官方字段文档未明示逐小时累计的区间方向；综合"1hour 产品语义、官网当前小时块前瞻展示、观测字段显式命名 PastHour 而预报字段无此标注"判定 `TotalLiquid@t` 覆盖 **(t, t+1h]**（小时段起点在 t）。观测 rain@t 口径为 (t−1h, t]，故快照 `precipitation@t := TotalLiquid@(t−1h)` 整体后移 1 小时入库（按整点键映射实现，序列缺口不错配邻窗降水；代价是首点降水记 None、末点降水被丢弃）。假设与依据在快照 `precip_alignment` 字段留档；**若日后发现该源降水相对观测系统性滞后 1 小时（整体前移 1h 反而更准时），应优先复核此假设**。
-  - **鉴权**：Key 经 `Authorization: Bearer` 头传递（官方 2026-06-10 修订契约；旧版 `?apikey=` query 参数已停用——有效 Key 走 query 也一律 401，曾致 2026-08-29 CI 全站失败）。Key 不再进 URL，日志/异常入 CI 日志前仍统一做掩码（防御纵深）。
+  - **鉴权**：**2026-08-29 迁移 Enterprise 入口后，Key 经 `?apikey=` query 参数传递**（Enterprise 认证页契约；dataservice 入口 2026-06-10 的 Bearer 头契约与本入口互不通用，不得混用）。Key 由此重新进入 URL：日志/异常入 CI 日志前统一做两层掩码（`apikey=<值>` 参数形态通用脱敏兜住 percent-encode/回显形态 + 原文替换）；构造期即拒绝含 URL 保留字符的 Key（其编码形态会使脱敏失配，审查实证）。
   - CI 中为 `continue-on-error` 可选步骤（Secret 缺失时跳过，抓取失败仅标注该步）。
 
 ## 评估方法说明（关于样本与时效）
@@ -334,8 +334,8 @@ tests/                    pytest（含 cyeva 手算对拍）
 - **（P3）快照 `hours` 字段原记"请求档位"而非"实际点数"**：响应被截断时元数据虚高（如请求 120h 实得 3 点仍记 hours=120）。已拆分为 `tier`（实际使用的档位）与 `hours`（实际拿到的时间点数）两字段。
 - **（P3）`Value=null` 但已声明 `Unit` 的缺测条目被误报"未声明单位"**：单位统计原按返回键聚合，缺测条目落入空键分支触发误导性告警。已改为只有真实解释过数值（换算/假设/拒绝）的条目才计入单位统计，并以"全缺测 + 已声明单位不得报未声明单位"的断言锁定。
 - **（P1 假设留档）降水 -1h 移位方向无法对真值校准**：`TotalLiquid@t` 覆盖 (t, t+1h] 的判定依据官方 1hour 产品语义、官网当前小时块前瞻展示、观测字段显式命名 PastHour 三条证据，但审查确认端到端测试只证明"实现与意图自洽"、不构成对真值校准（免费档无真实 Key 可录制）。已把假设、依据与复核信号写入 docstring / 快照 `precip_alignment` 字段 / README 约束节；并补"未移位口径下晴雨 TS 崩为 0"的对照测试，锁定移位确为承重假设——**若日后该源降水相对观测系统性滞后 1 小时，应优先翻转移位方向**。
-- **（记录不修）**：geoposition search 成功响应的形态（单对象）以官方文档为准、无真实 Key 无法录制回放夹具，契约漂移时已有含响应摘要的可诊断错误兜底；429 未按配额处理（AccuWeather 实际以 503 表达超限，无影响）。
-- **（已核查无误）**：CLI 分发/排除链/退出码与既有源语义一致；`--source accuweather` 的模型过滤与"全站失败→退出码 1"；503 熔断不改变失败计数；401 快速失败不做档位回退；F→℃/inch→mm 换算数学与 NaN/bool/null/非 dict 全分支归 None；`+08:00`/`+08`/`Z` 等偏移形态转北京时下取整；降水移位的缺口防错配与跨月边界；haversine 数值；Key 经 query 的全日志脱敏（当时契约；2026-08-29 起已改走 `Authorization: Bearer` 头、URL 不再含 Key，见下节）；无数据模型在排行榜沉底、不进图表与明细表（与 fuxi_det 同路径）；24 模型标签配色齐备且 JS 有兜底色；模板动态计数落在 HTML 上下文、autoescape 下安全；CI 步骤位置/Secret 门控/continue-on-error/并发组正确；`WEATHER_EVAL_DATA_ROOT` 测试隔离完整；快照按 issue 幂等。
+- **（记录不修）**：geoposition search 成功响应的形态（单对象）以官方文档为准、无真实 Key 无法录制回放夹具，契约漂移时已有含响应摘要的可诊断错误兜底；429 未按配额处理（AccuWeather 当时以 503 表达超限，无影响；Enterprise 入口下超限以 409 表达并已单独处理，见下节）。
+- **（已核查无误）**：CLI 分发/排除链/退出码与既有源语义一致；`--source accuweather` 的模型过滤与"全站失败→退出码 1"；503 熔断不改变失败计数；401 快速失败不做档位回退；F→℃/inch→mm 换算数学与 NaN/bool/null/非 dict 全分支归 None；`+08:00`/`+08`/`Z` 等偏移形态转北京时下取整；降水移位的缺口防错配与跨月边界；haversine 数值；Key 经 query 的全日志脱敏（当时契约；该要求后被 2026-08-29 的 Bearer 迁移取代，同日又随 Enterprise 入口迁移回到 query 形态，见下两节）；无数据模型在排行榜沉底、不进图表与明细表（与 fuxi_det 同路径）；24 模型标签配色齐备且 JS 有兜底色；模板动态计数落在 HTML 上下文、autoescape 下安全；CI 步骤位置/Secret 门控/continue-on-error/并发组正确；`WEATHER_EVAL_DATA_ROOT` 测试隔离完整；快照按 issue 幂等。
 
 ## AccuWeather 鉴权契约漂移：401 全站失败修复（2026-08-29）
 
@@ -345,3 +345,26 @@ CI 首轮真实抓取（2026-08-29 11:29）4 站全部 401 失败，Key 本身�
 - **凭据健壮化**：注入的 Key 先剥首尾空白/换行（CI Secret 与 `.env` 常见形态，否则 Bearer 头带脏字符）、控制字符提前给出可操作错误（避免 requests 头编码处炸出天书异常）。
 - **401 错误信息可操作化**：写明"Key 已按官方现行契约经 Bearer 头传递仍被拒"，指引核对控制台 Key 状态，避免误判为代码传参问题。
 - 测试契约同步锁定：Bearer 头存在性 + query 无 apikey、Key 剥空白、控制字符拒绝、脱敏断言改为"中间层/服务端回显凭据"形态。
+
+## AccuWeather 请求入口迁移：自助开发者入口 → Enterprise（2026-08-29）
+
+第一性原理审视"请求入口"：**host、鉴权、档位集、配额语义是同一入口契约的四个面，迁移必须整体切换**——只改域名会把 Bearer 头请求打进只认 apikey query 的 Enterprise，全站 401。核对官方 Enterprise 文档（apidev.accuweather.com 的 Overview/Authentication/Forecasts 页，2026-08-25 最后修订）后完成迁移：
+
+- **入口**：生产 `api.accuweather.com`（默认）、开发 `apidev.accuweather.com`（构造参数 `base_url` 切换，官方双环境表）。
+- **鉴权回迁 query**：Enterprise 契约是 `?apikey=` query 参数（官方原文 "Include the apikey query parameter on every request"），与 dataservice 入口 2026-06-10 修订的 Bearer 头契约**相反、互不通用**；Key 由 Enterprise 订阅签发（sales@accuweather.com），非自助创建。Key 重新进入 URL → 掩码防御从"纵深"升级为"承重"（日志/异常一律先经 `_masked`），api key 由 `_get` 集中注入、端点调用点不可能遗漏。
+- **档位集修正**：官方明列 1/12/24/72/120/240/360——**无 48h**（沿用旧梯子会对 48 白烧一次必拒调用）；迁移时默认仍请求 120h（快照口径连续），240/360 供显式加大（同日稍后默认档提升至 360h，见下）；非官方档位吸附时 INFO 留痕。
+- **配额语义**：超限官方形态 HTTP 409（Allowed request limit has been exceeded）→ 账号级确定性失败，不退避立即熔断（409 分支置于重试 try 之外，避免被网络异常分支当可重试错误烧满退避）；503 仍按瞬时过载退避、穷尽后熔断。官方 `allowError` 参数（Overview 页 Response Codes 节 400 行："Pass allowError=false in the query to suppress error codes"）可把错误码压平成 200——**刻意不用**：状态码是重试/熔断状态机的输入，压平会把契约漂移/配额耗尽静默成伪 200，违背"绝不静默"（契约测试显式断言不发送该参数）。
+- **运维注意**：勿对 `urllib3`/`requests` 开 DEBUG 日志——其自身会打印完整请求 URL（含 `apikey=`），绕过应用层脱敏。
+- **默认时效调整（2026-08-29 同日）**：默认档位由 120h 先提到官方最大档 360h，经真实 Key 实测**订阅最高开放 240h** 后定为 **240h（~10 天）**——评估链路 `hourly_lead_days: 16` 天可完整覆盖，快照体积约翻倍、每站调用数不变；档位梯子保留 360h（订阅升级后调大 `hours` 即可用满），未开放档位自动下探（进程内缓存跨站点复用）。
+
+### 对抗式审查（通用子智能体，独立复核）发现并处置的问题
+
+- **（P0，已实证复现并修复）Key 含 URL 保留字符时掩码失效**：Enterprise 把 Key 放进 URL，requests 会对参数值 percent-encode——Key 含 `+ & = / 空格 %` 等字符时，异常/日志里的 URL 携带**编码形态**（如 `apikey=AbC%2BDeF%3D12`），`_masked` 的原文子串替换匹配不到，凭据原样外泄（且可被 unquote 还原）。双层修复：① 构造期拒绝含 URL 保留字符的 Key（`quote(key) != key` 即拒，合法 Key 均为字母数字，含保留字符即凭据来源可疑）；② `_masked` 升级为两层——先按 `apikey=<值>` 的 URL 参数形态通用脱敏（兜住编码/回显形态），再按原文替换兜底其余泄漏面。补编码形态泄漏测试，审查员的复现脚本修复后复跑确认关闭。
+- **（P1，修复）README 运营约束节仍写 Bearer 头**：与同文件 Enterprise 节及代码自相矛盾，会误导接手者（误以为日志无凭据、应配 Bearer）。已对齐为 apikey query 现行契约并写明两层掩码。
+- **（P2，修复）401"官方语义"误引**：Overview 状态表未列 401（"Valid API key was not supplied" 归 403），原文案把它冠以"官方语义"属过度引用。已改为精确引用"官方认证页语义"（认证页 401=Missing or invalid API key）并注明状态表未列。
+- **（P2，已复核为属实）`allowError` 参数**：审查员首次抓取未见于文档、判为"未证实声明"；针对性复抓 Overview 页 Response Codes 节 400 行确认原文存在（"Pass allowError=false in the query to suppress error codes"）。维持"刻意不用"决策，并补测试断言请求不含该参数。
+- **（P2，留档不修）Locations geoposition 路径未在 Enterprise 主机实测**：官方 Locations 指南页为客户端渲染无法打开；无凭据探测时网关对一切路径（含伪造路径）均先回 403（证实 403=未提供有效 Key 的语义，但无法区分路径存在性）。docstring 已如实留痕，取得真实 Key 后应做一次 geoposition 冒烟；契约漂移时有含响应摘要的可诊断错误兜底。
+- **（P3，修复）`base_url=""` 产生无主机相对 URL**：构造期校验非空并给出可操作错误；尾斜杠已由 `rstrip("/")` 正确兜底（复现确认）。
+- **（P3，修复）历史段括注与最终状态矛盾**：README 既有记录中"Key 经 query（当时契约）→ 已改 Bearer""429/503 超限"两处括注更新为指向 Enterprise 最终状态（query 形态、409 超限）。
+- **（P3，留档）429/503 未读 `Retry-After` 头**：属增强项非缺陷，固定指数退避已够用。
+- **（已核查无误）**：`_get` 集中注入 apikey 杜绝单调用点遗漏；409 的 raise 置于重试 try 之外（else 分支判定），不会被网络异常分支当可重试错误烧满退避；档位梯移除 48 且 `48 not in TIERS`、`hours=48→24` 均有测试锁定；双环境切换、409 定位/预报两路熔断、全量测试零回归。

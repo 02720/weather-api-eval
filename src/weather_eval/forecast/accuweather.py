@@ -1,34 +1,53 @@
 """AccuWeather 逐小时预报快照器。
 
-数据源：AccuWeather Forecast API v1（官方开放 API，Key 见 developer.accuweather.com）：
-  GET https://dataservice.accuweather.com/forecasts/v1/hourly/{hours}hour/{locationKey}
-      ?language=zh-cn&details=true&metric=true   （Key 走 Authorization: Bearer 头）
+数据源：AccuWeather Enterprise API（官方文档 apidev.accuweather.com，2026-08-29 核对）：
+  GET https://api.accuweather.com/forecasts/v1/hourly/{hours}hour/{locationKey}
+      ?language=zh-cn&details=true&metric=true&apikey={key}
 
 ─────────────────────────────────────────────────────────────────────
-端点与契约（第一性原理，关键设计约束，2026-08 核对官方文档）
+端点与契约（第一性原理，关键设计约束，2026-08-29 迁移 Enterprise 时核对官方文档）
 ─────────────────────────────────────────────────────────────────────
+0. 入口：2026-08-29 起走 Enterprise 入口，替代自助开发者入口 dataservice。
+   官方 Overview 列双环境：生产 api.accuweather.com、开发 apidev.accuweather.com
+   （构造参数 base_url 切换，默认生产）。host/鉴权/档位集/配额语义是同一入口
+   契约的四个面，迁移必须整体切换——只改域名会把 Bearer 头请求打进只认
+   apikey query 的 Enterprise，全站 401。
 1. 定位是"最近城市吸附"而非格点：AccuWeather 不支持按经纬度点播，必须先用
    Locations API 把站点坐标解析为最近城市的 locationKey：
-     GET /locations/v1/cities/geoposition/search?q={lat},{lon}   （Key 走头）
+     GET /locations/v1/cities/geoposition/search?q={lat},{lon}   （Key 走 query）
+   （Enterprise 文档的 Locations 指南页为客户端渲染、无法直接核对路径，按官方
+   同一 /locations/v1 端点族沿用；契约漂移时定位失败有含响应摘要的可诊断错误
+   兜底，取得真实 Key 后应做一次冒烟确认。）
    q 为"纬度,经度"（注意与和风 v7 的"经度,纬度"相反，不可混用）。解析出的
    城市坐标/海拔/Key 全部留档（grid_lat/grid_lon/location_*），并用 haversine
    计算吸附距离 location_distance_km——该源的得分代表"最近城市"，与站点
    点位可能相距数十公里，解读时必须知情。
-2. 时效档位 1/12/24/48/72/120 小时，订阅档位决定可用上限：请求超出订阅的
-   档位返回 403/400。按 120→72→48→24→12→1 逐级回退（geovis 同款）。档位是
-   账号级属性：首次成功后进程内缓存、跨站点复用；不做跨运行持久化——免费档
-   50 次/天下每轮重探最多浪费 3 次调用（总用量约 33 次/天，仍宽裕），换来
-   双向自愈：瞬时 403 降级不会被 git 自动提交的状态文件永久封顶时效。
+2. 时效档位取官方 Enterprise 集：官方 Forecasts 页明列 1/12/24/72/120/240/360
+   小时——**无 48h**（沿用 dataservice 旧梯子会对 48 白烧一次必拒调用）。
+   默认请求 240h（~10 天；2026-08-29 真实 Key 实测订阅最高开放档，评估链路
+   hourly_lead_days=16 天可完整覆盖），请求超出订阅的档位返回 403/400，按
+   240→120→72→24→12→1 逐级回退（geovis 同款）。
+   档位是账号级属性：首次成功后进程内缓存、跨站点复用；不做跨运行持久化——
+   每轮重探最坏浪费 5 次调用（梯子全被拒时；订阅正常开放 240h 则为 0），
+   换来双向自愈：瞬时 403 降级不会被 git 自动提交的状态文件永久封顶时效。
    实际使用的档位记入快照 tier 字段，实际拿到的点数记入 hours 字段。
-3. 配额：免费档 50 次/天，超限返回 503（偶发 403）。本源每站每轮 2 次调用
-   （1 定位 + 1 预报），4 站 × 3 轮/天 ≈ 24 次，档位探测另计约 9 次。503 按
-   瞬时过载退避重试，穷尽后置"配额熔断"标志；档位梯子全被拒同样熔断——两种
-   账号级确定性失败都让同次运行内后续站点直接失败、不再烧退避/重探（若其实
-   是瞬时故障，下次运行自愈）。最终错误信息写明配额账本。
-4. 鉴权：官方认证文档（2026-06-10 修订版）改为 Bearer 头——每个请求必须带
-   Authorization: Bearer {key}；旧版"?apikey="query 参数契约已停用（2026-08-29
-   实测：有效 Key 走 query 也一律 401，4 站全挂）。Key 不再进 URL，但掩码防御
-   保留——底层异常/服务端回显仍可能外带凭据，日志/异常消息一律先经 _masked。
+3. 配额：Enterprise 配额与订阅合同挂钩，超限官方以 HTTP 409 表达（Overview
+   状态表 "Allowed request limit has been exceeded"）——账号级确定性失败，
+   不退避立即熔断；503 仍按瞬时过载退避重试、穷尽后熔断。档位梯子全被拒
+   同样熔断——账号级确定性失败都让同次运行内后续站点直接失败、不再烧
+   退避/重探（若其实是瞬时故障，下次运行自愈）。本源每站每轮 2 次调用
+   （1 定位 + 1 预报），4 站 × 3 轮/天 ≈ 24 次，档位探测进程内仅一轮
+   （最坏 5 次，梯子全被拒时；订阅正常开放 240h 则为 0）。官方另
+   提供 allowError 参数可把错误码压平成 200——刻意不用：状态码是重试/熔断
+   状态机的输入，压平会把契约漂移/配额耗尽静默成伪 200，违背"绝不静默"。
+4. 鉴权：Enterprise 契约是 ?apikey= query 参数（官方认证页 "Include the apikey
+   query parameter on every request"），与 dataservice 入口 2026-06-10 修订的
+   Bearer 头契约相反、互不通用。Key 由 Enterprise 订阅签发（sales@accuweather.com，
+   非自助创建）。Key 由此重新进入 URL——掩码防御从"纵深"升级为"承重"：
+   底层异常/服务端回显仍可能外带 URL 凭据，日志/异常消息一律先经 _masked
+   （两层：apikey=<值> 参数形态通用脱敏兜住 percent-encode/回显形态 + 原文
+   替换兜底其余泄漏面）；构造期即拒绝含 URL 保留字符的 Key——其编码形态会
+   使脱敏失配（审查实证），合法 Key 均为 URL 安全字符。
 5. 时间：DateTime 为 ISO8601 带当地时区偏移（如 2026-08-28T15:00:00+08:00；
    文档亦给出 +08 两数字形态，fromisoformat 均可直接解析），astimezone 转北京
    时并下取整整点（同彩云/和风口径）；无偏移的异常形态按北京时墙钟兜底并
@@ -53,11 +72,13 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 import unicodedata
 from datetime import datetime, timedelta
 from math import asin, cos, radians, sin, sqrt
 from typing import Any
+from urllib.parse import quote
 
 import requests
 
@@ -66,17 +87,25 @@ from ..timeutil import BEIJING
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://dataservice.accuweather.com"
-LOCATION_URL = f"{BASE_URL}/locations/v1/cities/geoposition/search"
-FORECAST_URL = f"{BASE_URL}/forecasts/v1/hourly/{{hours}}hour/{{key}}"
+# Enterprise 入口（官方 Overview 双环境）：生产 api / 开发 apidev。
+# host/鉴权/档位/配额是同一入口契约的四个面，切换必须整体进行（docstring 第 0 条）
+BASE_URL = "https://api.accuweather.com"
+DEV_BASE_URL = "https://apidev.accuweather.com"
+# 占位符用单花括号普通字符串（f-string 会吃掉花括号，.format 才是格式化时机）
+_LOCATION_PATH = "/locations/v1/cities/geoposition/search"
+_FORECAST_PATH = "/forecasts/v1/hourly/{hours}hour/{key}"
+LOCATION_URL = f"{BASE_URL}{_LOCATION_PATH}"
+FORECAST_URL = f"{BASE_URL}{_FORECAST_PATH}"
 
 SOURCE = "accuweather"
 MODEL_NAME = "accuweather_v1"
 KEY_ENV = "ACCUWEATHER_API_KEY"
 
-# 官方逐小时档位（小时），从大到小用于订阅档位回退
-TIERS = (120, 72, 48, 24, 12, 1)
-DEFAULT_HOURS = 120
+# Enterprise 官方逐小时档位（小时）：官方 Forecasts 页明列 1/12/24/72/120/240/360，
+# 无 48——沿用 dataservice 旧梯子（含 48）会对 48 白烧一次必拒调用。
+# 从大到小用于订阅档位回退；360 供显式加大 hours 时使用（订阅升级后可用满）。
+TIERS = (360, 240, 120, 72, 24, 12, 1)
+DEFAULT_HOURS = 240  # 真实 Key 实测订阅最高开放档（2026-08-29）
 HEADERS = {"User-Agent": "weather-api-eval/0.1 (+https://github.com/)"}
 
 # 单位自适应：AccuWeather 数值对象自带 Unit。温度目标 ℃、降水目标 mm；
@@ -90,9 +119,16 @@ class _QuotaHint(Exception):
 
 
 def _tier_for(hours: int) -> int:
-    """把请求时效吸附到官方档位：取不超过 hours 的最大档，无则取最小档 1。"""
+    """把请求时效吸附到官方档位：取不超过 hours 的最大档，无则取最小档 1。
+
+    非官方档位（如 dataservice 时代的 48，Enterprise 已无此档）落在此路径，
+    INFO 留痕避免静默降档。"""
     usable = [t for t in TIERS if t <= hours]
-    return max(usable) if usable else min(TIERS)
+    tier = max(usable) if usable else min(TIERS)
+    if hours not in TIERS:
+        logger.info("请求时效 %dh 非官方档位，吸附到 %dh（Enterprise 官方档位 %s）",
+                    hours, tier, "/".join(map(str, TIERS[::-1])))
+    return tier
 
 
 def _num_or_none(v: Any) -> float | None:
@@ -187,10 +223,10 @@ def _body_digest(body: Any) -> str:
 
 def _quota_hint(detail: str) -> str:
     return (
-        f"AccuWeather 请求持续失败（{detail}）。最常见原因是免费档 50 次/天配额耗尽"
-        "（本源每站每轮 2 次调用：1 定位 + 1 预报，4 站 × 3 轮/天 ≈ 24 次，档位探测"
-        "与手动测试另计），也可能是服务端过载；请前往 developer.accuweather.com "
-        "控制台核对当日用量。"
+        f"AccuWeather Enterprise 请求失败（{detail}）。Enterprise 超限的官方形态是 "
+        "HTTP 409（Allowed request limit has been exceeded），请核对 Enterprise 订阅"
+        "的当日用量与合同限额（本源每站每轮 2 次调用：1 定位 + 1 预报，档位探测另计）；"
+        "503 则多为服务端过载，退避穷尽仍持续失败时也应核对配额账本。"
     )
 
 
@@ -274,46 +310,64 @@ class AccuWeatherProvider(ForecastProvider):
 
     def __init__(self, api_key: str | None = None, hours: int = DEFAULT_HOURS,
                  language: str = "zh-cn", timeout: int | tuple = (10, 60),
-                 retries: int = 3, session: requests.Session | None = None):
+                 retries: int = 3, session: requests.Session | None = None,
+                 base_url: str = BASE_URL):
         self.key = api_key if api_key is not None else os.environ.get(KEY_ENV)
         if self.key:
-            # CI Secret/本地 .env 常携带首尾空白或换行——剥除后再进 Authorization 头
+            # CI Secret/本地 .env 常携带首尾空白或换行——剥除后再进 apikey 参数
             self.key = self.key.strip()
             if any(unicodedata.category(c) == "Cc" for c in self.key):
-                # Cc 覆盖 C0/DEL/C1 全部控制码位，非法字符绝不入 Bearer 头
+                # Cc 覆盖 C0/DEL/C1 全部控制码位，非法字符绝不入请求 URL
                 raise RuntimeError(
                     f"AccuWeather API Key 含非法控制字符（经 {KEY_ENV} 注入），"
                     "请检查凭据来源是否被污染"
                 )
+            if quote(self.key, safe="") != self.key:
+                # URL 保留字符（+&=/、空格、% 等）会被 requests 编码成与原文不同的
+                # 形态：异常/日志里的 URL 携带 percent-encode 形态，_masked 的原文
+                # 替换匹配不到 → 凭据泄漏（审查实证）。合法 Key 均为 URL 安全字符，
+                # 含保留字符即凭据来源可疑，直接拒绝而非静默掩码
+                raise RuntimeError(
+                    f"AccuWeather API Key 含 URL 保留字符（经 {KEY_ENV} 注入），"
+                    "percent-encode 形态会使日志脱敏失效，请检查凭据来源是否正确"
+                )
         if not self.key:
             raise RuntimeError(
-                f"AccuWeather API Key 未提供：请在 developer.accuweather.com 创建应用获取，"
-                f"经环境变量 {KEY_ENV} 注入，或在构造 AccuWeatherProvider 时显式传入 api_key。"
+                f"AccuWeather API Key 未提供：Enterprise 订阅 Key（sales@accuweather.com "
+                f"签发，非自助创建）请经环境变量 {KEY_ENV} 注入，或在构造 "
+                f"AccuWeatherProvider 时显式传入 api_key。"
             )
         self.hours = _tier_for(hours)  # 请求时效吸附到官方档位
         self.language = language
         self.timeout = timeout
         self.retries = retries
         self.session = session or requests.Session()
-        self._headers = {
-            **HEADERS,
-            # 官方 2026-06-10 修订契约：Key 经 Authorization: Bearer 头传递
-            # （旧版 query 参数已停用），并按文档要求显式声明 Accept-Encoding
-            "Accept-Encoding": "gzip, deflate",
-            "Authorization": f"Bearer {self.key}",
-        }
+        # Enterprise 双环境（docstring 第 0 条）：默认生产入口，可切开发环境
+        self.base_url = base_url.rstrip("/")
+        if not self.base_url:
+            raise RuntimeError(
+                "AccuWeather base_url 不能为空（应为 Enterprise 入口 URL，如 "
+                f"{BASE_URL}）"
+            )
+        self.location_url = f"{self.base_url}{_LOCATION_PATH}"
+        self.forecast_url = f"{self.base_url}{_FORECAST_PATH}"
+        # Enterprise 契约：Key 经 apikey query 参数传递（_get 集中注入），
+        # 请求头不携带凭据；dataservice 入口 2026-06-10 的 Bearer 头契约与本入口
+        # 互不通用，不得混用
+        self._headers = dict(HEADERS)
         self._tier_cache: int | None = None   # 本进程已验证的可用档位（账号级，跨站点复用）
-        self._quota_suspect = False           # 503 穷尽重试后的熔断标志
+        self._quota_suspect = False           # 409/503 穷尽后的熔断标志
         self._tiers_exhausted = False         # 档位梯子全被拒后的熔断标志
 
     # ------------------------------------------------------------------ 对外
     def fetch_snapshot(self, station: Any, models: list[str] | None = None) -> dict:
         if self._quota_suspect:
-            # 同一次运行内 503 已穷尽过退避：后续站点快速失败，不烧配额与时间
-            raise RuntimeError(_quota_hint("熔断：本次运行已有请求持续 503"))
+            # 同一次运行内配额失败已确认（409 直判 / 503 退避穷尽）：
+            # 后续站点快速失败，不烧配额与时间
+            raise RuntimeError(_quota_hint("熔断：本次运行已有请求确认配额失败"))
         if self._tiers_exhausted:
             # 档位梯子全被拒（订阅未开放逐小时预报或配额以 403 形态耗尽）：
-            # 属账号级确定性失败，后续站点不再重复 6 连探测
+            # 属账号级确定性失败，后续站点不再重复梯子探测
             raise RuntimeError(
                 "AccuWeather 熔断：本次运行内预报各档位均被拒（订阅未开放逐小时预报"
                 "或配额耗尽），不再对后续站点重复尝试")
@@ -356,19 +410,19 @@ class AccuWeatherProvider(ForecastProvider):
     # ------------------------------------------------------------------ 内部
     def _resolve_location(self, station: Any) -> dict:
         """站点坐标 → 最近城市的 locationKey 与元数据（q 为"纬度,经度"）。"""
-        status, body = self._get(LOCATION_URL, {
+        status, body = self._get(self.location_url, {
             "q": f"{station.lat},{station.lon}",
             "language": self.language,
         })
         if status == 401:
             raise RuntimeError(
-                f"AccuWeather 定位鉴权失败（HTTP 401）：Key 已按官方现行契约经 "
-                f"Authorization: Bearer 头传递仍被拒，请到 developer.accuweather.com "
-                f"核对 {KEY_ENV} 是否有效/启用"
+                f"AccuWeather 定位鉴权失败（HTTP 401，官方认证页语义：Missing or invalid "
+                f"API key）：Key 已按 Enterprise 契约经 apikey query 参数传递仍被拒，"
+                f"请核对 Enterprise 订阅的 {KEY_ENV} 是否有效/启用"
             )
         if status != 200 or not isinstance(body, dict):
             hint = ("响应结构异常（应为单个 location 对象，疑似契约漂移）" if status == 200
-                    else "常见原因：配额耗尽/无权限（403）、坐标无匹配城市（404）")
+                    else "官方状态表：403=未随请求提供有效 Key、404=无匹配路由或坐标无匹配城市")
             raise RuntimeError(
                 f"AccuWeather 站点 {station.id} 定位查询失败（HTTP {status}，{hint}）: "
                 f"{_masked(_body_digest(body), self.key)}"
@@ -396,15 +450,14 @@ class AccuWeatherProvider(ForecastProvider):
     def _forecast_any_tier(self, loc_key: str, station_id: str) -> tuple[int, Any]:
         """按档位梯子请求逐小时预报：403/400 逐级下探，成功档位进程内缓存（跨站点复用）。
 
-        无跨运行持久化：免费档 50 次/天下，每轮从默认档重探最多浪费 3 次调用
-        （4 站 × 3 轮/天 ≈ 33 次，含探测），换来双向自愈——瞬时 403 降级不会像
-        状态文件那样被 git 自动提交永久封顶时效。
+        无跨运行持久化：每轮从默认档重探最多浪费 3 次调用，换来双向自愈——
+        瞬时 403 降级不会像状态文件那样被 git 自动提交永久封顶时效。
         """
         tier = self._tier_cache or self.hours
         rejected: list[str] = []
         while True:
             status, body = self._get(
-                FORECAST_URL.format(hours=tier, key=loc_key),
+                self.forecast_url.format(hours=tier, key=loc_key),
                 {"language": self.language, "details": "true", "metric": "true"},
             )
             if status == 200:
@@ -412,8 +465,9 @@ class AccuWeatherProvider(ForecastProvider):
                 return tier, body
             if status == 401:
                 raise RuntimeError(
-                    f"AccuWeather 鉴权失败（HTTP 401）：Key 已按官方现行契约经 "
-                    f"Authorization: Bearer 头传递仍被拒，请核对 {KEY_ENV} 是否有效/启用"
+                    f"AccuWeather 鉴权失败（HTTP 401，官方认证页语义：Missing or invalid "
+                    f"API key）：Key 已按 Enterprise 契约经 apikey query 参数传递仍被拒，"
+                    f"请核对 Enterprise 订阅的 {KEY_ENV} 是否有效/启用"
                 )
             if status in (400, 403):
                 rejected.append(f"{tier}h:HTTP {status} {_masked(_body_digest(body), self.key)}")
@@ -434,8 +488,14 @@ class AccuWeatherProvider(ForecastProvider):
             )
 
     def _get(self, url: str, params: dict) -> tuple[int | None, Any]:
-        """请求一个端点。200 或确定性 4xx（除 429）返回 (status, body)；
-        网络错误/5xx/429 指数退避重试；503 穷尽后置熔断标志并携带配额说明抛错。"""
+        """请求一个端点，并按 Enterprise 契约集中注入 apikey query 参数
+        （端点 params 只管业务语义，鉴权不可能被单个调用点遗漏）。
+        200 或确定性 4xx（除 429/409）返回 (status, body)；409 为官方"订阅允许
+        的请求上限已被超出"——账号级确定性配额失败，不退避、立即置熔断标志并
+        携带配额说明抛错；网络错误/5xx/429 指数退避重试；503 穷尽后同样熔断。
+        409 分支在 try 之外判定：raise 若落在 try 内会被网络异常分支捕获、
+        被当成可重试错误烧满退避。"""
+        params = {**params, "apikey": self.key}
         last_err: Exception | None = None
         last_status: int | None = None
         for attempt in range(self.retries + 1):
@@ -447,18 +507,25 @@ class AccuWeatherProvider(ForecastProvider):
                     body = resp.json()
                 except ValueError:
                     body = (getattr(resp, "text", "") or "")[:200]
-                if status == 200:
-                    return status, body
-                if isinstance(status, int) and 400 <= status < 500 and status != 429:
-                    # 鉴权/权限/档位类确定性错误：重试不会改变结果，交上层判定
-                    return status, body
-                last_status = status
-                last_err = RuntimeError(f"HTTP {status} {_masked(_body_digest(body), self.key)}")
             except Exception as e:  # noqa: BLE001  网络类异常 → 可重试
                 last_status = None
                 # 归一为脱敏后的 RuntimeError：最终 raise 挂 __cause__ 链时，
                 # 原始异常消息（可能含服务端回显的凭据）不会绕过掩码外泄
                 last_err = RuntimeError(_masked(str(e), self.key))
+            else:
+                if status == 200:
+                    return status, body
+                if status == 409:
+                    # Enterprise 官方语义：Allowed request limit has been
+                    # exceeded——确定性配额失败，重试无意义；置熔断让同次运行内
+                    # 后续站点快速失败、不再烧配额
+                    self._quota_suspect = True
+                    raise RuntimeError(_quota_hint("HTTP 409 已超出订阅允许的请求上限"))
+                if isinstance(status, int) and 400 <= status < 500 and status != 429:
+                    # 鉴权/权限/档位类确定性错误：重试不会改变结果，交上层判定
+                    return status, body
+                last_status = status
+                last_err = RuntimeError(f"HTTP {status} {_masked(_body_digest(body), self.key)}")
             logger.warning("AccuWeather 请求失败（第%d次）: %s", attempt + 1,
                            _masked(str(last_err), self.key))
             if attempt < self.retries:
@@ -469,9 +536,18 @@ class AccuWeatherProvider(ForecastProvider):
         raise RuntimeError(f"AccuWeather 请求最终失败: {_masked(str(last_err), self.key)}") from last_err
 
 
+# URL 参数形态的 apikey 值（大小写不敏感）：_masked 的通用脱敏兜底
+_APIKEY_IN_URL_RE = re.compile(r"(apikey=)[^&\s'\"<>]+", re.IGNORECASE)
+
+
 def _masked(text: str, key: str) -> str:
-    """Key 已走 Authorization 头（官方 2026-06-10 修订契约），URL 不再携带凭据；
-    但底层异常/服务端回显仍可能外带 Key——入日志前一律掩码，防御纵深。"""
+    """Enterprise 契约下 Key 经 apikey query 参数进入 URL——日志/异常中的 URL、
+    底层异常消息、服务端回显都可能外带 Key，入日志前一律掩码（承重防御）。
+
+    两层：先按 `apikey=<值>` 的 URL 参数形态通用脱敏（兜住 percent-encode、
+    服务端回显等与原文不同的形态——原文替换对编码形态必然失配，审查实证）；
+    再按原文替换兜底其余泄漏面（如异常消息里裸出现的 Key）。"""
+    text = _APIKEY_IN_URL_RE.sub(r"\1***", text)
     if key:
         text = text.replace(key, "***")
     return text

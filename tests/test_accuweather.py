@@ -1,18 +1,23 @@
 """AccuWeather 逐小时预报接入测试。
 
-mock 契约依据官方文档（developer.accuweather.com，2026-08-29 核对现行版）：
-- 鉴权：Key 经 Authorization: Bearer 头传递（2026-06-10 修订契约；
-  旧版 ?apikey= query 参数已停用——实测有效 Key 走 query 也 401）；
+mock 契约依据官方 Enterprise 文档（apidev.accuweather.com，2026-08-29 核对现行版）：
+- 入口：Enterprise 生产 api.accuweather.com / 开发 apidev.accuweather.com
+  （官方 Overview 双环境；2026-08-29 自 dataservice 自助入口整体迁移）；
+- 鉴权：Key 经 ?apikey= query 参数随每请求传递（Enterprise 契约；
+  与 dataservice 入口 2026-06-10 的 Bearer 头契约相反、互不通用）；
 - Locations API geoposition search：q 为"纬度,经度"，返回 Key/GeoPosition；
 - Forecast API v1 hourly：URL 路径 /forecasts/v1/hourly/{hours}hour/{locationKey}，
   details=true 才有 TotalLiquid（该小时液态降水总量，metric=true 时 mm），
   DateTime 为 ISO8601 带当地偏移；
-- 免费档 50 次/天，超限 503；超出订阅的时效档位 403/400。
+- 官方档位 1/12/24/72/120/240/360（无 48）；超出订阅的时效档位 403/400；
+- 配额超限官方形态 HTTP 409（Allowed request limit has been exceeded）→
+  账号级熔断；503 视为瞬时过载退避穷尽后熔断。
 
 覆盖：时间换算与下取整、单位自适应换算（F→℃/inch→mm/未知单位）、
 降水 -1h 移位口径（含缺口防错配）、最近城市吸附留档、档位梯子回退与
-跨运行状态缓存、401 快速失败、503 退避穷尽后的配额熔断、日志脱敏、
-CLI 分发与 Open-Meteo 排除链、与评估引擎端到端配对。
+进程内缓存、401 快速失败、409 立即熔断、503 退避穷尽后的配额熔断、
+日志脱敏、开发环境入口切换、CLI 分发与 Open-Meteo 排除链、与评估引擎
+端到端配对。
 """
 import json
 import logging
@@ -23,7 +28,9 @@ import requests
 from conftest import FakeResp
 
 from weather_eval.forecast.accuweather import (
+    BASE_URL,
     DEFAULT_HOURS,
+    DEV_BASE_URL,
     KEY_ENV,
     LOCATION_URL,
     MODEL_NAME,
@@ -142,8 +149,11 @@ def test_parse_dt_rejects_garbage():
 
 # ----------------------------------------------------------------- 档位吸附
 def test_tier_for_snaps_to_official_tiers():
-    assert [_tier_for(h) for h in (120, 119, 73, 72, 49, 25, 24, 13, 1, 0)] == \
-           [120, 72, 72, 72, 48, 24, 24, 12, 1, 1]
+    """Enterprise 官方档位 1/12/24/72/120/240/360——锁定无 48（dataservice 旧档），
+    请求 48h 会被吸附到 24h 而非发出必拒调用。"""
+    assert 48 not in TIERS
+    assert [_tier_for(h) for h in (360, 361, 240, 239, 120, 119, 73, 72, 49, 48, 25, 24, 13, 1, 0)] == \
+           [360, 360, 240, 120, 120, 72, 72, 72, 24, 24, 24, 24, 12, 1, 1]
 
 
 # ----------------------------------------------------------------- 主路解析
@@ -178,9 +188,10 @@ def test_fetch_full_snapshot(monkeypatch):
 
 
 def test_request_contract(monkeypatch):
-    """锁定请求契约：定位 q=纬度,经度；预报路径档位/locationKey、
-    details/metric 为字符串 true、鉴权走 Authorization: Bearer 头且
-    绝不回落 query 参数（旧契约已停用）、UA 固定。"""
+    """锁定 Enterprise 请求契约：生产入口域名；定位 q=纬度,经度；预报路径
+    档位/locationKey、details/metric 为字符串 true（requests 的 True 会变 "True"）；
+    鉴权走 apikey query 参数（Enterprise 契约，与 dataservice 入口的 Bearer 头
+    契约互不通用）、请求头不携带凭据、UA 固定。"""
     monkeypatch.delenv(KEY_ENV, raising=False)
     sess = RoutingSession(_routes(forecast=lambda u, p: _ok(
         _fc_payload(BASE, [30.0], [0.0]))))
@@ -188,27 +199,41 @@ def test_request_contract(monkeypatch):
 
     loc_call, fc_call = sess.calls[0], sess.calls[1]
     assert loc_call["url"] == LOCATION_URL
+    assert loc_call["url"].startswith(BASE_URL + "/")
     assert loc_call["params"]["q"] == "23.4783,111.304"   # 纬度在前（与和风 v7 相反）
-    assert "apikey" not in loc_call["params"]
-    assert loc_call["headers"]["Authorization"] == f"Bearer {KEY}"
-    assert fc_call["url"] == f"https://dataservice.accuweather.com/forecasts/v1/hourly/{DEFAULT_HOURS}hour/329260"
-    assert fc_call["params"]["details"] == "true"          # 布尔必须传字符串，requests 的 True 会变 "True"
+    assert loc_call["params"]["apikey"] == KEY
+    assert "Authorization" not in loc_call["headers"]
+    assert fc_call["url"] == f"{BASE_URL}/forecasts/v1/hourly/{DEFAULT_HOURS}hour/329260"
+    assert fc_call["params"]["details"] == "true"
     assert fc_call["params"]["metric"] == "true"
-    assert "apikey" not in fc_call["params"]
-    assert fc_call["headers"]["Authorization"] == f"Bearer {KEY}"
+    assert fc_call["params"]["apikey"] == KEY
+    assert "Authorization" not in fc_call["headers"]
+    # 官方 allowError 参数（可把错误码压平成 200）刻意不用：状态码是重试/熔断
+    # 状态机的输入，压平违背"绝不静默"
+    assert "allowError" not in loc_call["params"]
+    assert "allowError" not in fc_call["params"]
     assert fc_call["headers"]["User-Agent"] == "weather-api-eval/0.1 (+https://github.com/)"
 
 
-def test_key_whitespace_stripped_into_bearer_header(monkeypatch):
-    """CI Secret/.env 常携带首尾空白或换行：必须剥除后再进 Authorization 头。"""
+def test_dev_entry_base_url_override(monkeypatch):
+    """官方双环境：base_url 可切到开发环境 apidev.accuweather.com，默认生产。"""
+    monkeypatch.delenv(KEY_ENV, raising=False)
+    sess = RoutingSession(_routes(forecast=lambda u, p: _ok(
+        _fc_payload(BASE, [30.0], [0.0]))))
+    AccuWeatherProvider(api_key=KEY, session=sess, retries=0,
+                        base_url=DEV_BASE_URL).fetch_snapshot(_station())
+    assert all(c["url"].startswith(DEV_BASE_URL + "/") for c in sess.calls)
+
+
+def test_key_whitespace_stripped_into_query_param(monkeypatch):
+    """CI Secret/.env 常携带首尾空白或换行：必须剥除后再进 apikey 参数。"""
     monkeypatch.delenv(KEY_ENV, raising=False)
     sess = RoutingSession(_routes(forecast=lambda u, p: _ok(
         _fc_payload(BASE, [30.0], [0.0]))))
     prov = AccuWeatherProvider(api_key=f"  {KEY}\n", session=sess, retries=0)
     assert prov.key == KEY
     prov.fetch_snapshot(_station())
-    assert all(c["headers"]["Authorization"] == f"Bearer {KEY}"
-               for c in sess.calls)
+    assert all(c["params"]["apikey"] == KEY for c in sess.calls)
 
 
 def test_env_key_whitespace_stripped(monkeypatch):
@@ -222,6 +247,15 @@ def test_key_with_control_chars_rejected_cleanly():
     # \x85(NEL) 属 Unicode 空白、会被 strip() 先剥除，不算到达头的控制字符
     for bad in (KEY + "\x00", KEY + "\x7f", KEY + "\x9f"):
         with pytest.raises(RuntimeError, match="控制字符"):
+            AccuWeatherProvider(api_key=bad)
+
+
+def test_key_with_url_unsafe_chars_rejected_cleanly():
+    """含 URL 保留字符的 Key 会被 percent-encode 成与原文不同的形态，
+    _masked 的原文替换必然失配 → 凭据泄漏（对抗审查实证）。合法 Key 均为
+    URL 安全字符，构造期直接拒绝而非静默掩码。"""
+    for bad in (KEY + "+", KEY + "&x=", "a b", KEY + "%2F", KEY + "/56"):
+        with pytest.raises(RuntimeError, match="URL 保留字符"):
             AccuWeatherProvider(api_key=bad)
 
 
@@ -248,7 +282,7 @@ def test_duplicate_times_keep_first():
 
 
 def test_truncated_response_warns(caplog, monkeypatch):
-    """档位 120h 但仅返回 24 点 -> 以 WARNING 暴露时效被截断。"""
+    """默认档 240h 但仅返回 24 点 -> 以 WARNING 暴露时效被截断。"""
     monkeypatch.delenv(KEY_ENV, raising=False)
     payload = _fc_payload(BASE, [30.0] * 24, [0.0] * 24)
     src = _provider(_routes(forecast=lambda u, p: _ok(payload)))
@@ -328,22 +362,23 @@ def test_all_missing_values_sentinels(caplog, monkeypatch):
 
 # ----------------------------------------------------------------- 档位回退与熔断
 def test_tier_fallback_steps_down_and_caches(monkeypatch):
-    """120/72 被 403 拒 -> 48 成功；第二个站点直接走 48，不再重探。"""
+    """默认档 240h 起，120/72 被 403 拒 -> 24 成功（Enterprise 无 48 档，
+    不空烧必拒调用）；第二个站点直接走 24，不再重探。"""
     monkeypatch.delenv(KEY_ENV, raising=False)
     state = {"forecast_calls": []}
 
     def forecast(url, params):
         state["forecast_calls"].append(url)
-        if "/hourly/48hour/" in url:
+        if "/hourly/24hour/" in url:
             return _ok(_fc_payload(BASE, [30.0], [0.0]))
         return json.dumps({"code": "403", "message": "Access denied"}), 403
 
     src = _provider(_routes(forecast=forecast))
     snap1 = src.fetch_snapshot(_station())
-    assert snap1["tier"] == 48
+    assert snap1["tier"] == 24
     src.fetch_snapshot(_station())
     assert [u.split("/hourly/")[1].split("/")[0] for u in state["forecast_calls"]] == \
-           ["120hour", "72hour", "48hour", "48hour"]
+           ["240hour", "120hour", "72hour", "24hour", "24hour"]
 
 
 def test_tier_cache_is_in_process_only(monkeypatch):
@@ -360,12 +395,12 @@ def test_tier_cache_is_in_process_only(monkeypatch):
     # 同实例第二站复用缓存，不再重探
     first.fetch_snapshot(_station())
 
-    # 新实例（模拟下一次运行）：重新从 120 探测（瞬时降级不会被永久封顶）
+    # 新实例（模拟下一次运行）：重新从默认档 240 探测（瞬时降级不会被永久封顶）
     sess = RoutingSession(_routes(forecast=forecast))
     second = AccuWeatherProvider(api_key=KEY, session=sess, retries=0)
     assert second.fetch_snapshot(_station())["tier"] == 24
     assert [c["url"].split("/hourly/")[1].split("/")[0] for c in sess.calls[1:]] == \
-        ["120hour", "72hour", "48hour", "24hour"]
+        ["240hour", "120hour", "72hour", "24hour"]
 
 
 def test_all_tiers_rejected_breaker_blocks_rest_of_run(monkeypatch):
@@ -401,30 +436,68 @@ def test_location_auth_failure_has_actionable_message(monkeypatch):
 
 
 def test_all_tiers_rejected_error_carries_attempts(monkeypatch):
+    """错误信息必须携带全部实际尝试过的档位（从默认 120h 向下回退的轨迹；
+    240/360 在默认档之上、本就不该被探测）。"""
     monkeypatch.delenv(KEY_ENV, raising=False)
     sess = RoutingSession(_routes(forecast=lambda u, p: (json.dumps({"code": "403"}), 403)))
     with pytest.raises(RuntimeError) as exc:
         AccuWeatherProvider(api_key=KEY, session=sess, retries=0).fetch_snapshot(_station())
     msg = str(exc.value)
-    for tier in TIERS:
+    attempted = [t for t in TIERS if t <= DEFAULT_HOURS]
+    for tier in attempted:
         assert f"{tier}h" in msg
     assert "403" in msg
+    # 尝试轨迹 = 梯子从默认档起的全量下探，一次不多烧
+    assert len([c for c in sess.calls if "hourly" in c["url"]]) == len(attempted)
+
+
+def test_409_quota_breaks_immediately_without_retries(monkeypatch):
+    """Enterprise 超限官方形态 409（Allowed request limit has been exceeded）：
+    账号级确定性失败——不退避重试、立即置熔断；后续站点 0 次请求快速失败。"""
+    monkeypatch.delenv(KEY_ENV, raising=False)
+    sess = RoutingSession(_routes(forecast=lambda u, p: (
+        json.dumps({"message": "Allowed request limit has been exceeded"}), 409)))
+    src = AccuWeatherProvider(api_key=KEY, session=sess, retries=3)
+    with pytest.raises(RuntimeError, match="409"):
+        src.fetch_snapshot(_station())
+    assert src._quota_suspect is True
+    assert len(sess.calls) == 2  # 定位 1 次（200）+ 预报 1 次（409），重试为 0
+    with pytest.raises(RuntimeError, match="熔断"):
+        src.fetch_snapshot(_station())
+    assert len(sess.calls) == 2  # 熔断后不再发请求
 
 
 def test_503_exhausts_then_breaker_blocks_rest_of_run(monkeypatch, caplog):
-    """503 退避重试穷尽 -> 带配额说明抛错 + 置熔断；后续站点 0 次请求快速失败。"""
+    """503 退避重试穷尽 -> 带配额说明抛错 + 置熔断；后续站点 0 次请求快速失败。
+    配额说明须写明 409 官方语义（503 也可能是超限的另一形态）。"""
     monkeypatch.delenv(KEY_ENV, raising=False)
     monkeypatch.setattr("weather_eval.forecast.accuweather.time.sleep", lambda s: None)
     sess = RoutingSession(_routes(forecast=lambda u, p: ("Service Unavailable", 503)))
     src = AccuWeatherProvider(api_key=KEY, session=sess, retries=2)
     with caplog.at_level(logging.WARNING, logger="weather_eval.forecast.accuweather"):
-        with pytest.raises(RuntimeError, match="50 次/天"):
+        with pytest.raises(RuntimeError, match="409"):
             src.fetch_snapshot(_station())
     assert src._quota_suspect is True
     assert len(sess.calls) == 1 + 3  # 定位 1 次（200）+ 预报重试穷尽 3 次
     with pytest.raises(RuntimeError, match="熔断"):
         src.fetch_snapshot(_station())
     assert len(sess.calls) == 1 + 3  # 熔断后不再发请求
+
+
+def test_location_409_quota_breaks_immediately(monkeypatch):
+    """定位调用返回 409 同样是账号级配额失败：不退避、立即熔断（_get 集中
+    判定，定位/预报两路同语义）。"""
+    monkeypatch.delenv(KEY_ENV, raising=False)
+    sess = RoutingSession(_routes(location=(json.dumps({"message": "exceeded"}), 409),
+                                  forecast=lambda u, p: _ok(_fc_payload(BASE, [30.0], [0.0]))))
+    src = AccuWeatherProvider(api_key=KEY, session=sess, retries=3)
+    with pytest.raises(RuntimeError, match="409"):
+        src.fetch_snapshot(_station())
+    assert src._quota_suspect is True
+    assert len(sess.calls) == 1  # 仅定位 1 次，无重试、无预报调用
+    with pytest.raises(RuntimeError, match="熔断"):
+        src.fetch_snapshot(_station())
+    assert len(sess.calls) == 1
 
 
 def test_non_503_5xx_retries_but_no_breaker(monkeypatch):
@@ -439,25 +512,51 @@ def test_non_503_5xx_retries_but_no_breaker(monkeypatch):
 
 
 def test_key_redacted_in_logs_and_errors(monkeypatch, caplog):
-    """Key 已走 Authorization 头，URL 不再携带凭据；但底层异常/服务端回显仍
-    可能外带 Key——日志与最终异常都必须脱敏（防御纵深）。"""
+    """Enterprise 契约下 Key 经 apikey query 参数进入 URL：底层异常（requests
+    常把完整 URL 带进异常消息）与服务端回显都可能外带 Key——日志与最终异常
+    都必须脱敏。"""
     monkeypatch.delenv(KEY_ENV, raising=False)
 
     class _BoomSession:
-        # 模拟中间层/服务端回显凭据的真实异常形态：消息携带 Bearer Key 明文
+        # 模拟底层异常携带完整请求 URL 的真实形态（Enterprise：URL 含 apikey=）
         def get(self, url, params=None, headers=None, **kwargs):
             raise ConnectionError(
-                f"refused while sending 'Authorization: Bearer {KEY}' to {url}")
+                f"HTTPSConnectionPool(host='api.accuweather.com'): refused while "
+                f"GETting {url}?apikey={KEY}")
 
     prov = AccuWeatherProvider(api_key=KEY, session=_BoomSession(), retries=0)
     with caplog.at_level(logging.WARNING, logger="weather_eval.forecast.accuweather"):
         with pytest.raises(RuntimeError) as exc:
             prov.fetch_snapshot(_station())
     assert KEY not in str(exc.value)
+    assert f"apikey={KEY}" not in str(exc.value)
     # __cause__ 链也不得携带明文：原始网络异常须先归一为脱敏 RuntimeError
     assert exc.value.__cause__ is not None
     assert KEY not in str(exc.value.__cause__)
     assert all(KEY not in r.message for r in caplog.records)
+
+
+def test_encoded_apikey_in_transport_error_masked(monkeypatch, caplog):
+    """通用参数形态脱敏（对抗审查实证的泄漏面）：percent-encode/服务端回显等
+    与原文 Key 不同的形态，靠 `apikey=<值>` 模式兜底，不能因原文失配而漏掩。"""
+    monkeypatch.delenv(KEY_ENV, raising=False)
+    encoded = "AbC%2BDeF%3D12%2634%2F56"
+
+    class _BoomSession:
+        # 模拟服务端/中间层回显完整 URL 的形态：apikey 值为 percent-encode 形态，
+        # 与 provider 持有的原文 Key（URL 安全字符）无子串关系
+        def get(self, url, params=None, headers=None, **kwargs):
+            raise ConnectionError(
+                f"HTTPSConnectionPool(host='api.accuweather.com'): refused while "
+                f"GETting {url}?apikey={encoded}&language=zh-cn")
+
+    prov = AccuWeatherProvider(api_key=KEY, session=_BoomSession(), retries=0)
+    with caplog.at_level(logging.WARNING, logger="weather_eval.forecast.accuweather"):
+        with pytest.raises(RuntimeError) as exc:
+            prov.fetch_snapshot(_station())
+    assert encoded not in str(exc.value)
+    assert encoded not in str(exc.value.__cause__)
+    assert all(encoded not in r.message for r in caplog.records)
 
 
 # ----------------------------------------------------------------- 定位解析
@@ -504,10 +603,23 @@ def test_key_arg_beats_env(monkeypatch):
 
 
 def test_hours_snapped_to_tier(monkeypatch):
+    """Enterprise 已无 48 档：请求 48h 吸附到 24h；360 仍是合法档位
+    （显式传入时使用，如订阅日后升级），默认档 240h 为实测订阅上限。"""
     monkeypatch.delenv(KEY_ENV, raising=False)
-    assert AccuWeatherProvider(api_key="k", hours=48).hours == 48
+    assert AccuWeatherProvider(api_key="k", hours=48).hours == 24
     assert AccuWeatherProvider(api_key="k", hours=100).hours == 72
+    assert AccuWeatherProvider(api_key="k", hours=300).hours == 240
+    assert AccuWeatherProvider(api_key="k", hours=360).hours == 360
+    assert AccuWeatherProvider(api_key="k").hours == DEFAULT_HOURS == 240
     assert AccuWeatherProvider(api_key="k", hours=0).hours == 1
+
+
+def test_empty_base_url_rejected_cleanly():
+    """base_url 置空会产生无主机的相对 URL——构造期拒绝而非静默产出坏 URL。"""
+    with pytest.raises(RuntimeError, match="base_url"):
+        AccuWeatherProvider(api_key="k", base_url="")
+    with pytest.raises(RuntimeError, match="base_url"):
+        AccuWeatherProvider(api_key="k", base_url="/")
 
 
 # ----------------------------------------------------------------- CLI 集成

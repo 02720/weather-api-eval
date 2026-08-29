@@ -128,9 +128,10 @@ jobs:
           fi
 
       - name: 抓取 AccuWeather 逐小时预报（可选，需配置 ACCUWEATHER_API_KEY Secret）
-        # Key 经 developer.accuweather.com 创建应用获取；免费档 50 次/天（每站每轮
-        # 2 次调用），可用档位状态缓存在 data/state/ 由各次运行共享以省配额。
-        # 未配置则跳过；503（配额耗尽/过载）重试穷尽后本步失败但不阻断主流程。
+        # 2026-08-29 起走 Enterprise 入口（api.accuweather.com，鉴权为 apikey query
+        # 参数），Key 由 Enterprise 订阅签发（sales@accuweather.com）；配额与合同
+        # 挂钩，超限官方形态 HTTP 409（立即熔断），503 过载退避穷尽后失败。
+        # 未配置则跳过；本步失败不阻断主流程。
         continue-on-error: true
         env:
           ACCUWEATHER_API_KEY: ${{ secrets.ACCUWEATHER_API_KEY }}
