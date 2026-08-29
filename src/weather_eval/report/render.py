@@ -54,6 +54,27 @@ MODEL_LABELS = {
     "accuweather_v1": "AccuWeather 逐小时",
 }
 
+# 模型家族分组（选源器按此分组展示）。源多了以后，读者按"这家是什么来头"找源，
+# 比在一长串列表里按颜色找快得多；组内展示顺序由前端按排行榜名次排。
+MODEL_FAMILIES = [
+    {"icon": "🌐", "name": "Open-Meteo 全球模式", "models": [
+        "best_match",
+        "ecmwf_ifs", "ecmwf_ifs025", "ecmwf_aifs025_single",
+        "ncep_gfs_global", "ncep_aigfs025", "ncep_hgefs025_ensemble_mean",
+        "dwd_icon_global", "cma_grapes_global", "cmc_gem_gdps",
+        "jma_gsm", "ukmo_global_deterministic_10km",
+    ]},
+    {"icon": "🏢", "name": "商业天气 API", "models": [
+        "caiyun_v2_6", "qweather_v1", "accuweather_v1",
+    ]},
+    {"icon": "🔬", "name": "中科天机", "models": [
+        "tj_km_fusion", "tj_t2_early", "tj_t2", "tj_t1", "tj_t1h_ai",
+    ]},
+    {"icon": "🤖", "name": "AI 气象大模型", "models": [
+        "fuxi_c88", "fuxi_det", "fengwu_ghr_9km", "geovis_v1",
+    ]},
+]
+
 # 每个模型的固定配色（图表/排行榜共用，全站一致，方便读者形成"颜色=模型"的记忆）。
 MODEL_COLORS = {
     "ecmwf_ifs": "#2563eb",      # 蓝
@@ -140,6 +161,7 @@ def render_report_html(report_data: dict, title: str | None = None,
         model_labels=MODEL_LABELS,
         model_labels_json=labels_json,
         model_colors_json=colors_json,
+        model_families_json=_js_json(MODEL_FAMILIES),
         station_labels=station_labels or {},
         station_labels_json=_js_json(station_labels or {}),
         archives=archives or [],
