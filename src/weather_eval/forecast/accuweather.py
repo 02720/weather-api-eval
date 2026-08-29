@@ -2,14 +2,14 @@
 
 数据源：AccuWeather Forecast API v1（官方开放 API，Key 见 developer.accuweather.com）：
   GET https://dataservice.accuweather.com/forecasts/v1/hourly/{hours}hour/{locationKey}
-      ?apikey=...&language=zh-cn&details=true&metric=true
+      ?language=zh-cn&details=true&metric=true   （Key 走 Authorization: Bearer 头）
 
 ─────────────────────────────────────────────────────────────────────
 端点与契约（第一性原理，关键设计约束，2026-08 核对官方文档）
 ─────────────────────────────────────────────────────────────────────
 1. 定位是"最近城市吸附"而非格点：AccuWeather 不支持按经纬度点播，必须先用
    Locations API 把站点坐标解析为最近城市的 locationKey：
-     GET /locations/v1/cities/geoposition/search?apikey=...&q={lat},{lon}
+     GET /locations/v1/cities/geoposition/search?q={lat},{lon}   （Key 走头）
    q 为"纬度,经度"（注意与和风 v7 的"经度,纬度"相反，不可混用）。解析出的
    城市坐标/海拔/Key 全部留档（grid_lat/grid_lon/location_*），并用 haversine
    计算吸附距离 location_distance_km——该源的得分代表"最近城市"，与站点
@@ -25,9 +25,10 @@
    瞬时过载退避重试，穷尽后置"配额熔断"标志；档位梯子全被拒同样熔断——两种
    账号级确定性失败都让同次运行内后续站点直接失败、不再烧退避/重探（若其实
    是瞬时故障，下次运行自愈）。最终错误信息写明配额账本。
-4. apikey 只能走 query 参数（官方契约，无 header 方式），key 必然出现在 URL
-   中——所有日志/异常消息必须先经 _masked 掩码（geovis 同款），不随 CI 日志
-   泄露。
+4. 鉴权：官方认证文档（2026-06-10 修订版）改为 Bearer 头——每个请求必须带
+   Authorization: Bearer {key}；旧版"?apikey="query 参数契约已停用（2026-08-29
+   实测：有效 Key 走 query 也一律 401，4 站全挂）。Key 不再进 URL，但掩码防御
+   保留——底层异常/服务端回显仍可能外带凭据，日志/异常消息一律先经 _masked。
 5. 时间：DateTime 为 ISO8601 带当地时区偏移（如 2026-08-28T15:00:00+08:00；
    文档亦给出 +08 两数字形态，fromisoformat 均可直接解析），astimezone 转北京
    时并下取整整点（同彩云/和风口径）；无偏移的异常形态按北京时墙钟兜底并
@@ -53,6 +54,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import unicodedata
 from datetime import datetime, timedelta
 from math import asin, cos, radians, sin, sqrt
 from typing import Any
@@ -274,6 +276,15 @@ class AccuWeatherProvider(ForecastProvider):
                  language: str = "zh-cn", timeout: int | tuple = (10, 60),
                  retries: int = 3, session: requests.Session | None = None):
         self.key = api_key if api_key is not None else os.environ.get(KEY_ENV)
+        if self.key:
+            # CI Secret/本地 .env 常携带首尾空白或换行——剥除后再进 Authorization 头
+            self.key = self.key.strip()
+            if any(unicodedata.category(c) == "Cc" for c in self.key):
+                # Cc 覆盖 C0/DEL/C1 全部控制码位，非法字符绝不入 Bearer 头
+                raise RuntimeError(
+                    f"AccuWeather API Key 含非法控制字符（经 {KEY_ENV} 注入），"
+                    "请检查凭据来源是否被污染"
+                )
         if not self.key:
             raise RuntimeError(
                 f"AccuWeather API Key 未提供：请在 developer.accuweather.com 创建应用获取，"
@@ -284,6 +295,13 @@ class AccuWeatherProvider(ForecastProvider):
         self.timeout = timeout
         self.retries = retries
         self.session = session or requests.Session()
+        self._headers = {
+            **HEADERS,
+            # 官方 2026-06-10 修订契约：Key 经 Authorization: Bearer 头传递
+            # （旧版 query 参数已停用），并按文档要求显式声明 Accept-Encoding
+            "Accept-Encoding": "gzip, deflate",
+            "Authorization": f"Bearer {self.key}",
+        }
         self._tier_cache: int | None = None   # 本进程已验证的可用档位（账号级，跨站点复用）
         self._quota_suspect = False           # 503 穷尽重试后的熔断标志
         self._tiers_exhausted = False         # 档位梯子全被拒后的熔断标志
@@ -339,12 +357,15 @@ class AccuWeatherProvider(ForecastProvider):
     def _resolve_location(self, station: Any) -> dict:
         """站点坐标 → 最近城市的 locationKey 与元数据（q 为"纬度,经度"）。"""
         status, body = self._get(LOCATION_URL, {
-            "apikey": self.key,
             "q": f"{station.lat},{station.lon}",
             "language": self.language,
         })
         if status == 401:
-            raise RuntimeError(f"AccuWeather 定位鉴权失败（HTTP 401）：请检查 {KEY_ENV} 是否有效")
+            raise RuntimeError(
+                f"AccuWeather 定位鉴权失败（HTTP 401）：Key 已按官方现行契约经 "
+                f"Authorization: Bearer 头传递仍被拒，请到 developer.accuweather.com "
+                f"核对 {KEY_ENV} 是否有效/启用"
+            )
         if status != 200 or not isinstance(body, dict):
             hint = ("响应结构异常（应为单个 location 对象，疑似契约漂移）" if status == 200
                     else "常见原因：配额耗尽/无权限（403）、坐标无匹配城市（404）")
@@ -384,14 +405,16 @@ class AccuWeatherProvider(ForecastProvider):
         while True:
             status, body = self._get(
                 FORECAST_URL.format(hours=tier, key=loc_key),
-                {"apikey": self.key, "language": self.language,
-                 "details": "true", "metric": "true"},
+                {"language": self.language, "details": "true", "metric": "true"},
             )
             if status == 200:
                 self._tier_cache = tier
                 return tier, body
             if status == 401:
-                raise RuntimeError(f"AccuWeather 鉴权失败（HTTP 401）：请检查 {KEY_ENV} 是否有效")
+                raise RuntimeError(
+                    f"AccuWeather 鉴权失败（HTTP 401）：Key 已按官方现行契约经 "
+                    f"Authorization: Bearer 头传递仍被拒，请核对 {KEY_ENV} 是否有效/启用"
+                )
             if status in (400, 403):
                 rejected.append(f"{tier}h:HTTP {status} {_masked(_body_digest(body), self.key)}")
                 smaller = [t for t in TIERS if t < tier]
@@ -417,7 +440,7 @@ class AccuWeatherProvider(ForecastProvider):
         last_status: int | None = None
         for attempt in range(self.retries + 1):
             try:
-                resp = self.session.get(url, params=params, headers=HEADERS,
+                resp = self.session.get(url, params=params, headers=self._headers,
                                         timeout=self.timeout)
                 status = getattr(resp, "status_code", None)
                 try:
@@ -433,7 +456,9 @@ class AccuWeatherProvider(ForecastProvider):
                 last_err = RuntimeError(f"HTTP {status} {_masked(_body_digest(body), self.key)}")
             except Exception as e:  # noqa: BLE001  网络类异常 → 可重试
                 last_status = None
-                last_err = e
+                # 归一为脱敏后的 RuntimeError：最终 raise 挂 __cause__ 链时，
+                # 原始异常消息（可能含服务端回显的凭据）不会绕过掩码外泄
+                last_err = RuntimeError(_masked(str(e), self.key))
             logger.warning("AccuWeather 请求失败（第%d次）: %s", attempt + 1,
                            _masked(str(last_err), self.key))
             if attempt < self.retries:
@@ -445,7 +470,8 @@ class AccuWeatherProvider(ForecastProvider):
 
 
 def _masked(text: str, key: str) -> str:
-    """apikey 走 query 参数（官方契约），URL 会随底层异常进日志——入日志前必须掩码。"""
+    """Key 已走 Authorization 头（官方 2026-06-10 修订契约），URL 不再携带凭据；
+    但底层异常/服务端回显仍可能外带 Key——入日志前一律掩码，防御纵深。"""
     if key:
         text = text.replace(key, "***")
     return text

@@ -220,7 +220,7 @@ tests/                    pytest（含 cyeva 手算对拍）
   - **时间语义**：`DateTime` 为 ISO8601 带当地时区偏移（含 `+08` 两数字形态），统一转北京时并**下取整整点**（同彩云/和风口径）。
   - **数值口径**：`details=true` 才返回 `TotalLiquid`（该小时液态降水总量；`metric=true` 时 ℃/mm）。响应自带 `Unit` 字段，按单位自适应换算（F→℃、inch→mm），未声明单位按公制处理、未知单位按缺测——均以 WARNING 留痕，绝不静默把华氏度当摄氏度入库。
   - **降水移位假设（承重）**：官方字段文档未明示逐小时累计的区间方向；综合"1hour 产品语义、官网当前小时块前瞻展示、观测字段显式命名 PastHour 而预报字段无此标注"判定 `TotalLiquid@t` 覆盖 **(t, t+1h]**（小时段起点在 t）。观测 rain@t 口径为 (t−1h, t]，故快照 `precipitation@t := TotalLiquid@(t−1h)` 整体后移 1 小时入库（按整点键映射实现，序列缺口不错配邻窗降水；代价是首点降水记 None、末点降水被丢弃）。假设与依据在快照 `precip_alignment` 字段留档；**若日后发现该源降水相对观测系统性滞后 1 小时（整体前移 1h 反而更准时），应优先复核此假设**。
-  - apikey 走 URL query 参数（官方契约、无 header 方式），URL 必然含 key——所有日志/异常入 CI 日志前已做掩码。
+  - **鉴权**：Key 经 `Authorization: Bearer` 头传递（官方 2026-06-10 修订契约；旧版 `?apikey=` query 参数已停用——有效 Key 走 query 也一律 401，曾致 2026-08-29 CI 全站失败）。Key 不再进 URL，日志/异常入 CI 日志前仍统一做掩码（防御纵深）。
   - CI 中为 `continue-on-error` 可选步骤（Secret 缺失时跳过，抓取失败仅标注该步）。
 
 ## 评估方法说明（关于样本与时效）
@@ -335,4 +335,13 @@ tests/                    pytest（含 cyeva 手算对拍）
 - **（P3）`Value=null` 但已声明 `Unit` 的缺测条目被误报"未声明单位"**：单位统计原按返回键聚合，缺测条目落入空键分支触发误导性告警。已改为只有真实解释过数值（换算/假设/拒绝）的条目才计入单位统计，并以"全缺测 + 已声明单位不得报未声明单位"的断言锁定。
 - **（P1 假设留档）降水 -1h 移位方向无法对真值校准**：`TotalLiquid@t` 覆盖 (t, t+1h] 的判定依据官方 1hour 产品语义、官网当前小时块前瞻展示、观测字段显式命名 PastHour 三条证据，但审查确认端到端测试只证明"实现与意图自洽"、不构成对真值校准（免费档无真实 Key 可录制）。已把假设、依据与复核信号写入 docstring / 快照 `precip_alignment` 字段 / README 约束节；并补"未移位口径下晴雨 TS 崩为 0"的对照测试，锁定移位确为承重假设——**若日后该源降水相对观测系统性滞后 1 小时，应优先翻转移位方向**。
 - **（记录不修）**：geoposition search 成功响应的形态（单对象）以官方文档为准、无真实 Key 无法录制回放夹具，契约漂移时已有含响应摘要的可诊断错误兜底；429 未按配额处理（AccuWeather 实际以 503 表达超限，无影响）。
-- **（已核查无误）**：CLI 分发/排除链/退出码与既有源语义一致；`--source accuweather` 的模型过滤与"全站失败→退出码 1"；503 熔断不改变失败计数；401 快速失败不做档位回退；F→℃/inch→mm 换算数学与 NaN/bool/null/非 dict 全分支归 None；`+08:00`/`+08`/`Z` 等偏移形态转北京时下取整；降水移位的缺口防错配与跨月边界；haversine 数值；Key 经 query 的全日志脱敏；无数据模型在排行榜沉底、不进图表与明细表（与 fuxi_det 同路径）；24 模型标签配色齐备且 JS 有兜底色；模板动态计数落在 HTML 上下文、autoescape 下安全；CI 步骤位置/Secret 门控/continue-on-error/并发组正确；`WEATHER_EVAL_DATA_ROOT` 测试隔离完整；快照按 issue 幂等。
+- **（已核查无误）**：CLI 分发/排除链/退出码与既有源语义一致；`--source accuweather` 的模型过滤与"全站失败→退出码 1"；503 熔断不改变失败计数；401 快速失败不做档位回退；F→℃/inch→mm 换算数学与 NaN/bool/null/非 dict 全分支归 None；`+08:00`/`+08`/`Z` 等偏移形态转北京时下取整；降水移位的缺口防错配与跨月边界；haversine 数值；Key 经 query 的全日志脱敏（当时契约；2026-08-29 起已改走 `Authorization: Bearer` 头、URL 不再含 Key，见下节）；无数据模型在排行榜沉底、不进图表与明细表（与 fuxi_det 同路径）；24 模型标签配色齐备且 JS 有兜底色；模板动态计数落在 HTML 上下文、autoescape 下安全；CI 步骤位置/Secret 门控/continue-on-error/并发组正确；`WEATHER_EVAL_DATA_ROOT` 测试隔离完整；快照按 issue 幂等。
+
+## AccuWeather 鉴权契约漂移：401 全站失败修复（2026-08-29）
+
+CI 首轮真实抓取（2026-08-29 11:29）4 站全部 401 失败，Key 本身有效。第一性原理核对官方认证文档（developer.accuweather.com/documentation/authentication，2026-06-10 修订版）：**AccuWeather 已把鉴权改为 `Authorization: Bearer <key>` 请求头，旧版 `?apikey=` query 参数契约已停用**——接入时依据的"apikey 只能走 query、无 header 方式"是过时契约，带着有效 Key 走 query 一律 401。修复与加固：
+
+- **鉴权迁移**：定位与预报请求统一经 `Authorization: Bearer` 头传递 Key（与风乌同款头模式），query 参数不再携带 Key，URL 亦不再含凭据；显式声明文档要求的 `Accept-Encoding: gzip, deflate`。
+- **凭据健壮化**：注入的 Key 先剥首尾空白/换行（CI Secret 与 `.env` 常见形态，否则 Bearer 头带脏字符）、控制字符提前给出可操作错误（避免 requests 头编码处炸出天书异常）。
+- **401 错误信息可操作化**：写明"Key 已按官方现行契约经 Bearer 头传递仍被拒"，指引核对控制台 Key 状态，避免误判为代码传参问题。
+- 测试契约同步锁定：Bearer 头存在性 + query 无 apikey、Key 剥空白、控制字符拒绝、脱敏断言改为"中间层/服务端回显凭据"形态。

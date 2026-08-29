@@ -1,6 +1,8 @@
 """AccuWeather 逐小时预报接入测试。
 
-mock 契约依据官方文档（developer.accuweather.com，2026-08 核对）：
+mock 契约依据官方文档（developer.accuweather.com，2026-08-29 核对现行版）：
+- 鉴权：Key 经 Authorization: Bearer 头传递（2026-06-10 修订契约；
+  旧版 ?apikey= query 参数已停用——实测有效 Key 走 query 也 401）；
 - Locations API geoposition search：q 为"纬度,经度"，返回 Key/GeoPosition；
 - Forecast API v1 hourly：URL 路径 /forecasts/v1/hourly/{hours}hour/{locationKey}，
   details=true 才有 TotalLiquid（该小时液态降水总量，metric=true 时 mm），
@@ -177,7 +179,8 @@ def test_fetch_full_snapshot(monkeypatch):
 
 def test_request_contract(monkeypatch):
     """锁定请求契约：定位 q=纬度,经度；预报路径档位/locationKey、
-    details/metric 为字符串 true、apikey 只走 query、UA 固定。"""
+    details/metric 为字符串 true、鉴权走 Authorization: Bearer 头且
+    绝不回落 query 参数（旧契约已停用）、UA 固定。"""
     monkeypatch.delenv(KEY_ENV, raising=False)
     sess = RoutingSession(_routes(forecast=lambda u, p: _ok(
         _fc_payload(BASE, [30.0], [0.0]))))
@@ -186,12 +189,40 @@ def test_request_contract(monkeypatch):
     loc_call, fc_call = sess.calls[0], sess.calls[1]
     assert loc_call["url"] == LOCATION_URL
     assert loc_call["params"]["q"] == "23.4783,111.304"   # 纬度在前（与和风 v7 相反）
-    assert loc_call["params"]["apikey"] == KEY
+    assert "apikey" not in loc_call["params"]
+    assert loc_call["headers"]["Authorization"] == f"Bearer {KEY}"
     assert fc_call["url"] == f"https://dataservice.accuweather.com/forecasts/v1/hourly/{DEFAULT_HOURS}hour/329260"
     assert fc_call["params"]["details"] == "true"          # 布尔必须传字符串，requests 的 True 会变 "True"
     assert fc_call["params"]["metric"] == "true"
-    assert fc_call["params"]["apikey"] == KEY
+    assert "apikey" not in fc_call["params"]
+    assert fc_call["headers"]["Authorization"] == f"Bearer {KEY}"
     assert fc_call["headers"]["User-Agent"] == "weather-api-eval/0.1 (+https://github.com/)"
+
+
+def test_key_whitespace_stripped_into_bearer_header(monkeypatch):
+    """CI Secret/.env 常携带首尾空白或换行：必须剥除后再进 Authorization 头。"""
+    monkeypatch.delenv(KEY_ENV, raising=False)
+    sess = RoutingSession(_routes(forecast=lambda u, p: _ok(
+        _fc_payload(BASE, [30.0], [0.0]))))
+    prov = AccuWeatherProvider(api_key=f"  {KEY}\n", session=sess, retries=0)
+    assert prov.key == KEY
+    prov.fetch_snapshot(_station())
+    assert all(c["headers"]["Authorization"] == f"Bearer {KEY}"
+               for c in sess.calls)
+
+
+def test_env_key_whitespace_stripped(monkeypatch):
+    monkeypatch.setenv(KEY_ENV, " from_env\n")
+    assert AccuWeatherProvider().key == "from_env"
+
+
+def test_key_with_control_chars_rejected_cleanly():
+    """带控制字符的 Key 会在 requests 头编码处炸出天书异常——提前给出可操作错误。
+    Cc 类须覆盖 C0(0x00-0x1F)/DEL(0x7F)/C1(0x80-0x9F) 全部码位。"""
+    # \x85(NEL) 属 Unicode 空白、会被 strip() 先剥除，不算到达头的控制字符
+    for bad in (KEY + "\x00", KEY + "\x7f", KEY + "\x9f"):
+        with pytest.raises(RuntimeError, match="控制字符"):
+            AccuWeatherProvider(api_key=bad)
 
 
 def test_precip_shift_gap_does_not_misassign():
@@ -408,20 +439,24 @@ def test_non_503_5xx_retries_but_no_breaker(monkeypatch):
 
 
 def test_key_redacted_in_logs_and_errors(monkeypatch, caplog):
-    """apikey 走 query（官方契约），网络异常消息携带 URL——日志与最终异常都必须脱敏。"""
+    """Key 已走 Authorization 头，URL 不再携带凭据；但底层异常/服务端回显仍
+    可能外带 Key——日志与最终异常都必须脱敏（防御纵深）。"""
     monkeypatch.delenv(KEY_ENV, raising=False)
 
     class _BoomSession:
-        # 模拟 requests 真实异常形态：消息携带完整 URL（含 query 里的 apikey）
-        def get(self, url, params=None, **kwargs):
-            from urllib.parse import urlencode
-            raise ConnectionError(f"refused while GET {url}?{urlencode(params or {})}")
+        # 模拟中间层/服务端回显凭据的真实异常形态：消息携带 Bearer Key 明文
+        def get(self, url, params=None, headers=None, **kwargs):
+            raise ConnectionError(
+                f"refused while sending 'Authorization: Bearer {KEY}' to {url}")
 
     prov = AccuWeatherProvider(api_key=KEY, session=_BoomSession(), retries=0)
     with caplog.at_level(logging.WARNING, logger="weather_eval.forecast.accuweather"):
         with pytest.raises(RuntimeError) as exc:
             prov.fetch_snapshot(_station())
     assert KEY not in str(exc.value)
+    # __cause__ 链也不得携带明文：原始网络异常须先归一为脱敏 RuntimeError
+    assert exc.value.__cause__ is not None
+    assert KEY not in str(exc.value.__cause__)
     assert all(KEY not in r.message for r in caplog.records)
 
 
