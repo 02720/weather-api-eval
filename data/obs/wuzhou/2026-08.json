@@ -1098,5 +1098,15 @@
     "rain": 0.1,
     "wind_speed": 0.8,
     "wind_dir": 157.0
+  },
+  "2026-08-30T12:00": {
+    "time": "2026-08-30T12:00",
+    "source": "wd",
+    "temp": 25.5,
+    "pressure": 986.8,
+    "humidity": 97.0,
+    "rain": 7.2,
+    "wind_speed": 1.0,
+    "wind_dir": 218.0
   }
 }
