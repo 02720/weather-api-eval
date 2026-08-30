@@ -47,6 +47,8 @@ def test_render_monthly_html_nonempty(tmp_path, monkeypatch):
     assert data["scorecard"]["ecmwf_ifs"]["temp_24h"]["n"] > 0
     # 分时效排行榜无条件计算（主报告的表格排行榜/冠军横幅依赖它）
     assert data["leaderboards"]["1d"] and data["leaderboards"]["1d"][0]["score"] is not None
+    # 全时效总榜同样无条件计算（主报告冠军横幅默认读总榜）
+    assert data["leaderboards"]["all"] and data["leaderboards"]["all"][0]["score"] is not None
     assert isinstance(data["heatmap"], list) and len(data["heatmap"]) > 0
     # 得分趋势（排行榜的"趋势版"）与全指标图表容器
     assert data["score_trend"]["overall"]["ecmwf_ifs"]["1d"] is not None
@@ -68,8 +70,9 @@ def test_write_live_report_overwrites_index(tmp_path, monkeypatch):
     cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
            "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 5}
     data = build_report(["s1"], ["ecmwf_ifs"], cfg, start, end, "2026-08")
-    # 分时效排行榜对非月度报告也必须可用（主报告冠军横幅依赖 leaderboards["1d"]）
+    # 分时效排行榜对非月度报告也必须可用（主报告冠军横幅依赖它；默认读总榜 "all"）
     assert data["leaderboards"]["1d"] and data["leaderboards"]["1d"][0]["score"] is not None
+    assert data["leaderboards"]["all"] and data["leaderboards"]["all"][0]["score"] is not None
 
     out = write_live_report(data, station_labels={"s1": "一号站"})
     assert out.name == "index.html"

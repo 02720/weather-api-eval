@@ -19,8 +19,15 @@
   各子分截断到 [0,100]，缺项按剩余权重归一（不让单一缺项把整行踢出局）。
   不入分的指标及理由见 TEMP/PRECIP_SCORE_PARTS 注释与 README。
 - 综合得分 = mean(温度得分, 降水分)，缺项不计。
-- 分时效排行榜（leaderboards）：每个天桶一份按综合分排序的完整行（含分数与
-  榜面关键指标 acc2/rmse/ts/ets/n），主报告表格排行榜与冠军横幅共用这一份数据。
+- 排行榜（leaderboards）分两层：
+  * 分时效榜（"1d".."16d"）：每个天桶一份按综合分排序的完整行。预报难度随时效单调
+    上升，天桶是"难度分层"——同桶内各源比较的是同一难度的预报，这是横向比较的公平基准。
+  * 总榜（"all"）：把该源在评估窗口内全部逐小时配对样本（lead 1..N 天所有天桶）合并
+    成一份指标再打分，回答"综合所有时效谁最准"。样本按条数计入，临近时效占比天然更高
+    （也是实际被使用最多的预报）。各源可提供的最长时效不同（商业源常只有 2~3 天），
+    合并后的样本构成随之不同，故总榜行附 lead_days（该源实际覆盖的最长时效，天）供
+    读者校正解读；同难度的精确对比仍以分时效榜为准。
+  两层共用同一行结构与打分公式，主报告表格排行榜（总榜 + 可切时效）与冠军横幅共用这份数据。
 """
 from __future__ import annotations
 
@@ -368,20 +375,33 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     hourly, daily = collect(station_ids, models, start_dt, end_dt,
                             hourly_lead_days, daily_max_offset)
 
-    # ---- 评分卡（模型级，覆盖全窗口）----
+    # 按模型分组一次，后续所有 per-model 统计只遍历各自的记录（不做全量重扫）
+    by_model: dict[str, list] = {m: [] for m in models}
+    for r in hourly:
+        if r["model"] in by_model:
+            by_model[r["model"]].append(r)
+
+    # ---- 评分卡（模型级）----
+    # 24h/72h 池 = 固定时效窗的 pooled 指标；all 池 = 评估窗口内全部逐小时样本
+    # （collect 已把 lead 限制在 1..hourly_lead_days*24），是"全时效总榜"的数据源。
     scorecard = {}
     for m in models:
-        h24 = [r for r in hourly if r["model"] == m and 1 <= r["lead"] <= 24]
-        h72 = [r for r in hourly if r["model"] == m and 1 <= r["lead"] <= 72]
+        recs = by_model[m]
+        h24 = [r for r in recs if 1 <= r["lead"] <= 24]
+        h72 = [r for r in recs if 1 <= r["lead"] <= 72]
         to24, tf24 = _pool(h24, ("temp_obs", "temp_fcst"))
         to72, tf72 = _pool(h72, ("temp_obs", "temp_fcst"))
+        toall, tfall = _pool(recs, ("temp_obs", "temp_fcst"))
         ro24, rf24 = _pool(h24, ("rain_obs", "rain_fcst"))
         ro72, rf72 = _pool(h72, ("rain_obs", "rain_fcst"))
+        roall, rfall = _pool(recs, ("rain_obs", "rain_fcst"))
         scorecard[m] = {
             "temp_24h": temp_metrics(to24, tf24, limits, min_sample),
             "temp_72h": temp_metrics(to72, tf72, limits, min_sample),
+            "temp_all": temp_metrics(toall, tfall, limits, min_sample),
             "precip_24h": precip_metrics(ro24, rf24, thr, min_sample),
             "precip_72h": precip_metrics(ro72, rf72, thr, min_sample),
+            "precip_all": precip_metrics(roall, rfall, thr, min_sample),
         }
 
     # ---- 逐小时按天桶：温度 / 降水（含 1h 雨强分级） ----
@@ -390,9 +410,7 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     for m in models:
         tbuckets: dict[int, tuple] = {b: ([], []) for b in range(1, hourly_lead_days + 1)}
         pbuckets: dict[int, tuple] = {b: ([], []) for b in range(1, hourly_lead_days + 1)}
-        for r in hourly:
-            if r["model"] != m:
-                continue
+        for r in by_model[m]:
             tbuckets[r["bucket"]][0].append(r["temp_obs"])
             tbuckets[r["bucket"]][1].append(r["temp_fcst"])
             pbuckets[r["bucket"]][0].append(r["rain_obs"])
@@ -407,8 +425,8 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     temp_lead_curve = {m: {f"{h}h": None for h in range(1, 73)} for m in models}
     for m in models:
         by_lead = defaultdict(lambda: ([], []))
-        for r in hourly:
-            if r["model"] == m and 1 <= r["lead"] <= 72:
+        for r in by_model[m]:
+            if 1 <= r["lead"] <= 72:
                 by_lead[r["lead"]][0].append(r["temp_obs"])
                 by_lead[r["lead"]][1].append(r["temp_fcst"])
         for h, (o, f) in by_lead.items():
@@ -439,12 +457,17 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
                 by_off[off]["rain"][0], by_off[off]["rain"][1], thr, min_sample,
                 kind="24h", graded_levs=DAILY_GRADED_LEVS)
 
-    # ---- 分站概览（24h 桶） ----
+    # ---- 分站概览（24h 桶）：按（站, 模型）分一次组，避免 O(站×模型×全量) 重扫 ----
+    by_station_model: dict[tuple, list] = {(sid, m): [] for sid in station_ids for m in models}
+    for r in hourly:
+        key = (r["station"], r["model"])
+        if key in by_station_model:
+            by_station_model[key].append(r)
     per_station = {}
     for sid in station_ids:
         per_station[sid] = {}
         for m in models:
-            h = [r for r in hourly if r["station"] == sid and r["model"] == m and 1 <= r["lead"] <= 24]
+            h = [r for r in by_station_model[(sid, m)] if 1 <= r["lead"] <= 24]
             to, tf = _pool(h, ("temp_obs", "temp_fcst"))
             ro, rf = _pool(h, ("rain_obs", "rain_fcst"))
             per_station[sid][m] = {
@@ -462,10 +485,12 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     # ---- 覆盖率 ----
     coverage = _coverage(station_ids, start_dt, end_dt)
 
-    # ---- 分时效排行榜：每个天桶一份排名行（表格排行榜、冠军横幅与趋势图共用同一套得分） ----
+    # ---- 排行榜：分时效榜（每个天桶一份）+ 全时效总榜 ----
+    # 表格排行榜、冠军横幅与趋势图共用同一套得分。
     # scorecard 的 24h 池（lead 1..24）与天桶 "1d" 是同一样本总体，实证数值一致，
-    # 故不再单独维护 ranking，冠军横幅直接读 leaderboards["1d"]。
+    # 故不再单独维护 ranking，冠军横幅直接读 leaderboards。
     leaderboards = _lead_leaderboards(models, temp_hourly, precip_hourly, hourly_lead_days)
+    leaderboards["all"] = _overall_board(models, scorecard, by_model)
 
     # ---- 得分随时效衰减（综合/温度/降水，天桶 1..N）：排行榜的"趋势版" ----
     score_trend = _score_trend(models, temp_hourly, precip_hourly, hourly_lead_days)
@@ -480,6 +505,7 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
             "models": models,
             "stations": station_ids,
             "limits": limits,
+            "hourly_lead_days": hourly_lead_days,
             "rain_threshold_mm": thr,
             "min_sample": min_sample,
         },
@@ -578,12 +604,32 @@ def _coverage(station_ids, start_dt, end_dt) -> dict:
     }
 
 
+def _board_row(m: str, t: dict, p: dict, **extra) -> dict:
+    """榜单行：得分（与趋势图同一套公式，榜单与曲线永不分叉）
+    + 榜面直接可读的关键指标（±2°C 准确率 / RMSE / TS / ETS / 样本数）。"""
+    row = {
+        "model": m,
+        "score": overall_score(t, p),
+        "temp_score": temp_score(t),
+        "precip_score": precip_score(p),
+        "acc2": t.get("acc2"), "rmse": t.get("rmse"),
+        "ts": p.get("ts"), "ets": p.get("ets"),
+        "n": t.get("n", 0), "n_precip": p.get("n", 0),
+    }
+    row.update(extra)
+    return row
+
+
+def _rank_rows(rows: list[dict]) -> list[dict]:
+    """综合分降序、None 沉底；行序即名次，前端只重排不重算。"""
+    return sorted(rows, key=lambda x: (x["score"] is None, -(x["score"] or 0)))
+
+
 def _lead_leaderboards(models, temp_hourly, precip_hourly, hourly_lead_days) -> dict:
     """分时效排行榜：每个天桶（第 1..N 天）一份按综合分排序的完整行。
 
-    行内同时携带得分（与"得分随时效衰减"趋势图同一套公式，保证榜单与曲线永不分叉）
-    和榜面直接可读的关键指标（±2°C 准确率 / RMSE / TS / ETS / 样本数）。
-    行序即名次（综合分降序、None 沉底）；前端表格切换时效/排序只重排，不重算。
+    预报难度随时效单调上升，天桶即"难度分层"——同桶内比较对各家才是同难度的。
+    前端表格切换时效/排序只重排，不重算。
     """
     boards: dict[str, list[dict]] = {}
     for b in range(1, hourly_lead_days + 1):
@@ -592,18 +638,32 @@ def _lead_leaderboards(models, temp_hourly, precip_hourly, hourly_lead_days) -> 
         for m in models:
             t = temp_hourly[m].get(bk) or {}
             p = precip_hourly[m].get(bk) or {}
-            rows.append({
-                "model": m,
-                "score": overall_score(t, p),
-                "temp_score": temp_score(t),
-                "precip_score": precip_score(p),
-                "acc2": t.get("acc2"), "rmse": t.get("rmse"),
-                "ts": p.get("ts"), "ets": p.get("ets"),
-                "n": t.get("n", 0), "n_precip": p.get("n", 0),
-            })
-        rows.sort(key=lambda x: (x["score"] is None, -(x["score"] or 0)))
-        boards[bk] = rows
+            rows.append(_board_row(m, t, p))
+        boards[bk] = _rank_rows(rows)
     return boards
+
+
+def _overall_board(models, scorecard, by_model) -> list[dict]:
+    """全时效总榜：把该源在评估窗口内全部逐小时配对样本（lead 1..N 天）合并成
+    一份指标再打分，回答"综合所有时效谁最准"。
+
+    公平性说明（第一性原理）：预报难度随时效单调上升，跨时效合并的前提是样本构成
+    可比——但各源实际参与对账的样本覆盖不同（商业源常只有 2~3 天，全球模式可到 16 天；
+    且受"起报 + 时效是否已落进可对账时段"限制），短时效源的总榜样本天然偏"易"。
+    这一混杂无法在单一数字内消除，只能显式披露：每行附 lead_days = 该源实际参与
+    对账的样本中最长一条覆盖到的天数（向上取整，不代表逐天连续覆盖），页面上作为
+    "覆盖时效"列展示并提示解读注意；同难度的精确对比仍以分时效榜为准。
+    """
+    rows = []
+    for m in models:
+        t = scorecard[m]["temp_all"]
+        p = scorecard[m]["precip_all"]
+        leads = [r["lead"] for r in by_model[m]]
+        rows.append(_board_row(
+            m, t, p,
+            lead_days=(math.ceil(max(leads) / 24) if leads else None),
+        ))
+    return _rank_rows(rows)
 
 
 def _score_trend(models, temp_hourly, precip_hourly, hourly_lead_days) -> dict:

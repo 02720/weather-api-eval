@@ -193,10 +193,17 @@ def test_build_report_end_to_end(tmp_path, monkeypatch):
     sc = data["scorecard"]["ecmwf_ifs"]
     assert row["score"] == overall_score(sc["temp_24h"], sc["precip_24h"])
     assert row["acc2"] == sc["temp_24h"]["acc2"] and row["ts"] == sc["precip_24h"]["ts"]
-    # 全部时效桶都有榜单行（无数据的桶行内分数为 None、沉底）
-    assert len(data["leaderboards"]) == 16
+    # 全部时效桶都有榜单行（无数据的桶行内分数为 None、沉底），另有总榜 "all"
+    assert set(data["leaderboards"]) == {"all"} | {f"{i}d" for i in range(1, 17)}
     assert all(len(rows) == 1 for rows in data["leaderboards"].values())
     assert data["leaderboards"]["5d"][0]["score"] is None
+
+    # 全时效总榜：全部逐小时样本（lead 1..47 共 47 对）池化成一份指标再打分，
+    # 并披露该源实际覆盖的最长时效（47h -> 向上取整 2 天）
+    all_row = data["leaderboards"]["all"][0]
+    assert all_row["model"] == "ecmwf_ifs" and all_row["score"] is not None
+    assert all_row["n"] == 47 and all_row["lead_days"] == 2
+    assert all_row["score"] == overall_score(sc["temp_all"], sc["precip_all"])
 
     # 得分趋势：综合 = 温度/降水的均分，且逐桶键齐备
     st = data["score_trend"]
@@ -220,3 +227,131 @@ def test_build_report_empty_is_safe(tmp_path, monkeypatch):
     assert data["temp_hourly"]["ecmwf_ifs"]["1d"]["rmse"] is None
     assert data["leaderboards"]["1d"][0]["score"] is None
     assert data["score_trend"]["overall"]["ecmwf_ifs"]["1d"] is None
+    # 总榜在无数据时同样安全：分数与覆盖时效均为 None
+    assert data["leaderboards"]["all"][0]["score"] is None
+    assert data["leaderboards"]["all"][0]["lead_days"] is None
+
+
+def test_overall_board_pools_all_leads_and_discloses_coverage(tmp_path, monkeypatch):
+    """总榜把各源全部逐小时样本池化打分，并披露各自覆盖时效。
+
+    两个模型：short_range 只覆盖前 24h（lead 1..23，n=23，且预报与实况完全一致 ->
+    满分），ecmwf_ifs 覆盖 48h（lead 1..47，n=47，温度恒偏高 1°C）。总榜应按池化
+    综合分排序（short_range 第一），lead_days 分别为 1 / 2 —— 短时效源样本构成偏"易"
+    的混杂通过覆盖时效列显式披露。"""
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    start = datetime(2026, 8, 24, 0, 0)
+    obs = []
+    for h in range(48):
+        t = start + timedelta(hours=h)
+        obs.append({"time": iso(t), "temp": 20.0 + (h % 3), "rain": 1.0 if h % 6 == 0 else 0.0})
+    storage.save_obs("s1", obs)
+
+    def make_snap(model, hours, temp_bias):
+        times = [iso(start + timedelta(hours=h)) for h in range(hours)]
+        return {
+            "issue_iso": iso(start), "station_id": "s1", "source": "test",
+            "models": [model], "grid_lat": 23.0, "grid_lon": 111.0, "elevation": 50,
+            "hourly_time": times,
+            "data": {model: {
+                "temperature_2m": [20.0 + (h % 3) + temp_bias for h in range(hours)],
+                "precipitation": [1.0 if h % 6 == 0 else 0.0 for h in range(hours)],
+            }},
+        }
+
+    storage.save_forecast_snapshot("s1", "short_range", make_snap("short_range", 24, 0.0))
+    storage.save_forecast_snapshot("s1", "ecmwf_ifs", make_snap("ecmwf_ifs", 48, 1.0))
+
+    end = start + timedelta(hours=47)
+    cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
+           "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 5}
+    data = build_report(["s1"], ["ecmwf_ifs", "short_range"], cfg, start, end, "2026-08")
+
+    board = data["leaderboards"]["all"]
+    assert [r["model"] for r in board] == ["short_range", "ecmwf_ifs"]
+    by_model = {r["model"]: r for r in board}
+    assert by_model["short_range"]["n"] == 23 and by_model["short_range"]["lead_days"] == 1
+    assert by_model["ecmwf_ifs"]["n"] == 47 and by_model["ecmwf_ifs"]["lead_days"] == 2
+    # 完美预报满分；有偏差的源低于满分
+    assert by_model["short_range"]["score"] == 100.0
+    assert 0 < by_model["ecmwf_ifs"]["score"] < 100
+    # 总榜分数与评分卡 all 池一致（同一份池化指标，榜单与评分卡不分叉）
+    for m in ("short_range", "ecmwf_ifs"):
+        sc = data["scorecard"][m]
+        assert by_model[m]["score"] == overall_score(sc["temp_all"], sc["precip_all"])
+    # 分时效榜不受影响：short_range 在 2d 桶无样本，分数为 None 沉底
+    b2 = data["leaderboards"]["2d"]
+    assert [r["model"] for r in b2] == ["ecmwf_ifs", "short_range"]
+    assert b2[1]["score"] is None
+    # 池化不变量：总榜样本数 == 各分时效桶样本数之和（天桶对 lead 1..N*24 完整划分）
+    for m in ("short_range", "ecmwf_ifs"):
+        sum_buckets = sum(
+            next(r for r in data["leaderboards"][f"{i}d"] if r["model"] == m)["n"]
+            for i in range(1, 17))
+        assert by_model[m]["n"] == sum_buckets, m
+
+
+def test_overall_board_boundaries_and_pooling_benefit(tmp_path, monkeypatch):
+    """总榜的边界语义与池化收益。
+
+    - lead_days 上限边界：lead 24h -> 1 天；lead 383h -> 16 天（ceil 边界）。
+    - 池化不变量：总榜 n == 各分桶 n 之和。
+    - 池化收益：sparse 模型每个天桶只有 1 个样本（单桶 n < min_sample，分桶指标全
+      None），池化后 n=6 通过门控、总榜仍能给出分数——这正是"合并算总账"的价值。"""
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    start = datetime(2026, 8, 1, 0, 0)
+    obs = []
+    for h in range(16 * 24):
+        t = start + timedelta(hours=h)
+        obs.append({"time": iso(t), "temp": 20.0 + (h % 3), "rain": 1.0 if h % 6 == 0 else 0.0})
+    storage.save_obs("s1", obs)
+
+    def make_snap(model, hours, temp_bias):
+        times = [iso(start + timedelta(hours=h)) for h in range(hours)]
+        return {
+            "issue_iso": iso(start), "station_id": "s1", "source": "test",
+            "models": [model], "grid_lat": 23.0, "grid_lon": 111.0, "elevation": 50,
+            "hourly_time": times,
+            "data": {model: {
+                "temperature_2m": [20.0 + (h % 3) + temp_bias for h in range(hours)],
+                "precipitation": [1.0 if h % 6 == 0 else 0.0 for h in range(hours)],
+            }},
+        }
+
+    storage.save_forecast_snapshot("s1", "day1", make_snap("day1", 25, 0.0))    # lead 1..24
+    storage.save_forecast_snapshot("s1", "wide", make_snap("wide", 16 * 24, 1.0))  # lead 1..383
+    # sparse：快照只含 6 个互不同桶的有效时刻（lead 1/25/49/73/97/121 -> 桶 1..6 各 1 条）
+    sparse_snap = make_snap("sparse", 0, 1.0)
+    sparse_times = [1, 25, 49, 73, 97, 121]
+    sparse_snap["hourly_time"] = [iso(start + timedelta(hours=h)) for h in sparse_times]
+    sparse_snap["data"]["sparse"] = {
+        "temperature_2m": [21.0 + (h % 3) for h in sparse_times],
+        "precipitation": [1.0 if h % 6 == 0 else 0.0 for h in sparse_times],
+    }
+    storage.save_forecast_snapshot("s1", "sparse", sparse_snap)
+
+    end = start + timedelta(hours=16 * 24 - 1)
+    cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
+           "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 5}
+    data = build_report(["s1"], ["day1", "wide", "sparse"], cfg, start, end, "2026-08")
+
+    board = data["leaderboards"]["all"]
+    info = {r["model"]: r for r in board}
+    # ceil 边界：24h -> 1 天；383h -> 16 天；121h -> 6 天
+    assert info["day1"]["lead_days"] == 1 and info["day1"]["n"] == 24
+    assert info["wide"]["lead_days"] == 16 and info["wide"]["n"] == 383
+    assert info["sparse"]["lead_days"] == 6 and info["sparse"]["n"] == 6
+    # 三家在总榜上都有分数（按综合分降序）
+    scores = [r["score"] for r in board]
+    assert all(s is not None for s in scores)
+    assert scores == sorted(scores, reverse=True)
+    # 池化收益：sparse 单桶 n=1 < min_sample，"1d" 分榜指标为 None；总榜 n=6 有分数
+    sparse_1d = next(r for r in data["leaderboards"]["1d"] if r["model"] == "sparse")
+    assert sparse_1d["score"] is None
+    assert info["sparse"]["score"] is not None
+    # 池化不变量：三家各自的总榜 n == 分桶 n 之和
+    for m in ("day1", "wide", "sparse"):
+        sum_buckets = sum(
+            next(r for r in data["leaderboards"][f"{i}d"] if r["model"] == m)["n"]
+            for i in range(1, 17))
+        assert info[m]["n"] == sum_buckets, m
