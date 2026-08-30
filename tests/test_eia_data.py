@@ -43,3 +43,19 @@ def test_records_from_wd_handles_none_and_short():
     assert recs[1]["temp"] is None
     assert recs[0]["rain"] == 0.0
     assert recs[1]["rain"] is None  # 空串 -> None
+
+
+def test_records_from_wd_floors_non_hour_times():
+    # L6 回归：带分钟/秒的观测时刻下取整到整点（否则永远配不上整点预报、静默丢样）
+    import weather_eval.obs.eia_data as eia
+    eia._non_hour_seen = 0
+    wd = {
+        "time": ["2026-08-26 15:10", "2026-08-26 14:00:30", "2026-08-26 13:00"],
+        "temp": [27.6, 27.0, 26.4],
+        "rain": [0.2, 0.0, 1.1],
+    }
+    recs = _records_from_wd(wd)
+    assert [r["time"] for r in recs] == [
+        "2026-08-26T15:00", "2026-08-26T14:00", "2026-08-26T13:00"]
+    assert eia._non_hour_seen == 2
+    eia._non_hour_seen = 0

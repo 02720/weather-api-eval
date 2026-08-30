@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 from pathlib import Path
@@ -22,6 +23,8 @@ from jinja2 import Environment, FileSystemLoader
 
 from ..evaluate import PRECIP_SCORE_PARTS, TEMP_SCORE_PARTS
 from ..timeutil import now_beijing
+
+logger = logging.getLogger(__name__)
 
 TPL_DIR = Path(__file__).resolve().parent / "templates"
 env = Environment(loader=FileSystemLoader(str(TPL_DIR)), autoescape=True)
@@ -191,15 +194,25 @@ def write_live_report(report_data: dict, station_labels: dict[str, str] | None =
     return out
 
 
-def write_monthly_report(report_data: dict, station_labels: dict[str, str] | None = None) -> Path:
-    """写月度归档：reports/monthly/YYYY-MM.html，写后不再变动（冻结档案）。"""
+def write_monthly_report(report_data: dict, station_labels: dict[str, str] | None = None,
+                         force: bool = False) -> Path:
+    """写月度归档：reports/monthly/YYYY-MM.html，写后不再变动（冻结档案）。
+
+    已存在的归档默认拒绝重写——防止手动 dispatch 或归档条件重复触发悄悄改写
+    冻结数据；确需重建时显式传 force=True。
+    归档页脚的归档列表包含自身——读者在任意归档页应看到完整的归档导航。
+    """
     root = _reports_root()
     monthly_dir = root / "monthly"
     monthly_dir.mkdir(parents=True, exist_ok=True)
     month = report_data["meta"]["period_label"]
     out = monthly_dir / f"{month}.html"
+    if out.exists() and not force:
+        logger.warning("月度归档 %s 已存在，跳过重写（冻结档案不再变动；确需重建请使用 --force）", out)
+        return out
+    archives = sorted({*_list_archives(root), month}, reverse=True)
     _atomic_write_text(out, render_report_html(
         report_data, title=f"{month} 月度归档 · 天气预报准确度检验报告",
-        base="../", archives=_list_archives(root),
+        base="../", archives=archives,
         station_labels=station_labels))
     return out

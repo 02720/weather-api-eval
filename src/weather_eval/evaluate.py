@@ -10,6 +10,10 @@
 - 按天：北京时自然日聚合日最高/最低气温、日降水量；按"有效日 − 起报日"的日偏移
   1..16 天分组。温度最高/最低全套指标；降水晴雨 + 连续量 + 24h 累计分级
   （≥0.1/≥10/≥25/≥50/≥100/≥250mm，即小雨..特大暴雨以上）每级 7 项指标。
+  覆盖门槛（第一性原理：缺测绝不伪装成数值）：日聚合同时记录非缺测小时数，
+  观测与预报任一侧的日覆盖不足 daily_min_hours（默认 20/24）时，该天该要素
+  不参与按天评估——降水全缺测日若折算成 0.0 会伪装成"预报无雨"，部分覆盖日的
+  日累计系统性偏低会伪装成"漏报"，两者都是把缺测当技巧。
 所有指标附样本数 n；n < min_sample 视为"样本不足"不出结论（置 None）。
 
 得分体系（排行榜、分时效榜单与时效趋势共用，2026-08-29 多指标加权重构）：
@@ -51,7 +55,7 @@ from cyeva.core.statistic import (
     calc_ts as _stat_ts,
 )
 
-from .timeutil import parse_iso, ymd, hour_bucket_days, floor_to_hour
+from .timeutil import parse_iso, hour_bucket_days, floor_to_hour
 from .storage import load_obs, list_forecast_snapshots
 
 # 逐小时降水分级：cyeva 1h 雨强区间级别（小雨 0.1~1.9 … 大暴雨 ≥20 mm/h）
@@ -93,7 +97,8 @@ def _valid_n(obs: np.ndarray, fcst: np.ndarray) -> int:
 
 # ----------------------------------------------------------------- 配对收集
 def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
-            hourly_lead_days: int, daily_max_offset_days: int) -> tuple[list[dict], list[dict]]:
+            hourly_lead_days: int, daily_max_offset_days: int,
+            daily_min_hours: int = 20) -> tuple[list[dict], list[dict]]:
     """返回 (hourly_records, daily_records)。"""
     # 观测月聚合
     obs_daily: dict[str, dict[str, dict]] = defaultdict(dict)
@@ -118,29 +123,34 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                         lead = int((vt - issue).total_seconds() // 3600)
                         if lead <= 0 or lead > hourly_lead_days * 24:
                             continue
+                        # 数组越界按缺测处理（与按天聚合同防护）：畸形存档降级为
+                        # 该点缺测，不拖垮整份报告
                         hourly_records.append({
                             "station": sid, "model": m, "valid_iso": tstr,
                             "lead": lead, "bucket": hour_bucket_days(lead),
-                            "temp_obs": rec.get("temp"), "temp_fcst": arr_t[i],
-                            "rain_obs": rec.get("rain"), "rain_fcst": arr_p[i],
+                            "temp_obs": rec.get("temp"),
+                            "temp_fcst": (arr_t[i] if i < len(arr_t) else None),
+                            "rain_obs": rec.get("rain"),
+                            "rain_fcst": (arr_p[i] if i < len(arr_p) else None),
                         })
 
     # 按天聚合
     daily_records: list[dict] = []
     for sid in station_ids:
         obs_map = load_obs(sid)
-        # 观测日聚合
+        # 观测日聚合（n_temp/n_rain = 非缺测小时数，供覆盖门槛判定）
         od: dict[str, dict] = {}
         for tstr, rec in obs_map.items():
             day = tstr[:10]
             d = od.setdefault(day, {"max_temp": -math.inf, "min_temp": math.inf,
-                                    "sum_rain": 0.0, "n": 0})
+                                    "sum_rain": 0.0, "n_temp": 0, "n_rain": 0})
             if rec.get("temp") is not None:
                 d["max_temp"] = max(d["max_temp"], rec["temp"])
                 d["min_temp"] = min(d["min_temp"], rec["temp"])
+                d["n_temp"] += 1
             if rec.get("rain") is not None:
                 d["sum_rain"] += rec["rain"]
-            d["n"] += 1
+                d["n_rain"] += 1
         obs_daily[sid] = od
 
         for model in models:
@@ -148,39 +158,56 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                 issue = parse_iso(snap["issue_iso"])
                 issue_day = issue.strftime("%Y-%m-%d")
                 times = snap["hourly_time"]
-                # 该快照该模型逐日聚合
-                fd: dict[str, dict] = {}
+                # 与逐小时循环对称：对 snap["data"] 逐模型展开、按模型重置聚合桶，
+                # 不依赖"每份存档只含一个模型"的上游不变量（新源直存/合并存档不混算）
                 for m in snap["data"]:
                     arr_t = snap["data"][m]["temperature_2m"]
                     arr_p = snap["data"][m]["precipitation"]
+                    fd: dict[str, dict] = {}
                     for i, tstr in enumerate(times):
                         vt = parse_iso(tstr)
                         if vt < start_dt or vt > end_dt:
                             continue
                         day = tstr[:10]
                         d = fd.setdefault(day, {"max_temp": -math.inf, "min_temp": math.inf,
-                                                "sum_rain": 0.0, "n": 0})
-                        if arr_t[i] is not None:
+                                                "sum_rain": 0.0, "n_temp": 0, "n_rain": 0})
+                        if i < len(arr_t) and arr_t[i] is not None:
                             d["max_temp"] = max(d["max_temp"], arr_t[i])
                             d["min_temp"] = min(d["min_temp"], arr_t[i])
-                        if arr_p[i] is not None:
+                            d["n_temp"] += 1
+                        if i < len(arr_p) and arr_p[i] is not None:
                             d["sum_rain"] += arr_p[i]
-                        d["n"] += 1
-                for day, d in fd.items():
-                    if day not in obs_daily[sid]:
-                        continue
-                    offset = (parse_iso(day + "T00:00") - parse_iso(issue_day + "T00:00")).days
-                    if offset <= 0 or offset > daily_max_offset_days:
-                        continue
-                    oday = obs_daily[sid][day]
-                    daily_records.append({
-                        "station": sid, "model": m, "valid_day": day, "offset": offset,
-                        "temp_max_obs": (oday["max_temp"] if oday["max_temp"] > -math.inf else None),
-                        "temp_max_fcst": (d["max_temp"] if d["max_temp"] > -math.inf else None),
-                        "temp_min_obs": (oday["min_temp"] if oday["min_temp"] < math.inf else None),
-                        "temp_min_fcst": (d["min_temp"] if d["min_temp"] < math.inf else None),
-                        "rain_obs": oday["sum_rain"], "rain_fcst": d["sum_rain"],
-                    })
+                            d["n_rain"] += 1
+                    for day, d in fd.items():
+                        if day not in obs_daily[sid]:
+                            continue
+                        offset = (parse_iso(day + "T00:00") - parse_iso(issue_day + "T00:00")).days
+                        if offset <= 0 or offset > daily_max_offset_days:
+                            continue
+                        oday = obs_daily[sid][day]
+                        # 覆盖门槛：观测与预报任一侧日覆盖不足（缺测多/模式时效边界）
+                        # 时该天该要素不入样——缺测折算成 0.0 或部分日累计都会伪装成技巧
+                        o_temp = (oday["max_temp"] if oday["n_temp"] >= daily_min_hours
+                                  and oday["max_temp"] > -math.inf else None)
+                        o_min = (oday["min_temp"] if oday["n_temp"] >= daily_min_hours
+                                 and oday["min_temp"] < math.inf else None)
+                        o_rain = (oday["sum_rain"]
+                                  if oday["n_rain"] >= max(daily_min_hours, 1) else None)
+                        f_temp = (d["max_temp"] if d["n_temp"] >= daily_min_hours
+                                  and d["max_temp"] > -math.inf else None)
+                        f_min = (d["min_temp"] if d["n_temp"] >= daily_min_hours
+                                  and d["min_temp"] < math.inf else None)
+                        f_rain = (d["sum_rain"]
+                                  if d["n_rain"] >= max(daily_min_hours, 1) else None)
+                        if o_temp is None and o_min is None and o_rain is None \
+                                and f_temp is None and f_min is None and f_rain is None:
+                            continue  # 该天无任何可用日聚合，不入样
+                        daily_records.append({
+                            "station": sid, "model": m, "valid_day": day, "offset": offset,
+                            "temp_max_obs": o_temp, "temp_max_fcst": f_temp,
+                            "temp_min_obs": o_min, "temp_min_fcst": f_min,
+                            "rain_obs": o_rain, "rain_fcst": f_rain,
+                        })
     return hourly_records, daily_records
 
 
@@ -371,9 +398,10 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     min_sample = eval_cfg["min_sample"]
     hourly_lead_days = eval_cfg["hourly_lead_days"]
     daily_max_offset = eval_cfg["daily_max_offset_days"]
+    daily_min_hours = eval_cfg.get("daily_min_hours", 20)
 
     hourly, daily = collect(station_ids, models, start_dt, end_dt,
-                            hourly_lead_days, daily_max_offset)
+                            hourly_lead_days, daily_max_offset, daily_min_hours)
 
     # 按模型分组一次，后续所有 per-model 统计只遍历各自的记录（不做全量重扫）
     by_model: dict[str, list] = {m: [] for m in models}
@@ -485,6 +513,9 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     # ---- 覆盖率 ----
     coverage = _coverage(station_ids, start_dt, end_dt)
 
+    # ---- 口径注记（如 AccuWeather 最近城市吸附），随报告元数据输出 ----
+    model_caveats = _model_caveats(station_ids, models)
+
     # ---- 排行榜：分时效榜（每个天桶一份）+ 全时效总榜 ----
     # 表格排行榜、冠军横幅与趋势图共用同一套得分。
     # scorecard 的 24h 池（lead 1..24）与天桶 "1d" 是同一样本总体，实证数值一致，
@@ -508,6 +539,8 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
             "hourly_lead_days": hourly_lead_days,
             "rain_threshold_mm": thr,
             "min_sample": min_sample,
+            "daily_min_hours": daily_min_hours,
+            "model_caveats": model_caveats,
         },
         "coverage": coverage,
         "scorecard": scorecard,
@@ -557,7 +590,9 @@ def _build_timeseries(station_ids, models, ts_start, end_dt) -> dict:
                 arr_t = snap["data"][m]["temperature_2m"]
                 arr_p = snap["data"][m]["precipitation"]
                 for i, t in enumerate(snap["hourly_time"]):
-                    tmap[t] = (arr_t[i], arr_p[i])  # 后发布的覆盖同刻旧值
+                    # 数组越界按缺测处理（畸形存档不拖垮报告）
+                    tmap[t] = (arr_t[i] if i < len(arr_t) else None,
+                               arr_p[i] if i < len(arr_p) else None)  # 后发布的覆盖同刻旧值
             if not tmap:
                 continue
             arr = []
@@ -588,20 +623,55 @@ def _build_heatmap(station_ids, models, hourly, limits, min_sample) -> list[dict
 
 
 def _coverage(station_ids, start_dt, end_dt) -> dict:
-    total_hours = int((end_dt - start_dt).total_seconds() // 3600) + 1
-    expected = total_hours * len(station_ids)
+    """观测覆盖率。分母按"该站实际已有观测的时段"截断：观测开始前/月初尚不存在
+    的时段计入分母只会稀释数字、误导读者（样本不是缺失，而是尚不存在）。"""
+    expected = 0
     got = 0
+    first_obs: str | None = None
     for sid in station_ids:
         obs_map = load_obs(sid)
-        for tstr in obs_map:
-            vt = parse_iso(tstr)
-            if start_dt <= vt <= end_dt:
-                got += 1
+        times_in_window = [parse_iso(t) for t in obs_map
+                           if start_dt <= parse_iso(t) <= end_dt]
+        got += len(times_in_window)
+        if times_in_window:
+            eff_start = max(start_dt, min(times_in_window))
+            expected += int((end_dt - eff_start).total_seconds() // 3600) + 1
+            iso_start = eff_start.strftime("%Y-%m-%dT%H:%M")
+            if first_obs is None or iso_start < first_obs:
+                first_obs = iso_start
     return {
         "expected_hours": expected,
         "got_hours": got,
         "coverage_pct": round(100.0 * got / expected, 1) if expected else None,
+        "first_obs": first_obs,
     }
+
+
+def _model_caveats(station_ids, models) -> dict[str, str]:
+    """从快照 meta 提取影响榜单解读的口径注记（数据驱动，模板只负责呈现）。
+
+    已知注记：AccuWeather 的"最近城市吸附"定位——快照留档了 location_name 与
+    haversine 吸附距离，其样本代表距站点数十公里的城市而非站点格点，公开榜单
+    必须让读者知情（README 有说明，但只看报告的读者看不到）。
+    """
+    dist: dict[str, list[float]] = defaultdict(list)
+    names: dict[str, str] = {}
+    for sid in station_ids:
+        for model in models:
+            for snap in list_forecast_snapshots(sid, model):
+                d = snap.get("location_distance_km")
+                if d is not None:
+                    dist[model].append(float(d))
+                nm = snap.get("location_name")
+                if nm:
+                    names.setdefault(model, str(nm))
+    out = {}
+    for model, ds in dist.items():
+        avg = round(sum(ds) / len(ds), 1)
+        name = names.get(model, "最近城市")
+        out[model] = (f"最近城市吸附：定位到距站点平均约 {avg} km 的「{name}」，"
+                      "样本代表该城市而非站点格点，雨温气候可能与站点本地不同")
+    return out
 
 
 def _board_row(m: str, t: dict, p: dict, **extra) -> dict:

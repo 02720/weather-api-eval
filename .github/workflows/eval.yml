@@ -148,25 +148,33 @@ jobs:
           TZ: Asia/Shanghai
         run: python -m weather_eval all
 
-      - name: 计算北京日与小时
+      - name: 计算北京日
         id: bj
-        run: |
-          echo "day=$(TZ=Asia/Shanghai date +%d)" >> "$GITHUB_OUTPUT"
-          echo "hour=$(TZ=Asia/Shanghai date +%H)" >> "$GITHUB_OUTPUT"
+        if: always()
+        run: echo "day=$(TZ=Asia/Shanghai date +%d)" >> "$GITHUB_OUTPUT"
 
-      - name: 月度归档（每月1号北京时 06:00 那次运行，或手动指定 month；归档后重建主报告同步归档列表）
+      - name: 月度归档（每月 1 号当天首次到达的那次运行，或手动指定 month）
+        # 放宽到"1 号当天任一次运行"：Actions 定时任务延迟超过 1 小时是常态，
+        # 精确匹配 06 点会让整月归档静默跳过。已存在的归档由 write_monthly_report
+        # 冻结保护（同日后续运行自动跳过，不会重写）。
         if: >-
-          github.event_name == 'workflow_dispatch' ||
-          (github.event_name == 'schedule' && steps.bj.outputs.day == '01' && steps.bj.outputs.hour == '06')
+          always() &&
+          (github.event_name == 'workflow_dispatch' ||
+           (github.event_name == 'schedule' && steps.bj.outputs.day == '01'))
         env:
           TZ: Asia/Shanghai
         run: python -m weather_eval monthly ${{
           github.event.inputs.month != '' && format('--month {0}', github.event.inputs.month) || '' }}
 
       - name: 变基远端最新提交（避免 push 被拒）
+        if: always()
         run: git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
 
       - name: 提交数据与新报告
+        # if: always()：`all` 步骤任一站失败会以非零退出，但此前已成功抓取的
+        # 预报快照不可追补（观测可下轮回看补抓，预报快照错过即永久缺失），
+        # 必须把当轮已落盘的数据提交入库；失败信号由作业状态本身保留。
+        if: always()
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "chore: 自动评测数据更新"
@@ -176,10 +184,12 @@ jobs:
           commit_author: weather-eval-bot <bot@weather-eval.local>
 
       - name: 上传 Pages 产物
+        if: always()
         uses: actions/upload-pages-artifact@v3
         with:
           path: reports
 
       - name: 部署 GitHub Pages
+        if: always()
         id: deploy
         uses: actions/deploy-pages@v4

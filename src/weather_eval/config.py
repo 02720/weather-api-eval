@@ -15,8 +15,9 @@ DEFAULT_EVAL = {
     "rain_threshold_mm": 0.1,          # 有无降水阈值（国内业务：≥0.1mm 记为有降水）
     "hourly_lead_days": 16,            # 逐小时评估最大时效（天），即 lead 1..384h
     "daily_max_offset_days": 16,       # 按天评估最大日偏移（天），即 offset 1..16
-    "day_boundary_hour": 0,            # 日界：0 = 北京时自然日 00:00-24:00
-    "precip_offset_hours": 0,          # 观测 rain@t 与预报 precipitation@t 的对齐偏移（小时）
+    "daily_min_hours": 20,             # 按天评估的日覆盖门槛：观测/预报任一侧当天
+                                       # 非缺测小时数低于此值，该天该要素不入样
+                                       # （防"缺测折算 0.0"与"部分日累计偏低"伪装成技巧）
     "min_sample": 5,                    # 样本数低于此值视为"样本不足"，不出结论
 }
 

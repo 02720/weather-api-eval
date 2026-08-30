@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import calendar
 import logging
+import re
 import sys
 from datetime import timedelta
 
@@ -81,6 +82,10 @@ def _default_month() -> str:
     now = now_beijing()
     prev = (now.replace(day=1) - timedelta(days=1))
     return prev.strftime("%Y-%m")
+
+
+# 合法月份：YYYY-MM，月 01-12（避免 "2026-13" 之类的输入裸 traceback）
+_MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
 
 def cmd_fetch_obs(args):
@@ -188,14 +193,20 @@ def cmd_report(args):
 
 
 def cmd_monthly(args):
-    """把某个自然月冻结为月度归档 reports/monthly/YYYY-MM.html（默认上一自然月）。"""
+    """把某个自然月冻结为月度归档 reports/monthly/YYYY-MM.html（默认上一自然月）。
+
+    已存在的归档默认拒绝重写（冻结档案永不改动）；--force 才允许重建。
+    """
     cfg = load_config(args.config)
     month = args.month or _default_month()
+    if not _MONTH_RE.match(month):
+        raise SystemExit(f"无效月份: {month!r}（应为 YYYY-MM，如 2026-07）")
     start, end = _month_window(month)
     data = build_report(cfg.station_ids, cfg.models, cfg.eval, start, end,
                         period_label=month, is_monthly=True)
-    out = write_monthly_report(data, station_labels={s.id: s.name for s in cfg.stations})
-    log.info("月度归档已生成: %s", out)
+    out = write_monthly_report(data, station_labels={s.id: s.name for s in cfg.stations},
+                               force=args.force)
+    log.info("月度归档就绪（已存在的冻结档案保留不动）: %s", out)
     # 归档列表是主报告渲染时快照的：立即重建一次主报告，
     # 让新归档在本次部署就出现在首页页脚，而不是等下一次定时运行。
     _update_live_report(cfg)
@@ -233,6 +244,8 @@ def main(argv=None):
     sub.add_parser("report")
     pm = sub.add_parser("monthly")
     pm.add_argument("--month", default=None, help="YYYY-MM，默认上一自然月")
+    pm.add_argument("--force", action="store_true",
+                    help="已存在同名归档时强制重写（默认拒绝改动冻结档案）")
     sub.add_parser("all")
 
     args = p.parse_args(argv)

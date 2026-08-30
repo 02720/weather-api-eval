@@ -3,6 +3,18 @@
 请求多模型时，返回键名带模型后缀（temperature_2m_ecmwf_ifs 等）；单模型不带后缀。
 本实现统一请求多模型并做兼容解析。坐标会被 Open-Meteo 吸附到最近格点，
 响应中的 latitude/longitude/elevation 即真实格点，存档记录。
+
+─────────────────────────────────────────────────────────────────────
+起报锚点语义（与其他源的已知差异，评估/解读时必须知情）
+─────────────────────────────────────────────────────────────────────
+Open-Meteo 不回显底层模式的真实起报轮次，共享时间轴首点固定是北京时"当日 00:00"
+（timezone=Asia/Shanghai 的当日零点）。它与真实 init（00/06/12/18Z 最近一轮）相差
+−8~+12h 且随抓取时刻漂移，而彩云/和风/星图/AccuWeather 锚定抓取时刻（滚动预报）、
+天机/伏羲/风乌锚定真实轮次——同一"提前 N 天"桶内各源的实际预报难度因此略有不同，
+跨源解读分时效榜时应把该差异计入（详见 README"起报锚点"说明）。
+同时本源快照按（站×模型×当日 00:00）幂等，每天仅产生 1 份快照（13/20 点的抓取
+全部被幂等跳过），样本新鲜度构成与其他逐时快照的源也不可比。评估按快照自身的
+锚点计算 lead，口径内部自洽；差异属"披露给读者"而非"可修正"项。
 """
 from __future__ import annotations
 
@@ -71,7 +83,8 @@ class OpenMeteoProvider(ForecastProvider):
         if not times:
             raise RuntimeError(f"Open-Meteo 站点 {station.id} 返回空时间序列")
 
-        issue_iso = times[0]  # 起报时刻 = 响应共享时间轴首点（北京时），与 hourly_time 同口径
+        # 锚点语义见模块 docstring：Open-Meteo 无真实起报轮次回显，首点=当日 00:00
+        issue_iso = times[0]
         allow_bare = len(models) == 1  # 仅单模型请求允许裸键回退（见 _model_key）
         data: dict[str, dict] = {}
         for model in models:

@@ -355,3 +355,182 @@ def test_overall_board_boundaries_and_pooling_benefit(tmp_path, monkeypatch):
             next(r for r in data["leaderboards"][f"{i}d"] if r["model"] == m)["n"]
             for i in range(1, 17))
         assert info[m]["n"] == sum_buckets, m
+
+
+# ---------------------------------------------------------------- 回归：按天口径
+def _save_day_snapshot(station, model, issue, day_hours, temps, precs, **extra):
+    """构造并保存一份快照：day_hours 为 (day_offset, 小时数) 的逐日样本数。"""
+    times, tvals, pvals = [], [], []
+    for off, hours in day_hours:
+        for h in range(hours):
+            times.append(iso(issue + timedelta(days=off, hours=h)))
+            tvals.append(temps(off, h))
+            pvals.append(precs(off, h))
+    snap = {
+        "issue_iso": iso(issue), "station_id": station, "source": "test",
+        "models": [model], "grid_lat": 23.0, "grid_lon": 111.0, "elevation": 50,
+        "hourly_time": times,
+        "data": {model: {"temperature_2m": tvals, "precipitation": pvals}},
+    }
+    snap.update(extra)
+    storage.save_forecast_snapshot(station, model, snap)
+    return snap
+
+
+CFG = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
+       "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 5}
+
+
+def test_daily_all_none_precip_day_not_folded_to_zero(tmp_path, monkeypatch):
+    """H1 回归：某天降水全缺测时，该天绝不折算成 0.0 的假"预报无雨"进入按天降水评估。"""
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    start = datetime(2026, 8, 24, 0, 0)
+    obs = []
+    for h in range(72):   # 3 天完整观测，第 3 天有明显降雨
+        t = start + timedelta(hours=h)
+        obs.append({"time": iso(t), "temp": 20.0 + (h % 3),
+                    "rain": 5.0 if h >= 48 else 0.0})
+    storage.save_obs("s1", obs)
+
+    # 快照覆盖 3 天：第 3 天（offset 2）温度完整、降水全缺测（如超出模式真实时效）
+    def temps(off, h):
+        return 21.0
+    def precs(off, h):
+        return None if off == 2 else 0.0
+    _save_day_snapshot("s1", "ecmwf_ifs", start, [(0, 24), (1, 24), (2, 24)],
+                       temps, precs)
+
+    data = build_report(["s1"], ["ecmwf_ifs"], CFG, start, start + timedelta(hours=71),
+                        "2026-08")
+    # 修复前：offset 2 的降水以 rain_fcst=0.0 参与评估，把实况 5mm/h 判成一片"漏报"
+    # 修复后：该天降水不入样（n=0、指标 None），温度指标不受影响
+    p2 = data["precip_daily"]["ecmwf_ifs"]["2d"]
+    assert p2["n"] == 0 and p2["ts"] is None
+    t2 = data["temp_daily"]["ecmwf_ifs"]["2d"]
+    assert t2["max"]["n"] == 1
+
+
+def test_daily_partial_coverage_day_gated(tmp_path, monkeypatch):
+    """覆盖门槛：预报只覆盖当天部分小时（模式时效边界）时，该天不入按天评估。"""
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    start = datetime(2026, 8, 24, 0, 0)
+    obs = []
+    for h in range(24 * 3):
+        t = start + timedelta(hours=h)
+        obs.append({"time": iso(t), "temp": 20.0 + (h % 3), "rain": 0.0})
+    storage.save_obs("s1", obs)
+
+    # offset 1 仅覆盖 9 个小时（< daily_min_hours=20），offset 2 完整
+    def temps(off, h):
+        return 21.0 if (off == 1 and h >= 9) or off == 2 else None
+    def precs(off, h):
+        return 0.0 if temps(off, h) is not None else None
+    _save_day_snapshot("s1", "ecmwf_ifs", start, [(0, 24), (1, 24), (2, 24)],
+                       temps, precs)
+
+    data = build_report(["s1"], ["ecmwf_ifs"], CFG, start, start + timedelta(hours=71),
+                        "2026-08")
+    assert data["temp_daily"]["ecmwf_ifs"]["1d"]["max"]["n"] == 0   # 9/24 小时 -> 剔除
+    assert data["temp_daily"]["ecmwf_ifs"]["2d"]["max"]["n"] == 1   # 完整天保留
+
+
+def test_daily_multi_model_snapshot_attributed_separately(tmp_path, monkeypatch):
+    """M5 回归：多模型共享时间轴的存档，按天聚合必须按模型分别展开，
+    不能把所有模型混算后全部记到最后一个模型名下。"""
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    start = datetime(2026, 8, 24, 0, 0)
+    obs = []
+    for h in range(48):
+        t = start + timedelta(hours=h)
+        obs.append({"time": iso(t), "temp": 20.0 + (h % 3), "rain": 0.0})
+    storage.save_obs("s1", obs)
+
+    times = [iso(start + timedelta(hours=h)) for h in range(48)]
+    snap = {
+        "issue_iso": iso(start), "station_id": "s1", "source": "test",
+        "models": ["ecmwf_ifs", "other_model"], "grid_lat": 23.0, "grid_lon": 111.0,
+        "elevation": 50, "hourly_time": times,
+        "data": {
+            "ecmwf_ifs": {"temperature_2m": [20.0] * 48, "precipitation": [0.0] * 48},
+            "other_model": {"temperature_2m": [30.0] * 48, "precipitation": [0.0] * 48},
+        },
+    }
+    storage.save_forecast_snapshot("s1", "ecmwf_ifs", snap)   # 存档目录只挂一个模型
+
+    cfg = dict(CFG, min_sample=1)   # 单样本天也出指标（本测试只关心按模型分账）
+    data = build_report(["s1"], ["ecmwf_ifs", "other_model"], cfg,
+                        start, start + timedelta(hours=47), "2026-08")
+    # 两个模型各自与观测的偏差被分开记账（修复前 other_model 独占全部按天样本）
+    assert data["temp_daily"]["ecmwf_ifs"]["1d"]["max"]["n"] == 1
+    assert data["temp_daily"]["other_model"]["1d"]["max"]["n"] == 1
+    # 日最高温：观测 max=22°C（20/21/22 周期），预报恒 20 / 30
+    assert data["temp_daily"]["ecmwf_ifs"]["1d"]["max"]["rmse"] == 2.0   # |20-22|
+    assert data["temp_daily"]["other_model"]["1d"]["max"]["rmse"] == 8.0  # |30-22|
+
+
+def test_coverage_denominator_truncated_to_first_obs(tmp_path, monkeypatch):
+    """L9 回归：覆盖率分母按各站实际有实况的时段截断，不把接入前的整月时段
+    算成缺失。观测从窗口第 3 天开始且逐小时完整 -> 覆盖率应为 100%。"""
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    start = datetime(2026, 8, 1, 0, 0)
+    obs = []
+    for h in range(3 * 24, 6 * 24):   # 08-04 00:00 起 3 天完整逐小时
+        t = start + timedelta(hours=h)
+        obs.append({"time": iso(t), "temp": 20.0, "rain": 0.0})
+    storage.save_obs("s1", obs)
+
+    from weather_eval.evaluate import _coverage
+    # 窗口 08-01 起：若不截断，分母是 08-01 起的 144 小时；截断后分母 = 08-04 起的 72 小时
+    cov = _coverage(["s1"], start, datetime(2026, 8, 6, 23, 0))
+    assert cov["got_hours"] == cov["expected_hours"] == 3 * 24
+    assert cov["coverage_pct"] == 100.0
+    assert cov["first_obs"] == "2026-08-04T00:00"
+
+
+def test_model_caveats_surfaced_from_snapshot_meta(tmp_path, monkeypatch):
+    """M2 回归：快照留档的"最近城市吸附"元数据进入报告 meta.model_caveats。"""
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    start = datetime(2026, 8, 24, 0, 0)
+    obs = [{"time": iso(start + timedelta(hours=h)), "temp": 20.0, "rain": 0.0}
+           for h in range(24)]
+    storage.save_obs("s1", obs)
+
+    def temps(off, h):
+        return 20.0
+    def precs(off, h):
+        return 0.0
+    snap = _save_day_snapshot("s1", "accuweather_v1", start, [(0, 24)], temps, precs,
+                              location_key="323883", location_name="梧州市",
+                              location_distance_km=38.2)
+    assert snap["location_distance_km"] == 38.2
+
+    data = build_report(["s1"], ["accuweather_v1"], CFG, start,
+                        start + timedelta(hours=23), "2026-08")
+    note = data["meta"]["model_caveats"]["accuweather_v1"]
+    assert "38.2" in note and "梧州" in note
+
+
+def test_daily_all_none_precip_excluded_even_if_gate_disabled(tmp_path, monkeypatch):
+    """第二轮审查回归：即使 daily_min_hours 被配成 0（门槛关闭），降水全缺测的
+    天也绝不折算成 0.0 —— "缺测不折算"是无条件下限，门槛只是额外的公平性要求。"""
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    start = datetime(2026, 8, 24, 0, 0)
+    obs = []
+    for h in range(72):
+        t = start + timedelta(hours=h)
+        obs.append({"time": iso(t), "temp": 20.0 + (h % 3),
+                    "rain": 5.0 if h >= 48 else 0.0})
+    storage.save_obs("s1", obs)
+
+    def temps(off, h):
+        return 21.0
+    def precs(off, h):
+        return None if off == 2 else 0.0
+    _save_day_snapshot("s1", "ecmwf_ifs", start, [(0, 24), (1, 24), (2, 24)],
+                       temps, precs)
+
+    cfg = dict(CFG, daily_min_hours=0, min_sample=1)
+    data = build_report(["s1"], ["ecmwf_ifs"], cfg, start,
+                        start + timedelta(hours=71), "2026-08")
+    p2 = data["precip_daily"]["ecmwf_ifs"]["2d"]
+    assert p2["n"] == 0 and p2["ts"] is None   # 假 0.0 依然被拒绝

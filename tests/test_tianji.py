@@ -346,3 +346,37 @@ def test_cli_fetch_forecast_saves_list_snapshots(tmp_path, monkeypatch):
     files = list((tmp_path / "forecasts" / "s1" / "tj_t2").glob("*.json"))
     assert len(files) == 1
     assert files[0].name == "2026-08-27T0800.json"
+
+
+def test_echoed_base_time_wins_over_requested():
+    # L4 回归：服务端"就近替换"（请求 08 轮、回显 02 轮的数据）时，
+    # issue_iso 必须取回显轮次——否则 lead 为负、样本全被评估引擎丢弃。
+    def responder(p):
+        factor = p["factorCode"]
+        vals = (27.0, 27.5, 28.0) if factor in ("tmp2m", "t2mz") else (0.0, 0.1, None)
+        return 200, _payload(p["mode"], factor,
+                             _details("2026082702", list(vals),
+                                      "2026-08-26T18:00:00.000+00:00"),
+                             base="2026082702")
+    sess = RoutingSession(responder)
+    prov = TianjiProvider(session=sess, now=NOW, retries=0)
+    snaps = prov.fetch_snapshot(_Station(), ["tj_t2"])
+    assert snaps[0]["issue_iso"] == "2026-08-27T02:00"
+    assert snaps[0]["hourly_time"] == [
+        "2026-08-27T03:00", "2026-08-27T04:00", "2026-08-27T05:00"]
+
+
+def test_malformed_echo_ignored_keeps_requested_base():
+    # 第二轮审查回归：回显 baseTimeString 非 YYYYMMDDHH 格式时必须忽略，
+    # 绝不让垃圾回显污染 issue_iso（否则 parse_iso 在评估期崩溃）
+    def responder(p):
+        factor = p["factorCode"]
+        vals = (27.0, 27.5, 28.0) if factor in ("tmp2m", "t2mz") else (0.0, 0.1, None)
+        return 200, _payload(p["mode"], factor,
+                             _details("2026082708", list(vals),
+                                      "2026-08-27T00:00:00.000+00:00"),
+                             base="not-a-time")
+    sess = RoutingSession(responder)
+    prov = TianjiProvider(session=sess, now=NOW, retries=0)
+    snaps = prov.fetch_snapshot(_Station(), ["tj_t2"])
+    assert snaps[0]["issue_iso"] == "2026-08-27T08:00"   # 回退为请求轮次

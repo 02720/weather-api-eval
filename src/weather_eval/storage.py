@@ -5,15 +5,19 @@
   data/forecasts/{station_id}/{model}/{issue}.json  起报快照（幂等）
   data/metrics/{period}/{file}.json              评估结果（可选缓存）
 
-写入采用"临时文件 + 原子 rename"避免半文件；读取容错：损坏文件（git 冲突残留、
+写入采用"临时文件 + 原子 rename"避免半文件；观测月文件的读-改-写合并窗口用
+文件锁（POSIX flock，锁文件 *.lock 不入 git）保护——CI 有 concurrency 组兜底，
+本地多进程并发抓观测时无锁会丢合并更新。读取容错：损坏文件（git 冲突残留、
 外部改写等导致 JSONDecodeError）告警并跳过，不拖垮整体评估/报告。
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +30,23 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 def _root() -> Path:
     return Path(os.environ.get("WEATHER_EVAL_DATA_ROOT", PROJECT_ROOT / "data"))
+
+
+@contextmanager
+def _exclusive_lock(path: Path):
+    """对目标文件的读-改-写窗口加进程间排他锁（flock，随进程退出自动释放）。
+
+    仅覆盖"读最新 → 合并 → 写回"这一临界区；写入本身仍走原子 rename，
+    因此即使锁意外失效也不会产生半文件，最多退化为丢更新（与无锁一致）。
+    """
+    lock_path = path.with_name(path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "w") as lf:
+        fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
 
 
 def _load_json(path: Path) -> Any | None:
@@ -54,7 +75,10 @@ def _atomic_write_json(path: Path, obj: Any) -> None:
 
 # ------------------------------------------------------------------ 观测
 def save_obs(station_id: str, records: list[dict]) -> int:
-    """把一批观测记录合并写入该站当月文件，按时间键去重；返回新增/更新的条数。"""
+    """把一批观测记录合并写入该站当月文件，按时间键去重；返回新增/更新的条数。
+
+    读-改-写全程持文件锁：两个进程并发保存同站观测时不会互相覆盖丢更新。
+    """
     if not records:
         return 0
     months: dict[str, dict] = {}
@@ -63,12 +87,13 @@ def save_obs(station_id: str, records: list[dict]) -> int:
     updated = 0
     for month, rec_map in months.items():
         path = _root() / "obs" / station_id / f"{month}.json"
-        existing: dict = _load_json(path) or {}
-        for k, v in rec_map.items():
-            if k not in existing or v != existing[k]:
-                updated += 1
-            existing[k] = v
-        _atomic_write_json(path, existing)
+        with _exclusive_lock(path):
+            existing: dict = _load_json(path) or {}
+            for k, v in rec_map.items():
+                if k not in existing or v != existing[k]:
+                    updated += 1
+                existing[k] = v
+            _atomic_write_json(path, existing)
     return updated
 
 

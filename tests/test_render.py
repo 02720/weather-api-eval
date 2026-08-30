@@ -108,5 +108,28 @@ def test_write_monthly_report_creates_frozen_archive(tmp_path, monkeypatch):
     assert "index.html" in html                # 返回本月实时报告的链接
     assert "月度归档" in html                   # 冻结徽章
     assert "一号站" in html
-    # 首次写入时归档列表不含自身（列表在写入前快照）
-    assert "monthly/2026-08.html" not in html
+    # 归档页脚的归档列表包含自身（读者在任意归档页看到完整归档导航）
+    assert "monthly/2026-08.html" in html
+
+
+def test_write_monthly_report_never_rewrites_frozen_archive(tmp_path, monkeypatch):
+    """冻结档案保护：已存在的归档默认拒绝重写（内容与 mtime 均不变），--force 才重建。"""
+    _populate(tmp_path, monkeypatch)
+    monkeypatch.setenv("WEATHER_EVAL_REPORTS_ROOT", str(tmp_path / "reports"))
+    start = datetime(2026, 8, 1, 0, 0)
+    end = datetime(2026, 8, 30, 23, 0)
+    cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
+           "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 5}
+    data = build_report(["s1"], ["ecmwf_ifs"], cfg, start, end, "2026-08", is_monthly=True)
+
+    first = write_monthly_report(data)
+    mtime = first.stat().st_mtime_ns
+    content = first.read_text(encoding="utf-8")
+    # 再次写入（如同 1 号当天的后续运行/手动 dispatch）：内容与 mtime 均不变
+    again = write_monthly_report(data)
+    assert again == first
+    assert first.stat().st_mtime_ns == mtime
+    assert first.read_text(encoding="utf-8") == content
+    # --force 显式重建：允许重写
+    write_monthly_report(data, force=True)
+    assert first.stat().st_mtime_ns != mtime

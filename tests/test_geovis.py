@@ -207,3 +207,33 @@ def test_unparseable_fc_time_rejected():
     sess = RoutingSession(_routes(tier_payloads={"/professional": json.dumps(payload)}))
     with pytest.raises(RuntimeError, match="拒绝入库"):
         GevisProvider(session=sess, token=TOKEN).fetch_snapshot(Station)
+
+
+def test_business_error_downgrades_tier():
+    # L3 回归：档位无权限以 HTTP 200 + status!=0 表达时，同样降档而非整源失败
+    sess = RoutingSession(_routes(tier_payloads={
+        "/professional": json.dumps({"status": 1001, "msg": "no permission"}),
+        "": _area_payload(),
+    }))
+    prov = GevisProvider(session=sess, token=TOKEN)
+    snap = prov.fetch_snapshot(Station)
+    assert snap["tier"] == "48h"
+    assert [u for u, _, _ in sess.calls] == [AREA_URL + "/professional", AREA_URL]
+
+
+def test_cached_tier_business_error_invalidates_cache():
+    # 已固定档位中途变为业务不可用：作废缓存回梯子自愈，不把失败档位当常量
+    payloads = {"/professional": _area_payload(), "": _area_payload()}
+    state = {"professional_ok": True}
+
+    def routes(url, params, headers):
+        suffix = url[len(AREA_URL):]
+        if suffix == "/professional" and not state["professional_ok"]:
+            return 200, json.dumps({"status": 1002, "msg": "expired mid-run"})
+        return 200, payloads[suffix]
+
+    sess = RoutingSession(routes)
+    prov = GevisProvider(session=sess, token=TOKEN)
+    assert prov.fetch_snapshot(Station)["tier"] == "professional"
+    state["professional_ok"] = False
+    assert prov.fetch_snapshot(Station)["tier"] == "48h"

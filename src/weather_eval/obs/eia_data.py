@@ -10,6 +10,7 @@ import json
 import logging
 import re
 import time
+from datetime import datetime
 from typing import Any
 
 import requests
@@ -60,6 +61,35 @@ def _to_float(v: Any) -> float | None:
         return None
 
 
+# 带（秒/分）非整点时刻的计数：本轮 fetch 内聚合告警一次，不逐条刷屏
+_non_hour_seen = 0
+
+
+def _floor_to_hour(dt: datetime) -> datetime:
+    """观测时刻下取整到整点。
+
+    评估按整点字符串精确配对，带分钟的观测（如 15:10）永远配不上整点预报、
+    会被静默丢样。eia-data 实测全为整点，此为防御：若页面开始返回带分钟时刻，
+    下取整并聚合告警（取整对 1h 累计量的标注误差 ≤ 读取延迟，优于整条丢失）。
+    """
+    global _non_hour_seen
+    floored = dt.replace(minute=0, second=0, microsecond=0)
+    if floored != dt:
+        _non_hour_seen += 1
+    return floored
+
+
+def _warn_non_hour(records: list[dict], station_id: str) -> list[dict]:
+    """本轮解析出现非整点时刻时聚合告警一次（下取整已在 _floor_to_hour 完成）。"""
+    global _non_hour_seen
+    if _non_hour_seen:
+        logger.warning(
+            "站点 %s 有 %d 个带分钟/秒的观测时刻，已下取整到整点参与配对"
+            "（页面时间格式可能已变化，请核对 eia-data 页面）", station_id, _non_hour_seen)
+        _non_hour_seen = 0
+    return records
+
+
 def _records_from_wd(wd: dict) -> list[dict]:
     times = wd.get("time") or []
     if not times:
@@ -68,7 +98,7 @@ def _records_from_wd(wd: dict) -> list[dict]:
     out: list[dict] = []
     for i in range(n):
         try:
-            dt = parse_obs_time(times[i])
+            dt = _floor_to_hour(parse_obs_time(times[i]))
         except ValueError:
             continue
         rec = {"time": iso(dt), "source": "wd"}
@@ -119,7 +149,7 @@ def _records_from_table(html: str) -> list[dict]:
         if "time" not in col or len(tds) <= col["time"]:
             continue
         try:
-            dt = parse_obs_time(tds[col["time"]].get_text(strip=True))
+            dt = _floor_to_hour(parse_obs_time(tds[col["time"]].get_text(strip=True)))
         except ValueError:
             continue
         rec = {"time": iso(dt), "source": "table"}
@@ -162,13 +192,14 @@ class EiaDataObsSource(ObsSource):
                 records = _records_from_wd(wd)
                 if records:
                     logger.info("站点 %s 解析 wd JSON 得到 %d 条", station.id, len(records))
-                    return records
+                    return _warn_non_hour(records, station.id)
             except (json.JSONDecodeError, TypeError) as e:
                 logger.warning("站点 %s 内嵌 wd JSON 解析失败: %s", station.id, e)
 
         records = _records_from_table(html)
         if records:
             logger.info("站点 %s 回退解析表格得到 %d 条", station.id, len(records))
+            return _warn_non_hour(records, station.id)
         else:
             # 页面 200 但无任何观测：视为抓取失败（可能是反爬/登录页/改版），让上层标红
             raise RuntimeError(

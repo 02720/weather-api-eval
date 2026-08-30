@@ -370,6 +370,12 @@ window.addEventListener("DOMContentLoaded", function () {
       </table>
     </div>
     <div id="lbEmpty" class="chart-empty" hidden>本榜单暂无足够样本（数据积累中）——各源都在持续积累，通常再过几天就会出现。</div>
+    {% if report.meta.model_caveats %}
+    <div class="hint" style="border-left-color:var(--amber);background:#fffbeb;color:#92400e">
+      ⚠️ <b>口径注记：</b>{% for m, note in report.meta.model_caveats.items() %}
+      <b>{{ model_labels.get(m, m) }}</b>：{{ note }}。{% endfor %}
+      该源在榜单中的名次应结合这一差异解读。</div>
+    {% endif %}
     <p class="hint">💡 <b>怎么看：</b>① 先看<b>综合分</b>列的名次与梯队（底纹条越长分越高）；
       ② 总榜是"全部样本合并"口径：临近时效样本天然更多（也是实际用得最多的预报），且有的源只提供较短时效——
       总榜视图下请结合<b>「覆盖时效」</b>列解读，要同难度硬碰硬就切「提前 N 天」分榜；
@@ -600,8 +606,9 @@ window.addEventListener("DOMContentLoaded", function () {
       <div><dt>雨强分级（1h 口径）</dt><dd>按每小时雨量分档检验：小雨(0.1~1.9mm/h)、中雨(2~4.9)、大雨(5~9.9)、暴雨(10~19.9)、大暴雨(≥20)。每档可算全套晴雨类指标。</dd></div>
       <div><dt>累计分级（24h 口径）</dt><dd>按日累计雨量"达到某档以上"检验：≥0.1（小雨以上）、≥10（中雨以上）、≥25（大雨以上）、≥50（暴雨以上）、≥100（大暴雨以上）、≥250mm（特大暴雨以上）。</dd></div>
       <div><dt>样本数 n</dt><dd>参与指标计算的"预报-实况"对数。n &lt; {{ report.meta.min_sample }} 时本报告判"样本不足"，不下结论（显示 —）。</dd></div>
-      <div><dt>观测覆盖率</dt><dd>评估窗口内成功抓到实况的小时占比。覆盖率低会让指标样本变少。</dd></div>
-      <div><dt>月度归档</dt><dd>每月 1 号把上个月的结果冻结成一份永久档案（见下方归档区），之后不再变动。</dd></div>
+      <div><dt>观测覆盖率</dt><dd>评估窗口内成功抓到实况的小时占比。分母按各站<b>实际有实况的时段</b>计算（实况接入前的时段不算缺失）；{% if report.coverage.first_obs %}本窗口实况自 {{ report.coverage.first_obs[:10] }} 起。{% endif %}覆盖率低会让指标样本变少。</dd></div>
+      <div><dt>起报锚点（各源差异）</dt><dd>计算"提前量"的参照时刻。多数源锚定真实起报轮次或抓取时刻；Open-Meteo 不回显真实轮次，锚点是北京时"当日 00:00"且每天只封存 1 份快照——同一「提前 N 天」桶内各源的实际难度与样本新鲜度因此略有差异（详见"口径与已知差异"）。</dd></div>
+      <div><dt>月度归档</dt><dd>每月 1 号把上个月的结果冻结成一份永久档案（见下方归档区），之后不再变动（重复触发会自动跳过，绝不重写）。</dd></div>
     </dl>
   </section>
 
@@ -624,12 +631,19 @@ window.addEventListener("DOMContentLoaded", function () {
       <li>本页指标每次都用当月积累的全部数据重新计算（评估计算由开源库 cyeva 完成：温度 9 项、降水晴雨 8 项 + 雨量误差 3 项 + 分级 11 档），所以打开永远是"本月至今"的最新结果。</li>
       <li>每月 1 号把上个月冻结成月度归档，永久可查。</li>
     </ol>
+    <h2 style="margin-top:22px">📏 口径与已知差异</h2>
+    <ol class="steps">
+      <li>🌧️ <b>逐小时降水口径</b>：观测 rain@t 覆盖 (t−1h, t]。各源入库口径——Open-Meteo/彩云/和风/中科星图/伏羲确定性：源原生序列直接透传（按"前 1 小时累计"同标注配对，彩云/和风的窗口方向已经平移标定核验）；中科天机/伏羲中期：源为 mm/h 降水率，作为前 1 小时累计的近似；风乌：6h 累计均摊为逐小时（总量守恒）；AccuWeather：按推断整体移位 1 小时（假设已在快照与代码中留档并定期标定复核）。</li>
+      <li>🧭 <b>起报锚点差异</b>：Open-Meteo 不回显真实起报轮次，其快照锚点是北京时"当日 00:00"且每天仅封存 1 份快照；其余各源锚定抓取时刻或真实起报轮次、逐时封存。同一「提前 N 天」桶内各源的实际难度与样本新鲜度因此略有差异，跨源解读请留意。</li>
+      <li>📅 <b>按天评估的覆盖门槛</b>：日聚合只在观测与预报两侧当日非缺测小时数都达标（≥{{ report.meta.daily_min_hours }}/24）的天上比较——降水全缺测的样本绝不折算成"预报无雨"。</li>
+      {% if report.coverage.first_obs %}<li>🛰️ <b>实况自 {{ report.coverage.first_obs[:10] }} 起接入</b>：覆盖率与样本量按各站实际有实况的时段计算。</li>{% endif %}
+    </ol>
   </section>
 
 </div>
 
 <footer>
-  生成时间：{{ generated_at }}（北京时）｜ 预报源：Open-Meteo（多模型）· 彩云天气 · 和风天气 · 中科天机 · 伏羲 · 风乌 · 中科星图 ｜
+  生成时间：{{ generated_at }}（北京时）｜ 预报源：Open-Meteo（多模型）· 彩云天气 · 和风天气 · 中科天机 · 伏羲 · 风乌 · 中科星图 · AccuWeather ｜
   实况：环境气象数据服务平台 eia-data.com<br>
   本页由 GitHub Actions 自动生成，每天 3 次更新；仅供学习参考，出行请以官方气象部门预报为准。
 </footer>

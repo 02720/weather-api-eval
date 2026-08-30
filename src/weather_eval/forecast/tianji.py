@@ -16,6 +16,8 @@
      逐小时步进、从起报后 1 小时开始，起报当刻本身不出现在序列里。
    - 本评估体系全程使用北京时 naive 整点字符串配对，因此这里直接按北京时墙钟解析，
      无需任何时区换算（见 timeutil 模块说明）。
+   - 起报以响应回显的 baseTimeString 为准：若服务端以"就近替换"响应了非所请求的
+     轮次，数据属于回显轮次，用它计算 issue/lead 才不错位（仅告警不拒绝，数据保留）。
 3. 起报轮次：北京时每天 08/20 时两轮（国内 NWP 业务惯例）。最新轮次有发布延迟，
    且**各模式的发布进度互不同步**——用未来轮次查询会返回 200 但 forecastDetails
    为空。因此逐模式向过去回退探测（最多 MAX_BASE_FALLBACK 轮）直到拿到非空数据，
@@ -186,19 +188,24 @@ class TianjiProvider(ForecastProvider):
         temp: dict[str, list] | None = None
         base = self._base_cache.get(model)
         if base is not None:
-            temp = self._fetch_series(station, mode, t_prod, t_factor, base)
+            temp, echoed = self._fetch_series(station, mode, t_prod, t_factor, base)
+            if echoed:
+                # 数据属于回显轮次：以回显为准修正起报并刷新缓存，防 lead 整体错位
+                base = echoed
+                self._base_cache[model] = base
             if not temp["time"]:
                 # 缓存轮次意外无数据（罕见：产品回溯清理），作废缓存重探一次
                 logger.warning(
                     "中科天机模型 %s 缓存起报 %s 无数据，作废缓存重新探测", model, base)
                 self._base_cache.pop(model, None)
                 base = None
+                temp = None
         if temp is None:
             base, temp = self._resolve_base_time(model, mode, t_prod, t_factor, station)
             self._base_cache[model] = base
         # 探测刚返回的 temp 序列与正式请求同参同址，直接复用（省一次请求）。
 
-        prec = self._fetch_series(station, mode, p_prod, p_factor, base)
+        prec, _prec_echo = self._fetch_series(station, mode, p_prod, p_factor, base)
         if not temp["time"]:
             raise RuntimeError(
                 f"中科天机站点 {station.id} 模型 {model} 起报 {base} 未返回温度序列"
@@ -253,24 +260,27 @@ class TianjiProvider(ForecastProvider):
                            factor: str, station: Any) -> tuple[str, dict[str, list]]:
         """探测该模型最新可用起报：从最近轮次向过去回退，取首个非空数据轮。
 
-        返回 (baseTime, 命中轮次的序列)——序列与正式温度请求同参同址，直接复用省一次请求。
-        注意：非 200 / code!=200 属于请求级失败，直接上抛；只有"200 但该轮
-        尚未发布（空序列）"才回退到更早轮次。
+        返回 (生效起报, 命中轮次的序列)——生效起报以响应回显的 baseTimeString 为准
+        （服务端"静默就近替换"时，数据属于回显轮次，用它计算 lead 才不错位）；
+        序列与正式温度请求同参同址，直接复用省一次请求。注意：非 200 / code!=200
+        属于请求级失败，直接上抛；只有"200 但该轮尚未发布（空序列）"才回退到更早轮次。
         """
         now = self._now or now_beijing()
         first = candidate_base_times(now, 1)[0]
         for cand in candidate_base_times(now):
-            series = self._fetch_series(station, mode, prod, factor, cand)
+            series, echoed = self._fetch_series(station, mode, prod, factor, cand)
             if series["time"]:
-                if cand != first:
-                    logger.info("中科天机模型 %s 最新轮次未发布，回退使用起报 %s", model, cand)
-                return cand, series
+                effective = echoed or cand
+                if effective != first:
+                    logger.info("中科天机模型 %s 最新轮次未发布，回退使用起报 %s", model, effective)
+                return effective, series
         raise RuntimeError(
             f"中科天机模型 {model} 在最近 {MAX_BASE_FALLBACK} 个起报轮次均无数据"
         )
 
     def _fetch_series(self, station: Any, mode: str, prod: str,
-                      factor: str, base: str) -> dict[str, list]:
+                      factor: str, base: str) -> tuple[dict[str, list], str | None]:
+        """请求某要素在某起报轮次的序列，返回 (序列, 回显的轮次 YYYYMMDDHH | None)。"""
         params = {
             "lat": station.lat,
             "lon": station.lon,
@@ -282,14 +292,20 @@ class TianjiProvider(ForecastProvider):
         }
         payload = self._request(params)
         series = _parse_tj_response(payload, factor)
-        # 回读校验：确认服务端响应的就是所请求的轮次，防止"静默就近替换"导致 lead 错位
+        # 回读校验：确认服务端响应的就是所请求的轮次，防止"静默就近替换"导致 lead 错位。
+        # 不一致时告警并返回回显值，由调用方以回显为准（数据属于它真实所属的轮次）；
+        # 回显值必须通过 YYYYMMDDHH 格式校验才采信，否则忽略（防契约漂移产出垃圾 issue）。
         echoed = (payload or {}).get("data", {}).get("baseTimeString") if isinstance(payload, dict) else None
+        if isinstance(echoed, str) and len(echoed.strip()) == 10 and echoed.strip().isdigit():
+            echoed = echoed.strip()
+        else:
+            echoed = None
         if echoed is not None and echoed != base:
             logger.warning(
-                "中科天机响应轮次(%s)与请求(%s)不一致，按响应回显的时间串解析",
+                "中科天机响应轮次(%s)与请求(%s)不一致，以回显轮次为准计算起报/时效",
                 echoed, base,
             )
-        return series
+        return series, echoed
 
     def _request(self, params: dict) -> Any:
         last_err: Exception | None = None
