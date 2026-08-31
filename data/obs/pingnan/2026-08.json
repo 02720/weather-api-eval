@@ -1096,8 +1096,8 @@
     "pressure": 990.0,
     "humidity": 91.0,
     "rain": 0.1,
-    "wind_speed": 1.8,
-    "wind_dir": 47.0
+    "wind_speed": 0.8,
+    "wind_dir": 41.0
   },
   "2026-08-30T12:00": {
     "time": "2026-08-30T12:00",
@@ -1218,5 +1218,85 @@
     "rain": 0.9,
     "wind_speed": 1.6,
     "wind_dir": 316.0
+  },
+  "2026-08-31T07:00": {
+    "time": "2026-08-31T07:00",
+    "source": "wd",
+    "temp": 24.8,
+    "pressure": 991.0,
+    "humidity": 99.0,
+    "rain": 0.0,
+    "wind_speed": 0.6,
+    "wind_dir": 162.0
+  },
+  "2026-08-31T06:00": {
+    "time": "2026-08-31T06:00",
+    "source": "wd",
+    "temp": 24.8,
+    "pressure": 990.7,
+    "humidity": 98.0,
+    "rain": 0.1,
+    "wind_speed": 0.9,
+    "wind_dir": 204.0
+  },
+  "2026-08-31T05:00": {
+    "time": "2026-08-31T05:00",
+    "source": "wd",
+    "temp": 25.2,
+    "pressure": 990.3,
+    "humidity": 98.0,
+    "rain": 0.1,
+    "wind_speed": 1.4,
+    "wind_dir": 203.0
+  },
+  "2026-08-31T04:00": {
+    "time": "2026-08-31T04:00",
+    "source": "wd",
+    "temp": 25.3,
+    "pressure": 990.3,
+    "humidity": 95.0,
+    "rain": 0.0,
+    "wind_speed": 1.2,
+    "wind_dir": 12.0
+  },
+  "2026-08-31T03:00": {
+    "time": "2026-08-31T03:00",
+    "source": "wd",
+    "temp": 24.8,
+    "pressure": 990.5,
+    "humidity": 98.0,
+    "rain": 0.0,
+    "wind_speed": 1.7,
+    "wind_dir": 19.0
+  },
+  "2026-08-31T02:00": {
+    "time": "2026-08-31T02:00",
+    "source": "wd",
+    "temp": 24.4,
+    "pressure": 990.6,
+    "humidity": 99.0,
+    "rain": 0.1,
+    "wind_speed": 1.1,
+    "wind_dir": 97.0
+  },
+  "2026-08-31T01:00": {
+    "time": "2026-08-31T01:00",
+    "source": "wd",
+    "temp": 24.3,
+    "pressure": 991.4,
+    "humidity": 98.0,
+    "rain": 0.8,
+    "wind_speed": 1.7,
+    "wind_dir": 113.0
+  },
+  "2026-08-31T00:00": {
+    "time": "2026-08-31T00:00",
+    "source": "wd",
+    "temp": 25.4,
+    "pressure": 991.7,
+    "humidity": 96.0,
+    "rain": 0.4,
+    "wind_speed": 1.7,
+    "wind_dir": 95.0
   }
 }
