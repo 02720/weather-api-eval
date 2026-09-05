@@ -100,7 +100,20 @@ python -m weather_eval report                                   # 生成 reports
 2. **观测侧覆盖门槛不放松**：实况当天不足 `daily_min_hours` 照样不入样；日产品缺测就是缺测，绝不折算 0.0。
 3. **口径差异只披露不消除**：日产品的日界窗口与"逐小时求和"相差约 1 小时边界；同一日偏移桶内可能两种来源混存（不同源、甚至同源的不同天），横向解读以补位列与分时效榜为准。日产品的日界必须是北京时自然日——中国天气网"白天/夜间"那类日界不能照抄，接入前必须在 provider docstring 里核实留档。
 
-日产品**抓取失败不拖垮整份起报快照**（逐小时是主干，错过起报无法追补），缺失块以 WARNING 暴露、评估自动回退纯逐小时口径；`daily_source_fallback: false` 可整体关回旧口径。Open-Meteo 已作为参考实现接入（同一次请求顺带取回日产品，零额外调用；实测其日产品与逐小时聚合逐日完全一致——该源逐小时本就覆盖满 16 天，补位保持休眠，链路由 CI 真实数据走到）。
+日产品**抓取失败不拖垮整份起报快照**（逐小时是主干，错过起报无法追补），缺失块以 WARNING 暴露、评估自动回退纯逐小时口径；`daily_source_fallback: false` 可整体关回旧口径。各源接入状态（2026-09-05 逐源实测核实，证据与口径假设见各 provider docstring）：
+
+| 源 | 逐日块 | 说明 |
+|---|---|---|
+| Open-Meteo | ✅ 全三要素 | 参考实现：同一次请求顺带取回，零额外调用。该源逐小时本就覆盖满 16 天，补位保持休眠 |
+| 和风天气 | ✅ 全三要素 | 旧版 v7 逐日 3/7/10/15/30d 逐档回退（precip 为官方整日降水量）。逐小时止于 240h=10 天，逐日可到 30d——**真实时效增益 +5~20 天**。v7 官方 2027-02-01 停服，届时自动退化为不带块；新版 v1 daily 仅 10 天且无整日降水量字段，不接 |
+| AccuWeather | ✅ 全三要素 | 官方逐日 15/10/5/1day 逐档回退；降水 = Day/Night 两个半日 TotalLiquid 之和（details=true）。逐小时 10 天 → 逐日 15 天（订阅开放 15day 时）。半日窗口（约当地 06/18 时）与自然日的边界差已留档 |
+| 中科星图 | ✅ 仅温度 | `day/area` 15 天：tem_max/min 与自家逐小时对拍一致（±1°C）。**降水拒绝接入**——实测 pre_day/pre_night 呈恒 5.0 的量级码形态且与自家逐小时矛盾 90 倍，逐小时 5 天 → 逐日温度 15 天 |
+| 彩云天气 | ✅ 仅温度 | 同请求把 dailysteps 提到 15（官方上限）：daily.temperature[].max/min 即全天最高/最低。**降水拒绝接入**——daily.precipitation 只有日内统计量（max/min/avg/probability），无累计字段。逐小时本就覆盖 16 天，接入价值在逐小时被 Token/UA 截断时 |
+| 中科天机 | ❌ | 单点接口无逐日产品：5 个模式 × 6 个逐日要素候选码全部实测为空（docstring 留档） |
+| 风乌 | ❌ | 官方变量表仅 16 个逐小时要素，前端 API 面无逐日端点 |
+| 伏羲（中期/确定性） | ❌ | 两条产品线的变量表均无逐日极值；次季节线的 t_min/t_max 属不同产品线（分位值、非自然日），不混用 |
+| MSN 天气 | ❌ | SSR 的 daily 汇总两次实测与任何可识别日界（自然日/白天-夜间窗口）都对不上（差 1~2°C、方向不定），疑占位值——与观测日界无法对齐的极值入库等于注入系统噪声（docstring 留档证据） |
+
 - **样本下限**：所有指标附样本数 n，`n < 5`（`min_sample`）视为"样本不足"，不出结论。
 - **指标**：温度 9 项（RMSE/MAE/MBE/±1°C·±2°C 准确率/相关系数/回归斜率/RSS/χ²），降水 11 项（晴雨二分类 8 项：准确率/POD/FAR/POFD/漏报率/TS/ETS/BIAS ＋ 雨量连续量 3 项），另有逐小时雨强 5 档与 24h 累计 6 档的分级指标。全量定义见 `evaluate.py` 模块 docstring。
 
@@ -150,7 +163,7 @@ tests/                    pytest（含 cyeva 手算对拍）
 - **新增站点**：在 `config/stations.yaml` 的 `stations` 下加一项（`id`/`name`/`lat`/`lon`/`obs_url`，`obs_url` 为 eia-data 该站"气象站基本信息"页的 URL）。
 - **新增模型**：Open-Meteo 模型直接加入 `models` 列表；中科天机模型需先在 `forecast/tianji.py` 的 `MODEL_SPECS` 登记映射。
 - **新增预报源**：实现 `forecast/base.py` 的 `ForecastProvider` 接口（返回统一结构的起报快照，支持共享时间轴的 dict 或各模型独立快照的 list 两种形态），在 `__main__.py` 的 `SOURCE_SPECS` 登记一个 `--source` 值（模型集合与提供方工厂在同一处登记，勿分两张表），评估/报告逻辑无需改动。现有 `caiyun.py`/`qweather.py`/`geovis.py`/`accuweather.py`/`msn.py` 可作参考，覆盖了官方 API、网页接口抓取、档位回退、SSR 状态抽取等常见形态。
-- **逐小时覆盖短于逐日的源**：按 `forecast/base.py` 的契约把该源的逐日预报一并封存进快照的 `daily_time`/`daily` 块（日产品抓取失败降级为不带块的快照），按天评估即可自动越过逐小时断供点——参考 `open_meteo.py` 的 `_parse_daily`；日界与字段口径假设必须先实测核实并写进该 provider 的 docstring。
+- **逐小时覆盖短于逐日的源**：按 `forecast/base.py` 的契约把该源的逐日预报一并封存进快照的 `daily_time`/`daily` 块（日产品抓取失败降级为不带块的快照），按天评估即可自动越过逐小时断供点——参考 `open_meteo.py` 的 `_parse_daily`、`qweather.py` 的 `_fetch_daily_block`（档位梯子型）、`accuweather.py` 的 `_fetch_daily_block`（半日分量求和型）、`geovis.py` 的 `_fetch_daily_block`（仅温度型）；日界与字段口径假设必须先实测核实并写进该 provider 的 docstring，源的逐日产品若只有概率/量级码/日内统计量（无定量累计），对应要素一律置全 null 并留档拒绝理由（见 base.py 契约）。
 
 ## 已知约束
 

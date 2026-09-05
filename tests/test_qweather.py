@@ -227,13 +227,15 @@ def test_fallback_picks_largest_tier_within_requested_hours(monkeypatch):
     def route(url, params):
         if "weather/v1" in url:
             return 404, {}
-        assert "/v7/weather/168h" in url
-        assert params["location"] == f"{round(111.304, 2)},{round(23.4783, 2)}"
-        return _ok(_v7_payload(base, ["1.0"], ["0.0"]))
+        if url.endswith("168h"):
+            assert params["location"] == f"{round(111.304, 2)},{round(23.4783, 2)}"
+            return _ok(_v7_payload(base, ["1.0"], ["0.0"]))
+        return 403, {}  # 逐日各档位被拒 -> 梯子走完后放弃（不带逐日块）
 
     sess = _RoutingSession(route)
     QWeatherProvider(key="d", session=sess, retries=0).fetch_snapshot(_station())
-    assert len(sess.calls) == 2
+    hourly_calls = [c for c in sess.calls if c["url"].endswith("168h")]
+    assert len(hourly_calls) == 1
 
 
 def test_auth_failure_terminates_without_fallback(monkeypatch):
@@ -463,3 +465,112 @@ def test_end_to_end_spans_day_for_daily(tmp_path, monkeypatch):
     daily_max = data["temp_daily"]["qweather_v1"]["1d"]["max"]
     assert daily_max["n"] >= 1
     assert daily_max["acc2"] == 100.0
+
+
+# ----------------------------------------------------------------- 逐日预报块
+def _v7_daily_payload(base_day, n_days, tmaxes, tmins, precips):
+    """构造 v7 逐日响应：fxDate 'YYYY-MM-DD'，数值为字符串（缺测空串）。"""
+    from datetime import date as _date, timedelta as _td
+    items = []
+    for i in range(n_days):
+        d = (_date.fromisoformat(base_day) + _td(days=i)).isoformat()
+        items.append({
+            "fxDate": d,
+            "tempMax": "" if tmaxes[i] is None else str(tmaxes[i]),
+            "tempMin": "" if tmins[i] is None else str(tmins[i]),
+            "precip": "" if precips[i] is None else str(precips[i]),
+            "textDay": "多云", "textNight": "晴",
+        })
+    return {"code": "200", "updateTime": "2026-08-27T15:00+08:00", "daily": items}
+
+
+def test_daily_block_fetched_from_v7(monkeypatch):
+    """逐小时照常 + v7/30d 逐日块解析：字符串数值归一、fxDate 即北京时自然日。"""
+    monkeypatch.delenv("QWEATHER_API_HOST", raising=False)
+    base = datetime(2026, 8, 27, 15, 0)
+    hourly = _v1_payload(base, [28.5], [0.0])
+
+    def route(url, params):
+        if "weather/v1" in url:
+            return _ok(hourly)
+        assert "/v7/weather/30d" in url                      # 首选最大档
+        assert params["location"] == f"{round(111.304, 2)},{round(23.4783, 2)}"
+        return _ok(_v7_daily_payload("2026-08-28", 3,
+                                     [33, 34, 35], [24, 25, 26], [0.0, "1.5", None]))
+
+    snap = QWeatherProvider(key="d", session=_RoutingSession(route), retries=0) \
+        .fetch_snapshot(_station())
+    assert snap["daily_time"] == ["2026-08-28", "2026-08-29", "2026-08-30"]
+    d = snap["daily"]["qweather_v1"]
+    assert d["temp_max"] == [33.0, 34.0, 35.0]
+    assert d["temp_min"] == [24.0, 25.0, 26.0]
+    assert d["precipitation"] == [0.0, 1.5, None]            # 空串缺测 -> None
+    # 逐小时主干不受影响
+    assert snap["hourly_time"][0] == "2026-08-27T15:00"
+    assert snap["data"]["qweather_v1"]["temperature_2m"] == [28.5]
+
+
+def test_daily_tier_ladder_descends_and_caches(monkeypatch, caplog):
+    """30d 被拒（403）→ 15d 成功；第二站直接走 15d（档位账号级、进程内缓存）。"""
+    monkeypatch.delenv("QWEATHER_API_HOST", raising=False)
+    base = datetime(2026, 8, 27, 15, 0)
+    hourly = _v1_payload(base, [28.5], [0.0])
+    daily_15 = _v7_daily_payload("2026-08-28", 2, [33, 34], [24, 25], [0.0, 0.0])
+    calls_30d = []
+
+    def route(url, params):
+        if "weather/v1" in url:
+            return _ok(hourly)
+        if url.endswith("30d"):
+            calls_30d.append(url)
+            return 403, {"code": "403"}
+        assert url.endswith("15d")
+        return _ok(daily_15)
+
+    with caplog.at_level(logging.WARNING, logger="weather_eval.forecast.qweather"):
+        prov = QWeatherProvider(key="d", session=_RoutingSession(route), retries=0)
+    snap1 = prov.fetch_snapshot(_station())
+    assert snap1["daily_time"] == ["2026-08-28", "2026-08-29"]
+    prov.fetch_snapshot(_station())
+    assert len(calls_30d) == 1                                # 缓存后不再重探 30d
+
+
+def test_daily_all_tiers_fail_leaves_snapshot_intact(monkeypatch, caplog):
+    """逐日各档位均被拒 -> 快照照常入库但不带逐日块（延长线绝不拖垮主干）。"""
+    monkeypatch.delenv("QWEATHER_API_HOST", raising=False)
+    base = datetime(2026, 8, 27, 15, 0)
+    hourly = _v1_payload(base, [28.5], [0.0])
+    sess = _RoutingSession(lambda u, p: _ok(hourly) if "weather/v1" in u
+                           else (200, {"code": "402"}))       # 业务错误码：档位不可用
+    with caplog.at_level(logging.WARNING, logger="weather_eval.forecast.qweather"):
+        snap = QWeatherProvider(key="d", session=sess, retries=0) \
+            .fetch_snapshot(_station())
+    assert "daily" not in snap and "daily_time" not in snap
+    assert snap["data"]["qweather_v1"]["temperature_2m"] == [28.5]
+    assert any("逐日预报各档位均不可用" in r.message for r in caplog.records)
+    # 五档逐日都试过（从大到小），全部立即被拒、无退避空烧
+    daily_urls = [c["url"] for c in sess.calls if "/v7/weather/" in c["url"]]
+    assert [u.rsplit("/", 1)[1] for u in daily_urls] == ["30d", "15d", "10d", "7d", "3d"]
+
+
+def test_daily_bad_dates_skipped_and_deduped(monkeypatch):
+    """fxDate 非法/重复：非法跳过、重复保留首见，时间轴升序去重（契约要求）。"""
+    monkeypatch.delenv("QWEATHER_API_HOST", raising=False)
+    base = datetime(2026, 8, 27, 15, 0)
+    hourly = _v1_payload(base, [28.5], [0.0])
+    daily = {"code": "200", "daily": [
+        {"fxDate": "2026-08-29", "tempMax": "34", "tempMin": "25", "precip": "0.0"},
+        {"fxDate": "not-a-date", "tempMax": "40", "tempMin": "30", "precip": "9"},
+        {"fxDate": "2026-08-28", "tempMax": "33", "tempMin": "24", "precip": "1.0"},
+        {"fxDate": "2026-08-28", "tempMax": "99", "tempMin": "99", "precip": "9"},  # 重复
+    ]}
+
+    def route(url, params):
+        if "weather/v1" in url:
+            return _ok(hourly)
+        return _ok(daily)
+
+    snap = QWeatherProvider(key="d", session=_RoutingSession(route), retries=0) \
+        .fetch_snapshot(_station())
+    assert snap["daily_time"] == ["2026-08-28", "2026-08-29"]
+    assert snap["daily"]["qweather_v1"]["temp_max"] == [33.0, 34.0]

@@ -35,9 +35,10 @@
    状态表 "Allowed request limit has been exceeded"）——账号级确定性失败，
    不退避立即熔断；503 仍按瞬时过载退避重试、穷尽后熔断。档位梯子全被拒
    同样熔断——账号级确定性失败都让同次运行内后续站点直接失败、不再烧
-   退避/重探（若其实是瞬时故障，下次运行自愈）。本源每站每轮 2 次调用
-   （1 定位 + 1 预报），4 站 × 3 轮/天 ≈ 24 次，档位探测进程内仅一轮
-   （最坏 5 次，梯子全被拒时；订阅正常开放 240h 则为 0）。官方另
+   退避/重探（若其实是瞬时故障，下次运行自愈）。本源每站每轮 3 次调用
+   （1 定位 + 1 逐小时 + 1 逐日），4 站 × 3 轮/天 ≈ 36 次，档位探测进程内仅一轮
+   （最坏 5 次逐小时 + 3 次逐日，梯子全被拒时；订阅正常开放则逐小时 0 次、
+   逐日首站最坏 3 次）。官方另
    提供 allowError 参数可把错误码压平成 200——刻意不用：状态码是重试/熔断
    状态机的输入，压平会把契约漂移/配额耗尽静默成伪 200，违背"绝不静默"。
 4. 鉴权：Enterprise 契约是 ?apikey= query 参数（官方认证页 "Include the apikey
@@ -74,6 +75,24 @@
    标定方法见审查报告/README"降水口径"一节。快照 precip_alignment 字段留档，
    与风乌 expansion 字段同例。
 8. issue_iso 取时间轴首点（评估引擎排除 lead=0），与 qweather/geovis 一致。
+9. 逐日预报块（可选扩展，契约见 forecast/base.py）：逐小时止于订阅档位（实测
+   240h=10 天），逐日产品可到 15day——逐小时一断供，按天评估由日产品接续（+5 天）。
+   - 端点 `GET /forecasts/v1/daily/{days}day/{locationKey}`，官方逐日档位
+     15/10/5/1day（从大到小逐档回退，超出订阅的档位 403/400；档位账号级、
+     进程内缓存，与逐小时梯子同理）。鉴权/参数与逐小时同一契约（apikey query）。
+   - temp_max/temp_min := DailyForecasts[].Temperature.Maximum/Minimum（同款
+     {"Value","Unit"} 量纲对象，单位自适应换算复用 _TEMP_TO_C）。
+   - 降水 := Day.TotalLiquid + Night.TotalLiquid（details=true 才返回； halves
+     分别经 _LIQUID_TO_MM 换算成 mm 后求和，为全天液态水当量累计）。任一半日
+     缺失即整体记缺测（绝不只加一半）；TotalLiquid 含固态降水的液态当量，评估
+     站均在国内东南（固态降水可忽略），与观测雨量计口径一致性可接受，若站点
+     北迁应复核。Day/Night 的分界窗口（约当地 06/18 时）与北京时自然日不重合，
+     边界降水会记入相邻日——补位口径固有差异，只能披露不能消除。
+   - Date 为城市当地时区的当日时刻，转北京时后取日历日（评估站均在国内，
+     当地时即北京时，与逐小时 _parse_dt 同一假设）。
+   - 逐日抓取失败（档位被拒/409 配额/网络穷尽/契约漂移）只降级为"不带该块的
+     快照"并以 WARNING 暴露：逐小时是主干，绝不因延长线丢主干。409 仍会置
+     配额熔断标志（账号级状态，让同轮后续站点快速失败），但本次快照照常入库。
 """
 from __future__ import annotations
 
@@ -101,8 +120,10 @@ DEV_BASE_URL = "https://apidev.accuweather.com"
 # 占位符用单花括号普通字符串（f-string 会吃掉花括号，.format 才是格式化时机）
 _LOCATION_PATH = "/locations/v1/cities/geoposition/search"
 _FORECAST_PATH = "/forecasts/v1/hourly/{hours}hour/{key}"
+_DAILY_FORECAST_PATH = "/forecasts/v1/daily/{days}day/{key}"
 LOCATION_URL = f"{BASE_URL}{_LOCATION_PATH}"
 FORECAST_URL = f"{BASE_URL}{_FORECAST_PATH}"
+DAILY_FORECAST_URL = f"{BASE_URL}{_DAILY_FORECAST_PATH}"
 
 SOURCE = "accuweather"
 MODEL_NAME = "accuweather_v1"
@@ -113,6 +134,8 @@ KEY_ENV = "ACCUWEATHER_API_KEY"
 # 从大到小用于订阅档位回退；360 供显式加大 hours 时使用（订阅升级后可用满）。
 TIERS = (360, 240, 120, 72, 24, 12, 1)
 DEFAULT_HOURS = 240  # 真实 Key 实测订阅最高开放档（2026-08-29）
+# 逐日预报官方档位（docstring 第 9 条）：15day 需订阅开放，403/400 逐级回退
+DAILY_TIERS = (15, 10, 5, 1)
 HEADERS = {"User-Agent": "weather-api-eval/0.1 (+https://github.com/)"}
 
 # 单位自适应：AccuWeather 数值对象自带 Unit。温度目标 ℃、降水目标 mm；
@@ -232,7 +255,7 @@ def _quota_hint(detail: str) -> str:
     return (
         f"AccuWeather Enterprise 请求失败（{detail}）。Enterprise 超限的官方形态是 "
         "HTTP 409（Allowed request limit has been exceeded），请核对 Enterprise 订阅"
-        "的当日用量与合同限额（本源每站每轮 2 次调用：1 定位 + 1 预报，档位探测另计）；"
+        "的当日用量与合同限额（本源每站每轮 3 次调用：1 定位 + 1 逐小时 + 1 逐日，档位探测另计）；"
         "503 则多为服务端过载，退避穷尽仍持续失败时也应核对配额账本。"
     )
 
@@ -312,6 +335,74 @@ def parse_hourly_payload(payload: Any, station_id: str,
     }
 
 
+def _parse_daily_payload(payload: Any, station_id: str) -> dict | None:
+    """解析逐日预报响应 → {"time": [...], "temp_max": [...], "temp_min": [...],
+    "precipitation": [...]}（北京时自然日、升序去重）。
+
+    解析不出任何有效日返回 None（调用方告警并退化为不带该块的快照）；
+    Date 无法解析的条目跳过；降水为 Day+Night 两个半日 TotalLiquid 之和，
+    任一半日缺失即整体记缺测（绝不只加一半），半日缺失计数交由调用方告警。
+    """
+    if not isinstance(payload, dict):
+        return None
+    forecasts = payload.get("DailyForecasts")
+    if not isinstance(forecasts, list) or not forecasts:
+        return None
+    rows: dict[str, tuple[float | None, float | None, float | None]] = {}
+    temp_unit_counts: dict[str, int] = {}
+    liquid_unit_counts: dict[str, int] = {}
+    halfday_liquid_missing = 0
+    usable_days = 0
+    for ent in forecasts:
+        if not isinstance(ent, dict):
+            continue
+        try:
+            dt = _parse_dt(ent.get("Date"))
+        except ValueError:
+            logger.warning("AccuWeather 站点 %s 逐日条目 Date 无法解析（%r），跳过",
+                           station_id, ent.get("Date"))
+            continue
+        day = dt.date().isoformat()
+        if day in rows:  # 重复日保留首见
+            continue
+        temp_obj = ent.get("Temperature") or {}
+        tmax, uk = _metric_value(temp_obj.get("Maximum"), _TEMP_TO_C)
+        if tmax is not None or uk:
+            temp_unit_counts[uk] = temp_unit_counts.get(uk, 0) + 1
+        tmin, uk = _metric_value(temp_obj.get("Minimum"), _TEMP_TO_C)
+        if tmin is not None or uk:
+            temp_unit_counts[uk] = temp_unit_counts.get(uk, 0) + 1
+        day_liquid, lk = _metric_value((ent.get("Day") or {}).get("TotalLiquid"),
+                                       _LIQUID_TO_MM)
+        night_liquid, lk2 = _metric_value((ent.get("Night") or {}).get("TotalLiquid"),
+                                          _LIQUID_TO_MM)
+        for key in (lk, lk2):
+            if key:
+                liquid_unit_counts[key] = liquid_unit_counts.get(key, 0) + 1
+        if (day_liquid is None) != (night_liquid is None):
+            halfday_liquid_missing += 1
+        rain = (day_liquid + night_liquid
+                if day_liquid is not None and night_liquid is not None else None)
+        rows[day] = (tmax, tmin, rain)
+        usable_days += 1
+    if not rows:
+        return None
+    _warn_units(temp_unit_counts, _TEMP_TO_C, "c", "逐日气温", station_id)
+    _warn_units(liquid_unit_counts, _LIQUID_TO_MM, "mm", "逐日降水", station_id)
+    if halfday_liquid_missing:
+        logger.warning(
+            "AccuWeather 站点 %s 有 %d/%d 个逐日仅含一个半日的 TotalLiquid"
+            "（details=true 疑未生效或半日缺测），该日降水记缺测（绝不只加一半）",
+            station_id, halfday_liquid_missing, usable_days)
+    days = sorted(rows)
+    return {
+        "time": days,
+        "temp_max": [rows[d][0] for d in days],
+        "temp_min": [rows[d][1] for d in days],
+        "precipitation": [rows[d][2] for d in days],
+    }
+
+
 class AccuWeatherProvider(ForecastProvider):
     """AccuWeather 逐小时预报快照器：需 ACCUWEATHER_API_KEY，单模型快照 dict。"""
 
@@ -358,11 +449,13 @@ class AccuWeatherProvider(ForecastProvider):
             )
         self.location_url = f"{self.base_url}{_LOCATION_PATH}"
         self.forecast_url = f"{self.base_url}{_FORECAST_PATH}"
+        self.daily_forecast_url = f"{self.base_url}{_DAILY_FORECAST_PATH}"
         # Enterprise 契约：Key 经 apikey query 参数传递（_get 集中注入），
         # 请求头不携带凭据；dataservice 入口 2026-06-10 的 Bearer 头契约与本入口
         # 互不通用，不得混用
         self._headers = dict(HEADERS)
         self._tier_cache: int | None = None   # 本进程已验证的可用档位（账号级，跨站点复用）
+        self._daily_tier_cache: int | None = None  # 逐日产品可用档位（账号级，同上）
         self._quota_suspect = False           # 409/503 穷尽后的熔断标志
         self._tiers_exhausted = False         # 档位梯子全被拒后的熔断标志
 
@@ -381,6 +474,7 @@ class AccuWeatherProvider(ForecastProvider):
         loc = self._resolve_location(station)
         tier, payload = self._forecast_any_tier(loc["key"], station.id)
         parsed = parse_hourly_payload(payload, station.id, tier)
+        daily_block = self._fetch_daily_block(loc["key"], station.id)
         snapshot = {
             "issue_iso": parsed["time"][0],
             "station_id": station.id,
@@ -409,12 +503,69 @@ class AccuWeatherProvider(ForecastProvider):
                 "precipitation": parsed["precipitation"],
             }},
         }
+        if daily_block:
+            snapshot["daily_time"] = daily_block["time"]
+            snapshot["daily"] = daily_block["data"]
         logger.info("站点 %s 已抓取 AccuWeather 起报 %s（档位 %dh，实际 %d 点，城市 %s，"
-                    "距站点 %.1f km）", station.id, parsed["time"][0], tier,
-                    len(parsed["time"]), loc["name"], snapshot["location_distance_km"])
+                    "距站点 %.1f km，日产品 %d 天）", station.id, parsed["time"][0], tier,
+                    len(parsed["time"]), loc["name"], snapshot["location_distance_km"],
+                    len(daily_block["time"]) if daily_block else 0)
         return snapshot
 
     # ------------------------------------------------------------------ 内部
+    def _fetch_daily_block(self, loc_key: str, station_id: str) -> dict | None:
+        """逐日预报块：官方档位从大到小逐档回退，成功档位进程内缓存。
+
+        任何失败都不上抛——逐日块是可选延长线，退化为"不带该块的快照"并以
+        WARNING 暴露（docstring 第 9 条）。409/503 熔断语义与逐小时一致
+        （_get 内置），熔断后立即放弃逐日（后续档位必然同样失败）；401 时逐小时
+        已成功、Key 有效性已被证实，视为逐日产品权限/契约问题，放弃延长线。
+        """
+        tiers: list[int] = []
+        if self._daily_tier_cache is not None:
+            tiers.append(self._daily_tier_cache)
+        tiers += [t for t in DAILY_TIERS if t != self._daily_tier_cache]
+        rejected: list[str] = []
+        for tier in tiers:
+            try:
+                status, body = self._get(
+                    self.daily_forecast_url.format(days=tier, key=loc_key),
+                    {"language": self.language, "details": "true", "metric": "true"},
+                )
+            except Exception as e:  # noqa: BLE001  409 熔断/503 穷尽/网络穷尽
+                logger.warning("AccuWeather 站点 %s 逐日预报（%dday）请求失败: %s",
+                               station_id, tier, _masked(str(e), self.key))
+                if self._quota_suspect:
+                    break  # 账号级配额状态已确认，后续档位必然同样失败
+                continue
+            if status == 200:
+                parsed = _parse_daily_payload(body, station_id)
+                if parsed is not None:
+                    self._daily_tier_cache = tier
+                    return {
+                        "time": parsed["time"],
+                        "data": {MODEL_NAME: {
+                            "temp_max": parsed["temp_max"],
+                            "temp_min": parsed["temp_min"],
+                            "precipitation": parsed["precipitation"],
+                        }},
+                    }
+                # 200 但响应形态异常（各档位同 schema）：契约漂移，逐档重试无意义
+                logger.warning("AccuWeather 站点 %s 逐日响应形态异常（契约漂移），"
+                               "本次快照不带逐日预报块: %s",
+                               station_id, _masked(_body_digest(body), self.key))
+                return None
+            if status == 401:
+                logger.warning("AccuWeather 站点 %s 逐日预报被拒（HTTP 401），放弃逐日块",
+                               station_id)
+                return None
+            rejected.append(f"{tier}day:HTTP {status} {_masked(_body_digest(body), self.key)}")
+            logger.warning("AccuWeather 站点 %s 逐日档位 %dday 被拒（HTTP %s），降档尝试",
+                           station_id, tier, status)
+        logger.warning(
+            "AccuWeather 站点 %s 逐日预报各档位均不可用（%s），本次快照不带逐日预报块，"
+            "按天评估将只用逐小时聚合", station_id, rejected or "请求失败")
+        return None
     def _resolve_location(self, station: Any) -> dict:
         """站点坐标 → 最近城市的 locationKey 与元数据（q 为"纬度,经度"）。"""
         status, body = self._get(self.location_url, {

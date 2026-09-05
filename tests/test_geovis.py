@@ -8,12 +8,14 @@ chinaCity120HourForecast，2026-08 版）：
   tem(℃)/pre(1h 降水 mm)，异常值 999999。
 """
 import json
+import logging
 
 import pytest
 from conftest import FakeResp
 
 from weather_eval.forecast.geovis import (
     AREA_URL,
+    DAY_URL,
     GevisProvider,
     _num_or_none,
     parse_area_response,
@@ -135,12 +137,14 @@ def test_tier_fallback_to_48h_and_cached():
     prov = GevisProvider(session=sess, token=TOKEN)
     snap = prov.fetch_snapshot(Station)
     assert snap["tier"] == "48h"
-    urls_tried = [u for u, _, _ in sess.calls]
+    # 只看逐小时端点：逐日块（day/area）是另一次探测，另有专测
+    urls_tried = [u for u, _, _ in sess.calls if u.startswith(AREA_URL)]
     assert urls_tried == [AREA_URL + "/professional", AREA_URL]
     # 同实例第二站：直接走已固定的档位，不再探测
-    n = len(sess.calls)
+    n = len([u for u, _, _ in sess.calls if u.startswith(AREA_URL)])
     prov.fetch_snapshot(Station)
-    assert [u for u, _, _ in sess.calls[n:]] == [AREA_URL]
+    assert [u for u, _, _ in sess.calls
+            if u.startswith(AREA_URL)][n:] == [AREA_URL]
 
 
 def test_tier_fallback_exhausted():
@@ -218,7 +222,8 @@ def test_business_error_downgrades_tier():
     prov = GevisProvider(session=sess, token=TOKEN)
     snap = prov.fetch_snapshot(Station)
     assert snap["tier"] == "48h"
-    assert [u for u, _, _ in sess.calls] == [AREA_URL + "/professional", AREA_URL]
+    assert [u for u, _, _ in sess.calls
+            if u.startswith(AREA_URL)] == [AREA_URL + "/professional", AREA_URL]
 
 
 def test_cached_tier_business_error_invalidates_cache():
@@ -227,6 +232,8 @@ def test_cached_tier_business_error_invalidates_cache():
     state = {"professional_ok": True}
 
     def routes(url, params, headers):
+        if url.startswith(DAY_URL):      # 逐日端点另有专测；此处固定成功避免烧退避
+            return 200, _day_payload()
         suffix = url[len(AREA_URL):]
         if suffix == "/professional" and not state["professional_ok"]:
             return 200, json.dumps({"status": 1002, "msg": "expired mid-run"})
@@ -237,3 +244,117 @@ def test_cached_tier_business_error_invalidates_cache():
     assert prov.fetch_snapshot(Station)["tier"] == "professional"
     state["professional_ok"] = False
     assert prov.fetch_snapshot(Station)["tier"] == "48h"
+
+
+# ----------------------------------------------------------------- 逐日预报块
+def _day_payload(days=None):
+    """构造 15 日逐日响应（fc_time 为 yyyyMMdd；tem_max/min + 量级码式 pre 分量）。"""
+    days = days or [("20260828", 30, 24), ("20260829", 31, 24), ("20260830", 33, 25)]
+    datas = [{"fc_time": d, "tem_max": mx, "tem_min": mn,
+              "pre_day": 5.0, "pre_night": 5.0, "pre_pro_day": 100}
+             for d, mx, mn in days]
+    last = days[-1][0]
+    end = f"{last[0:4]}-{last[4:6]}-{last[6:8]}"
+    body = {
+        "status": 0, "version": "v1",
+        "date": {"time": "20260828153000", "timeZone": "Asia/Shanghai"},
+        "result": {"start": days[0][0], "end": end, "size": str(len(datas)),
+                   "datas": datas},
+    }
+    return json.dumps(body)
+
+
+def _day_routes(hour_suffix_payload=None, day_handler=None):
+    """同时路由逐小时与逐日端点的假 session 路由。"""
+    hour = hour_suffix_payload if hour_suffix_payload is not None else _area_payload()
+
+    def routes(url, params, headers):
+        assert params["location"] == f"{Station.lon},{Station.lat}"
+        assert params["token"] == TOKEN
+        if url.startswith(DAY_URL):
+            if day_handler is None:
+                return 403, '{"status":1001,"msg":"no permission"}'
+            ret = day_handler(url)
+            return ret if isinstance(ret, tuple) else (200, ret)
+        if url.startswith(AREA_URL):
+            suffix = url[len(AREA_URL):]
+            if isinstance(hour, dict):
+                return 200, hour.get(suffix, "403")
+            return 200, hour
+        return 404, "{}"
+
+    return routes
+
+
+def test_daily_block_parsed_temp_only():
+    """day/area 15 天逐日：tem_max/min 入块、日期转自然日；量级码式降水不入块。"""
+    sess = RoutingSession(_day_routes(day_handler=lambda u: _day_payload()))
+    snap = GevisProvider(session=sess, token=TOKEN).fetch_snapshot(Station, ["geovis_v1"])
+    assert snap["daily_time"] == ["2026-08-28", "2026-08-29", "2026-08-30"]
+    d = snap["daily"]["geovis_v1"]
+    assert d["temp_max"] == [30.0, 31.0, 33.0]
+    assert d["temp_min"] == [24.0, 24.0, 25.0]
+    assert d["precipitation"] == [None, None, None]   # pre_day/night 是量级码，绝不入库
+    assert sess.calls[1][0] == DAY_URL + "/professional"   # 逐日首选专业档（call0 是逐小时）
+    # 逐小时主干不受影响
+    assert snap["hourly_time"][0] == "2026-08-28T15:00"
+
+
+def test_daily_999999_missing_marker_becomes_none():
+    sess = RoutingSession(_day_routes(day_handler=lambda u: _day_payload(
+        days=[("20260828", 999999, 24), ("20260829", 31, -9999)])))
+    snap = GevisProvider(session=sess, token=TOKEN).fetch_snapshot(Station, ["geovis_v1"])
+    d = snap["daily"]["geovis_v1"]
+    assert d["temp_max"] == [None, 31.0]
+    assert d["temp_min"] == [24.0, None]
+
+
+def test_daily_tier_descends_and_caches():
+    """逐日 professional 被拒 → 进阶（无后缀）成功；第二站直走已固定档位。"""
+    tried = []
+
+    def day_handler(url):
+        tried.append(url)
+        if url == DAY_URL + "/professional":
+            return 403, '{"status":1001}'
+        assert url == DAY_URL
+        return _day_payload()
+
+    sess = RoutingSession(_day_routes(day_handler=day_handler))
+    prov = GevisProvider(session=sess, token=TOKEN)
+    snap = prov.fetch_snapshot(Station, ["geovis_v1"])
+    assert snap["daily_time"] == ["2026-08-28", "2026-08-29", "2026-08-30"]
+    prov.fetch_snapshot(Station, ["geovis_v1"])
+    assert tried == [DAY_URL + "/professional", DAY_URL, DAY_URL]
+
+
+def test_daily_all_tiers_fail_leaves_snapshot_intact(caplog):
+    """逐日各档位均被拒：快照照常产出但不带逐日块（延长线绝不拖垮主干）。"""
+    sess = RoutingSession(_day_routes())     # day 全部 403
+    with caplog.at_level(logging.WARNING, logger="weather_eval.forecast.geovis"):
+        snap = GevisProvider(session=sess, token=TOKEN, retries=0) \
+            .fetch_snapshot(Station, ["geovis_v1"])
+    assert "daily" not in snap and "daily_time" not in snap
+    assert snap["data"]["geovis_v1"]["temperature_2m"][0] == 30.0
+    assert any("逐日预报各档位均不可用" in r.message for r in caplog.records)
+    # 三个档位都试过且 4xx 不烧退避
+    day_urls = [u for u, _, _ in sess.calls if u.startswith(DAY_URL)]
+    assert day_urls == [DAY_URL + "/professional", DAY_URL, DAY_URL + "/basic"]
+
+
+def test_daily_business_error_and_bad_fc_time_rejected(caplog):
+    """200 + status!=0 属档位不可用（降档）；fc_time 全非法属契约漂移（拒绝入块）。"""
+    # status!=0：三档全部业务失败 → 放弃逐日块
+    sess = RoutingSession(_day_routes(day_handler=lambda u: (200, json.dumps({"status": 1001}))))
+    with caplog.at_level(logging.WARNING, logger="weather_eval.forecast.geovis"):
+        snap = GevisProvider(session=sess, token=TOKEN, retries=0) \
+            .fetch_snapshot(Station, ["geovis_v1"])
+    assert "daily" not in snap
+    assert any("逐日预报各档位均不可用" in r.message for r in caplog.records)
+
+    # fc_time 全非法：业务成功但解析不出任何日 → 该次降档后同样放弃
+    bad = json.dumps({"status": 0, "result": {"datas": [{"fc_time": "bad", "tem_max": 30}]}})
+    sess2 = RoutingSession(_day_routes(day_handler=lambda u: bad))
+    snap2 = GevisProvider(session=sess2, token=TOKEN, retries=0) \
+        .fetch_snapshot(Station, ["geovis_v1"])
+    assert "daily" not in snap2

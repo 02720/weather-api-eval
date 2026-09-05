@@ -140,6 +140,7 @@ def test_requests_full_range_params_and_ua():
     cap = _CaptureSession(_caiyun_payload([28.5], [0.0]))
     CaiyunProvider(token="dummy", session=cap).fetch_snapshot(_station())
     assert cap.last_params["hourlysteps"] == 384
+    assert cap.last_params["dailysteps"] == 15   # 逐日块与逐小时同请求取回（官方上限）
     assert cap.last_headers["User-Agent"] == "weather-api-eval/0.1 (+https://github.com/)"
 
 
@@ -276,3 +277,60 @@ def test_end_to_end_spans_day_for_daily(tmp_path, monkeypatch):
     assert daily_max["n"] >= 1
     # 观测与预报逐日完全一致 -> 准确率 100
     assert daily_max["acc2"] == 100.0
+
+
+# ----------------------------------------------------------------- 逐日预报块
+def test_daily_block_parsed_temp_only():
+    """v2.6 daily.temperature[].max/min → 逐日块；降水无累计产品，全 null 绝不折算。"""
+    payload = _caiyun_payload([28.5], [0.0])
+    payload["result"]["daily"] = {
+        "temperature": [
+            {"date": "2026-08-28T00:00+08:00", "max": 34, "min": 25, "avg": 28.0},
+            {"date": "2026-08-27T00:00+08:00", "max": 33, "min": 24, "avg": 27.5},
+        ],
+        # 日内统计量（max/min/avg/probability）—— 提供方必须无视它，不得折算成累计
+        "precipitation": [{"date": "2026-08-27T00:00+08:00", "max": 1.2, "min": 0.0,
+                           "avg": 0.05, "probability": 0.5}],
+    }
+    src = CaiyunProvider(token="dummy", session=FakeSession(json.dumps(payload)))
+    snap = src.fetch_snapshot(_station())
+    # 时间轴升序（响应乱序也必须排好）且取到自然日
+    assert snap["daily_time"] == ["2026-08-27", "2026-08-28"]
+    assert snap["daily"]["caiyun_v2_6"]["temp_max"] == [33.0, 34.0]
+    assert snap["daily"]["caiyun_v2_6"]["temp_min"] == [24.0, 25.0]
+    assert snap["daily"]["caiyun_v2_6"]["precipitation"] == [None, None]
+    # 逐小时主干不受影响
+    assert snap["data"]["caiyun_v2_6"]["temperature_2m"] == [28.5]
+
+
+def test_daily_block_missing_is_backward_compatible(caplog):
+    """响应无 daily 组（契约漂移/截断）→ WARNING + 不带该块的快照，主干照常入库。"""
+    payload = _caiyun_payload([28.5, 27.0], [0.0, 0.1])
+    with caplog.at_level(logging.WARNING, logger="weather_eval.forecast.caiyun"):
+        snap = CaiyunProvider(token="dummy", session=FakeSession(json.dumps(payload))) \
+            .fetch_snapshot(_station())
+    assert "daily" not in snap and "daily_time" not in snap
+    assert snap["data"]["caiyun_v2_6"]["temperature_2m"] == [28.5, 27.0]
+    assert any("daily.temperature" in r.message for r in caplog.records)
+
+
+def test_daily_block_malformed_entries_skipped(caplog):
+    """非法 date 跳过、缺测归 None、全无效日 → 不带该块（绝不造值、绝不拖垮快照）。"""
+    payload = _caiyun_payload([28.5], [0.0])
+    payload["result"]["daily"] = {"temperature": [
+        {"date": "2026-08-28T00:00+08:00", "max": None, "min": 25},   # max 缺测
+        {"date": "bad-date", "max": 30, "min": 20},                   # 非法日期
+        {"date": "2026-08-27T00:00+08:00", "max": 33, "min": 24},
+    ]}
+    with caplog.at_level(logging.WARNING, logger="weather_eval.forecast.caiyun"):
+        snap = CaiyunProvider(token="dummy", session=FakeSession(json.dumps(payload))) \
+            .fetch_snapshot(_station())
+    assert snap["daily_time"] == ["2026-08-27", "2026-08-28"]
+    assert snap["daily"]["caiyun_v2_6"]["temp_max"] == [33.0, None]
+    assert any("无法解析" in r.message for r in caplog.records)
+
+    empty = _caiyun_payload([28.5], [0.0])
+    empty["result"]["daily"] = {"temperature": [{"date": "bad", "max": 1, "min": 0}]}
+    snap2 = CaiyunProvider(token="dummy", session=FakeSession(json.dumps(empty))) \
+        .fetch_snapshot(_station())
+    assert "daily" not in snap2

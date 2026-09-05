@@ -37,6 +37,11 @@
    POST /gw/user/api/v1/api/v1/admin/accessToken/queryToken 换取查询 token
    （页面"获取查询令牌"）。401 "请求头中缺少id字段" = 未带/无效 token。
 7. 快照粒度：单模型，返回单份快照 dict（共享时间轴形态）。
+
+逐日预报块（不接入，2026-09-05 留档）：`/models`（游客可用，实测）中 FuXi-Det
+的 vars_raw 仅逐小时要素（t2m/tp/u10/…），无逐日极值变量（无 mx2t/mn2t 类）；
+带 t_max/t_min 的是 FuXi-s2s 次季节线（id=2，1.5°，分位值），与本产品线不同，
+不接入。逐小时断供后的按天轨道缺口接受为已知边界。
 """
 from __future__ import annotations
 

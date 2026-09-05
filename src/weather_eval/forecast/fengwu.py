@@ -41,6 +41,16 @@
      序列无种子值不可解——差分在本数据形态下数学上不可恢复 1h 分辨率，均摊是
      唯一总量守恒的确定性展开。
 6. region 固定 "cn"（评估站点均在国内；global 对国内点同样可用但范围校验不同）。
+
+─────────────────────────────────────────────────────────────────────
+逐日预报块（实测后决定不接入，2026-09-05 留档）
+─────────────────────────────────────────────────────────────────────
+官方变量表 `GET /api/v1/weather/variables?model_type=FengWu-GHR-9km&region=cn`
+实测仅 16 个逐小时/短时累计要素（u10/v10/u100/v100/ws/wd/t2m/msl/sp/tp6h/tcc/
+ssr6h/ssrd1h/ssr1h），**无任何逐日极值或逐日累计要素**；前端 API 面
+（weather/models、weather/variables、weather/query、weather/availability、
+api/open/v1/weather/visual/query）亦无逐日端点。本源按天轨道的缺口（游客 7 天/
+持 Key 15 天逐小时）接受为已知边界；若日后上线逐日要素，按 base.py 契约接入。
 """
 from __future__ import annotations
 

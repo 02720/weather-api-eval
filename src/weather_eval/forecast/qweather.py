@@ -40,6 +40,23 @@
 
 限速遵循官方"指数退避"建议：对网络错误/5xx/429 以 3、6、12…秒退避重试；
 确定性 4xx（鉴权、权限、参数）不重试、直接上抛交由调用方处理。
+
+─────────────────────────────────────────────────────────────────────
+逐日预报块（可选扩展，契约见 forecast/base.py）
+─────────────────────────────────────────────────────────────────────
+逐小时（240h=10 天）之外，本源还有覆盖更远的逐日产品——逐小时一断供，按天评估
+可由日产品接续（本源是逐日补位产生**真实时效增益**的主要源之一）：
+- 选用旧版 `GET {host}/v7/weather/{tier}d`（tier ∈ 3/7/10/15/30d，从大到小逐档
+  回退，档位随订阅而定、进程内缓存）：daily[].fxDate（'YYYY-MM-DD'，站点所在时区
+  自然日——评估站均在国内即北京时自然日）、tempMax/tempMin（字符串 ℃）、
+  precip（**当日总降水量**，mm，直取即得，无需任何推导）。
+- 不接新版 weather/v1 daily（days≤10，与逐小时上限持平，**零时效增益**；且无
+  整日降水量字段，只有白天/夜间两个半天量，求和引入日界窗口假设）。
+- v7 已官方宣布 2027-02-01 停止服务（存量订阅用户仍可用）：届时各档将确定性
+  失败，本块自动退化为"不带逐日块"（WARNING 可见），按天轨道回到纯逐小时口径，
+  绝不拖垮整份起报快照。
+- 逐日抓取失败（任一形态）只降级为不带该块的快照：逐小时是主干，日产品只是
+  延长线，快照错过即无法追补，绝不因延长线丢主干。
 """
 from __future__ import annotations
 
@@ -63,7 +80,9 @@ HOST_ENV = "QWEATHER_API_HOST"
 DEPRECATED_FALLBACK_HOST = "devapi.qweather.com"
 
 DEFAULT_HOURS = 240          # 新版接口支持上限（1..240）
-_V7_TIERS = (24, 72, 168)    # 旧版接口的三档时效
+_V7_TIERS = (24, 72, 168)    # 旧版逐小时接口的三档时效
+# 旧版逐日接口的档位（从大到小用于订阅回退；docstring"逐日预报块"一节）
+_V7_DAILY_TIERS = (30, 15, 10, 7, 3)
 HEADERS = {"User-Agent": "weather-api-eval/0.1 (+https://github.com/)"}
 
 
@@ -161,6 +180,47 @@ def _v7_tier_for(hours: int) -> int:
     return max(usable) if usable else min(_V7_TIERS)
 
 
+def _parse_daily_entries(entries: Any, station_id: str,
+                         model: str = DEFAULT_NAME) -> dict | None:
+    """解析 v7 daily[] → {"time": [...], "data": {模型: {...}}}（北京时自然日）。
+
+    fxDate 非法/缺失的条目跳过；重复日保留首见；时间轴升序去重（契约要求）。
+    解析不出任何有效日返回 None（调用方告警并退化为不带该块的快照）。
+    """
+    if not isinstance(entries, list):
+        return None
+    rows: dict[str, tuple[float | None, float | None, float | None]] = {}
+    for ent in entries:
+        if not isinstance(ent, dict):
+            continue
+        d = ent.get("fxDate")
+        if not isinstance(d, str):
+            logger.warning("和风站点 %s 逐日条目缺 fxDate（%r），跳过", station_id, d)
+            continue
+        try:
+            datetime.strptime(d.strip(), "%Y-%m-%d")
+        except ValueError:
+            logger.warning("和风站点 %s 逐日 fxDate 非法（%r），跳过", station_id, d)
+            continue
+        day = d.strip()
+        if day in rows:  # 重复日保留首见
+            continue
+        rows[day] = (_to_float(ent.get("tempMax")),
+                     _to_float(ent.get("tempMin")),
+                     _to_float(ent.get("precip")))
+    if not rows:
+        return None
+    days = sorted(rows)
+    return {
+        "time": days,
+        "data": {model: {
+            "temp_max": [rows[d][0] for d in days],
+            "temp_min": [rows[d][1] for d in days],
+            "precipitation": [rows[d][2] for d in days],
+        }},
+    }
+
+
 def _merge_series(
     pairs: list[tuple[datetime, float | None, float | None]],
     station_id: str,
@@ -233,6 +293,8 @@ class QWeatherProvider(ForecastProvider):
         self.hours = max(1, min(int(hours), 240))
         self.timeout = timeout
         self.retries = retries
+        # 逐日档位：订阅级属性，首次成功后进程内缓存、跨站点复用（与逐小时梯子同理）
+        self._daily_tier_cache: int | None = None
         # Key 只经请求头传递，绝不进入 URL/query（避免随日志/代理泄露）。
         self._headers = {**HEADERS, "X-QW-Api-Key": self.key}
         self.session = session or requests.Session()
@@ -317,6 +379,8 @@ class QWeatherProvider(ForecastProvider):
 
         hourly_time, temps, precips = _merge_series(pairs, station.id, expected)
 
+        daily_block = self._fetch_daily_block(r_lon, r_lat, station.id)
+
         snapshot = {
             "issue_iso": hourly_time[0],
             "station_id": station.id,
@@ -334,13 +398,57 @@ class QWeatherProvider(ForecastProvider):
                 self.name: {"temperature_2m": temps, "precipitation": precips}
             },
         }
+        if daily_block:
+            snapshot["daily_time"] = daily_block["time"]
+            snapshot["daily"] = daily_block["data"]
         logger.info(
-            "站点 %s 已抓取和风起报 %s（%s），时间点数 %d",
+            "站点 %s 已抓取和风起报 %s（%s），时间点数 %d，日产品 %d 天",
             station.id, hourly_time[0], used_api, len(hourly_time),
+            len(daily_block["time"]) if daily_block else 0,
         )
         return snapshot
 
     # ------------------------------------------------------------------ 内部
+    def _fetch_daily_block(self, r_lon: float, r_lat: float,
+                           station_id: str) -> dict | None:
+        """v7 逐日预报块：档位从大到小逐档回退，成功档位进程内缓存。
+
+        任何失败（档位被拒/业务错误码/网络穷尽/解析为空）都不抛出——逐日块是
+        可选延长线，退化为"不带该块的快照"并以 WARNING 暴露（docstring 契约）；
+        401 同样只降级：此时逐小时已成功，Key 有效性已被证实，逐日 401 属产品
+        权限/契约问题，降档无意义也不应拖垮快照。
+        """
+        tiers: list[int] = []
+        if self._daily_tier_cache is not None:
+            tiers.append(self._daily_tier_cache)
+        tiers += [t for t in _V7_DAILY_TIERS if t != self._daily_tier_cache]
+        for tier in tiers:
+            try:
+                status, body = self._get(
+                    f"https://{self.host}/v7/weather/{tier}d",
+                    {"location": f"{r_lon},{r_lat}"},
+                )
+            except Exception as e:  # noqa: BLE001  网络穷尽等：降档继续
+                logger.warning("和风站点 %s 逐日预报（v7/%dd）请求失败: %s",
+                               station_id, tier, _redact(str(e), self.key))
+                continue
+            code = str(body.get("code")) if isinstance(body, dict) else None
+            entries = body.get("daily") if isinstance(body, dict) else None
+            if status == 200 and code == "200" and entries:
+                parsed = _parse_daily_entries(entries, station_id, model=self.name)
+                if parsed is not None:
+                    self._daily_tier_cache = tier
+                    return parsed
+                logger.warning("和风站点 %s 逐日响应未解析出任何有效日（契约漂移），"
+                               "本次快照不带逐日预报块", station_id)
+                return None
+            logger.info("和风站点 %s 逐日档位 %dd 不可用（HTTP %s code=%s），降档尝试",
+                        station_id, tier, status, code)
+        logger.warning(
+            "和风站点 %s 逐日预报各档位均不可用（订阅/产品权限或 v7 停服），"
+            "本次快照不带逐日预报块，按天评估将只用逐小时聚合", station_id)
+        return None
+
     def _get(self, url: str, params: dict) -> tuple[int | None, Any]:
         """请求一个端点。HTTP 200 或确定性 4xx 时返回 (status, 已解析的 json 或 None)；
         网络错误/5xx/429 按官方建议指数退避重试，全部失败后抛 RuntimeError。"""

@@ -377,7 +377,8 @@ def test_tier_fallback_steps_down_and_caches(monkeypatch):
     snap1 = src.fetch_snapshot(_station())
     assert snap1["tier"] == 24
     src.fetch_snapshot(_station())
-    assert [u.split("/hourly/")[1].split("/")[0] for u in state["forecast_calls"]] == \
+    hourly = [u for u in state["forecast_calls"] if "/hourly/" in u]  # 逐日调用另计
+    assert [u.split("/hourly/")[1].split("/")[0] for u in hourly] == \
            ["240hour", "120hour", "72hour", "24hour", "24hour"]
 
 
@@ -399,7 +400,8 @@ def test_tier_cache_is_in_process_only(monkeypatch):
     sess = RoutingSession(_routes(forecast=forecast))
     second = AccuWeatherProvider(api_key=KEY, session=sess, retries=0)
     assert second.fetch_snapshot(_station())["tier"] == 24
-    assert [c["url"].split("/hourly/")[1].split("/")[0] for c in sess.calls[1:]] == \
+    hourly = [c["url"] for c in sess.calls[1:] if "/hourly/" in c["url"]]  # 逐日调用另计
+    assert [u.split("/hourly/")[1].split("/")[0] for u in hourly] == \
         ["240hour", "120hour", "72hour", "24hour"]
 
 
@@ -811,3 +813,159 @@ def test_snapshot_is_idempotent_per_issue(tmp_path, monkeypatch):
     snap = AccuWeatherProvider(api_key=KEY, session=sess, retries=0) \
         .fetch_snapshot(_station())
     assert storage.save_forecast_snapshot("s1", MODEL_NAME, snap) is False  # 同 issue 幂等
+
+
+# ----------------------------------------------------------------- 逐日预报块
+def _daily_payload(base_day, n_days, tmaxes, tmins, day_liquids, night_liquids,
+                   unit_t="C", unit_l="mm"):
+    """构造逐日响应（官方 schema）：Date 带当地偏移，Temperature/Day/Night 量纲对象。
+
+    某元素为 None 时模拟缺测（对应 Value 键为 null 或 TotalLiquid 键缺失）。
+    """
+    forecasts = []
+    for i in range(n_days):
+        day = (base_day + timedelta(days=i)).strftime("%Y-%m-%d")
+        ent = {
+            "Date": f"{day}T00:00:00+08:00",
+            "EpochDate": 1787900000 + i * 86400,
+            "Temperature": {
+                "Minimum": {"Value": tmins[i], "Unit": unit_t},
+                "Maximum": {"Value": tmaxes[i], "Unit": unit_t},
+            },
+            "Day": {"Icon": 4, "IconPhrase": "Mostly sunny",
+                    "PrecipitationProbability": 25},
+            "Night": {"Icon": 38, "IconPhrase": "Clear",
+                      "PrecipitationProbability": 10},
+        }
+        if day_liquids[i] is not None:
+            ent["Day"]["TotalLiquid"] = {"Value": day_liquids[i], "Unit": unit_l}
+        if night_liquids[i] is not None:
+            ent["Night"]["TotalLiquid"] = {"Value": night_liquids[i], "Unit": unit_l}
+        forecasts.append(ent)
+    return {"Headline": {"Text": "sunny"}, "DailyForecasts": forecasts}
+
+
+def _routes_with_daily(hourly_payload, daily_handler):
+    """定位成功 + 逐小时固定响应 + 逐日走 daily_handler(url)。
+
+    daily_handler 返回 (body, status)（同 _ok 约定）或直接返回 body（视为 200）。
+    """
+    def handler(url, params):
+        if "geoposition" in url:
+            return _ok(LOCATION_PAYLOAD)
+        if "/forecasts/v1/daily/" in url:
+            ret = daily_handler(url)
+            body, status = ret if isinstance(ret, tuple) else (ret, 200)
+            return (body, status) if isinstance(body, str) else (json.dumps(body), status)
+        return _ok(hourly_payload)
+    return handler
+
+
+def _hourly_ok():
+    return _fc_payload(BASE, [30.0], [0.0])
+
+
+def test_daily_block_fetched_and_parsed(monkeypatch):
+    """15day 首档成功：温度直取、降水 = Day+Night TotalLiquid 之和（mm）。"""
+    daily = _daily_payload(datetime(2026, 8, 29), 3,
+                           [33, 34, 35], [24, 25, 26],
+                           [5.5, 0.0, None], [2.0, 0.0, 1.0])
+    urls = []
+
+    def daily_handler(url):
+        urls.append(url)
+        return _ok(daily)
+
+    snap = _provider(_routes_with_daily(_hourly_ok(), daily_handler)) \
+        .fetch_snapshot(_station())
+    assert urls == [f"{BASE_URL}/forecasts/v1/daily/15day/329260"]
+    assert snap["daily_time"] == ["2026-08-29", "2026-08-30", "2026-08-31"]
+    d = snap["daily"]["accuweather_v1"]
+    assert d["temp_max"] == [33.0, 34.0, 35.0]
+    assert d["temp_min"] == [24.0, 25.0, 26.0]
+    # 半日缺测（08-31 的 Day.TotalLiquid 缺失）→ 该日降水整体缺测，绝不只加一半
+    assert d["precipitation"] == [7.5, 0.0, None]
+    # 逐小时主干不受影响
+    assert snap["data"]["accuweather_v1"]["temperature_2m"][0] == 30.0
+
+
+def test_daily_unit_conversion(monkeypatch, caplog):
+    """逐日单位自适应：华氏度 → ℃、inch → mm，与逐小时同款换算表。"""
+    daily = _daily_payload(datetime(2026, 8, 29), 1,
+                           [86.0], [68.0], [0.1, None], [0.1, None],
+                           unit_t="F", unit_l="in")
+    snap = _provider(_routes_with_daily(_hourly_ok(), lambda u: _ok(daily))) \
+        .fetch_snapshot(_station())
+    d = snap["daily"]["accuweather_v1"]
+    assert d["temp_max"] == [pytest.approx(30.0, abs=0.01)]
+    assert d["temp_min"] == [pytest.approx(20.0, abs=0.01)]
+    assert d["precipitation"] == [pytest.approx(5.08, abs=0.001)]
+
+
+def test_daily_half_liquid_missing_warns(monkeypatch, caplog):
+    """仅一个半日有 TotalLiquid（details 未生效/半日缺测）→ 降水缺测并告警。"""
+    daily = _daily_payload(datetime(2026, 8, 29), 2,
+                           [33, 34], [24, 25],
+                           [5.0, None], [None, 1.0])
+    with caplog.at_level(logging.WARNING, logger="weather_eval.forecast.accuweather"):
+        snap = _provider(_routes_with_daily(_hourly_ok(), lambda u: _ok(daily))) \
+            .fetch_snapshot(_station())
+    assert snap["daily"]["accuweather_v1"]["precipitation"] == [None, None]
+    assert any("绝不只加一半" in r.message for r in caplog.records)
+
+
+def test_daily_tier_ladder_descends_and_caches(monkeypatch):
+    """15day 被拒（403）→ 10day 成功；第二站直接走 10day（账号级缓存）。"""
+    tried = []
+
+    def daily_handler(url):
+        tried.append(url.split("/daily/")[1].split("/")[0])
+        if url.endswith("15day/329260"):
+            return json.dumps({"code": "403"}), 403
+        assert url.endswith("10day/329260")
+        return _ok(_daily_payload(datetime(2026, 8, 29), 1, [33], [24], [1.0], [0.0]))
+
+    prov = _provider(_routes_with_daily(_hourly_ok(), daily_handler))
+    snap = prov.fetch_snapshot(_station())
+    assert snap["daily_time"] == ["2026-08-29"]
+    prov.fetch_snapshot(_station())
+    assert tried == ["15day", "10day", "10day"]
+
+
+def test_daily_all_tiers_fail_leaves_snapshot_intact(monkeypatch, caplog):
+    """逐日各档位均被拒：快照照常产出但不带逐日块（延长线绝不拖垮主干）。"""
+    sess = RoutingSession(_routes(forecast=lambda u, p: (
+        _ok(_fc_payload(BASE, [30.0], [0.0])) if "/hourly/" in u
+        else (json.dumps({"code": "403"}), 403))))
+    with caplog.at_level(logging.WARNING, logger="weather_eval.forecast.accuweather"):
+        snap = AccuWeatherProvider(api_key=KEY, session=sess, retries=0) \
+            .fetch_snapshot(_station())
+    assert "daily" not in snap and "daily_time" not in snap
+    assert snap["data"]["accuweather_v1"]["temperature_2m"][0] == 30.0
+    assert any("逐日预报各档位均不可用" in r.message for r in caplog.records)
+    daily_urls = [c["url"] for c in sess.calls if "/daily/" in c["url"]]
+    assert [u.split("/daily/")[1].split("/")[0] for u in daily_urls] == \
+        ["15day", "10day", "5day", "1day"]
+
+
+def test_daily_200_wrong_shape_is_contract_drift_not_ladder_retry(monkeypatch, caplog):
+    """200 但响应形态异常（如误回逐小时数组）＝契约漂移：立即放弃，不逐档空烧。"""
+    def daily_handler(url):
+        return _fc_payload(BASE, [30.0], [0.0])   # list 而非 dict（200 但形态异常）
+
+    with caplog.at_level(logging.WARNING, logger="weather_eval.forecast.accuweather"):
+        snap = _provider(_routes_with_daily(_hourly_ok(), daily_handler)) \
+            .fetch_snapshot(_station())
+    assert "daily" not in snap
+    assert any("形态异常" in r.message for r in caplog.records)
+
+
+def test_daily_bad_date_rows_skipped_and_deduped(monkeypatch):
+    """Date 无法解析的条目跳过、重复日保留首见、时间轴升序（契约要求）。"""
+    daily = _daily_payload(datetime(2026, 8, 29), 2, [33, 34], [24, 25], [1.0, 0.0], [0.0, 0.0])
+    daily["DailyForecasts"].insert(0, {"Date": "garbage", "Temperature": {}})
+    daily["DailyForecasts"].insert(1, dict(daily["DailyForecasts"][1]))
+    snap = _provider(_routes_with_daily(_hourly_ok(), lambda u: _ok(daily))) \
+        .fetch_snapshot(_station())
+    assert snap["daily_time"] == ["2026-08-29", "2026-08-30"]
+    assert snap["daily"]["accuweather_v1"]["temp_max"] == [33.0, 34.0]

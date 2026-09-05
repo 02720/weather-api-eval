@@ -26,6 +26,26 @@ chinaCity120HourForecast，入口即 meteorological/summary 页）：
 4. `status != 0` 为业务失败（如 token 无效/无权限），直接报错，附带响应摘要。
 5. 传入经纬度时响应无 areaCode/location 字段，坐标以请求值为准（城市级后处理产品，
    无格点吸附语义）。
+
+─────────────────────────────────────────────────────────────────────
+逐日预报块（可选扩展，契约见 forecast/base.py）
+─────────────────────────────────────────────────────────────────────
+「全国城市15天逐日预报」`GET …/forecast/day/area[/professional|/basic]`（2026-09-05
+线上实测：15 天、fc_time 为 yyyyMMdd 北京时自然日、tem_max/tem_min 为全天最高/
+最低温 ℃、pre_day/pre_night 为白天/夜间分量）。本源逐小时止于 120h（5 天），逐日
+15 天是**逐日补位产生真实时效增益**的主要源（+10 天）。
+
+- **只接温度，降水置全 null**（实测证据，2026-09-05 梧州点对拍自家逐小时产品）：
+  ① pre_night 在全部 15 天恒为 5.0、pre_day 大多为 5.0——呈量级码/占位形态而非
+  定量累计；② 逐日 pre_day+pre_night 与自家逐小时 pre 逐日求和严重矛盾（09-06
+  逐日 18.2mm vs 逐小时 0.2mm、09-08 10.0mm vs 0.3mm）。把量级档当 mm 入库会让
+  无雨日伪装成"预报大雨"，故拒绝接入；若日后产品修复应实测核实后再接并留档。
+- 日界与量级（对拍自家逐小时，5 天样本）：tem_min 与自然日逐小时 min 3/5 天全等、
+  其余差 ±1°C；tem_max 偏高 0~1°C——日产品极值与逐小时聚合存在系统性 ±1°C 的
+  产品差，属补位口径固有差异（temp_src="daily" 样本在报告中单独披露）。
+- 逐日抓取失败（档位被拒/业务失败/契约漂移）只降级为不带该块的快照：逐小时是
+  主干，日产品只是延长线，绝不因它丢掉整份起报快照。档位梯子与逐小时同款
+  （professional → 进阶 → basic），成功档位进程内缓存。
 """
 from __future__ import annotations
 
@@ -43,6 +63,8 @@ logger = logging.getLogger(__name__)
 
 AREA_URL = ("https://tiles.geovisearth.com/meteorology/v1/weather/cn/"
             "forecast/hour/area")
+DAY_URL = ("https://tiles.geovisearth.com/meteorology/v1/weather/cn/"
+           "forecast/day/area")
 HEADERS = {"User-Agent": "weather-api-eval/0.1 (+https://github.com/)"}
 
 SOURCE = "geovis"
@@ -72,6 +94,50 @@ def _num_or_none(v: Any) -> float | None:
     if f != f:
         return None
     return None if abs(f) >= MISSING_TOL else f
+
+
+def parse_fc_date(s: Any) -> str | None:
+    """逐日 fc_time（yyyyMMdd，北京时自然日）→ 'YYYY-MM-DD'；非法返回 None。"""
+    if not isinstance(s, str) or len(s) != 8 or not s.isdigit():
+        return None
+    return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
+
+
+def parse_day_area_response(payload: Any) -> dict[str, Any]:
+    """解析逐日预报响应 → {"time": ["YYYY-MM-DD", ...], "temp_max": [...], "temp_min": [...]}。
+
+    status != 0 / datas 为空抛 _TierUnavailable（档位回退捕捉）；只取 tem_max/
+    tem_min（降水拒绝接入，见模块 docstring"逐日预报块"一节）；fc_time 无法解析
+    的条目跳过；同一日保留首见；时间轴升序去重（契约要求）。
+    """
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"星图逐日响应异常: {payload!r}"[:300])
+    status = payload.get("status")
+    if status not in (0, "0"):
+        raise _TierUnavailable(
+            f"星图逐日业务错误: status={status!r} resp={str(payload)[:200]!r}"
+        )
+    result = payload.get("result") or {}
+    datas = result.get("datas")
+    if not isinstance(datas, list) or not datas:
+        raise _TierUnavailable("星图逐日响应 result.datas 为空（token 无权限或产品未覆盖该点）")
+    rows: dict[str, tuple[float | None, float | None]] = {}
+    for d in datas:
+        if not isinstance(d, dict):
+            continue
+        day = parse_fc_date(d.get("fc_time"))
+        if day is None:
+            continue
+        rows.setdefault(day, (_num_or_none(d.get("tem_max")),
+                              _num_or_none(d.get("tem_min"))))
+    if not rows:
+        raise RuntimeError("星图逐日响应无可解析的 fc_time 条目（疑似契约漂移）")
+    days = sorted(rows)
+    return {
+        "time": days,
+        "temp_max": [rows[d][0] for d in days],
+        "temp_min": [rows[d][1] for d in days],
+    }
 
 
 class _TierUnavailable(RuntimeError):
@@ -131,10 +197,12 @@ class GevisProvider(ForecastProvider):
         self.retries = retries
         self.session = session or requests.Session()
         self._tier_cache: str | None = None  # 可用档位（账号级属性，跨站点复用）
+        self._day_tier_cache: str | None = None  # 逐日产品可用档位（账号级，同上）
 
     def fetch_snapshot(self, station: Any, models: list[str] | None = None) -> dict:
         # 档位在首次成功（含解析成功）后固定（权限是账号级属性，跨站点复用）
         parsed, tier = self._query_any_tier(station)
+        daily_block = self._fetch_daily_block(station)
         if parsed["temperature_2m"] and all(v is None for v in parsed["temperature_2m"]):
             logger.warning("星图站点 %s 温度序列全部缺测，服务端契约可能已变化", station.id)
         if parsed["precipitation"] and all(v is None for v in parsed["precipitation"]):
@@ -156,14 +224,80 @@ class GevisProvider(ForecastProvider):
                 "precipitation": parsed["precipitation"],
             }},
         }
+        if daily_block:
+            snapshot["daily_time"] = daily_block["time"]
+            snapshot["daily"] = daily_block["data"]
         if not parsed["time"]:
             # 空时间轴快照一旦入库会被同 issue 幂等锁死，正常数据永远进不来
             raise RuntimeError("星图响应无可解析的 fc_time 条目（疑似契约漂移），拒绝入库")
-        logger.info("站点 %s 已抓取星图逐小时预报（档位 %s）起报 %s，时间点数 %d",
-                    station.id, tier, parsed["issue_iso"], len(parsed["time"]))
+        logger.info("站点 %s 已抓取星图逐小时预报（档位 %s）起报 %s，时间点数 %d，日产品 %d 天",
+                    station.id, tier, parsed["issue_iso"], len(parsed["time"]),
+                    len(daily_block["time"]) if daily_block else 0)
         return snapshot
 
     # ------------------------------------------------------------------ 内部
+    def _fetch_daily_block(self, station: Any) -> dict | None:
+        """逐日预报块：档位梯子与逐小时同款，任何失败只降级为不带该块的快照。
+
+        401/403 不向上抛（与逐小时路径不同）：此时逐小时已成功、Key 有效性已被
+        证实，逐日被拒属产品权限/订阅问题，降档尝试后仍失败就放弃延长线。
+        """
+        tiers: list[str] = []
+        if self._day_tier_cache is not None:
+            tiers.append(self._day_tier_cache)
+        tiers += [t for t, _ in TIERS if t != self._day_tier_cache]
+        errors: list[str] = []
+        for tier in tiers:
+            try:
+                payload = self._request_day(station, dict(TIERS)[tier])
+                parsed = parse_day_area_response(payload)
+            except Exception as e:  # noqa: BLE001  逐日块失败绝不拖垮整份快照
+                errors.append(f"{tier}: {e}")
+                logger.warning("星图站点 %s 逐日预报（档位 %s）不可用: %s",
+                               station.id, tier, str(e).replace(self.token, "***"))
+                continue
+            self._day_tier_cache = tier
+            data = {
+                MODEL_NAME: {
+                    "temp_max": parsed["temp_max"],
+                    "temp_min": parsed["temp_min"],
+                    # 逐日降水产品为量级码（不可信，见 docstring）：全 null，绝不折算
+                    "precipitation": [None] * len(parsed["time"]),
+                },
+            }
+            return {"time": parsed["time"], "data": data}
+        logger.warning(
+            "星图站点 %s 逐日预报各档位均不可用（%s），本次快照不带逐日预报块，"
+            "按天评估将只用逐小时聚合", station.id, errors)
+        return None
+
+    def _request_day(self, station: Any, suffix: str) -> dict:
+        """逐日端点请求（与 _request 同构，URL 换 day/area；token 掩码同理）。"""
+        params = {
+            "location": f"{station.lon},{station.lat}",
+            "token": self.token,
+        }
+        last_err: Exception | None = None
+        for attempt in range(self.retries + 1):
+            try:
+                resp = self.session.get(DAY_URL + suffix, params=params,
+                                        headers=HEADERS, timeout=self.timeout)
+                status = getattr(resp, "status_code", None)
+                if status == 200:
+                    return resp.json()
+                if isinstance(status, int) and 400 <= status < 500 and status != 429:
+                    # 逐日块的 4xx 属产品权限/参数问题，重试无意义——上抛交由
+                    # _fetch_daily_block 降档/放弃，绝不在这里烧退避
+                    raise _Rejected(f"HTTP {status}")
+                last_err = RuntimeError(f"HTTP {status}")
+            except _Rejected:
+                raise
+            except Exception as e:  # noqa: BLE001  网络类异常/5xx → 可重试
+                last_err = RuntimeError(str(e).replace(self.token, "***"))
+            logger.warning("星图逐日请求失败（第%d次）: %s", attempt + 1, last_err)
+            if attempt < self.retries:
+                time.sleep(min(30, 3 * 2 ** attempt))
+        raise RuntimeError(f"星图逐日请求最终失败: {last_err}")
     def _query_any_tier(self, station: Any) -> tuple[dict, str]:
         """按档位梯子查询并解析，返回 (parse_area_response 结果, 档位名)。
 
