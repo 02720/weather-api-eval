@@ -14,6 +14,20 @@
   观测与预报任一侧的日覆盖不足 daily_min_hours（默认 20/24）时，该天该要素
   不参与按天评估——降水全缺测日若折算成 0.0 会伪装成"预报无雨"，部分覆盖日的
   日累计系统性偏低会伪装成"漏报"，两者都是把缺测当技巧。
+
+逐日预报补位（2026-09 新增，daily_source_fallback 开关控制，默认开）：
+  多数 API 的逐日预报比逐小时预报覆盖得更远（逐小时常止于 5~10 天，逐日可到
+  15 天），逐小时一断供，按天评估就跟着断在第一段时效上。快照可另带一个可选的
+  "逐日预报"块（契约见 forecast/base.py），此时按天评估走**双轨**：
+  - 该日逐小时覆盖达标 → 用逐小时聚合（与历史存档同一口径，旧数字不变）；
+  - 该日逐小时覆盖不足或根本没有逐小时数据 → 回退源自带的日产品值，该条样本
+    记 temp_src/rain_src="daily"，与 "hourly" 分开计数并在报告中披露。
+  边界（第一性原理，不可越界）：
+  * **绝不由日产品反推逐小时序列**——插值/均摊是凭空造出日内变化，会让逐小时
+    指标与排行榜出现根本不存在的样本。补位只发生在按天轨道。
+  * 观测侧的覆盖门槛不因补位放松：实况当天不足 daily_min_hours 照样不入样。
+  * 日产品的日界窗口与"逐小时求和"并非严格同一窗口（相差约 1 小时边界），
+    且日最高/最低是源自己的估计量。这是补位口径的固有差异，只能披露不能消除。
 所有指标附样本数 n；n < min_sample 视为"样本不足"不出结论（置 None）。
 
 得分体系（排行榜、分时效榜单与时效趋势共用，2026-08-29 多指标加权重构）：
@@ -95,11 +109,63 @@ def _valid_n(obs: np.ndarray, fcst: np.ndarray) -> int:
     return int((np.isfinite(obs) & np.isfinite(fcst)).sum())
 
 
+def _finite_or_none(v: Any) -> float | None:
+    """把快照里的值规整为有限浮点数；None/NaN/inf/非数值一律归 None。
+
+    日产品块来自外部 JSON（可能混入 null、字符串、NaN），入库前统一在这里过一遍，
+    绝不把缺测伪装成 0.0、也绝不让 inf 流进指标。
+    """
+    if v is None or isinstance(v, bool):
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(f) or math.isinf(f):
+        return None
+    return f
+
+
 # ----------------------------------------------------------------- 配对收集
+def daily_block_of(snap: dict, model: str) -> dict[str, dict]:
+    """抽取快照自带的逐日预报块 → {自然日: {"temp_max","temp_min","precipitation"}}。
+
+    块缺省/结构异常一律返回空 dict——历史存档无此块，行为完全回退到逐小时聚合
+    （新字段是纯增量，绝不改变已有结论）。数组越界按缺测处理，与逐小时路径同款
+    防护：畸形存档只降级为"该日无日产品"，不拖垮整份报告。
+    """
+    times = snap.get("daily_time")
+    block = snap.get("daily")
+    if not isinstance(times, list) or not isinstance(block, dict):
+        return {}
+    entry = block.get(model)
+    if not isinstance(entry, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for i, day in enumerate(times):
+        if not isinstance(day, str) or len(day) < 10:
+            continue
+        out[day[:10]] = {
+            k: _at(entry, k, i)
+            for k in ("temp_max", "temp_min", "precipitation")
+        }
+    return out
+
+
+def _at(entry: dict, key: str, i: int) -> float | None:
+    arr = entry.get(key)
+    return _finite_or_none(arr[i]) if isinstance(arr, list) and i < len(arr) else None
+
+
 def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
             hourly_lead_days: int, daily_max_offset_days: int,
-            daily_min_hours: int = 20) -> tuple[list[dict], list[dict]]:
-    """返回 (hourly_records, daily_records)。"""
+            daily_min_hours: int = 20,
+            daily_source_fallback: bool = True) -> tuple[list[dict], list[dict]]:
+    """返回 (hourly_records, daily_records)。
+
+    daily_source_fallback：允许用快照自带的逐日预报块为按天评估补位（默认开）。
+    关掉后按天轨道与补位前完全一致，用于口径对照/回归。
+    """
     # 观测月聚合
     obs_daily: dict[str, dict[str, dict]] = defaultdict(dict)
     hourly_records: list[dict] = []
@@ -136,6 +202,7 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
 
     # 按天聚合
     daily_records: list[dict] = []
+    start_day, end_day = start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d")
     for sid in station_ids:
         obs_map = load_obs(sid)
         # 观测日聚合（n_temp/n_rain = 非缺测小时数，供覆盖门槛判定）
@@ -178,8 +245,13 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                         if i < len(arr_p) and arr_p[i] is not None:
                             d["sum_rain"] += arr_p[i]
                             d["n_rain"] += 1
-                    for day, d in fd.items():
+                    # 源自带的逐日预报块（可缺省）：与逐小时聚合按自然日合并成双轨
+                    dblock = daily_block_of(snap, m) if daily_source_fallback else {}
+                    for day in sorted(set(fd) | set(dblock)):
                         if day not in obs_daily[sid]:
+                            continue
+                        # 日块按自然日判窗口（逐小时侧已按整点过滤过，两者语义一致）
+                        if day < start_day or day > end_day:
                             continue
                         offset = (parse_iso(day + "T00:00") - parse_iso(issue_day + "T00:00")).days
                         if offset <= 0 or offset > daily_max_offset_days:
@@ -193,12 +265,23 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                                  and oday["min_temp"] < math.inf else None)
                         o_rain = (oday["sum_rain"]
                                   if oday["n_rain"] >= max(daily_min_hours, 1) else None)
-                        f_temp = (d["max_temp"] if d["n_temp"] >= daily_min_hours
-                                  and d["max_temp"] > -math.inf else None)
-                        f_min = (d["min_temp"] if d["n_temp"] >= daily_min_hours
-                                  and d["min_temp"] < math.inf else None)
-                        f_rain = (d["sum_rain"]
-                                  if d["n_rain"] >= max(daily_min_hours, 1) else None)
+                        # ---- 预报侧双轨：逐小时聚合优先，覆盖不足才用源自带日产品 ----
+                        d = fd.get(day)
+                        h_temp_ok = bool(d and d["n_temp"] >= daily_min_hours
+                                         and d["max_temp"] > -math.inf
+                                         and d["min_temp"] < math.inf)
+                        h_rain_ok = bool(d and d["n_rain"] >= max(daily_min_hours, 1))
+                        db = dblock.get(day) or {}
+                        if h_temp_ok:
+                            f_temp, f_min, temp_src = d["max_temp"], d["min_temp"], "hourly"
+                        else:
+                            f_temp, f_min = db.get("temp_max"), db.get("temp_min")
+                            temp_src = "daily" if (f_temp is not None or f_min is not None) else None
+                        if h_rain_ok:
+                            f_rain, rain_src = d["sum_rain"], "hourly"
+                        else:
+                            f_rain = db.get("precipitation")
+                            rain_src = "daily" if f_rain is not None else None
                         if o_temp is None and o_min is None and o_rain is None \
                                 and f_temp is None and f_min is None and f_rain is None:
                             continue  # 该天无任何可用日聚合，不入样
@@ -207,8 +290,43 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                             "temp_max_obs": o_temp, "temp_max_fcst": f_temp,
                             "temp_min_obs": o_min, "temp_min_fcst": f_min,
                             "rain_obs": o_rain, "rain_fcst": f_rain,
+                            # 来源留档（"hourly"=逐小时聚合 / "daily"=源自带日产品 /
+                            # None=该要素无值）—— 补位绝不静默，报告按此披露构成
+                            "temp_src": temp_src, "rain_src": rain_src,
                         })
     return hourly_records, daily_records
+
+
+def daily_source_mix(models: list[str], daily: list[dict]) -> dict[str, dict[str, dict]]:
+    """统计按天样本的来源构成：逐小时聚合 vs 源自带日产品（分温度/降水、分日偏移）。
+
+    跨源横向比较按天指标时，"这条样本是逐小时聚合出来的，还是源自己的日产品"
+    是口径差异——同一日偏移桶内可能两种来源混在一家或多家身上。这份统计让差异
+    可见（报告披露），而不是让读者把口径不同的数字当成同难度对比。
+
+    计数与指标同源：只统计**真正配成对**的样本（观测侧与预报侧同时有值）。
+    否则"观测缺测被门槛剔除"的记录也会被算成一条日产品样本，披露出来的构成
+    与桶里实际的 n 对不上——披露必须与被披露的东西一一对齐。
+    """
+    counts: dict[str, dict[str, dict[str, int]]] = {m: {} for m in models}
+    for r in daily:
+        m = r.get("model")
+        if m not in counts:
+            continue
+        paired = {
+            "temp": ((r.get("temp_max_obs") is not None and r.get("temp_max_fcst") is not None)
+                     or (r.get("temp_min_obs") is not None and r.get("temp_min_fcst") is not None)),
+            "rain": (r.get("rain_obs") is not None and r.get("rain_fcst") is not None),
+        }
+        for key, field in (("temp", "temp_src"), ("rain", "rain_src")):
+            src = r.get(field)
+            if not paired[key] or src not in ("hourly", "daily"):
+                continue
+            slot = counts[m].setdefault(f"{r['offset']}d", {})
+            cell = slot.setdefault(key, {"hourly": 0, "daily": 0})
+            cell[src] += 1
+    # 空桶不输出：报告里"没有样本"就是没有，不必给一个全 0 的结构让人费解
+    return {m: slots for m, slots in counts.items() if slots}
 
 
 # ----------------------------------------------------------------- 指标计算
@@ -399,9 +517,11 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     hourly_lead_days = eval_cfg["hourly_lead_days"]
     daily_max_offset = eval_cfg["daily_max_offset_days"]
     daily_min_hours = eval_cfg.get("daily_min_hours", 20)
+    daily_source_fallback = bool(eval_cfg.get("daily_source_fallback", True))
 
     hourly, daily = collect(station_ids, models, start_dt, end_dt,
-                            hourly_lead_days, daily_max_offset, daily_min_hours)
+                            hourly_lead_days, daily_max_offset, daily_min_hours,
+                            daily_source_fallback)
 
     # 按模型分组一次，后续所有 per-model 统计只遍历各自的记录（不做全量重扫）
     by_model: dict[str, list] = {m: [] for m in models}
@@ -540,6 +660,7 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
             "rain_threshold_mm": thr,
             "min_sample": min_sample,
             "daily_min_hours": daily_min_hours,
+            "daily_source_fallback": daily_source_fallback,
             "model_caveats": model_caveats,
         },
         "coverage": coverage,
@@ -549,6 +670,9 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
         "temp_lead_curve": temp_lead_curve,
         "temp_daily": temp_daily,
         "precip_daily": precip_daily,
+        # 按天样本的来源构成（逐小时聚合 / 源自带日产品补位），分模型分日偏移
+        "daily_source_mix": (daily_source_mix(models, daily)
+                             if daily_source_fallback else {}),
         "per_station": per_station,
         "timeseries": timeseries,
         "heatmap": heatmap,

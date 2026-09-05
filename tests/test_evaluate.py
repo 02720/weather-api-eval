@@ -532,6 +532,268 @@ def test_model_caveats_lists_all_station_names_not_just_first(tmp_path, monkeypa
     assert "万秀" in note and "wanning" in note   # 两站城市名都必须出现
 
 
+# ------------------------------------------------- 逐日预报补位（2026-09 新增）
+def _snap_with_daily(model, issue, hourly_days, temps, precs,
+                     daily_days, daily_max, daily_min, daily_rain, **extra):
+    """构造带可选逐日预报块的快照。
+
+    hourly_days: [(日偏移, 该日逐小时点数)]；daily_*: 与 daily_days 等长的日产品值。
+    """
+    times, tvals, pvals = [], [], []
+    for off, hours in hourly_days:
+        for h in range(hours):
+            times.append(iso(issue + timedelta(days=off, hours=h)))
+            tvals.append(temps(off, h))
+            pvals.append(precs(off, h))
+    snap = {
+        "issue_iso": iso(issue), "station_id": "s1", "source": "test",
+        "models": [model], "grid_lat": 23.0, "grid_lon": 111.0, "elevation": 50,
+        "hourly_time": times,
+        "data": {model: {"temperature_2m": tvals, "precipitation": pvals}},
+    }
+    if daily_days is not None:
+        snap["daily_time"] = [str(issue.date() + timedelta(days=off)) for off in daily_days]
+        snap["daily"] = {model: {"temp_max": daily_max, "temp_min": daily_min,
+                                 "precipitation": daily_rain}}
+    snap.update(extra)
+    return snap
+
+
+def _obs_days(start, days, temp=20.0, rain=0.0):
+    obs = []
+    for h in range(days * 24):
+        t = start + timedelta(hours=h)
+        obs.append({"time": iso(t), "temp": temp + (h % 3), "rain": rain})
+    return obs
+
+
+def test_daily_fallback_extends_beyond_hourly_coverage(tmp_path, monkeypatch):
+    """核心回归：逐小时只覆盖前 2 天，第 3~5 天靠源自带日产品继续做按天评估。
+
+    补位前 offset 3~5 完全无样本（按天评估止于第 2 天）；补位后这些日子的
+    日最高/最低温与日降水都入样，且来源标记为 "daily"。
+    """
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    start = datetime(2026, 8, 24, 0, 0)
+    obs = []
+    for h in range(5 * 24):     # 5 天完整观测：前 2 天无雨，后 3 天有雨
+        t = start + timedelta(hours=h)
+        obs.append({"time": iso(t), "temp": 20.0 + (h % 3),
+                    "rain": 5.0 if h >= 2 * 24 else 0.0})
+    storage.save_obs("s1", obs)
+
+    snap = _snap_with_daily(
+        "ecmwf_ifs", start,
+        hourly_days=[(0, 24), (1, 24)],          # 逐小时只覆盖到 offset 1（08-25）
+        temps=lambda off, h: 21.0, precs=lambda off, h: 0.0,
+        # 日产品覆盖 offset 2~4（08-26..28）—— 完美预报：日最高 22 / 最低 20 / 日雨 120
+        daily_days=[2, 3, 4],
+        daily_max=[22.0, 22.0, 22.0],
+        daily_min=[20.0, 20.0, 20.0],
+        daily_rain=[120.0, 120.0, 120.0],
+    )
+    storage.save_forecast_snapshot("s1", "ecmwf_ifs", snap)
+
+    cfg = dict(CFG, min_sample=1)   # 单样本天也要出指标（本测试只关心入样与来源）
+    data = build_report(["s1"], ["ecmwf_ifs"], cfg, start, start + timedelta(hours=5 * 24 - 1),
+                        "2026-08")
+    # 观测侧：offset 2~4 每天 5mm/h × 24h = 120mm，日最高 22 / 最低 20
+    for off in (2, 3, 4):
+        t = data["temp_daily"]["ecmwf_ifs"][f"{off}d"]
+        assert t["max"]["n"] == 1, off          # 补位前为 0
+        assert abs(t["max"]["rmse"]) < 1e-9     # 日最高完全吻合
+        assert abs(t["min"]["rmse"]) < 1e-9
+        p = data["precip_daily"]["ecmwf_ifs"][f"{off}d"]
+        assert p["n"] == 1 and p["ts"] == 1.0   # 有雨且报中
+    # 来源构成：offset 2~4 三桶全部标记为日产品补位
+    mix = data["daily_source_mix"]["ecmwf_ifs"]
+    for off in (2, 3, 4):
+        assert mix[f"{off}d"] == {"temp": {"hourly": 0, "daily": 1},
+                                  "rain": {"hourly": 0, "daily": 1}}, off
+    # 逐小时轨道完全不受影响：日产品绝不反推逐小时样本
+    assert data["temp_hourly"]["ecmwf_ifs"]["2d"]["n"] == 23   # 仅 lead 25..47
+    assert data["temp_hourly"]["ecmwf_ifs"]["3d"]["n"] == 0
+    assert data["leaderboards"]["all"][0]["lead_days"] == 2
+
+
+def test_daily_prefers_hourly_aggregation_when_covered(tmp_path, monkeypatch):
+    """逐小时覆盖充足的日子继续用逐小时聚合——补位不得改变已有口径的样本。
+
+    构造一个"逐小时聚合与日产品给出不同答案"的日子：日最高 22（逐小时）/ 30（日产品）。
+    若实现误把日产品当首选，指标会立刻翻脸。
+    """
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    start = datetime(2026, 8, 24, 0, 0)
+    storage.save_obs("s1", _obs_days(start, 2, temp=20.0))
+
+    snap = _snap_with_daily(
+        "ecmwf_ifs", start,
+        hourly_days=[(0, 24), (1, 24)],
+        temps=lambda off, h: 22.0, precs=lambda off, h: 0.0,   # 逐小时恒温 22
+        daily_days=[0, 1], daily_max=[30.0, 30.0], daily_min=[30.0, 30.0],
+        daily_rain=[99.0, 99.0],                                # 日产品故意给出不同答案
+    )
+    storage.save_forecast_snapshot("s1", "ecmwf_ifs", snap)
+
+    data = build_report(["s1"], ["ecmwf_ifs"], dict(CFG, min_sample=1), start,
+                        start + timedelta(hours=47), "2026-08")
+    t1 = data["temp_daily"]["ecmwf_ifs"]["1d"]
+    # 观测日最高 22（20+(h%3) -> 22），逐小时聚合亦为 22 -> RMSE=0；若误用日产品则为 8
+    assert abs(t1["max"]["rmse"]) < 1e-9
+    assert data["daily_source_mix"]["ecmwf_ifs"]["1d"]["temp"] == {"hourly": 1, "daily": 0}
+
+
+def test_daily_fallback_fills_partially_covered_day(tmp_path, monkeypatch):
+    """时效边界日（逐小时只有部分小时）由日产品补位：原本这整天会被覆盖门槛剔除。"""
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    start = datetime(2026, 8, 24, 0, 0)
+    storage.save_obs("s1", _obs_days(start, 2, temp=20.0))
+
+    # offset 1 只预报了 9 个小时（< daily_min_hours=20）
+    def temps(off, h):
+        return 22.0 if off == 0 or (off == 1 and h < 9) else None
+    snap = _snap_with_daily(
+        "ecmwf_ifs", start,
+        hourly_days=[(0, 24), (1, 24)],
+        temps=temps, precs=lambda off, h: 0.0 if temps(off, h) is not None else None,
+        daily_days=[1], daily_max=[22.0], daily_min=[20.0], daily_rain=[0.0],
+    )
+    storage.save_forecast_snapshot("s1", "ecmwf_ifs", snap)
+
+    data = build_report(["s1"], ["ecmwf_ifs"], CFG, start, start + timedelta(hours=47),
+                        "2026-08")
+    mix = data["daily_source_mix"]["ecmwf_ifs"]["1d"]
+    assert mix == {"temp": {"hourly": 0, "daily": 1}, "rain": {"hourly": 0, "daily": 1}}
+    assert data["temp_daily"]["ecmwf_ifs"]["1d"]["max"]["n"] == 1
+    # 关掉开关则回到旧行为：该天被剔除
+    off_cfg = dict(CFG, daily_source_fallback=False)
+    data_off = build_report(["s1"], ["ecmwf_ifs"], off_cfg, start,
+                            start + timedelta(hours=47), "2026-08")
+    assert data_off["temp_daily"]["ecmwf_ifs"]["1d"]["max"]["n"] == 0
+    assert data_off["daily_source_mix"] == {}
+
+
+def test_daily_fallback_never_invents_missing_values(tmp_path, monkeypatch):
+    """补位也不得把缺测伪装成数值：日产品该要素为 null 时该要素照样不入样。"""
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    start = datetime(2026, 8, 24, 0, 0)
+    obs = []
+    for h in range(3 * 24):
+        t = start + timedelta(hours=h)
+        obs.append({"time": iso(t), "temp": 20.0 + (h % 3), "rain": 5.0 if h >= 2 * 24 else 0.0})
+    storage.save_obs("s1", obs)
+
+    snap = _snap_with_daily(
+        "ecmwf_ifs", start,
+        hourly_days=[(0, 24), (1, 24)],
+        temps=lambda off, h: 21.0, precs=lambda off, h: 0.0,
+        daily_days=[2], daily_max=[22.0], daily_min=[20.0], daily_rain=[None],
+    )
+    storage.save_forecast_snapshot("s1", "ecmwf_ifs", snap)
+
+    data = build_report(["s1"], ["ecmwf_ifs"], CFG, start, start + timedelta(hours=3 * 24 - 1),
+                        "2026-08")
+    p2 = data["precip_daily"]["ecmwf_ifs"]["2d"]
+    assert p2["n"] == 0 and p2["ts"] is None     # 日产品降水缺测 -> 绝不折算 0.0
+    t2 = data["temp_daily"]["ecmwf_ifs"]["2d"]
+    assert t2["max"]["n"] == 1                   # 温度照常入样
+    # 降水缺测不影响温度来源标记，两者分开记账（未配对成样本的要素不出现在构成里）
+    assert data["daily_source_mix"]["ecmwf_ifs"]["2d"] == {"temp": {"hourly": 0, "daily": 1}}
+
+
+def test_daily_fallback_multimodel_snapshot_attributed_per_model(tmp_path, monkeypatch):
+    """多模型共享时间轴的存档带日产品块时，各模型只取自己的那一列。"""
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    start = datetime(2026, 8, 24, 0, 0)
+    storage.save_obs("s1", _obs_days(start, 3, temp=20.0))
+    times = [iso(start + timedelta(hours=h)) for h in range(24)]
+    snap = {
+        "issue_iso": iso(start), "station_id": "s1", "source": "test",
+        "models": ["ecmwf_ifs", "other_model"],
+        "grid_lat": 23.0, "grid_lon": 111.0, "elevation": 50,
+        "hourly_time": times,
+        "data": {
+            "ecmwf_ifs": {"temperature_2m": [22.0] * 24, "precipitation": [0.0] * 24},
+            "other_model": {"temperature_2m": [22.0] * 24, "precipitation": [0.0] * 24},
+        },
+        "daily_time": [str(start.date() + timedelta(days=1)),
+                       str(start.date() + timedelta(days=2))],
+        "daily": {
+            "ecmwf_ifs": {"temp_max": [22.0, 22.0], "temp_min": [20.0, 20.0],
+                          "precipitation": [0.0, 0.0]},
+            "other_model": {"temp_max": [40.0, 40.0], "temp_min": [40.0, 40.0],
+                            "precipitation": [50.0, 50.0]},
+        },
+    }
+    storage.save_forecast_snapshot("s1", "ecmwf_ifs", snap)
+
+    cfg = dict(CFG, min_sample=1)
+    data = build_report(["s1"], ["ecmwf_ifs", "other_model"], cfg,
+                        start, start + timedelta(hours=3 * 24 - 1), "2026-08")
+    # 两家各自记账：ecmwf 的日产品与观测吻合（RMSE 0），other_model 明显偏差（18）
+    t2 = data["temp_daily"]
+    assert abs(t2["ecmwf_ifs"]["2d"]["max"]["rmse"]) < 1e-9
+    assert abs(t2["other_model"]["2d"]["max"]["rmse"] - 18.0) < 1e-9
+    # 降水（雨量 RMSE 在全零样本上仍有定义）：ecmwf 与实况一致 -> 0；
+    # other_model 用了自己那一列的 50mm -> 50。若两家混用同一列，两者会相等
+    assert abs(data["precip_daily"]["ecmwf_ifs"]["2d"]["rmse"]) < 1e-9
+    assert abs(data["precip_daily"]["other_model"]["2d"]["rmse"] - 50.0) < 1e-9
+
+
+def test_daily_block_missing_or_malformed_is_backward_compatible(tmp_path, monkeypatch):
+    """旧存档无 daily 块 / 结构畸形：行为完全回退到纯逐小时聚合，且不崩溃。"""
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    start = datetime(2026, 8, 24, 0, 0)
+    storage.save_obs("s1", _obs_days(start, 2, temp=20.0))
+
+    base = _snap_with_daily("ecmwf_ifs", start, [(0, 24), (1, 24)],
+                            lambda off, h: 22.0, lambda off, h: 0.0,
+                            None, None, None, None)
+    storage.save_forecast_snapshot("s1", "ecmwf_ifs", base)   # 无 daily 块
+
+    cfg = dict(CFG, min_sample=1)
+    data = build_report(["s1"], ["ecmwf_ifs"], cfg, start, start + timedelta(hours=47),
+                        "2026-08")
+    assert data["temp_daily"]["ecmwf_ifs"]["1d"]["max"]["n"] == 1
+    assert data["daily_source_mix"]["ecmwf_ifs"]["1d"]["temp"] == {"hourly": 1, "daily": 0}
+
+    # 畸形块不得拖垮报告：每份快照只有一种畸形形态，故各自独立跑一次
+    for bad in ({"daily_time": ["2026-08-25"], "daily": {}},                    # 缺模型
+                {"daily_time": "2026-08-25", "daily": {"ecmwf_ifs": {}}},       # 时间轴非数组
+                {"daily_time": ["2026-08-25"], "daily": {"ecmwf_ifs": {
+                    "temp_max": ["x"], "temp_min": [None], "precipitation": [0.0]}}},  # 非数值
+                {"daily_time": [123], "daily": {"ecmwf_ifs": {                  # 日期非字符串
+                    "temp_max": [1.0], "temp_min": [1.0], "precipitation": [0.0]}}}):
+        import shutil
+        shutil.rmtree(tmp_path / "forecasts", ignore_errors=True)
+        broken = dict(base); broken.update(bad)
+        storage.save_forecast_snapshot("s1", "ecmwf_ifs", broken)
+        d = build_report(["s1"], ["ecmwf_ifs"], cfg, start, start + timedelta(hours=47),
+                         "2026-08")
+        assert d["temp_daily"]["ecmwf_ifs"]["1d"]["max"]["n"] == 1   # 逐小时口径不受影响
+        assert d["temp_daily"]["ecmwf_ifs"]["1d"]["max"]["rmse"] == 0.0
+
+
+def test_daily_fallback_respects_observation_gate(tmp_path, monkeypatch):
+    """补位不放松观测侧门槛：实况当天不足 daily_min_hours 时该天照样不入样。"""
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    start = datetime(2026, 8, 24, 0, 0)
+    obs = []   # 第 3 天只有 10 个小时的实况
+    for h in range(2 * 24 + 10):
+        obs.append({"time": iso(start + timedelta(hours=h)), "temp": 20.0, "rain": 0.0})
+    storage.save_obs("s1", obs)
+
+    snap = _snap_with_daily("ecmwf_ifs", start, [(0, 24), (1, 24)],
+                            lambda off, h: 21.0, lambda off, h: 0.0,
+                            [2], [21.0], [21.0], [0.0])
+    storage.save_forecast_snapshot("s1", "ecmwf_ifs", snap)
+
+    data = build_report(["s1"], ["ecmwf_ifs"], CFG, start,
+                        start + timedelta(hours=2 * 24 + 9), "2026-08")
+    assert data["temp_daily"]["ecmwf_ifs"]["2d"]["max"]["n"] == 0
+    assert data["daily_source_mix"]["ecmwf_ifs"].get("2d") is None
+
+
 def test_daily_all_none_precip_excluded_even_if_gate_disabled(tmp_path, monkeypatch):
     """第二轮审查回归：即使 daily_min_hours 被配成 0（门槛关闭），降水全缺测的
     天也绝不折算成 0.0 —— "缺测不折算"是无条件下限，门槛只是额外的公平性要求。"""

@@ -14,6 +14,12 @@
   留档接口契约（时间语义/字段口径/降级行为），评估与报告逻辑零改动
 - **降水口径**：各源窗口方向假设都落在各自 provider 并留档（README 口径表是索引）；
   有累计字段时优先做守恒校验（如 MSN raAccu）
+- **逐日预报补位**（2026-09 新增）：快照可选 `daily_time`/`daily` 块（契约在
+  forecast/base.py）；按天轨道双轨——逐小时聚合优先，覆盖不足才用日产品，逐条记
+  temp_src/rain_src；开关 `daily_source_fallback`。边界：绝不反推逐小时、观测门槛
+  不放松、日界差 ~1h 只披露。接入参考 open_meteo._parse_daily；**接入前必须核实
+  该源日产品的日界是否为北京时自然日**（中国天气网白天/夜间口径不可照抄，且其
+  SSR day=N 分页只有被渲染那天的 daily 汇总可信）
 - 单测假 session 用 `types.SimpleNamespace`（嵌套类闭包有坑），且配 `retries=0` 防退避拖慢
 
 ## 源接入状态（2026-09-05）

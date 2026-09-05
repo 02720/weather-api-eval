@@ -515,7 +515,9 @@ window.addEventListener("DOMContentLoaded", function () {
     <summary>🧪 进阶数据：按天评估 · 分级降水 · 精细曲线 · 全指标明细表</summary>
     <div class="body">
       <h3>按天评估：日最高 / 最低气温准确率（日偏移 1~16 天）</h3>
-      <p class="desc">把一天浓缩成两个数（最高/最低温），按"预报的是起报后第几天"分组。</p>
+      <p class="desc">把一天浓缩成两个数（最高/最低温），按"预报的是起报后第几天"分组。
+        {% if report.meta.daily_source_fallback %}逐小时预报够不着的日子，只要这一家还提供了自己的逐日预报，
+        该日仍会参与按天评估（<b>日产品补位</b>，明细表里可看每条的来源构成）；逐小时样本从不由日预报伪造。{% endif %}</p>
       <div class="chart-controls">
         <div class="cmp-mount" data-cmp></div>
       </div>
@@ -636,6 +638,7 @@ window.addEventListener("DOMContentLoaded", function () {
       <li>🌧️ <b>逐小时降水口径</b>：观测 rain@t 覆盖 (t−1h, t]。各源入库口径——Open-Meteo/彩云/和风/中科星图/伏羲确定性：源原生序列直接透传（按"前 1 小时累计"同标注配对，彩云/和风的窗口方向已经平移标定核验）；中科天机/伏羲中期：源为 mm/h 降水率，作为前 1 小时累计的近似；风乌：6h 累计均摊为逐小时（总量守恒）；AccuWeather：按推断整体移位 1 小时（假设已在快照与代码中留档并定期标定复核）。</li>
       <li>🧭 <b>起报锚点差异</b>：Open-Meteo 不回显真实起报轮次，其快照锚点是北京时"当日 00:00"且每天仅封存 1 份快照；其余各源锚定抓取时刻或真实起报轮次、逐时封存。同一「提前 N 天」桶内各源的实际难度与样本新鲜度因此略有差异，跨源解读请留意。</li>
       <li>📅 <b>按天评估的覆盖门槛</b>：日聚合只在观测与预报两侧当日非缺测小时数都达标（≥{{ report.meta.daily_min_hours }}/24）的天上比较——降水全缺测的样本绝不折算成"预报无雨"。</li>
+      {% if report.meta.daily_source_fallback %}<li>🗓️ <b>逐日预报补位</b>：不少 API 的逐日预报比逐小时覆盖得更远。某家在某一日的逐小时预报已到时效尽头时，只要它还提供了<b>自己的</b>逐日预报（日最高/最低温、日降水量），该日仍会参与按天评估——逐小时覆盖充足的日子一律继续用逐小时聚合（与历史同一口径）。补位条目在明细表②的「日产品补位」列按"补位数/总数"标出。<u>逐小时指标与排行榜永不掺入日预报反推的样本</u>；日产品的日界窗口与"逐小时求和"相差约 1 小时边界，跨源横比时请以该列为凭。</li>{% endif %}
       {% if report.coverage.first_obs %}<li>🛰️ <b>实况自 {{ report.coverage.first_obs[:10] }} 起接入</b>：覆盖率与样本量按各站实际有实况的时段计算。</li>{% endif %}
     </ol>
   </section>
@@ -1467,10 +1470,25 @@ function buildDetailTables() {
   offs.forEach(o => { const op=document.createElement("option"); op.value=o;
     op.text="第"+o.replace("d","")+"天"; oSel.appendChild(op); });
   const DAILY_GRADE_LABELS = {"+1":"≥0.1","+2":"≥10","+3":"≥25","+4":"≥50","+5":"≥100","+6":"≥250"};
+  // 按天样本可能来自两种口径：逐小时聚合（hourly）或源自带日产品补位（daily）。
+  // 同一日偏移桶内各家来源可能不同，故单列一列把构成摆出来，别让读者当同口径横比。
+  const SHOW_MIX = !!(report.meta && report.meta.daily_source_fallback);
+  function mixCell(m, o) {
+    if (!SHOW_MIX) return "";
+    const mix = (report.daily_source_mix && report.daily_source_mix[m]
+                 && report.daily_source_mix[m][o]) || null;
+    if (!mix) return '<td class="num">—</td>';
+    // 要素只有一侧有样本时桶里只会有那一侧的键，缺侧按 0 处理
+    const t = mix.temp || {hourly:0, daily:0}, r = mix.rain || {hourly:0, daily:0};
+    if (!t.daily && !r.daily) return '<td class="num">—</td>';
+    return '<td class="num">温 ' + t.daily + '/' + (t.hourly + t.daily) +
+           ' · 雨 ' + r.daily + '/' + (r.hourly + r.daily) + '</td>';
+  }
   function tableDaily() {
     const o = oSel.value;
     let html = '<table><thead><tr>' +
       '<th class="l sticky" rowspan="2">模型</th><th rowspan="2">n温</th><th rowspan="2">n降</th>' +
+      (SHOW_MIX ? '<th rowspan="2">日产品补位</th>' : '') +
       '<th class="g" colspan="2">日最高(°C)</th><th class="g" colspan="2">日最低(°C)</th>' +
       '<th class="g" colspan="8">日降水 · 晴雨</th><th class="g" colspan="3">雨量误差(mm)</th>' +
       '<th class="g" colspan="6">分级TS · 24h累计(mm)</th></tr>' +
@@ -1486,6 +1504,7 @@ function buildDetailTables() {
       const g = p.graded || {};
       const gs = lv => (g[lv] ? f2(g[lv].ts) : "—");
       html += `<tr>${modelCell(m)}<td class="num">${Math.max(mx.n||0, mn.n||0)}</td><td class="num">${p.n||0}</td>` +
+        mixCell(m, o) +
         `<td>${pf(mx.acc2)}</td><td>${f2(mx.rmse)}</td><td>${pf(mn.acc2)}</td><td>${f2(mn.rmse)}</td>` +
         `<td>${pf(p.acc)}</td><td>${pf(p.pod)}</td><td>${pf(p.far)}</td><td>${pf(p.miss)}</td>` +
         `<td>${f2(p.ts)}</td><td>${f2(p.ets)}</td><td>${f2(p.bias)}</td><td>${pf(p.farate)}</td>` +

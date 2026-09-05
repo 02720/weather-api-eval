@@ -169,6 +169,10 @@ def cmd_fetch_forecast(args):
                     sub = dict(snap)
                     sub["models"] = [m]
                     sub["data"] = {m: snap["data"][m]}
+                    # 逐日预报块（可选扩展，见 forecast/base.py）：与 hourly 一样
+                    # 按模型拆分，否则拆分后的子快照会带着别家的日产品
+                    if isinstance(snap.get("daily"), dict) and m in snap["daily"]:
+                        sub["daily"] = {m: snap["daily"][m]}
                     subs.append(sub)
             else:
                 # 中科天机：各模式最新可用起报可能不同步，提供方直接返回按模型独立的快照列表
