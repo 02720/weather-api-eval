@@ -11,6 +11,7 @@
   python -m weather_eval fetch-forecast --source fengwu    抓取风乌 FengWu-GHR-9km 起报（可选 FENGWU_API_KEY）
   python -m weather_eval fetch-forecast --source geovis    抓取中科星图逐小时预报起报（需 GEVIS_TOKEN）
   python -m weather_eval fetch-forecast --source accuweather 抓取 AccuWeather 逐小时预报起报（需 ACCUWEATHER_API_KEY）
+  python -m weather_eval fetch-forecast --source msn        抓取 MSN 天气（中国天气网）起报（网页接口，无需凭据）
   python -m weather_eval report                   用本月至今数据更新主报告 reports/index.html
   python -m weather_eval monthly [--month YYYY-MM] 生成月度归档报告 reports/monthly/YYYY-MM.html
   python -m weather_eval all                       抓取观测+预报+更新主报告（GitHub Action 调用）
@@ -31,6 +32,7 @@ import logging
 import re
 import sys
 from datetime import timedelta
+from typing import Any
 
 from .config import load_config
 from .timeutil import now_beijing, ymd, parse_iso, floor_to_hour, ym
@@ -39,7 +41,7 @@ from .obs import EiaDataObsSource
 from .forecast import (
     OpenMeteoProvider, CaiyunProvider, QWeatherProvider, TianjiProvider,
     FuxiC88Provider, FuxiDetProvider, FengWuProvider, GevisProvider,
-    AccuWeatherProvider,
+    AccuWeatherProvider, MsnProvider,
 )
 from .forecast.caiyun import DEFAULT_NAME as CAIYUN_DEFAULT_MODEL
 from .forecast.qweather import DEFAULT_NAME as QWEATHER_DEFAULT_MODEL
@@ -49,20 +51,32 @@ from .forecast.fuxi_data import MODEL_NAME as FUXI_DET_MODEL
 from .forecast.fengwu import MODEL_NAME as FENGWU_MODEL
 from .forecast.geovis import MODEL_NAME as GEVIS_MODEL
 from .forecast.accuweather import MODEL_NAME as ACCUWEATHER_MODEL
+from .forecast.msn import MODEL_NAME as MSN_MODEL
+# 独立抓取源（非 Open-Meteo 模型）的登记处：source -> (模型集合, 提供方类)。
+# 单一数据源：模型集合与提供方类必须同步登记，此前分成两张表（SOURCE_MODELS 与
+# _build_provider 内的内联字典）手工同步，新增源漏登其一会退化成运行期 KeyError
+# 且只在运行到该源时才暴露。这里合并后两张派生表自动同步，新增源只需改一处。
+# 提供方登记为**零参工厂**而非类对象：lambda 体内对模块级符号的解析发生在调用时，
+# 保留了晚绑定（测试以 monkeypatch 替换 m.<Xxx>Provider 来注入假实现；若在此处按值
+# 绑定类对象，替换将失效——这不是测试细节，而是"CLI 应可被注入"的可测性契约）。
+SOURCE_SPECS: dict[str, tuple[set[str], Any]] = {
+    # 伏羲中期：可视化接口，游客可用
+    "fuxi": ({FUXI_C88_MODEL}, lambda: FuxiC88Provider()),
+    # 伏羲确定性：数据服务，需 FUXI_DATA_TOKEN
+    "fuxi_data": ({FUXI_DET_MODEL}, lambda: FuxiDetProvider()),
+    "fengwu": ({FENGWU_MODEL}, lambda: FengWuProvider()),       # 风乌 GHR-9km：可选 FENGWU_API_KEY
+    "geovis": ({GEVIS_MODEL}, lambda: GevisProvider()),         # 中科星图：需 GEVIS_TOKEN
+    # AccuWeather：需 ACCUWEATHER_API_KEY（Enterprise 入口）
+    "accuweather": ({ACCUWEATHER_MODEL}, lambda: AccuWeatherProvider()),
+    "msn": ({MSN_MODEL}, lambda: MsnProvider()),                # MSN 天气：无凭据，底层中国天气网
+}
+# 各独立源的模型集合（config 中按此过滤，防止把别家的模型传进去刷缺失警告）
+SOURCE_MODELS: dict[str, set[str]] = {s: ms for s, (ms, _) in SOURCE_SPECS.items()}
 # 非第三方模式名的"独立抓取源"，Open-Meteo 抓取分支必须排除，
 # 否则会被当作 Open-Meteo 响应里缺失的模型而刷警告。
 NON_OPENMETEO_MODELS = {
     CAIYUN_DEFAULT_MODEL, QWEATHER_DEFAULT_MODEL, *TJ_MODEL_SPECS,
-    FUXI_C88_MODEL, FUXI_DET_MODEL, FENGWU_MODEL, GEVIS_MODEL,
-    ACCUWEATHER_MODEL,
-}
-# 各独立源的模型集合（config 中按此过滤，防止把别家的模型传进去刷缺失警告）
-SOURCE_MODELS: dict[str, set[str]] = {
-    "fuxi": {FUXI_C88_MODEL},
-    "fuxi_data": {FUXI_DET_MODEL},
-    "fengwu": {FENGWU_MODEL},
-    "geovis": {GEVIS_MODEL},
-    "accuweather": {ACCUWEATHER_MODEL},
+    *(m for ms in SOURCE_MODELS.values() for m in ms),
 }
 from .evaluate import build_report
 from .report import write_live_report, write_monthly_report
@@ -130,14 +144,8 @@ def _build_provider(source: str, cfg):
                 f"config models 中未配置任何 {source} 源模型（{sorted(SOURCE_MODELS[source])}），"
                 "无法抓取该源"
             )
-        prov = {
-            "fuxi": FuxiC88Provider,          # 伏羲中期：可视化接口，游客可用
-            "fuxi_data": FuxiDetProvider,     # 伏羲确定性：数据服务，需 FUXI_DATA_TOKEN
-            "fengwu": FengWuProvider,         # 风乌 GHR-9km：可选 FENGWU_API_KEY
-            "geovis": GevisProvider,          # 中科星图：需 GEVIS_TOKEN
-            "accuweather": AccuWeatherProvider,  # AccuWeather：需 ACCUWEATHER_API_KEY（Enterprise 入口）
-        }[source]()
-        return prov, wanted
+        _, provider_factory = SOURCE_SPECS[source]
+        return provider_factory(), wanted
     # Open-Meteo 无需凭据；仅交其自身模型，避免把独立源模型当作缺失模型刷警告
     return OpenMeteoProvider(), [m for m in cfg.models if m not in NON_OPENMETEO_MODELS]
 
@@ -232,14 +240,15 @@ def main(argv=None):
     p_fetch.add_argument(
         "--source", choices=["open_meteo", "caiyun", "qweather", "tianji",
                              "fuxi", "fuxi_data", "fengwu", "geovis",
-                             "accuweather"],
+                             "accuweather", "msn"],
         default="open_meteo",
         help="预报源：open_meteo（默认）、caiyun（需 CAIYUN_TOKEN）、qweather"
              "（需 QWEATHER_API_KEY）、tianji（网页接口，无需凭据）、fuxi（伏羲中期"
              " FuXi-C88，网页接口，无需凭据）、fuxi_data（伏羲确定性 FuXi-Det，需 "
              "FUXI_DATA_TOKEN）、fengwu（FengWu-GHR-9km，可选 FENGWU_API_KEY 延长"
              "时效）、geovis（中科星图，需 GEVIS_TOKEN）、accuweather（AccuWeather"
-             " Enterprise，需 ACCUWEATHER_API_KEY）",
+             " Enterprise，需 ACCUWEATHER_API_KEY）、msn（MSN 天气/中国天气网，"
+             "无需凭据，时效上限约 9.3 天）",
     )
     sub.add_parser("report")
     pm = sub.add_parser("monthly")

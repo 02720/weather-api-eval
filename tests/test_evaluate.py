@@ -510,6 +510,28 @@ def test_model_caveats_surfaced_from_snapshot_meta(tmp_path, monkeypatch):
     assert "38.2" in note and "梧州" in note
 
 
+def test_model_caveats_lists_all_station_names_not_just_first(tmp_path, monkeypatch):
+    """吸附距离是全站均值，而各站吸附到的城市不同——只写第一站名会误导读者
+    （MSN/中国天气网 4 站各吸附到不同城市，该缺陷因新源接入而显性化）。"""
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    start = datetime(2026, 8, 24, 0, 0)
+    for sid in ("s1", "s2"):
+        obs = [{"time": iso(start + timedelta(hours=h)), "temp": 20.0, "rain": 0.0}
+               for h in range(24)]
+        storage.save_obs(sid, obs)
+
+    for sid, nm, km in (("s1", "万秀", 1.8), ("s2", "wanning", 7.0)):
+        _save_day_snapshot(sid, "msn_v1", start, [(0, 24)],
+                           lambda off, h: 20.0, lambda off, h: 0.0,
+                           location_name=nm, location_distance_km=km)
+
+    data = build_report(["s1", "s2"], ["msn_v1"], CFG, start,
+                        start + timedelta(hours=23), "2026-08")
+    note = data["meta"]["model_caveats"]["msn_v1"]
+    assert "4.4" in note                     # 均值 (1.8+7.0)/2
+    assert "万秀" in note and "wanning" in note   # 两站城市名都必须出现
+
+
 def test_daily_all_none_precip_excluded_even_if_gate_disabled(tmp_path, monkeypatch):
     """第二轮审查回归：即使 daily_min_hours 被配成 0（门槛关闭），降水全缺测的
     天也绝不折算成 0.0 —— "缺测不折算"是无条件下限，门槛只是额外的公平性要求。"""

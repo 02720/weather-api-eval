@@ -8,9 +8,10 @@ from .fuxi_data import FuxiDetProvider
 from .fengwu import FengWuProvider
 from .geovis import GevisProvider
 from .accuweather import AccuWeatherProvider
+from .msn import MsnProvider
 
 __all__ = [
     "ForecastProvider", "OpenMeteoProvider", "CaiyunProvider", "QWeatherProvider",
     "TianjiProvider", "FuxiC88Provider", "FuxiDetProvider", "FengWuProvider",
-    "GevisProvider", "AccuWeatherProvider",
+    "GevisProvider", "AccuWeatherProvider", "MsnProvider",
 ]

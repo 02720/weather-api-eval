@@ -143,6 +143,17 @@ jobs:
             echo "未配置 ACCUWEATHER_API_KEY Secret，跳过 AccuWeather 抓取"
           fi
 
+      - name: 抓取 MSN 天气预报（可选，网页接口抓取，无需凭据）
+        # 抓取 msn.cn/zh-cn/weather 的 SSR 内嵌状态（底层为中国天气网）。
+        # SSR 一次只渲染一天逐小时，故一份快照需 day=1..10 共 10 次请求/站，
+        # 4 站 = 40 次请求/轮，是本仓库请求量最大的源——若页面改版或限流，
+        # 表现为该源整体缺失（不阻断主流程），应优先核对页面结构而非配额。
+        # 单日分片失败只让该时效残缺（日志告警），不拖垮整份快照。
+        continue-on-error: true
+        env:
+          TZ: Asia/Shanghai
+        run: python -m weather_eval fetch-forecast --source msn
+
       - name: 抓取观测 + 预报快照 + 更新主报告（本月累计，覆盖写 index.html）
         env:
           TZ: Asia/Shanghai

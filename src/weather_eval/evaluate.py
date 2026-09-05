@@ -650,12 +650,14 @@ def _coverage(station_ids, start_dt, end_dt) -> dict:
 def _model_caveats(station_ids, models) -> dict[str, str]:
     """从快照 meta 提取影响榜单解读的口径注记（数据驱动，模板只负责呈现）。
 
-    已知注记：AccuWeather 的"最近城市吸附"定位——快照留档了 location_name 与
-    haversine 吸附距离，其样本代表距站点数十公里的城市而非站点格点，公开榜单
-    必须让读者知情（README 有说明，但只看报告的读者看不到）。
+    已知注记：AccuWeather / MSN（中国天气网）等"最近城市吸附"定位——快照留档了
+    location_name 与 haversine 吸附距离，其样本代表距站点数公里的城市而非站点
+    格点，公开榜单必须让读者知情（README 有说明，但只看报告的读者看不到）。
+    吸附距离是全站均值，而各站吸附到的城市名不同——只取第一站的名字会让人误以为
+    所有站都定位到同一城市，故多站时列全（名称集合天然去重）。
     """
     dist: dict[str, list[float]] = defaultdict(list)
-    names: dict[str, str] = {}
+    names: dict[str, set[str]] = defaultdict(set)
     for sid in station_ids:
         for model in models:
             for snap in list_forecast_snapshots(sid, model):
@@ -664,12 +666,14 @@ def _model_caveats(station_ids, models) -> dict[str, str]:
                     dist[model].append(float(d))
                 nm = snap.get("location_name")
                 if nm:
-                    names.setdefault(model, str(nm))
+                    names[model].add(str(nm))
     out = {}
     for model, ds in dist.items():
         avg = round(sum(ds) / len(ds), 1)
-        name = names.get(model, "最近城市")
-        out[model] = (f"最近城市吸附：定位到距站点平均约 {avg} km 的「{name}」，"
+        got = sorted(names.get(model, ()))
+        who = f"「{got[0]}」" if len(got) == 1 else \
+            (f"各站最近城市（{'、'.join(got)}）" if got else "最近城市")
+        out[model] = (f"最近城市吸附：定位到距站点平均约 {avg} km 的{who}，"
                       "样本代表该城市而非站点格点，雨温气候可能与站点本地不同")
     return out
 

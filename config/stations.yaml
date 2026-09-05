@@ -32,6 +32,8 @@ models:
   - geovis_v1            # 中科星图全国逐小时预报（--source geovis，需环境变量 GEVIS_TOKEN）
   # —— AccuWeather（2026-08 新增独立源；2026-08-29 起 Enterprise 入口）——
   - accuweather_v1       # AccuWeather 逐小时预报（--source accuweather，需环境变量 ACCUWEATHER_API_KEY；Enterprise 订阅 Key，最近城市吸附语义）
+  # —— MSN 天气（2026-09 新增独立源）——
+  - msn_v1               # MSN 天气（msn.cn/zh-cn/weather，--source msn，无需凭据；底层为中国天气网，最近城市吸附语义，时效上限约 9.3 天）
 
 stations:
   - id: wuzhou
