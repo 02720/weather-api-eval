@@ -126,6 +126,8 @@ class _CaptureSession:
         text = self._text
 
         class _R:
+            status_code = 200
+
             def raise_for_status(self):
                 return None
 

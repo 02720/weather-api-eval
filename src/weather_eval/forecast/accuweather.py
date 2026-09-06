@@ -99,7 +99,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import time
 import unicodedata
 from datetime import datetime, timedelta
 from math import asin, cos, radians, sin, sqrt
@@ -109,6 +108,7 @@ from urllib.parse import quote
 import requests
 
 from .base import ForecastProvider
+from .http import request_with_retries
 from ..timeutil import BEIJING
 
 logger = logging.getLogger(__name__)
@@ -654,44 +654,40 @@ class AccuWeatherProvider(ForecastProvider):
         409 分支在 try 之外判定：raise 若落在 try 内会被网络异常分支捕获、
         被当成可重试错误烧满退避。"""
         params = {**params, "apikey": self.key}
-        last_err: Exception | None = None
-        last_status: int | None = None
-        for attempt in range(self.retries + 1):
+
+        def _classify(resp):
+            status = getattr(resp, "status_code", None)
             try:
-                resp = self.session.get(url, params=params, headers=self._headers,
-                                        timeout=self.timeout)
-                status = getattr(resp, "status_code", None)
-                try:
-                    body = resp.json()
-                except ValueError:
-                    body = (getattr(resp, "text", "") or "")[:200]
-            except Exception as e:  # noqa: BLE001  网络类异常 → 可重试
-                last_status = None
-                # 归一为脱敏后的 RuntimeError：最终 raise 挂 __cause__ 链时，
-                # 原始异常消息（可能含服务端回显的凭据）不会绕过掩码外泄
-                last_err = RuntimeError(_masked(str(e), self.key))
-            else:
-                if status == 200:
-                    return status, body
-                if status == 409:
-                    # Enterprise 官方语义：Allowed request limit has been
-                    # exceeded——确定性配额失败，重试无意义；置熔断让同次运行内
-                    # 后续站点快速失败、不再烧配额
-                    self._quota_suspect = True
-                    raise RuntimeError(_quota_hint("HTTP 409 已超出订阅允许的请求上限"))
-                if isinstance(status, int) and 400 <= status < 500 and status != 429:
-                    # 鉴权/权限/档位类确定性错误：重试不会改变结果，交上层判定
-                    return status, body
-                last_status = status
-                last_err = RuntimeError(f"HTTP {status} {_masked(_body_digest(body), self.key)}")
-            logger.warning("AccuWeather 请求失败（第%d次）: %s", attempt + 1,
-                           _masked(str(last_err), self.key))
-            if attempt < self.retries:
-                time.sleep(min(30, 3 * 2 ** attempt))
-        if last_status == 503:
-            self._quota_suspect = True
-            raise RuntimeError(_quota_hint("HTTP 503 已退避重试穷尽")) from last_err
-        raise RuntimeError(f"AccuWeather 请求最终失败: {_masked(str(last_err), self.key)}") from last_err
+                body = resp.json()
+            except ValueError:
+                body = (getattr(resp, "text", "") or "")[:200]
+            if status == 200:
+                return "return", (status, body)
+            if status == 409:
+                # Enterprise 官方语义：Allowed request limit has been
+                # exceeded——确定性配额失败，重试无意义；置熔断让同次运行内
+                # 后续站点快速失败、不再烧配额
+                self._quota_suspect = True
+                return "fatal", RuntimeError(
+                    _quota_hint("HTTP 409 已超出订阅允许的请求上限"))
+            if isinstance(status, int) and 400 <= status < 500 and status != 429:
+                # 鉴权/权限/档位类确定性错误：重试不会改变结果，交上层判定
+                return "return", (status, body)
+            return "retry", f"HTTP {status} {_masked(_body_digest(body), self.key)}"
+
+        def _exhausted(last_status, last_err):
+            if last_status == 503:
+                self._quota_suspect = True
+                return RuntimeError(_quota_hint("HTTP 503 已退避重试穷尽"))
+            return RuntimeError(
+                f"AccuWeather 请求最终失败: {_masked(str(last_err), self.key)}")
+
+        return request_with_retries(
+            self.session, url, params=params, headers=self._headers,
+            timeout=self.timeout, retries=self.retries, source="AccuWeather",
+            redact=lambda s: _masked(s, self.key), classify=_classify,
+            on_exhausted=_exhausted,
+        )
 
 
 # URL 参数形态的 apikey 值（大小写不敏感）：_masked 的通用脱敏兜底

@@ -58,6 +58,7 @@ from typing import Any
 import requests
 
 from .base import ForecastProvider
+from .http import request_with_retries
 
 logger = logging.getLogger(__name__)
 
@@ -277,27 +278,21 @@ class GevisProvider(ForecastProvider):
             "location": f"{station.lon},{station.lat}",
             "token": self.token,
         }
-        last_err: Exception | None = None
-        for attempt in range(self.retries + 1):
-            try:
-                resp = self.session.get(DAY_URL + suffix, params=params,
-                                        headers=HEADERS, timeout=self.timeout)
-                status = getattr(resp, "status_code", None)
-                if status == 200:
-                    return resp.json()
-                if isinstance(status, int) and 400 <= status < 500 and status != 429:
-                    # 逐日块的 4xx 属产品权限/参数问题，重试无意义——上抛交由
-                    # _fetch_daily_block 降档/放弃，绝不在这里烧退避
-                    raise _Rejected(f"HTTP {status}")
-                last_err = RuntimeError(f"HTTP {status}")
-            except _Rejected:
-                raise
-            except Exception as e:  # noqa: BLE001  网络类异常/5xx → 可重试
-                last_err = RuntimeError(str(e).replace(self.token, "***"))
-            logger.warning("星图逐日请求失败（第%d次）: %s", attempt + 1, last_err)
-            if attempt < self.retries:
-                time.sleep(min(30, 3 * 2 ** attempt))
-        raise RuntimeError(f"星图逐日请求最终失败: {last_err}")
+        def _classify(resp: Any) -> tuple[str, Any]:
+            status = getattr(resp, "status_code", None)
+            if status == 200:
+                return "return", resp.json()
+            if isinstance(status, int) and 400 <= status < 500 and status != 429:
+                # 逐日块的 4xx 属产品权限/参数问题，重试无意义——fatal 上抛交由
+                # _fetch_daily_block 降档/放弃，绝不在这里烧退避
+                return "fatal", _Rejected(f"HTTP {status}")
+            return "retry", f"HTTP {status}"
+
+        return request_with_retries(
+            self.session, DAY_URL + suffix, params=params, headers=HEADERS,
+            timeout=self.timeout, retries=self.retries, source="星图逐日",
+            redact=lambda s: s.replace(self.token, "***"), classify=_classify,
+        )
     def _query_any_tier(self, station: Any) -> tuple[dict, str]:
         """按档位梯子查询并解析，返回 (parse_area_response 结果, 档位名)。
 
@@ -341,39 +336,30 @@ class GevisProvider(ForecastProvider):
             # token 走 URL query，底层异常消息会带完整 URL——入日志前必须掩码
             return str(err).replace(self.token, "***")
 
-        last_err: Exception | None = None
-        for attempt in range(self.retries + 1):
+        def _classify(resp: Any) -> tuple[str, Any]:
+            status = getattr(resp, "status_code", None)
+            if status == 200:
+                return "return", resp.json()
             try:
-                resp = self.session.get(AREA_URL + suffix, params=params,
-                                        headers=HEADERS, timeout=self.timeout)
-                status = getattr(resp, "status_code", None)
-                if status == 200:
-                    return resp.json()
-                try:
-                    body_digest = _masked((resp.text or ""))[:200]
-                except Exception:  # noqa: BLE001
-                    body_digest = ""
-                if status == 401 or status == 403:
-                    raise RuntimeError(
-                        f"星图鉴权/权限失败（HTTP {status} {body_digest!r}）——"
-                        f"请确认 {TOKEN_ENV} 有效且账号已开通逐小时预报产品"
-                    )
-                if isinstance(status, int) and 400 <= status < 500 and status != 429:
-                    raise _Rejected(f"HTTP {status} body={body_digest!r}")
-                last_err = RuntimeError(f"HTTP {status} body={body_digest!r}")
-            except RuntimeError as e:
-                if "鉴权" in str(e):
-                    raise
-                last_err = RuntimeError(_masked(e))
-            except _Rejected as e:
-                # 确定性失败（4xx）重试无意义，直接上抛
-                raise RuntimeError(f"星图请求被拒: {e}") from e
-            except Exception as e:  # noqa: BLE001  网络类异常/5xx → 可重试
-                last_err = RuntimeError(_masked(e))
-            logger.warning("星图请求失败（第%d次）: %s", attempt + 1, last_err)
-            if attempt < self.retries:
-                time.sleep(min(30, 3 * 2 ** attempt))
-        raise RuntimeError(f"星图请求最终失败: {last_err}") from last_err
+                body_digest = _masked((resp.text or ""))[:200]
+            except Exception:  # noqa: BLE001
+                body_digest = ""
+            if status == 401 or status == 403:
+                return "fatal", RuntimeError(
+                    f"星图鉴权/权限失败（HTTP {status} {body_digest!r}）——"
+                    f"请确认 {TOKEN_ENV} 有效且账号已开通逐小时预报产品")
+            if isinstance(status, int) and 400 <= status < 500 and status != 429:
+                # 确定性失败（4xx）重试无意义：保持既有"请求被拒"消息形态上抛，
+                # 档位梯子按 RuntimeError 捕获后降档
+                return "fatal", RuntimeError(
+                    f"星图请求被拒: HTTP {status} body={body_digest!r}")
+            return "retry", f"HTTP {status} body={body_digest!r}"
+
+        return request_with_retries(
+            self.session, AREA_URL + suffix, params=params, headers=HEADERS,
+            timeout=self.timeout, retries=self.retries, source="星图",
+            redact=_masked, classify=_classify,
+        )
 
 
 class _Rejected(Exception):

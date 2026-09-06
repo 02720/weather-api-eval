@@ -14,6 +14,7 @@
   python -m weather_eval fetch-forecast --source msn        抓取 MSN 天气（中国天气网）起报（网页接口，无需凭据）
   python -m weather_eval report                   用本月至今数据更新主报告 reports/index.html
   python -m weather_eval monthly [--month YYYY-MM] 生成月度归档报告 reports/monthly/YYYY-MM.html
+  python -m weather_eval archive [--days 60] [--apply]  把超窗口的旧快照 gzip 归档（默认 dry-run）
   python -m weather_eval all                       抓取观测+预报+更新主报告（GitHub Action 调用）
 
 报告体系（2026-08 重设计）：
@@ -224,6 +225,34 @@ def cmd_monthly(args):
     _update_live_report(cfg)
 
 
+def cmd_archive(args):
+    """把 issue 早于保留窗口的旧快照 gzip 归档（P3-5）。
+
+    默认 dry-run 只列出候选；--apply 才真正压缩并删除源 .json。评估读取侧对
+    .json/.json.gz 一视同仁，归档不改变任何指标口径。git 侧表现为"删除 N 个
+    .json + 新增 N 个 .json.gz"，随下一次自动提交入库。"""
+    from .storage import archive_old_snapshots
+    candidates = archive_old_snapshots(args.days, apply=False)
+    n = len(candidates)
+    if n == 0:
+        log.info("没有早于 %d 天的快照需要归档", args.days)
+        return 0
+    if not args.apply:
+        log.info("dry-run：%d 份快照早于 %d 天可归档（加 --apply 执行）", n, args.days)
+        for p in candidates[:10]:
+            log.info("  %s", p)
+        if n > 10:
+            log.info("  … 及另外 %d 份", n - 10)
+        return 0
+    total_in = sum(p.stat().st_size for p in candidates)
+    archive_old_snapshots(args.days, apply=True)
+    gz_sizes = [p.with_name(p.name + ".gz").stat().st_size for p in candidates]
+    log.info("已归档 %d 份旧快照（%.1f MB -> %.1f MB，%.1f×）",
+             n, total_in / 1e6, sum(gz_sizes) / 1e6,
+             (total_in / sum(gz_sizes)) if sum(gz_sizes) else 0.0)
+    return 0
+
+
 def cmd_all(args):
     f1 = cmd_fetch_obs(args)
     f2 = cmd_fetch_forecast(args)
@@ -259,6 +288,11 @@ def main(argv=None):
     pm.add_argument("--month", default=None, help="YYYY-MM，默认上一自然月")
     pm.add_argument("--force", action="store_true",
                     help="已存在同名归档时强制重写（默认拒绝改动冻结档案）")
+    pa = sub.add_parser("archive")
+    pa.add_argument("--days", type=int, default=60,
+                    help="保留窗口（天）：issue 早于该窗口的快照被归档，默认 60")
+    pa.add_argument("--apply", action="store_true",
+                    help="真正执行压缩并删除源文件（默认 dry-run 只列出候选）")
     sub.add_parser("all")
 
     args = p.parse_args(argv)
@@ -267,6 +301,7 @@ def main(argv=None):
         "fetch-forecast": cmd_fetch_forecast,
         "report": cmd_report,
         "monthly": cmd_monthly,
+        "archive": cmd_archive,
         "all": cmd_all,
     }[args.cmd](args)
     # 抓取类命令的失败数必须反映到退出码：否则单独运行 fetch-forecast 失败也会

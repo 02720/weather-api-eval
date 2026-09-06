@@ -47,13 +47,13 @@ from __future__ import annotations
 
 import logging
 import os
-import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import requests
 
 from .base import ForecastProvider
+from .http import request_with_retries
 
 logger = logging.getLogger(__name__)
 
@@ -341,41 +341,28 @@ class FuxiDetProvider(ForecastProvider):
         headers = dict(HEADERS)
         if auth:
             headers["Authorization"] = self.token  # 官方示例：原始 token，无 Bearer 前缀
-        last_err: Exception | None = None
-        for attempt in range(self.retries + 1):
+
+        def _classify(resp):
+            status = getattr(resp, "status_code", None)
+            if status == 200:
+                return "return", resp.json()
             try:
-                resp = self.session.request(
-                    method, url, json=json_body, headers=headers, timeout=self.timeout,
-                )
-                status = getattr(resp, "status_code", None)
-                if status == 200:
-                    return resp.json()
-                try:
-                    body_digest = (resp.text or "")[:200]
-                except Exception:  # noqa: BLE001
-                    body_digest = ""
-                if status == 401:
-                    raise RuntimeError(
-                        f"伏羲数据服务鉴权失败（HTTP 401 {body_digest!r}）——"
-                        f"请确认 {TOKEN_ENV} 为 fuxi-data 页面获取的最新查询 Token"
-                    )
-                if isinstance(status, int) and 400 <= status < 500 and status != 429:
-                    raise _Rejected(f"HTTP {status} body={body_digest!r}")
-                last_err = RuntimeError(f"HTTP {status} body={body_digest!r}")
-            except RuntimeError as e:
-                if "鉴权失败" in str(e):
-                    raise
-                last_err = e
-            except _Rejected as e:
+                body_digest = (resp.text or "")[:200]
+            except Exception:  # noqa: BLE001
+                body_digest = ""
+            if status == 401:
+                return "fatal", RuntimeError(
+                    f"伏羲数据服务鉴权失败（HTTP 401 {body_digest!r}）——"
+                    f"请确认 {TOKEN_ENV} 为 fuxi-data 页面获取的最新查询 Token")
+            if isinstance(status, int) and 400 <= status < 500 and status != 429:
                 # 确定性失败（4xx）重试无意义，直接上抛
-                raise RuntimeError(f"伏羲数据请求被拒: {e}") from e
-            except Exception as e:  # noqa: BLE001  网络类异常/5xx → 可重试
-                last_err = e
-            logger.warning("伏羲数据请求失败（第%d次）: %s", attempt + 1, last_err)
-            if attempt < self.retries:
-                time.sleep(min(30, 3 * 2 ** attempt))
-        raise RuntimeError(f"伏羲数据请求最终失败: {last_err}") from last_err
+                return "fatal", RuntimeError(
+                    f"伏羲数据请求被拒: HTTP {status} body={body_digest!r}")
+            return "retry", f"HTTP {status} body={body_digest!r}"
 
+        return request_with_retries(
+            self.session, url, method=method, json_body=json_body,
+            headers=headers, timeout=self.timeout, retries=self.retries,
+            source="伏羲数据", classify=_classify,
+        )
 
-class _Rejected(Exception):
-    """确定性失败（4xx，重试无意义）。"""

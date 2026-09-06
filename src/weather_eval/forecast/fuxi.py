@@ -38,13 +38,13 @@
 from __future__ import annotations
 
 import logging
-import time
 from datetime import datetime, timedelta
 from typing import Any
 
 import requests
 
 from .base import ForecastProvider
+from .http import request_with_retries
 
 logger = logging.getLogger(__name__)
 
@@ -189,33 +189,22 @@ class FuxiC88Provider(ForecastProvider):
     # ------------------------------------------------------------------ 内部
     def _request(self, url: str, *, method: str = "GET",
                  json_body: dict | None = None) -> Any:
-        last_err: Exception | None = None
-        for attempt in range(self.retries + 1):
+        # 熔断/退避统一走共享助手：4xx 立即失败（不重试），网络错误/5xx/429 退避重试
+        def _classify(resp: Any) -> tuple[str, Any]:
+            status = getattr(resp, "status_code", None)
+            if status == 200:
+                return "return", resp.json()
             try:
-                if method == "GET":
-                    resp = self.session.get(url, headers=HEADERS, timeout=self.timeout)
-                else:
-                    resp = self.session.post(url, json=json_body, headers=HEADERS,
-                                             timeout=self.timeout)
-                status = getattr(resp, "status_code", None)
-                if status == 200:
-                    return resp.json()
-                try:
-                    body_digest = (resp.text or "")[:200]
-                except Exception:  # noqa: BLE001
-                    body_digest = ""
-                if isinstance(status, int) and 400 <= status < 500 and status != 429:
-                    raise _Rejected(f"HTTP {status} body={body_digest!r}")
-                last_err = RuntimeError(f"HTTP {status} body={body_digest!r}")
-            except _Rejected as e:
-                raise RuntimeError(f"伏羲请求被拒: {e}") from e
-            except Exception as e:  # noqa: BLE001  网络类异常/5xx → 可重试
-                last_err = e
-            logger.warning("伏羲请求失败（第%d次）: %s", attempt + 1, last_err)
-            if attempt < self.retries:
-                time.sleep(min(30, 3 * 2 ** attempt))
-        raise RuntimeError(f"伏羲请求最终失败: {last_err}") from last_err
+                body_digest = (resp.text or "")[:200]
+            except Exception:  # noqa: BLE001
+                body_digest = ""
+            if isinstance(status, int) and 400 <= status < 500 and status != 429:
+                return "fatal", RuntimeError(
+                    f"伏羲请求被拒: HTTP {status} body={body_digest!r}")
+            return "retry", f"HTTP {status} body={body_digest!r}"
 
-
-class _Rejected(Exception):
-    """确定性失败（4xx，重试无意义）。"""
+        return request_with_retries(
+            self.session, url, method=method, json_body=json_body,
+            headers=HEADERS, timeout=self.timeout, retries=self.retries,
+            source="伏羲", classify=_classify,
+        )

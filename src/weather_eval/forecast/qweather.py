@@ -69,6 +69,7 @@ from typing import Any
 import requests
 
 from .base import ForecastProvider
+from .http import request_with_retries
 from ..timeutil import BEIJING
 
 logger = logging.getLogger(__name__)
@@ -85,9 +86,6 @@ _V7_TIERS = (24, 72, 168)    # 旧版逐小时接口的三档时效
 _V7_DAILY_TIERS = (30, 15, 10, 7, 3)
 HEADERS = {"User-Agent": "weather-api-eval/0.1 (+https://github.com/)"}
 
-
-class _Transient(Exception):
-    """需要退避重试的瞬时失败占位（网络错误 / 5xx / 429）。"""
 
 
 def _redact(text: str, key: str) -> str:
@@ -452,31 +450,23 @@ class QWeatherProvider(ForecastProvider):
     def _get(self, url: str, params: dict) -> tuple[int | None, Any]:
         """请求一个端点。HTTP 200 或确定性 4xx 时返回 (status, 已解析的 json 或 None)；
         网络错误/5xx/429 按官方建议指数退避重试，全部失败后抛 RuntimeError。"""
-        last_err: Exception | None = None
-        for attempt in range(self.retries + 1):
+        # 熔断/退避统一走共享助手。本源契约：200 与确定性 4xx（鉴权/权限/参数，
+        # 重试不改变结果）都"成功返回" (status, body) 交给上层做档位判定；
+        # 只有网络错误/5xx/429 退避重试。
+        def _classify(resp):
+            status = getattr(resp, "status_code", None)
             try:
-                resp = self.session.get(
-                    url, params=params, headers=self._headers, timeout=self.timeout
-                )
-                status = getattr(resp, "status_code", None)
-                try:
-                    body = resp.json()
-                except ValueError:
-                    body = None
-                if status == 200:
-                    return status, body
-                if isinstance(status, int) and 400 <= status < 500 and status != 429:
-                    # 鉴权/权限/参数错误重试也不会改变结果，立即交给上层判定。
-                    return status, body
-                last_err = _Transient(f"HTTP {status}")
-            except Exception as e:  # noqa: BLE001  网络类异常 → 可重试
-                last_err = e
-            logger.warning(
-                "和风请求失败（第%d次）: %s", attempt + 1,
-                _redact(f"{url}: {last_err}", self.key),
-            )
-            if attempt < self.retries:
-                time.sleep(min(30, 3 * 2 ** attempt))  # 官方建议指数退避
-        raise RuntimeError(
-            f"和风请求最终失败: {_redact(str(last_err), self.key)}"
-        ) from last_err
+                body = resp.json()
+            except ValueError:
+                body = None
+            if status == 200:
+                return "return", (status, body)
+            if isinstance(status, int) and 400 <= status < 500 and status != 429:
+                return "return", (status, body)
+            return "retry", f"HTTP {status}"
+
+        return request_with_retries(
+            self.session, url, params=params, headers=self._headers,
+            timeout=self.timeout, retries=self.retries, source="和风",
+            redact=lambda s: _redact(s, self.key), classify=_classify,
+        )

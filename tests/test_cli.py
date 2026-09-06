@@ -59,3 +59,27 @@ def test_fetch_forecast_splits_daily_block_per_model(tmp_path, monkeypatch):
             ["precipitation"] == [0.0])
     assert (storage.list_forecast_snapshots("wuzhou", "ncep_gfs_global")[0]["daily"]
             ["ncep_gfs_global"]["precipitation"] == [9.0])
+
+
+def test_archive_dry_run_and_apply(tmp_path, monkeypatch, caplog):
+    """P3-5：archive 命令 dry-run 列候选、--apply 压缩删源文件。"""
+    import logging
+    import json as _json
+    from pathlib import Path
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    for issue in ("2026-07-01T08:00", "2026-09-06T08:00"):
+        snap = {"issue_iso": issue, "models": ["ecmwf_ifs"],
+                "hourly_time": [issue], "data": {"ecmwf_ifs": {}}}
+        storage.save_forecast_snapshot("s1", "ecmwf_ifs", snap)
+
+    from weather_eval.__main__ import main
+    main(["archive", "--days", "60"])                      # dry-run
+    assert (tmp_path / "forecasts" / "s1" / "ecmwf_ifs" / "2026-07-01T0800.json").exists()
+
+    with caplog.at_level(logging.INFO):
+        main(["archive", "--days", "60", "--apply"])
+    d = tmp_path / "forecasts" / "s1" / "ecmwf_ifs"
+    assert (d / "2026-07-01T0800.json.gz").exists()
+    assert not (d / "2026-07-01T0800.json").exists()
+    assert (d / "2026-09-06T0800.json").exists()           # 窗口内的不动
+    assert len(storage.list_forecast_snapshots("s1", "ecmwf_ifs")) == 2

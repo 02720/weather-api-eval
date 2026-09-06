@@ -133,3 +133,32 @@ def test_write_monthly_report_never_rewrites_frozen_archive(tmp_path, monkeypatc
     # --force 显式重建：允许重写
     write_monthly_report(data, force=True)
     assert first.stat().st_mtime_ns != mtime
+
+
+def test_all_models_registered_in_report_layer():
+    """P2-2 守卫：config 的每个模型必须登记在报告层三张表里。
+
+    README 的扩展契约写明"新增源只需改 SOURCE_SPECS + config + CI，评估与报告
+    逻辑无需改动"——但 MSN 接入时漏登了 MODEL_LABELS/MODEL_COLORS/MODEL_FAMILIES，
+    它以原始 id 显示在总榜第 3 名附近且不属于任何源分组。这条测试把该契约变成
+    机器可校验的：任何新源漏登任何一张表，CI 直接红。"""
+    import json
+    from weather_eval.config import load_config
+    from weather_eval.report import render
+
+    cfg = load_config()
+    fam = {m for f in render.MODEL_FAMILIES for m in f["models"]}
+    for m in cfg.models:
+        assert m in render.MODEL_LABELS, f"{m} 缺中文名（MODEL_LABELS）"
+        assert m in render.MODEL_COLORS, f"{m} 缺配色（MODEL_COLORS）"
+        assert m in fam, f"{m} 缺源分组（MODEL_FAMILIES）"
+
+
+def test_inline_json_is_compact():
+    """P3-4：内联 JSON 用紧凑分隔符（MB 级内联数据白省 10~15% 体积）。"""
+    from weather_eval.report.render import _js_json
+    out = _js_json({"a": [1, 2], "b": "中文</script>"})
+    assert ": " not in out and ", " not in out
+    assert "<\\/" in out            # </ 转义仍在
+    import json as _json
+    assert _json.loads(out.replace("<\\/", "</")) == {"a": [1, 2], "b": "中文</script>"}

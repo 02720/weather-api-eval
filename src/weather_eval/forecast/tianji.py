@@ -52,13 +52,13 @@ t1_ai/t1、early/t1h 等）× 逐日要素候选码（tmax2m/tmin2m/mx2t/mn2t/tm
 from __future__ import annotations
 
 import logging
-import time
 from datetime import datetime, timedelta
 from typing import Any
 
 import requests
 
 from .base import ForecastProvider
+from .http import request_with_retries
 from ..timeutil import now_beijing
 
 logger = logging.getLogger(__name__)
@@ -147,10 +147,6 @@ def _parse_tj_response(payload: Any, factor_code: str) -> dict[str, list[float |
         times = list(seen.keys())
         return {"time": times, "value": [seen[t] for t in times]}
     return {"time": [], "value": []}
-
-
-class _Deterministic(Exception):
-    """确定性失败（重试无意义）：4xx 或带业务错误码的响应体。"""
 
 
 class TianjiProvider(ForecastProvider):
@@ -317,40 +313,33 @@ class TianjiProvider(ForecastProvider):
         return series, echoed
 
     def _request(self, params: dict) -> Any:
-        last_err: Exception | None = None
-        for attempt in range(self.retries + 1):
-            resp = None
+        # 熔断/退避统一走共享助手。该服务把参数/产品类确定性错误也包在
+        # HTTP 500 + 业务错误码里返回（如 {"code":11001,"message":"缺失参数:..."}）
+        # ——classify 里把"非 200 业务码"一并判为 fatal，重试无意义。
+        def _classify(resp: Any) -> tuple[str, Any]:
+            status = getattr(resp, "status_code", None)
+            if status == 200:
+                return "return", resp.json()
             try:
-                resp = self.session.get(
-                    ENDPOINT, params=params, headers=HEADERS, timeout=self.timeout
-                )
-                status = getattr(resp, "status_code", None)
-                if status == 200:
-                    return resp.json()
-                try:
-                    body_digest = (resp.text or "")[:200]
-                except Exception:  # noqa: BLE001
-                    body_digest = ""
-                # 该服务把参数/产品类确定性错误也包在 HTTP 500 + 业务错误码里返回
-                # （如 {"code":11001,"message":"缺失参数:..."}）——重试无意义，直接上抛
-                business_code = None
-                try:
-                    bj = resp.json()
-                    if isinstance(bj, dict):
-                        business_code = bj.get("code")
-                except Exception:  # noqa: BLE001
-                    pass
-                if (isinstance(status, int) and 400 <= status < 500 and status != 429) \
-                        or (business_code is not None and business_code != 200):
-                    raise _Deterministic(
-                        f"HTTP {status} code={business_code} body={body_digest!r}"
-                    )
-                last_err = RuntimeError(f"HTTP {status} body={body_digest!r}")
-            except _Deterministic as e:
-                raise RuntimeError(f"中科天机请求被拒: {e}") from e
-            except Exception as e:  # noqa: BLE001  网络类异常/5xx → 可重试
-                last_err = e
-            logger.warning("中科天机请求失败（第%d次）: %s", attempt + 1, last_err)
-            if attempt < self.retries:
-                time.sleep(min(30, 3 * 2 ** attempt))
-        raise RuntimeError(f"中科天机请求最终失败: {last_err}") from last_err
+                body_digest = (resp.text or "")[:200]
+            except Exception:  # noqa: BLE001
+                body_digest = ""
+            business_code = None
+            try:
+                bj = resp.json()
+                if isinstance(bj, dict):
+                    business_code = bj.get("code")
+            except Exception:  # noqa: BLE001
+                pass
+            if (isinstance(status, int) and 400 <= status < 500 and status != 429) \
+                    or (business_code is not None and business_code != 200):
+                return "fatal", RuntimeError(
+                    f"中科天机请求被拒: HTTP {status} code={business_code} "
+                    f"body={body_digest!r}")
+            return "retry", f"HTTP {status} body={body_digest!r}"
+
+        return request_with_retries(
+            self.session, ENDPOINT, params=params, headers=HEADERS,
+            timeout=self.timeout, retries=self.retries, source="中科天机",
+            classify=_classify,
+        )

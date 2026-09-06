@@ -56,13 +56,13 @@ from __future__ import annotations
 
 import logging
 import os
-import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import requests
 
 from .base import ForecastProvider
+from .http import request_with_retries
 
 logger = logging.getLogger(__name__)
 
@@ -299,45 +299,39 @@ class FengWuProvider(ForecastProvider):
         return snapshot
 
     def _request(self, url: str, *, params: dict | None = None) -> Any:
+        # 熔断/退避统一走共享助手。分类规则：
+        # 401 鉴权失败——Key 无效属账号级错误，任何起报轮次都会同样失败，
+        #     绝不能当"该起报不可查"逐轮回退（浪费请求且错误消息误导）；
+        # 400 起报轮次不可查/参数问题——fatal 抛 _Rejected，调用方按需回退轮次；
+        # 其余 4xx 立即失败；429/5xx/网络错误退避重试。
         headers = dict(HEADERS)
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
-        last_err: Exception | None = None
-        for attempt in range(self.retries + 1):
+
+        def _classify(resp: Any) -> tuple[str, Any]:
+            status = getattr(resp, "status_code", None)
+            if status == 200:
+                return "return", resp.json()
             try:
-                resp = self.session.get(url, params=params, headers=headers,
-                                        timeout=self.timeout)
-                status = getattr(resp, "status_code", None)
-                if status == 200:
-                    return resp.json()
-                try:
-                    body_digest = (resp.text or "")[:200]
-                except Exception:  # noqa: BLE001
-                    body_digest = ""
-                if status == 401:
-                    # Key 无效属账号级错误，任何起报轮次都会同样失败——
-                    # 绝不能当"该起报不可查"逐轮回退（浪费请求且错误消息误导）
-                    raise RuntimeError(
-                        f"风乌鉴权失败（HTTP 401 {body_digest!r}）——"
-                        f"{KEY_ENV} 无效或已过期")
-                if status == 400:
-                    # 起报轮次不可查/参数问题：调用方按需回退，不重试
-                    raise _Rejected(f"HTTP 400 body={body_digest!r}")
-                if isinstance(status, int) and 400 <= status < 500 and status != 429:
-                    raise RuntimeError(f"风乌请求被拒: HTTP {status} body={body_digest!r}")
-                last_err = RuntimeError(f"HTTP {status} body={body_digest!r}")
-            except RuntimeError as e:
-                if "鉴权失败" in str(e) or "请求被拒" in str(e):
-                    raise
-                last_err = e
-            except _Rejected:
-                raise
-            except Exception as e:  # noqa: BLE001  网络类异常/5xx → 可重试
-                last_err = e
-            logger.warning("风乌请求失败（第%d次）: %s", attempt + 1, last_err)
-            if attempt < self.retries:
-                time.sleep(min(30, 3 * 2 ** attempt))
-        raise RuntimeError(f"风乌请求最终失败: {last_err}") from last_err
+                body_digest = (resp.text or "")[:200]
+            except Exception:  # noqa: BLE001
+                body_digest = ""
+            if status == 401:
+                return "fatal", RuntimeError(
+                    f"风乌鉴权失败（HTTP 401 {body_digest!r}）——"
+                    f"{KEY_ENV} 无效或已过期")
+            if status == 400:
+                return "fatal", _Rejected(f"HTTP 400 body={body_digest!r}")
+            if isinstance(status, int) and 400 <= status < 500 and status != 429:
+                return "fatal", RuntimeError(
+                    f"风乌请求被拒: HTTP {status} body={body_digest!r}")
+            return "retry", f"HTTP {status} body={body_digest!r}"
+
+        return request_with_retries(
+            self.session, url, params=params, headers=headers,
+            timeout=self.timeout, retries=self.retries, source="风乌",
+            classify=_classify,
+        )
 
 
 class _Rejected(Exception):

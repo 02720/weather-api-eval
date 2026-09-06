@@ -13,12 +13,20 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "stations
 DEFAULT_EVAL = {
     "temp_accuracy_limits": [1, 2],   # ±1°C、±2°C 准确率
     "rain_threshold_mm": 0.1,          # 有无降水阈值（国内业务：≥0.1mm 记为有降水）
+    "rain_daily_threshold_mm": 1.0,    # 降水分（评分轨道）阈值：24h 累计 ≥1mm 记"有效降水日"
+                                       # （2026-09-06 标定：逐小时 0.1mm 口径全模式 ETS≤0.054
+                                       # 无区分度，日累计 1mm 阈值下 ETS 上限恢复到 0.25，
+                                       # 扫描见 scripts/calibrate_daily_threshold.py）
     "hourly_lead_days": 16,            # 逐小时评估最大时效（天），即 lead 1..384h
     "daily_max_offset_days": 16,       # 按天评估最大日偏移（天），即 offset 1..16
     "daily_min_hours": 20,             # 按天评估的日覆盖门槛：观测/预报任一侧当天
                                        # 非缺测小时数低于此值，该天该要素不入样
                                        # （防"缺测折算 0.0"与"部分日累计偏低"伪装成技巧）
     "min_sample": 5,                    # 样本数低于此值视为"样本不足"，不出结论
+    "min_board_neff": 30,               # 进入总榜排名的有效样本量门槛（n_eff，考虑误差
+                                       # 自相关后）；未达标源列"样本积累中"不参与冠军竞争
+    "bootstrap_runs": 500,              # 按天分块 bootstrap 重采样次数（置信区间/冠军频率）
+    "sensitivity_runs": 500,            # 权重敏感性扰动次数（权重 ±40% 均匀扰动）
     "daily_source_fallback": True,      # 逐小时覆盖不足时，允许用快照自带的逐日
                                         # 预报（daily_time/daily 块）为按天评估补位。
                                         # 只补按天轨道，绝不反推逐小时；关掉即回到

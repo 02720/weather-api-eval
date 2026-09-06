@@ -56,10 +56,14 @@ MODEL_LABELS = {
     "fengwu_ghr_9km": "风乌 GHR-9km",
     "geovis_v1": "中科星图逐小时",
     "accuweather_v1": "AccuWeather 逐小时",
+    "msn_v1": "MSN 天气（中国天气网）",
 }
 
 # 模型家族分组（选源器按此分组展示）。源多了以后，读者按"这家是什么来头"找源，
 # 比在一长串列表里按颜色找快得多；组内展示顺序由前端按排行榜名次排。
+# 守卫：tests/test_render.py 的 test_all_models_registered_in_report_layer 会
+# 校验 config 的每个模型都登记在 LABELS/COLORS/FAMILIES 三张表里——新源接入
+# 漏登任何一张表都会在 CI 红（MSN 曾以原始 id 显示在总榜第 3 名附近，P2-2）。
 MODEL_FAMILIES = [
     {"icon": "🌐", "name": "Open-Meteo 全球模式", "models": [
         "best_match",
@@ -69,7 +73,7 @@ MODEL_FAMILIES = [
         "jma_gsm", "ukmo_global_deterministic_10km",
     ]},
     {"icon": "🏢", "name": "商业天气 API", "models": [
-        "caiyun_v2_6", "qweather_v1", "accuweather_v1",
+        "caiyun_v2_6", "qweather_v1", "accuweather_v1", "msn_v1",
     ]},
     {"icon": "🔬", "name": "中科天机", "models": [
         "tj_km_fusion", "tj_t2_early", "tj_t2", "tj_t1", "tj_t1h_ai",
@@ -105,6 +109,7 @@ MODEL_COLORS = {
     "fengwu_ghr_9km": "#f43f5e", # 玫红偏红
     "geovis_v1": "#6b7280",      # 灰
     "accuweather_v1": "#b45309", # 棕橙（AccuWeather 橙红系，与现有橙/红均拉开明度）
+    "msn_v1": "#4d7c0f",         # 橄榄绿（与既有亮绿/黄绿拉开明度与色相）
 }
 
 
@@ -125,10 +130,13 @@ def _list_archives(root: Path) -> list[str]:
 
 
 def _js_json(obj) -> str:
-    """序列化为 JSON 并转义 </：防止数据中的 </script> 提前闭合内联脚本。
-    对所有内联进 <script> 的 JSON 统一走这里（与 storage 的原子写一样，
-    是"写进仓库的每一份产物都要过"的基础防护）。"""
-    return json.dumps(obj, ensure_ascii=False).replace("</", "<\\/")
+    """序列化为紧凑 JSON 并转义 </：防止数据中的 </script> 提前闭合内联脚本。
+
+    separators 显式去掉默认的 ", "/": " 空格——内联 JSON 达 MB 级，紧凑分隔符
+    白省 10~15% 页面体积（P3-4）。对所有内联进 <script> 的 JSON 统一走这里
+    （与 storage 的原子写一样，是"写进仓库的每一份产物都要过"的基础防护）。"""
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":")) \
+        .replace("</", "<\\/")
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -139,6 +147,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
+        os.chmod(tmp, 0o644)   # mkstemp 默认 0600，恢复常规读权限
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):

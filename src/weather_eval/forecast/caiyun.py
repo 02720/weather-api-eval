@@ -52,13 +52,13 @@ from __future__ import annotations
 
 import logging
 import os
-import time
 from datetime import datetime
 from typing import Any
 
 import requests
 
 from .base import ForecastProvider
+from .http import request_with_retries
 from ..timeutil import BEIJING
 
 logger = logging.getLogger(__name__)
@@ -284,16 +284,11 @@ class CaiyunProvider(ForecastProvider):
         return snapshot
 
     def _request(self, url: str, params: dict) -> dict:
-        last_err = None
-        for attempt in range(self.retries + 1):
-            try:
-                resp = self.session.get(
-                    url, params=params, headers=HEADERS, timeout=self.timeout
-                )
-                resp.raise_for_status()
-                return resp.json()
-            except Exception as e:  # noqa: BLE001
-                last_err = e
-                logger.warning("彩云站点请求失败（第%d次）: %s", attempt + 1, _redact(str(e), self.token))
-                time.sleep(3 * (attempt + 1))
-        raise RuntimeError(f"彩云请求失败: {_redact(str(last_err), self.token)}") from last_err
+        # 熔断/退避语义统一走共享助手：4xx（如 Token 失效 401）立即失败，
+        # 只有网络错误/5xx/429 才退避重试。此前本地循环兜住一切异常且对 4xx
+        # 也重试（401 白等 18 秒才失败）、末次尝试后还 sleep——现由助手根治。
+        resp = request_with_retries(
+            self.session, url, params=params, headers=HEADERS, timeout=self.timeout,
+            retries=self.retries, source="彩云", redact=lambda s: _redact(s, self.token),
+        )
+        return resp.json()

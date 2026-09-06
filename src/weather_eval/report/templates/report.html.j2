@@ -290,9 +290,12 @@ window.addEventListener("DOMContentLoaded", function () {
 
 {% set lb_all = (report.leaderboards or {}).get('all', []) %}
 {% set lb1 = (report.leaderboards or {}).get('1d', []) %}
-{# 冠军横幅默认读全时效总榜（"综合谁最准"的总答案）；总榜样本不足时回退提前 1 天分榜 #}
-{% set lb_all_champ = lb_all[0] if (lb_all and lb_all[0].score is not none) else none %}
-{% set champ = lb_all_champ if lb_all_champ else (lb1[0] if (lb1 and lb1[0].score is not none) else none) %}
+{# 冠军横幅默认读全时效总榜中"达标"（n_eff 门槛 + 温度/降水两维度齐备）的第一名；
+   全部未达标时回退提前 1 天分榜中两维度齐备的第一行 #}
+{% set lb_all_q = lb_all | selectattr('qualified') | list %}
+{% set lb_all_champ = lb_all_q[0] if (lb_all_q and lb_all_q[0].score is not none) else none %}
+{% set lb1_q = lb1 | selectattr('temp_score') | selectattr('precip_score') | selectattr('score') | list %}
+{% set champ = lb_all_champ if lb_all_champ else (lb1_q[0] if lb1_q else none) %}
 {# 数值格式化宏：None（样本不足）统一显示为 — #}
 {% macro pct(v) %}{{ '—' if v is none else '%.1f%%'|format(v) }}{% endmacro %}
 {% macro num(v, d=2) %}{{ '—' if v is none else ('%.' ~ d ~ 'f')|format(v) }}{% endmacro %}
@@ -313,15 +316,15 @@ window.addEventListener("DOMContentLoaded", function () {
       <span class="chip">🔄 数据截至 {{ report.meta.end }}</span>
       <span class="chip">📍 {{ report.meta.stations|length }} 个观测站</span>
       <span class="chip">🛰️ {{ report.meta.models|length }} 家预报源</span>
-      <span class="chip">🧮 综合分：温度 7 项 + 降水 6 项加权</span>
+      <span class="chip">🧮 综合分：温度 7 项 + 降水 5 项加权</span>
       <span class="chip">✅ 实况覆盖率 {{ '—' if report.coverage.coverage_pct is none else '%.0f%%'|format(report.coverage.coverage_pct) }}</span>
     </div>
     {% if champ %}
     <!-- 全页唯一的"一句话结论"：小白只看这一句也够 -->
     <div class="champion">🏆 {{ report.meta.period_label }} 月{% if not report.meta.is_monthly %}至今{% endif %}{% if lb_all_champ %}全时效总榜{% else %}提前 1 天{% endif %}综合表现最好的是
       <b>{{ model_labels.get(champ.model, champ.model) }}</b>
-      <div class="sub">综合得分 {{ num(champ.score, 1) }}（温度 {{ num(champ.temp_score, 1) }} 分 + 降水 {{ num(champ.precip_score, 1) }} 分）{% if champ.lead_days %}· 覆盖预报至提前 {{ champ.lead_days }} 天{% endif %} ·
-        温度准确率 {{ pct(champ.acc2) }}（误差 ≤2°C 即算准）· 晴雨评分 TS {{ num(champ.ts, 2) }}（0~1，越高越好）。
+      <div class="sub">综合得分 {{ num(champ.score, 1) }}{% if champ.ci90 %}（90% 置信区间 {{ num(champ.ci90[0], 1) }}~{{ num(champ.ci90[1], 1) }}，按天重采样 {{ report.meta.bootstrap_runs }} 次）{% endif %}（温度 {{ num(champ.temp_score, 1) }} 分 + 降水 {{ num(champ.precip_score, 1) }} 分）{% if champ.lead_days %}· 覆盖预报至提前 {{ champ.lead_days }} 天{% endif %} ·
+        温度准确率 {{ pct(champ.acc2) }}（误差 ≤2°C 即算准）· 日雨评分 TS {{ num(champ.ts, 2) }}（24h 累计 ≥{{ report.meta.rain_daily_threshold_mm }}mm 报中程度，0~1，越高越好）。
         提前更久谁守得住？见下方<a href="#leaderboard" style="color:#dbeafe">🏅 排行榜（总榜 + 可切提前天数）</a>与<a href="#score-trend" style="color:#dbeafe">📉 得分衰减曲线</a>。</div>
     </div>
     {% else %}
@@ -345,19 +348,19 @@ window.addEventListener("DOMContentLoaded", function () {
         <div class="d">预报温度与实况相差 <b>不超过 2°C</b> 就算报准。比例<b>越高越好</b>，100% = 满分。</div></div>
       <div class="guide-item"><div class="t">📉 温度误差（RMSE）</div>
         <div class="d">温度平均<b>报错了多少 °C</b>，<b>越小越好</b>，0 = 完美。它对"偶尔离谱的大误差"更敏感。</div></div>
-      <div class="guide-item"><div class="t">🌧️ 晴雨评分（TS）</div>
-        <div class="d">"下没下雨"报对程度的综合分（0~1），同时惩罚漏报和瞎报，<b>越高越好</b>。</div></div>
+      <div class="guide-item"><div class="t">🌧️ 日雨评分（TS）</div>
+        <div class="d">按<b>天</b>结算的"下没下雨"报对程度（24h 累计 ≥{{ report.meta.rain_daily_threshold_mm }}mm 算雨日；0~1），同时惩罚漏报和瞎报，<b>越高越好</b>。</div></div>
     </div>
   </section>
 
   <!-- ==================== 排行榜（表格式主视图）：总榜 + 每个提前量档一张榜 ==================== -->
   <section class="card" id="leaderboard">
     <h2>🏅 预报源排行榜</h2>
-    <p class="desc">榜单分两层，用按钮切换：<b>「总榜」</b>把评估窗口内全部逐小时对账样本（提前 1~{{ report.meta.hourly_lead_days }} 天）合并成一张总分榜，
+    <p class="desc">榜单分两层，用按钮切换：<b>「总榜」</b>把各源在每个「提前 N 天」档的得分做<b>等权平均</b>（每个源先在自己的每个可用时效各得一分、再跨时效平均），
       回答"综合来看谁最准"；<b>「提前 N 天」分榜</b>按时效分档、每档一张，保证同一难度下比较。
       点<b>任意列名</b>可改排序（如按 RMSE 找误差最小、按 TS 找晴雨最准）；数字全部来自与趋势图同一套加权公式。
       名次列始终是综合名次（👑 = 当前榜单第一）；右侧走势线是该源得分随提前量 1~{{ report.meta.hourly_lead_days }} 天的衰减全程（总榜视图不标圆点）。
-      样本不足的源沉底显示 —。</p>
+      样本不足、有效样本量未达 {{ report.meta.min_board_neff }}、或温度/降水缺一个维度的源沉底显示"样本积累中"，不参与冠军竞争。</p>
     <div class="lb-controls">
       <div class="lb-buckets" id="lbBuckets" aria-label="选择提前天数"></div>
       <input type="search" id="lbSearch" class="lb-search" placeholder="🔍 搜索预报源…" aria-label="搜索预报源">
@@ -377,12 +380,20 @@ window.addEventListener("DOMContentLoaded", function () {
       该源在榜单中的名次应结合这一差异解读。</div>
     {% endif %}
     <p class="hint">💡 <b>怎么看：</b>① 先看<b>综合分</b>列的名次与梯队（底纹条越长分越高）；
-      ② 总榜是"全部样本合并"口径：临近时效样本天然更多（也是实际用得最多的预报），且有的源只提供较短时效——
-      总榜视图下请结合<b>「覆盖时效」</b>列解读，要同难度硬碰硬就切「提前 N 天」分榜；
-      ③ 点列名按单一指标排队，<b>RMSE 等误差类越低越好，其余越高越好</b>；④ 走势线向右下掉是自然规律，
+      ② 总榜每个源先在每个可用时效各得一分再平均，"只报短时效"不再占便宜——但可用时效数本身就是信息，
+      总榜视图下请结合<b>「覆盖时效」</b>列与<b>置信区间</b>解读，要同难度硬碰硬就切「提前 N 天」分榜；
+      ③ 名字带 <b>†</b> = 与第一名的差距在统计上不显著（按天重采样区分不开）；
+      ④ 点列名按单一指标排队，<b>RMSE 等误差类越低越好，其余越高越好</b>；⑤ 走势线向右下掉是自然规律，
       <b>谁掉得慢、谁在右边还站得高</b>，谁的长效预报就更可靠。</p>
+    {% if report.meta.weight_sensitivity and report.meta.weight_sensitivity.champions %}
+    <div class="hint" style="border-left-color:var(--amber);background:#fffbeb;color:#92400e">
+      ⚖️ <b>冠军有多稳？</b>把 12 项评分权重各随机扰动 ±40%、重复 {{ report.meta.weight_sensitivity.runs }} 次，
+      冠军在各家之间的分布：
+      {% for c in report.meta.weight_sensitivity.champions %}<b>{{ model_labels.get(c.model, c.model) }}</b> {{ c.pct }}%{% if not loop.last %}、{% endif %}{% endfor %}。
+      多家轮换说明头名之争在当前样本量下并不"一锤定音"，请结合置信区间解读。</div>
+    {% endif %}
     <details class="lb-weights">
-      <summary>🧮 综合分怎么算：13 项指标的加权构成（点开看明细）</summary>
+      <summary>🧮 综合分怎么算：12 项指标的加权构成（点开看明细）</summary>
       <div class="lb-weights-body">
         <div class="lb-weights-grid">
           <div>
@@ -398,7 +409,7 @@ window.addEventListener("DOMContentLoaded", function () {
             <p class="lb-why">不入分：RSS、χ²——χ²=RMSE²、RSS=n×χ²，是样本量的函数而非预报技巧（数值仍可在进阶区明细表查看）。</p>
           </div>
           <div>
-            <h4>🌧️ 降水分（6 项，权重和 100%）</h4>
+            <h4>🌧️ 降水分（5 项，权重和 100%；按天 24h 累计 ≥{{ report.meta.rain_daily_threshold_mm }}mm 口径）</h4>
             <table>
               <thead><tr><th class="l">指标</th><th>权重</th><th class="l">0~100 换算</th></tr></thead>
               <tbody>
@@ -407,15 +418,16 @@ window.addEventListener("DOMContentLoaded", function () {
                 {% endfor %}
               </tbody>
             </table>
-            <p class="lb-why">不入分：漏报率（=100−命中率）、空报频率（与空报率同族仅分母不同）、
-              雨量 RMSE/MAE/MBE（由个别强降水时段主导、随样本期气候波动大，跨源比较不公平）。</p>
+            <p class="lb-why">不入分：晴雨准确率（干燥气候下"全答无雨"也能拿高分，主要由气候基率决定而非技巧，
+              ETS 已做过基率校正）、漏报率（=100−命中率）、空报频率（与空报率同族仅分母不同）、
+              雨量 RMSE/MAE/MBE（由个别强降水时段主导、随样本期气候波动大，跨源比较不公平）。
+              命中率权重低于空报率+偏差之和——评分不奖励"多报占便宜"。</p>
           </div>
         </div>
         <p class="lb-why">各子分都截断到 0~100；某项缺数据时按<b>剩余权重</b>折算（"存疑不计亏"口径：缺数据≠差数据，
           不让单一缺项把整行踢出局，也不因缺项额外扣分）——缺失的维度在榜单里以 — 显示，读者可自行判断。
           综合分 = 温度分与降水分各占一半。把"报得准、误差小、节奏对、不偏科、雨报得实"分别记账再合并，比只用一两个指标更能区分真实水平。
-          <b>总榜与分榜用同一套公式</b>，区别只在样本：总榜把提前 1~{{ report.meta.hourly_lead_days }} 天的全部逐小时样本合并计算，
-          分榜只取该天桶内的样本。</p>
+          <b>总榜与分榜用同一套桶得分</b>：分榜只取该天桶，总榜把各桶得分等权平均。</p>
       </div>
     </details>
   </section>
@@ -584,8 +596,11 @@ window.addEventListener("DOMContentLoaded", function () {
       <div><dt>天桶</dt><dd>把时效按天分组：提前 1~24 小时算"第 1 天桶"，25~48 小时算"第 2 天桶"，以此类推。</dd></div>
       <div><dt>综合得分 / 温度分 / 降水分</dt><dd>把多个指标压缩成一个 0~100 的总分方便排名。温度分 = 7 项温度指标（±2°C/±1°C 准确率、RMSE/MAE 换算分、相关系数、偏差分、斜率分）按 25/25/15/10/10/10/5 加权；降水分 = 6 项降水指标（TS、ETS、晴雨准确率、命中率、空报率换算分、频率偏差分）按 30/25/15/15/10/5 加权；综合得分 = 两者均分。某项缺数据按剩余权重折算。总榜与分时效榜用同一套公式，区别只在参与计算的样本。点开排行榜的「评分构成」可看每个指标的换算公式。</dd></div>
       <div><dt>为什么有的指标不进综合分</dt><dd>χ²=RMSE²、RSS=样本量×χ²，是样本量的函数而非预报技巧；漏报率 = 100−命中率（纯重复）；空报频率与空报率同族（仅分母不同）；雨量 RMSE/MAE/MBE 由个别强降水时段主导、随当期气候波动大，跨源比较不公平——它们照常计算，只是不参与打分，可在进阶区明细表查看。</dd></div>
-      <div><dt>总榜（全时效汇总）</dt><dd>把评估窗口内该源<b>全部逐小时对账样本</b>（提前 1~{{ report.meta.hourly_lead_days }} 天所有时效）合并成一份指标后打分的总排行，回答"综合来看谁最准"。样本按条数计入，临近时效天然占比更高（也是实际用得最多的预报）。注意：各源能提供的最长时效不同（有的只有 2~3 天），样本构成随之不同——短时效源的预报天然更准，所以总榜视图附「覆盖时效」列，解读时请结合它；要同难度硬碰硬，切「提前 N 天」分榜。</dd></div>
-      <div><dt>覆盖时效</dt><dd>该源在本评估窗口内<b>实际参与对账的样本</b>中，最长一条覆盖到提前第几天（向上取整到天；取最大值，不代表逐天连续覆盖）。受两件事限制：源本身的最长时效，以及"起报 + 时效"是否已落进可对账的时段（刚接入的源或刚延长时效的源，远期样本要等几天才攒出来）。总榜把全部时效样本合并，覆盖越短的源样本构成越偏"易"，跨覆盖范围比较总分时要留意这一列。</dd></div>
+      <div><dt>总榜（全时效汇总）</dt><dd>把该源在<b>每个「提前 N 天」档的得分做等权平均</b>后的总排行，回答"综合来看谁最准"。每个源先在自己的每个可用时效各得一分、再跨时效平均——预报难度随时效上升，这样"只提供短时效"的源不再因样本构成偏"易"而占便宜；可用时效数本身也是信息，请结合「覆盖时效」列解读。要同难度硬碰硬，切「提前 N 天」分榜。</dd></div>
+      <div><dt>覆盖时效</dt><dd>该源在本评估窗口内<b>实际参与指标计算的样本</b>（预报与实况两侧同时有值）中最长覆盖到提前第几天，按"温度 / 降水"两条轨道分别统计（向上取整到天；取最大值，不代表逐天连续覆盖）。受三件事限制：源本身的最长时效，"起报 + 时效"是否已落进可对账的时段，以及序列尾部缺测（尾部全是 null 的时段不参与计算，也不计入覆盖）。总榜把各时效等权平均，可用时效数越少，平均所依据的"桶"就越少。</dd></div>
+      <div><dt>90% 置信区间与显著性</dt><dd>把评估窗口内的<b>天</b>做有放回重采样（块长 1 天，{{ report.meta.bootstrap_runs }} 次），每次都重算一遍完整榜单，得到综合分的波动范围——区间越窄说明分数越"站得稳"。名字带 <b>†</b> 表示该源与第一名的得分差在 90% 置信下与 0 分不开（差异不显著）：两者谁先谁后更多是抽样运气，不宜过度解读。样本期只有一两周时区间天然很宽，随数据积累收窄。</dd></div>
+      <div><dt>有效样本量 n_eff 与门槛</dt><dd>逐小时误差强自相关（这一小时的预报误差和上 hour 高度相似），名义样本对数 n 会把同一信息重复计数——n_eff 按"每天真正带来多少新信息"折算（n·(1−ρ)/(1+ρ)），跨源比较请以它为准。总榜另设入围门槛 n_eff ≥ {{ report.meta.min_board_neff }}：未达标的源列"样本积累中"，不参与冠军竞争。</dd></div>
+      <div><dt>日雨评分（TS/ETS，按天轨道）</dt><dd>降水入分口径为<b>北京时自然日 24h 累计</b>、日雨量 ≥{{ report.meta.rain_daily_threshold_mm }}mm 记"有效降水日"（业务惯用口径）。逐小时 ≥0.1mm 的口径下数值模式普遍每小时报微量降水（drizzle bias），实测超报最高 15 倍、所有源 ETS 都接近 0、评分失去区分度；24h 累计让毛毛雨在求和中自然抵消。逐小时晴雨指标仍在进阶区保留为诊断视图。</dd></div>
       <div><dt>提前量档与分时效排行榜</dt><dd>把时效按天分档（提前 1~24 小时 = 第 1 档…），每档一张排行榜。预报难度随时效上升，同档内比较对各家才是同难度的。同一预报源在短时效可能领先、长时效掉队，切档对比才能看出谁"衰减得慢"。</dd></div>
       <div><dt>RMSE（均方根误差）</dt><dd>温度误差的"典型大小"，单位 °C，越小越好。比起 MAE，它对偶尔的大误差惩罚更重。</dd></div>
       <div><dt>MAE（平均绝对误差）</dt><dd>每次预报误差绝对值的平均，单位 °C，越小越好。最朴素的"平均差多少度"。</dd></div>
@@ -607,7 +622,7 @@ window.addEventListener("DOMContentLoaded", function () {
       <div><dt>雨量误差（RMSE / MAE / MBE）</dt><dd>不只看下没下，还看预报的降水量数值差多少（mm），越小越好。降水数值比晴雨难报得多。</dd></div>
       <div><dt>雨强分级（1h 口径）</dt><dd>按每小时雨量分档检验：小雨(0.1~1.9mm/h)、中雨(2~4.9)、大雨(5~9.9)、暴雨(10~19.9)、大暴雨(≥20)。每档可算全套晴雨类指标。</dd></div>
       <div><dt>累计分级（24h 口径）</dt><dd>按日累计雨量"达到某档以上"检验：≥0.1（小雨以上）、≥10（中雨以上）、≥25（大雨以上）、≥50（暴雨以上）、≥100（大暴雨以上）、≥250mm（特大暴雨以上）。</dd></div>
-      <div><dt>样本数 n</dt><dd>参与指标计算的"预报-实况"对数。n &lt; {{ report.meta.min_sample }} 时本报告判"样本不足"，不下结论（显示 —）。</dd></div>
+      <div><dt>样本数 n</dt><dd>参与指标计算的"预报-实况"对数。n 或有效样本量 n_eff &lt; {{ report.meta.min_sample }} 时本报告判"样本不足"，不下结论（显示 —）。逐小时数据里 n 明显大于 n_eff（同一信息被相邻小时重复计数），比较"谁的信息更足"请看 n_eff。</dd></div>
       <div><dt>观测覆盖率</dt><dd>评估窗口内成功抓到实况的小时占比。分母按各站<b>实际有实况的时段</b>计算（实况接入前的时段不算缺失）；{% if report.coverage.first_obs %}本窗口实况自 {{ report.coverage.first_obs[:10] }} 起。{% endif %}覆盖率低会让指标样本变少。</dd></div>
       <div><dt>起报锚点（各源差异）</dt><dd>计算"提前量"的参照时刻。多数源锚定真实起报轮次或抓取时刻；Open-Meteo 不回显真实轮次，锚点是北京时"当日 00:00"且每天只封存 1 份快照——同一「提前 N 天」桶内各源的实际难度与样本新鲜度因此略有差异（详见"口径与已知差异"）。</dd></div>
       <div><dt>月度归档</dt><dd>每月 1 号把上个月的结果冻结成一份永久档案（见下方归档区），之后不再变动（重复触发会自动跳过，绝不重写）。</dd></div>
@@ -946,23 +961,29 @@ try {
     {key:"precip_score", label:"降水分",  dir:"desc", dec:1},
     {key:"acc2",         label:"±2°C",    dir:"desc", dec:1, unit:"%", title:"温度 ±2°C 命中率，越高越好"},
     {key:"rmse",         label:"RMSE °C", dir:"asc",  dec:2, title:"温度均方根误差，越低越好"},
-    {key:"ts",           label:"晴雨 TS", dir:"desc", dec:2, title:"晴雨评分 0~1，越高越好"},
-    {key:"ets",          label:"晴雨 ETS",dir:"desc", dec:2, title:"校正后 TS 0~1，越高越好"},
+    {key:"ts",           label:"日雨 TS", dir:"desc", dec:2, title:"24h 累计 ≥" + (report.meta.rain_daily_threshold_mm || 1) + "mm 的晴雨评分 0~1，越高越好"},
+    {key:"ets",          label:"日雨 ETS",dir:"desc", dec:2, title:"对随机蒙对做过校正的晴雨技巧 0~1，越高越好"},
   ];
-  // 总榜把全部时效样本合并，而各源能提供的最长时效不同（商业源常只有 2~3 天），
-  // 样本构成随之不同——补一列"覆盖时效"把这一混杂显式暴露给读者。
+  // 总榜把各时效桶得分等权平均，而各源能提供的时效档数不同（商业源常只有 2~3 天）——
+  // 补一列"覆盖时效"把可用时效数显式暴露给读者（温度/降水两条轨道分别统计）。
   const LEAD_COL = {key:"lead_days", label:"覆盖时效", dir:"desc", dec:0, unit:" 天",
-                    title:"该源实际参与对账的样本中，最长一条覆盖到提前第几天（取最大值，不代表逐天连续覆盖；受源本身时效上限与样本积累时间限制）；总榜合并全部时效样本，覆盖越短样本构成越偏“易”，解读请结合本列"};
-  const lbCols = board => board === "all" ? LB_COLS.concat([LEAD_COL]) : LB_COLS;
+                    title:"该源实际参与指标计算的样本（两侧同时有值）中最长覆盖到提前第几天，按 温度/降水 两轨分别统计（向上取整，不代表逐天连续覆盖）；可用时效数越少，总榜平均所依据的桶越少"};
+  // 置信区间（P0-2）：按天分块 bootstrap 的综合分 90% 区间；† = 与第一名差异不显著
+  const CI_COL = {key:"_ci", label:"90% 置信区间", nosort:true,
+                  title:"按天重采样 " + (report.meta.bootstrap_runs || 500) + " 次的综合分波动范围；区间越窄分数越稳"};
+  const lbCols = board => board === "all"
+    ? LB_COLS.concat([CI_COL, LEAD_COL])
+    : LB_COLS;
   // 默认展示总榜；总榜整体样本不足时落到第一个有分的分时效榜
-  let board = (LEADERBOARDS.all || []).some(r => r.score !== null && r.score !== undefined) ? "all"
+  let board = (LEADERBOARDS.all || []).some(r => r.qualified === true) ? "all"
     : (BUCKETS.find(b => (LEADERBOARDS[b] || []).some(r => r.score !== null)) || "all");
   let sortKey = "score", sortDir = "desc", lbQuery = "";
 
-  // 名次只跟综合分绑定：无论当前按哪列排序，名次列始终显示该源在本时效的综合名次
+  // 名次只跟综合分绑定：无论当前按哪列排序，名次列始终显示该源在本时效的综合名次。
+  // 总榜的未达标源（n_eff 门槛，qualified=false）不参与名次（P0-2.3）
   function lbRankMap(rows) {
     const map = {};
-    rows.filter(r => r.score !== null && r.score !== undefined)
+    rows.filter(r => r.score !== null && r.score !== undefined && r.qualified !== false)
         .sort((a, b) => b.score - a.score)
         .forEach((r, i) => { map[r.model] = i + 1; });
     return map;
@@ -1036,7 +1057,7 @@ try {
     const fixed = [{key:"_rank", label:"#", cls:"c-rank"}, {key:"_name", label:"预报源", cls:"c-name l"}];
     // tail 顺序须与 lbRowHtml 的尾部单元格一致：走势 / 样本对 / 操作（样本对列此前漏了表头）
     const tail = [{key:"_spark", label:"得分走势", cls:""},
-                  {key:"_n", label:"样本对", cls:"num", title:"有效样本对：温度/降水"},
+                  {key:"_n", label:"样本对", cls:"num", title:"名义样本对：温度/降水（逐小时误差强自相关，总榜入围看有效样本量 n_eff）"},
                   {key:"_act", label:"", cls:"c-act"}];
     const cols = fixed.concat(lbCols(board).map(c => ({key:c.key, label:c.label, cls:"num", title:c.title})), tail);
     return cols.map(c => {
@@ -1044,8 +1065,9 @@ try {
       const ind = active ? '<span class="ind">' + (sortDir === "desc" ? "▼" : "▲") + "</span>" : "";
       const aria = active ? ' aria-sort="' + (sortDir === "desc" ? "descending" : "ascending") + '"' : "";
       const tip = c.title ? ' title="' + c.title + '"' : "";
+      const sortable = lbCols(board).some(x => x.key === c.key) && !c.nosort;
       return '<th scope="col" class="' + c.cls + (c.key === sortKey ? " on" : "") + '"' +
-        (lbCols(board).some(x => x.key === c.key) ? ' data-key="' + c.key + '"' : "") + aria + tip + ">" +
+        (sortable ? ' data-key="' + c.key + '"' : "") + aria + tip + ">" +
         c.label + ind + "</th>";
     }).join("");
   }
@@ -1053,31 +1075,46 @@ try {
   function lbRowHtml(row, rank, markIdx) {
     const m = row.model;
     const none = row.score === null || row.score === undefined;
+    const notQ = row.qualified === false;   // 有分但 n_eff 未达标：不参与冠军竞争（P0-2.3）
     const fmtC = (v, dec, unit) =>
       (v === null || v === undefined) ? "—" : Number(v).toFixed(dec) + (unit || "");
-    const barStyle = none ? "" : ' style="--w:' + Math.max(0, Math.min(100, row.score)).toFixed(1) + '%"';
-    const rankCell = (rank === 1 && !none) ? "🥇" : (rank === 2 && !none) ? "🥈" :
-                     (rank === 3 && !none) ? "🥉" : (rank || "·");
+    const barStyle = (none || notQ) ? "" : ' style="--w:' + Math.max(0, Math.min(100, row.score)).toFixed(1) + '%"';
+    const rankCell = (rank === 1 && !none && !notQ) ? "🥇" : (rank === 2 && !none && !notQ) ? "🥈" :
+                     (rank === 3 && !none && !notQ) ? "🥉" : (rank || "·");
     const spark = sparkDomain
       ? sparkSVG(sparkDomain.byModel[m] || [], sparkDomain.lo, sparkDomain.hi, colorOf(m), markIdx)
       : "";
-    const crown = (rank === 1 && !none) ? "👑 " : "";
-    return '<tr class="' + (rank === 1 && !none ? "lb-first" : "") + (none ? " lb-none" : "") + '">' +
+    const crown = (rank === 1 && !none && !notQ) ? "👑 " : "";
+    const dagger = (board === "all" && !none && !notQ && row.sig_vs_top === false)
+      ? ' <span title="与第一名的得分差在 90% 置信下与 0 分不开（差异不显著），前后名次更多是抽样运气" style="cursor:help">†</span>' : "";
+    const naTip = notQ && row.n_eff !== null && row.n_eff !== undefined
+      ? '<span class="na" title="有效样本量 n_eff=' + row.n_eff + '，未达门槛 ' + (report.meta.min_board_neff || 30) + '">样本积累中</span>'
+      : '<span class="na">样本积累中</span>';
+    const ciCell = board === "all"
+      ? '<td class="num" title="按天重采样 ' + (report.meta.bootstrap_runs || 500) + ' 次的综合分波动范围">' +
+        (row.ci90 ? fmtC(row.ci90[0], 1) + "~" + fmtC(row.ci90[1], 1) : "—") + "</td>"
+      : "";
+    const leadCell = board === "all"
+      ? '<td class="num" title="温度/降水两轨分别统计的最长覆盖天数">' +
+        (row.lead_days === null || row.lead_days === undefined ? "—" : row.lead_days) + "/" +
+        (row.rain_days === null || row.rain_days === undefined ? "—" : row.rain_days) + " 天</td>"
+      : "";
+    return '<tr class="' + (rank === 1 && !none && !notQ ? "lb-first" : "") + ((none || notQ) ? " lb-none" : "") + '">' +
       '<td class="c-rank lb-rank">' + rankCell + "</td>" +
       '<td class="c-name l">' + crown + '<span class="dot" style="background:' + colorOf(m) +
-        '"></span><span class="fam">' + (FAMILY_ICON[m] || "") + "</span><b>" + labelOf(m) +
+        '"></span><span class="fam">' + (FAMILY_ICON[m] || "") + "</span><b>" + labelOf(m) + dagger +
         '</b><span class="id">' + m + "</span></td>" +
       '<td class="num lb-pri"' + barStyle + ">" +
-        (none ? '<span class="na">样本积累中</span>' : fmtC(row.score, 1)) + "</td>" +
+        ((none || notQ) ? naTip : fmtC(row.score, 1)) + "</td>" +
       "<td class=\"num\">" + fmtC(row.temp_score, 1) + "</td>" +
       "<td class=\"num\">" + fmtC(row.precip_score, 1) + "</td>" +
       "<td class=\"num\">" + fmtC(row.acc2, 1, "%") + "</td>" +
       "<td class=\"num\">" + fmtC(row.rmse, 2) + "</td>" +
       "<td class=\"num\">" + fmtC(row.ts, 2) + "</td>" +
       "<td class=\"num\">" + fmtC(row.ets, 2) + "</td>" +
-      (board === "all" ? '<td class="num">' + fmtC(row.lead_days, 0, " 天") + "</td>" : "") +
+      ciCell + leadCell +
       '<td class="c-spark">' + spark + "</td>" +
-      '<td class="num lb-n" title="有效样本对：温度/降水">' + (row.n || 0) + "/" + (row.n_precip || 0) + "</td>" +
+      '<td class="num lb-n" title="名义样本对（温度/降水）；总榜另附有效样本量 n_eff">' + (row.n || 0) + "/" + (row.n_precip || 0) + "</td>" +
       '<td class="c-act"><button type="button" class="rank-focus" data-focus-model="' + m +
         '" title="在下方所有对比图中聚焦/取消这一家">👁 聚焦</button></td></tr>';
   }
@@ -1096,7 +1133,7 @@ try {
     const hasScore = rows.some(r => r.score !== null);
     if (!hasScore) {          // 该榜单整体样本不足：空态提示而非空表
       empty.textContent = board === "all"
-        ? "本评估窗口还没有足够的对账样本（数据积累中）——各源持续抓取，攒够样本后总榜就会出现。"
+        ? "还没有源达到总榜的入围门槛（有效样本量 n_eff ≥ " + (report.meta.min_board_neff || 30) + "）——各源持续抓取，攒够样本后总榜就会出现。"
         : "该时效暂无足够样本（数据积累中）——各源都在持续积累，通常再过几天这一档就会出现榜单。";
       scroll.hidden = true;
       empty.hidden = false;
@@ -1438,9 +1475,9 @@ function buildDetailTables() {
     const b = bSel.value;
     let html = '<table><thead><tr>' +
       '<th class="l sticky" rowspan="2">模型</th><th rowspan="2">n温</th><th rowspan="2">n降</th>' +
-      '<th class="g" colspan="9">温度(°C)</th><th class="g" colspan="8">降水 · 晴雨</th>' +
+      '<th class="g" colspan="11">温度(°C)</th><th class="g" colspan="8">降水 · 晴雨</th>' +
       '<th class="g" colspan="3">雨量误差(mm)</th><th class="g" colspan="5">分级TS · 1h雨强</th></tr>' +
-      '<tr><th>RMSE</th><th>MAE</th><th>MBE</th><th>±1°C</th><th>±2°C</th><th>r</th><th>斜率</th><th>RSS</th><th>χ²</th>' +
+      '<tr><th>RMSE</th><th>MAE</th><th>MBE</th><th>±1°C</th><th>±2°C</th><th>r</th><th>r池化</th><th>斜率</th><th>斜率池化</th><th>RSS</th><th>χ²</th>' +
       '<th>准确率</th><th>POD</th><th>空报</th><th>漏报</th><th>TS</th><th>ETS</th><th>BIAS</th><th>空报频率</th>' +
       '<th>RMSE</th><th>MAE</th><th>MBE</th>' +
       Object.values(HOURLY_GRADE_LABELS).map(l => `<th>${l}</th>`).join("") +
@@ -1452,7 +1489,7 @@ function buildDetailTables() {
       const gs = lv => (g[lv] ? f2(g[lv].ts) : "—");
       html += `<tr>${modelCell(m)}<td class="num">${t.n||0}</td><td class="num">${p.n||0}</td>` +
         `<td>${f2(t.rmse)}</td><td>${f2(t.mae)}</td><td>${f2(t.mbe)}</td><td>${pf(t.acc1)}</td><td>${pf(t.acc2)}</td>` +
-        `<td>${f2(t.r)}</td><td>${f2(t.slope)}</td><td>${f2(t.rss)}</td><td>${f2(t.chi2)}</td>` +
+        `<td>${f2(t.r)}</td><td>${f2(t.r_pooled)}</td><td>${f2(t.slope)}</td><td>${f2(t.slope_pooled)}</td><td>${f2(t.rss)}</td><td>${f2(t.chi2)}</td>` +
         `<td>${pf(p.acc)}</td><td>${pf(p.pod)}</td><td>${pf(p.far)}</td><td>${pf(p.miss)}</td>` +
         `<td>${f2(p.ts)}</td><td>${f2(p.ets)}</td><td>${f2(p.bias)}</td><td>${pf(p.farate)}</td>` +
         `<td>${f2(p.rmse)}</td><td>${f2(p.mae)}</td><td>${f2(p.mbe)}</td>` +

@@ -84,19 +84,25 @@ def test_scores_weighted_multi_metric():
               "mae": 1.5, "mbe": 0.5, "slope": 1.1}
     # 子分：80, 90, 90, 60, 92.5, 95, 90；权重 .25/.25/.15/.10/.10/.10/.05
     assert abs(temp_score(t_full) - 85.25) < 1e-9
-    # 降水分：TS×100(.30) 与 准确率(.15) 的加权 -> (15+12)/0.45
+    # 降水分（2026-09 重构）：acc 不再入分（主要由气候基率决定）——
+    # ts 单独在位即 ts×100；acc 无论多高/多低都不改变分数
     p = {"ts": 0.5, "acc": 80.0}
-    assert precip_score(p) == 60.0
-    # 子分截断到 [0,100]：ETS 为负记 0 分，不拖成负总分
-    assert precip_score({"ets": -0.5, "acc": 100.0}) == (0.0 * 0.25 + 100.0 * 0.15) / 0.40
+    assert precip_score(p) == 50.0
+    assert precip_score({"ts": 0.5, "acc": 0.0}) == 50.0
+    # ETS 首位（0.35）：ets 与 ts 同值时 ETS 话语权更大
+    p2 = {"ets": 0.5, "ts": 0.5}
+    assert precip_score(p2) == 50.0
+    # 子分截断到 [0,100]：ETS 为负记 0 分，不拖成负总分（缺项按剩余权重归一：
+    # 0×0.35 与 50×0.25 在剩余权重 0.60 上归一 -> 20.83）
+    assert precip_score({"ets": -0.5, "ts": 0.5}) == round(50.0 * 0.25 / 0.60, 2)
     # RMSE 大到换算分为负时截断为 0
     assert temp_score({"rmse": 30.0}) == 0.0
     # 缺项按剩余权重归一：只有 r 时常数为 r×100
     assert temp_score({"r": 0.8}) == 80.0
     # 综合分 = 两者均分
-    assert overall_score(t, p) == (92.5 + 60.0) / 2
+    assert overall_score(t, p) == (92.5 + 50.0) / 2
     # 缺项不计：只有温度分时综合分 = 温度分
-    assert overall_score(t, {"ts": None, "acc": None}) == 92.5
+    assert overall_score(t, {"ts": None, "ets": None}) == 92.5
     # 全缺 -> None
     assert overall_score({}, {}) is None
 
@@ -106,12 +112,19 @@ def test_score_parts_contract():
     from weather_eval.evaluate import PRECIP_SCORE_PARTS, TEMP_SCORE_PARTS
     for parts, keys in (
         (TEMP_SCORE_PARTS, {"acc2", "rmse", "r", "acc1", "mae", "mbe", "slope"}),
-        (PRECIP_SCORE_PARTS, {"ts", "ets", "acc", "pod", "far", "bias"}),
+        (PRECIP_SCORE_PARTS, {"ets", "ts", "pod", "far", "bias"}),
     ):
         assert {k for k, *_ in parts} == keys
         assert abs(sum(w for _k, w, *_ in parts) - 1.0) < 1e-9
         for _k, _w, label, mp, fn in parts:
             assert label and mp and callable(fn)
+    # P0-3 契约：acc 不入分（气候基率主导）；ETS 权重首位；
+    # FAR+BIAS 权重之和不低于 POD（不奖励"多报占便宜"）
+    keys = [k for k, *_ in PRECIP_SCORE_PARTS]
+    assert "acc" not in keys
+    w = {k: weight for k, weight, *_ in PRECIP_SCORE_PARTS}
+    assert list(w) == sorted(w, key=w.get, reverse=True)   # ETS 权重最大
+    assert w["far"] + w["bias"] >= w["pod"]
 
 
 def test_score_clamps_and_dimension_conventions():
@@ -153,7 +166,7 @@ def test_build_report_end_to_end(tmp_path, monkeypatch):
 
     end = start + timedelta(hours=47)
     cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
-           "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 5}
+           "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 1}
     data = build_report(["s1"], ["ecmwf_ifs"], cfg, start, end, "2026-08")
 
     # 逐小时 24h 桶：lead 1..24 共 24 对，且预报=观测+1 -> 误差恒为 1 -> ±2°C 准确率 100%，RMSE=1
@@ -182,37 +195,49 @@ def test_build_report_end_to_end(tmp_path, monkeypatch):
     assert "s1" in data["timeseries"]
     assert isinstance(data["heatmap"], list)
 
-    # 分时效排行榜：行结构与名次（唯一有数据模型应排第一且分数与评分卡一致）
-    from weather_eval.evaluate import overall_score
+    # 分时效排行榜：温度分来自逐小时轨道、降水分来自按天累计轨道（P0-3 主轨道切换）
+    from weather_eval.evaluate import overall_score, _mean_or_none
     lb1 = data["leaderboards"]["1d"]
     assert lb1 and lb1[0]["model"] == "ecmwf_ifs"
     row = lb1[0]
     assert row["score"] is not None and row["temp_score"] is not None and row["precip_score"] is not None
     assert 0 <= row["score"] <= 100 and 0 <= row["temp_score"] <= 100
-    # 榜单分数与 24h 评分卡（同一样本总体）完全一致，冠军横幅与榜单不分叉
-    sc = data["scorecard"]["ecmwf_ifs"]
-    assert row["score"] == overall_score(sc["temp_24h"], sc["precip_24h"])
-    assert row["acc2"] == sc["temp_24h"]["acc2"] and row["ts"] == sc["precip_24h"]["ts"]
+    # 榜单分数与该桶两条轨道完全一致，冠军横幅与榜单不分叉
+    t1 = data["temp_hourly"]["ecmwf_ifs"]["1d"]
+    p1 = data["precip_score_daily"]["ecmwf_ifs"]["1d"]
+    assert row["score"] == overall_score(t1, p1)
+    assert row["acc2"] == t1["acc2"] and row["ts"] == p1["ts"]
     # 全部时效桶都有榜单行（无数据的桶行内分数为 None、沉底），另有总榜 "all"
     assert set(data["leaderboards"]) == {"all"} | {f"{i}d" for i in range(1, 17)}
     assert all(len(rows) == 1 for rows in data["leaderboards"].values())
     assert data["leaderboards"]["5d"][0]["score"] is None
 
-    # 全时效总榜：全部逐小时样本（lead 1..47 共 47 对）池化成一份指标再打分，
-    # 并披露该源实际覆盖的最长时效（47h -> 向上取整 2 天）
+    # 全时效总榜（P0-1 macro 化）：各天桶综合分的等权平均，不再是全部样本池化
     all_row = data["leaderboards"]["all"][0]
     assert all_row["model"] == "ecmwf_ifs" and all_row["score"] is not None
     assert all_row["n"] == 47 and all_row["lead_days"] == 2
-    assert all_row["score"] == overall_score(sc["temp_all"], sc["precip_all"])
+    bucket_overalls = [
+        overall_score(data["temp_hourly"]["ecmwf_ifs"][f"{b}d"],
+                      data["precip_score_daily"]["ecmwf_ifs"][f"{b}d"])
+        for b in (1, 2)]
+    assert all_row["score"] == _mean_or_none(bucket_overalls)
+    # 不确定性（P0-2）：90% 置信区间、冠军频率、n_eff 门槛达标标记齐备。
+    # 误差恒定的确定性夹具 → 每次重采样分数相同 → CI 坍缩为点值、冠军频率 100%
+    assert all_row["ci90"] is not None and all_row["ci90"][0] <= all_row["score"] <= all_row["ci90"][1]
+    assert all_row["champion_pct"] == 100.0
+    assert all_row["n_eff"] == 47 and all_row["qualified"] is True
+    assert all_row["n_buckets"] == 2
 
-    # 得分趋势：综合 = 温度/降水的均分，且逐桶键齐备
+    # 得分趋势：综合 = 温度/降水的均分，且逐桶键齐备；与榜单共用同一套桶得分
     st = data["score_trend"]
     assert set(st.keys()) == {"overall", "temp", "precip"}
     for b in ("1d", "2d"):
         tv = st["temp"]["ecmwf_ifs"][b]
         pv = st["precip"]["ecmwf_ifs"][b]
         ov = st["overall"]["ecmwf_ifs"][b]
-        assert abs(ov - round((tv + pv) / 2, 2)) < 0.011, b
+        # 综合分 = 温度/降水的均分，缺项不计（本夹具 2d 桶无按天降水样本）
+        expected = round((tv + pv) / 2, 2) if tv is not None and pv is not None else tv
+        assert abs(ov - expected) < 0.011, b
 
 
 def test_build_report_empty_is_safe(tmp_path, monkeypatch):
@@ -233,12 +258,12 @@ def test_build_report_empty_is_safe(tmp_path, monkeypatch):
 
 
 def test_overall_board_pools_all_leads_and_discloses_coverage(tmp_path, monkeypatch):
-    """总榜把各源全部逐小时样本池化打分，并披露各自覆盖时效。
+    """总榜 macro 化后的语义：各天桶等权平均 + 覆盖时效按有效样本披露。
 
     两个模型：short_range 只覆盖前 24h（lead 1..23，n=23，且预报与实况完全一致 ->
-    满分），ecmwf_ifs 覆盖 48h（lead 1..47，n=47，温度恒偏高 1°C）。总榜应按池化
-    综合分排序（short_range 第一），lead_days 分别为 1 / 2 —— 短时效源样本构成偏"易"
-    的混杂通过覆盖时效列显式披露。"""
+    满分），ecmwf_ifs 覆盖 48h（lead 1..47，温度恒偏高 1°C）。short_range 只有
+    第 1 桶且桶内完美 -> macro = 100 仍第一；ecmwf 的 macro 是其两个桶的平均。
+    lead_days 按实际参与计算的样本计（1 / 2 天）。"""
     monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
     start = datetime(2026, 8, 24, 0, 0)
     obs = []
@@ -263,27 +288,49 @@ def test_overall_board_pools_all_leads_and_discloses_coverage(tmp_path, monkeypa
     storage.save_forecast_snapshot("s1", "ecmwf_ifs", make_snap("ecmwf_ifs", 48, 1.0))
 
     end = start + timedelta(hours=47)
+    # min_sample=1：单站单起报的按天降水只有 1 对样本，也让它入样，
+    # 使"维度齐备"门槛（温度+降水都有分）可以独立于样本量被观察
     cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
-           "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 5}
+           "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 1,
+           "min_board_neff": 10}
     data = build_report(["s1"], ["ecmwf_ifs", "short_range"], cfg, start, end, "2026-08")
 
     board = data["leaderboards"]["all"]
-    assert [r["model"] for r in board] == ["short_range", "ecmwf_ifs"]
+    # short_range 只覆盖逐小时前 23h：没有任何按天降水样本 -> 温度单维度，
+    # "综合"未到位 -> 未达标（哪怕桶内满分）；ecmwf 两维度齐备 -> 达标第一
+    assert [r["model"] for r in board] == ["ecmwf_ifs", "short_range"]
     by_model = {r["model"]: r for r in board}
     assert by_model["short_range"]["n"] == 23 and by_model["short_range"]["lead_days"] == 1
     assert by_model["ecmwf_ifs"]["n"] == 47 and by_model["ecmwf_ifs"]["lead_days"] == 2
-    # 完美预报满分；有偏差的源低于满分
+    assert by_model["short_range"]["qualified"] is False
+    assert by_model["short_range"]["score"] == 100.0   # 分数保留、名次降权
+    assert by_model["ecmwf_ifs"]["qualified"] is True
+    # n_eff 门槛（P0-2.3）：把门槛抬到 100 -> ecmwf（n_eff=47）也不得入围，
+    # 冠军频率与显著性全部清零（156 条样本争冠军的教训）
+    data_100 = build_report(["s1"], ["ecmwf_ifs", "short_range"],
+                            dict(cfg, min_board_neff=100), start, end, "2026-08")
+    board_100 = {r["model"]: r for r in data_100["leaderboards"]["all"]}
+    assert board_100["ecmwf_ifs"]["qualified"] is False
+    assert board_100["ecmwf_ifs"]["champion_pct"] == 0.0
+    # 完美预报满分；有偏差的源低于满分（macro 是各自桶分的平均，两个桶都 <100）
     assert by_model["short_range"]["score"] == 100.0
     assert 0 < by_model["ecmwf_ifs"]["score"] < 100
-    # 总榜分数与评分卡 all 池一致（同一份池化指标，榜单与评分卡不分叉）
+    # macro 语义：总榜分 == 各天桶综合分的等权平均（不再等于全样本池化指标的分）
+    from weather_eval.evaluate import overall_score, _mean_or_none
     for m in ("short_range", "ecmwf_ifs"):
-        sc = data["scorecard"][m]
-        assert by_model[m]["score"] == overall_score(sc["temp_all"], sc["precip_all"])
-    # 分时效榜不受影响：short_range 在 2d 桶无样本，分数为 None 沉底
+        buckets = [overall_score(data["temp_hourly"][m][f"{b}d"],
+                                 data["precip_score_daily"][m][f"{b}d"])
+                   for b in range(1, 17)]
+        assert by_model[m]["score"] == _mean_or_none(buckets), m
+    # 分时效榜：short_range 在 2d 桶无样本，分数为 None 沉底；
+    # ecmwf 在 2d 桶只有温度维（无按天降水）-> 维度不齐 -> 未达标（分数保留）
     b2 = data["leaderboards"]["2d"]
     assert [r["model"] for r in b2] == ["ecmwf_ifs", "short_range"]
     assert b2[1]["score"] is None
-    # 池化不变量：总榜样本数 == 各分时效桶样本数之和（天桶对 lead 1..N*24 完整划分）
+    e2 = next(r for r in b2 if r["model"] == "ecmwf_ifs")
+    assert e2["qualified"] is False and e2["temp_score"] is not None \
+        and e2["precip_score"] is None
+    # 展示用 n 仍是全时效池化的配对数（天桶对 lead 1..N*24 完整划分）
     for m in ("short_range", "ecmwf_ifs"):
         sum_buckets = sum(
             next(r for r in data["leaderboards"][f"{i}d"] if r["model"] == m)["n"]
@@ -292,12 +339,14 @@ def test_overall_board_pools_all_leads_and_discloses_coverage(tmp_path, monkeypa
 
 
 def test_overall_board_boundaries_and_pooling_benefit(tmp_path, monkeypatch):
-    """总榜的边界语义与池化收益。
+    """总榜的边界语义与样本量门槛。
 
-    - lead_days 上限边界：lead 24h -> 1 天；lead 383h -> 16 天（ceil 边界）。
-    - 池化不变量：总榜 n == 各分桶 n 之和。
-    - 池化收益：sparse 模型每个天桶只有 1 个样本（单桶 n < min_sample，分桶指标全
-      None），池化后 n=6 通过门控、总榜仍能给出分数——这正是"合并算总账"的价值。"""
+    - lead_days 上限边界：lead 24h -> 1 天；lead 383h -> 16 天。
+    - 展示 n == 各分桶 n 之和（天桶对 lead 完整划分）。
+    - 样本量门槛（P0-2.3）：sparse 模型每个天桶只有 1 个样本（单桶 n < min_sample，
+      桶指标全 None）——旧池化口径会把 6 条样本凑成一份"总榜分数"，macro 化后
+      没有任何达标的桶，总榜不给分、行未达标（qualified=False），杜绝
+      "156 条样本争冠军"类假结论。"""
     monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
     start = datetime(2026, 8, 1, 0, 0)
     obs = []
@@ -341,15 +390,12 @@ def test_overall_board_boundaries_and_pooling_benefit(tmp_path, monkeypatch):
     assert info["day1"]["lead_days"] == 1 and info["day1"]["n"] == 24
     assert info["wide"]["lead_days"] == 16 and info["wide"]["n"] == 383
     assert info["sparse"]["lead_days"] == 6 and info["sparse"]["n"] == 6
-    # 三家在总榜上都有分数（按综合分降序）
-    scores = [r["score"] for r in board]
-    assert all(s is not None for s in scores)
-    assert scores == sorted(scores, reverse=True)
-    # 池化收益：sparse 单桶 n=1 < min_sample，"1d" 分榜指标为 None；总榜 n=6 有分数
-    sparse_1d = next(r for r in data["leaderboards"]["1d"] if r["model"] == "sparse")
-    assert sparse_1d["score"] is None
-    assert info["sparse"]["score"] is not None
-    # 池化不变量：三家各自的总榜 n == 分桶 n 之和
+    # 达标的两家有分数（按综合分降序）；sparse 桶样本全部不足 -> 无分、未达标、沉底
+    assert info["day1"]["score"] == 100.0
+    assert 0 < info["wide"]["score"] < 100
+    assert info["sparse"]["score"] is None and info["sparse"]["qualified"] is False
+    assert [r["model"] for r in board][-1] == "sparse"
+    # 展示 n 不变量：总榜 n == 分桶 n 之和
     for m in ("day1", "wide", "sparse"):
         sum_buckets = sum(
             next(r for r in data["leaderboards"][f"{i}d"] if r["model"] == m)["n"]
@@ -818,3 +864,204 @@ def test_daily_all_none_precip_excluded_even_if_gate_disabled(tmp_path, monkeypa
                         start + timedelta(hours=71), "2026-08")
     p2 = data["precip_daily"]["ecmwf_ifs"]["2d"]
     assert p2["n"] == 0 and p2["ts"] is None   # 假 0.0 依然被拒绝
+
+
+# ------------------------------------------------- 统计推断层（2026-09-06 新增）
+def test_lead_days_uses_valid_pairs_not_series_length(tmp_path, monkeypatch):
+    """P1-1 回归：「覆盖时效」按实际参与计算的样本（两侧同时非缺测）计。
+
+    cma_grapes 类源的部分模型序列尾部是大片 null：全量 record 的 max(lead)
+    会把尾部虚报成覆盖（旧实现 384h 序列只有 119h 有效却披露 16 天）。
+    构造 lead 1..96 中只有前 48h 有温度值 -> 覆盖时效应为 2 天而非 4 天。"""
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    start = datetime(2026, 8, 24, 0, 0)
+    obs = []
+    for h in range(48):
+        t = start + timedelta(hours=h)
+        obs.append({"time": iso(t), "temp": 20.0 + (h % 3), "rain": 0.0})
+    storage.save_obs("s1", obs)
+
+    times = [iso(start + timedelta(hours=h)) for h in range(96)]
+    temps = [20.0 + (h % 3) if h < 48 else None for h in range(96)]
+    snap = {
+        "issue_iso": iso(start), "station_id": "s1", "source": "test",
+        "models": ["trailing_null"], "grid_lat": 23.0, "grid_lon": 111.0,
+        "elevation": 50, "hourly_time": times,
+        "data": {"trailing_null": {"temperature_2m": temps,
+                                   "precipitation": [0.0] * 96}},
+    }
+    storage.save_forecast_snapshot("s1", "trailing_null", snap)
+
+    cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
+           "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 5}
+    data = build_report(["s1"], ["trailing_null"], cfg, start,
+                        start + timedelta(hours=95), "2026-08")
+    row = data["leaderboards"]["all"][0]
+    assert row["lead_days"] == 2          # 温度有效样本最远到 lead 48 -> 2 天
+    assert row["n"] == 47                 # 只有 lead 1..47 有观测可配对
+    # 观测只有 2 天：观测缺位同样限制有效覆盖，绝不按 96h 序列长度虚报
+
+
+def test_neff_effective_sample_size_and_gate():
+    """P1-2：有效样本量与门槛。
+
+    - AR(1) 误差（ρ≈0.9）的 n_eff ≈ n·(1−ρ)/(1+ρ)（约 1/19）；
+    - 白噪声误差 n_eff ≈ n；
+    - min_sample 门槛作用于 n_eff：名义 n 达标但 n_eff 不达标同样不出结论。"""
+    import numpy as np
+    from weather_eval.evaluate import temp_metrics, _n_eff_temp
+    from weather_eval.stats import effective_n
+
+    rng = np.random.default_rng(7)
+    ar = np.empty(600)
+    ar[0] = 0.0
+    for i in range(1, 600):
+        ar[i] = 0.9 * ar[i - 1] + rng.normal(0, 0.2)
+    assert 20 < effective_n(ar) < 80          # 理论 ~31
+    white = rng.normal(0, 1, 600)
+    assert effective_n(white) > 400           # 无自相关几乎不折损
+
+    # 名义 n=600 但误差强自相关 -> n_eff < min_sample 时指标置 None（不报假精度）
+    obs = [20.0] * 600
+    fcst = [20.0 + float(e) for e in ar]
+    m = temp_metrics(obs, fcst, [1, 2], 5, n_eff=3)
+    assert m["rmse"] is None and m["n"] == 600 and m["n_eff"] == 3
+    # n_eff 达标则正常出指标
+    m2 = temp_metrics(obs, fcst, [1, 2], 5, n_eff=500)
+    assert m2["rmse"] is not None
+
+    # _n_eff_temp 沿时间轴去重（同一有效时刻只保留最新一版起报）
+    recs = []
+    for h in range(100):
+        recs.append({"station": "s1", "valid_iso": f"2026-08-{h // 24 + 1:02d}T{h % 24:02d}:00",
+                     "lead": 24, "temp_obs": 20.0, "temp_fcst": 20.1})
+    recs.append({"station": "s1", "valid_iso": "2026-08-02T00:00", "lead": 48,
+                 "temp_obs": 20.0, "temp_fcst": 25.0})   # 旧起报对同一时刻（被最新版覆盖）
+    assert _n_eff_temp(recs) == 100                      # 100 个不同时刻、误差近常数
+
+
+def test_temp_metrics_per_station_fisher_z(tmp_path):
+    """P1-3：r/slope 站内计算后 Fisher-z / n 加权合并；池化值并列披露。
+
+    两站：A 站误差与观测强相关（r≈1）、B 站反相关（r≈−1）。池化后两站的
+    站间均值差会主导 r（池化 r 接近 1，纯粹的"复现气候差异"红利）；
+    站内合并的 r 应显著低于池化值——这才度量"站内起伏同步程度"。"""
+    import numpy as np
+    from weather_eval.evaluate import temp_metrics
+
+    rng = np.random.default_rng(11)
+    n = 200
+    obs_a = 20 + rng.normal(0, 2, n)          # A 站均温 20
+    fcst_a = obs_a + rng.normal(0, 0.3, n)    # 同步起伏 r≈1
+    obs_b = 32 + rng.normal(0, 2, n)          # B 站均温 32（站间差 12°C）
+    # B 站镜像预报（绕均值 32 反相）：站内 r≈−1，与 A 站 r≈+1 合并后应接近 0
+    fcst_b = 64.0 - obs_b + rng.normal(0, 0.3, n)
+
+    groups = [(obs_a, fcst_a), (obs_b, fcst_b)]
+    m = temp_metrics(np.concatenate([obs_a, obs_b]),
+                     np.concatenate([fcst_a, fcst_b]),
+                     [1, 2], 5, groups=groups)
+    assert m["r_pooled"] is not None and m["r"] is not None
+    # 池化 r 因站间均值差虚高（接近 1）；站内合并（+1 与 −1 抵消）应接近 0
+    assert m["r_pooled"] > 0.9
+    assert m["r"] < m["r_pooled"] - 0.5
+    assert abs(m["r"]) < 0.3
+    # 单组时站内合并退化为该组自身
+    m1 = temp_metrics(obs_a, fcst_a, [1, 2], 5, groups=[(obs_a, fcst_a)])
+    assert abs(m1["r"] - m1["r_pooled"]) < 1e-9
+
+
+def test_numpy_fast_paths_match_cyeva(tmp_path, monkeypatch):
+    """快速路径（曲线 rmse/acc2、按天二分类 6 项）与 cyeva 全量路径同数值。
+
+    用真实随机数据对拍：报告里的数字不允许"曲线一套、表格一套"。"""
+    import numpy as np
+    from weather_eval.evaluate import (temp_curve_metrics, precip_binary_metrics,
+                                       precip_metrics)
+    rng = np.random.default_rng(3)
+    o = rng.normal(25, 2, 500).round(1)
+    f = o + rng.normal(0, 1.5, 500).round(1)
+
+    fast = temp_curve_metrics(o, f, 5)
+    full = temp_metrics(o, f, [2], 5)
+    assert fast["rmse"] == full["rmse"] and fast["acc2"] == full["acc2"]
+
+    # 按天二分类（1mm 阈值）与 cyeva threshold 路径
+    ro = (rng.random(400) < 0.15).astype(float) * rng.uniform(0, 30, 400).round(1)
+    rf = (rng.random(400) < 0.3).astype(float) * rng.uniform(0, 25, 400).round(1)
+    mine = precip_binary_metrics(ro, rf, 1.0, 5)
+    cy = precip_metrics(ro, rf, 1.0, 5)
+    for k in ("acc", "pod", "far", "ts", "ets", "bias"):
+        assert mine[k] == cy[k], (k, mine[k], cy[k])
+
+
+def test_bootstrap_ci_deterministic_and_honest(tmp_path, monkeypatch):
+    """P0-2：bootstrap 置信区间。
+
+    - 同一天数据 + 固定种子 -> 完全相同的 CI（可复现性）；
+    - 噪声数据 -> CI 有真实宽度且冠军频率不武断（无一家 100% 时不应报 100%）。"""
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    start = datetime(2026, 8, 1, 0, 0)
+    import numpy as np
+    rng = np.random.default_rng(5)
+    obs = []
+    for h in range(16 * 24):
+        t = start + timedelta(hours=h)
+        obs.append({"time": iso(t), "temp": 20.0 + (h % 3),
+                    "rain": 1.0 if h % 12 == 0 else 0.0})
+    storage.save_obs("s1", obs)
+    for model, noise in (("noisy_a", 1.0), ("noisy_b", 1.2)):
+        times = [iso(start + timedelta(hours=h)) for h in range(16 * 24 - 1)]
+        vals = [20.0 + (h % 3) + float(rng.normal(0, noise)) for h in range(16 * 24 - 1)]
+        rains = [1.0 if h % 12 == 0 else 0.0 for h in range(16 * 24 - 1)]
+        snap = {"issue_iso": iso(start), "station_id": "s1", "source": "test",
+                "models": [model], "grid_lat": 23.0, "grid_lon": 111.0,
+                "elevation": 50, "hourly_time": times,
+                "data": {model: {"temperature_2m": vals,
+                                 "precipitation": rains}}}
+        storage.save_forecast_snapshot("s1", model, snap)
+
+    # min_sample=1：单站单起报的按天降水只有 1 对样本，也让它入样，
+    # 使两源达到"两维度齐备"的入围条件（本测试关注 CI 与冠军频率本身）
+    cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
+           "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 1,
+           "bootstrap_runs": 200}
+    d1 = build_report(["s1"], ["noisy_a", "noisy_b"], cfg, start,
+                      start + timedelta(hours=16 * 24 - 2), "2026-08")
+    d2 = build_report(["s1"], ["noisy_a", "noisy_b"], cfg, start,
+                      start + timedelta(hours=16 * 24 - 2), "2026-08")
+    r1 = {r["model"]: r for r in d1["leaderboards"]["all"]}
+    r2 = {r["model"]: r for r in d2["leaderboards"]["all"]}
+    for m in ("noisy_a", "noisy_b"):
+        assert r1[m]["ci90"] == r2[m]["ci90"]
+        assert r1[m]["ci90"][0] < r1[m]["ci90"][1]        # 噪声数据 CI 有宽度
+    champ_total = sum(r["champion_pct"] for r in r1.values())
+    assert 99.0 <= champ_total <= 101.0                   # 冠军频率归一
+
+
+def test_weight_sensitivity_in_meta(tmp_path, monkeypatch):
+    """P0-2.2：权重敏感性进报告 meta——冠军分布、扰动次数齐备。"""
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    start = datetime(2026, 8, 1, 0, 0)
+    obs = [{"time": iso(start + timedelta(hours=h)), "temp": 20.0 + (h % 3),
+            "rain": 1.0 if h % 12 == 0 else 0.0} for h in range(48)]
+    storage.save_obs("s1", obs)
+    for model, bias in (("m_a", 0.0), ("m_b", 1.0)):
+        times = [iso(start + timedelta(hours=h)) for h in range(47)]
+        snap = {"issue_iso": iso(start), "station_id": "s1", "source": "test",
+                "models": [model], "grid_lat": 23.0, "grid_lon": 111.0,
+                "elevation": 50, "hourly_time": times,
+                "data": {model: {
+                    "temperature_2m": [20.0 + (h % 3) + bias for h in range(47)],
+                    "precipitation": [1.0 if h % 12 == 0 else 0.0 for h in range(47)]}}}
+        storage.save_forecast_snapshot("s1", model, snap)
+    cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
+           "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 1,
+           "sensitivity_runs": 100}
+    data = build_report(["s1"], ["m_a", "m_b"], cfg, start,
+                        start + timedelta(hours=46), "2026-08")
+    ws = data["meta"]["weight_sensitivity"]
+    assert ws["runs"] == 100
+    assert ws["champions"] and sum(c["pct"] for c in ws["champions"]) <= 100.5
+    names = {c["model"] for c in ws["champions"]}
+    assert names <= {"m_a", "m_b"}

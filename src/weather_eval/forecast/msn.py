@@ -103,7 +103,6 @@ import base64
 import json
 import logging
 import re
-import time
 from datetime import datetime, timedelta
 from math import asin, cos, radians, sin, sqrt
 from typing import Any
@@ -112,6 +111,7 @@ from urllib.parse import quote
 import requests
 
 from .base import ForecastProvider
+from .http import request_with_retries
 from ..timeutil import BEIJING, floor_to_hour, parse_iso
 
 logger = logging.getLogger(__name__)
@@ -141,9 +141,6 @@ MAX_VERSION_RESTARTS = 1
 class ReduxStateMissing(RuntimeError):
     """页面内找不到 redux-data 状态块（契约漂移的确定性信号，重试无意义）。"""
 
-
-class _Deterministic(Exception):
-    """确定性失败（重试无意义）：4xx 或页面结构异常。"""
 
 
 # ------------------------------------------------------------------ 工具函数
@@ -520,35 +517,26 @@ class MsnProvider(ForecastProvider):
         漂移（ReduxStateMissing）因此只会消耗 1 次请求就触发上层熔断，不会
         被当成网络错误重试。
         """
-        last_err: Exception | None = None
-        for attempt in range(self.retries + 1):
-            resp = None
+        def _classify(resp):
+            status = getattr(resp, "status_code", None)
+            if status == 200:
+                # 服务端实测返回 charset=utf-8；缺失时 requests 会退回
+                # chardet 猜测，而本源整条解析链依赖中文正确解码，
+                # 故显式钉死 UTF-8，不让编码猜测成为静默失败源。
+                if not getattr(resp, "encoding", None):
+                    resp.encoding = "utf-8"
+                return "return", resp.text
+            digest = ""
             try:
-                resp = self.session.get(url, headers=HEADERS, timeout=self.timeout)
-                status = getattr(resp, "status_code", None)
-                if status == 200:
-                    try:
-                        # 服务端实测返回 charset=utf-8；缺失时 requests 会退回
-                        # chardet 猜测，而本源整条解析链依赖中文正确解码，
-                        # 故显式钉死 UTF-8，不让编码猜测成为静默失败源。
-                        if not getattr(resp, "encoding", None):
-                            resp.encoding = "utf-8"
-                        return resp.text
-                    except Exception as e:  # noqa: BLE001
-                        raise _Deterministic(f"响应体读取失败: {e}") from e
-                digest = ""
-                try:
-                    digest = (resp.text or "")[:200]
-                except Exception:  # noqa: BLE001
-                    pass
-                if isinstance(status, int) and 400 <= status < 500 and status != 429:
-                    raise _Deterministic(f"HTTP {status} body={digest!r}")
-                last_err = RuntimeError(f"HTTP {status} body={digest!r}")
-            except _Deterministic:
-                raise
-            except Exception as e:  # noqa: BLE001  网络类异常/5xx/429 → 可重试
-                last_err = e
-            logger.warning("MSN 请求失败（第%d次）: %s", attempt + 1, last_err)
-            if attempt < self.retries:
-                time.sleep(min(30, 3 * 2 ** attempt))
-        raise RuntimeError(f"MSN 请求最终失败: {last_err}") from last_err
+                digest = (resp.text or "")[:200]
+            except Exception:  # noqa: BLE001
+                pass
+            if isinstance(status, int) and 400 <= status < 500 and status != 429:
+                return "fatal", RuntimeError(
+                    f"MSN 请求被拒: HTTP {status} body={digest!r}（确定性失败，不重试）")
+            return "retry", f"HTTP {status} body={digest!r}"
+
+        return request_with_retries(
+            self.session, url, headers=HEADERS, timeout=self.timeout,
+            retries=self.retries, source="MSN", classify=_classify,
+        )

@@ -473,7 +473,7 @@ def test_503_exhausts_then_breaker_blocks_rest_of_run(monkeypatch, caplog):
     """503 退避重试穷尽 -> 带配额说明抛错 + 置熔断；后续站点 0 次请求快速失败。
     配额说明须写明 409 官方语义（503 也可能是超限的另一形态）。"""
     monkeypatch.delenv(KEY_ENV, raising=False)
-    monkeypatch.setattr("weather_eval.forecast.accuweather.time.sleep", lambda s: None)
+    monkeypatch.setattr("weather_eval.forecast.http.time.sleep", lambda s: None)
     sess = RoutingSession(_routes(forecast=lambda u, p: ("Service Unavailable", 503)))
     src = AccuWeatherProvider(api_key=KEY, session=sess, retries=2)
     with caplog.at_level(logging.WARNING, logger="weather_eval.forecast.accuweather"):
@@ -505,7 +505,7 @@ def test_location_409_quota_breaks_immediately(monkeypatch):
 def test_non_503_5xx_retries_but_no_breaker(monkeypatch):
     """500 过载重试穷尽后抛错，但不触发配额熔断（下次运行/下一站仍应尝试）。"""
     monkeypatch.delenv(KEY_ENV, raising=False)
-    monkeypatch.setattr("weather_eval.forecast.accuweather.time.sleep", lambda s: None)
+    monkeypatch.setattr("weather_eval.forecast.http.time.sleep", lambda s: None)
     sess = RoutingSession(_routes(forecast=lambda u, p: ("boom", 500)))
     src = AccuWeatherProvider(api_key=KEY, session=sess, retries=1)
     with pytest.raises(RuntimeError, match="最终失败"):

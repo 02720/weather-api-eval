@@ -43,12 +43,12 @@ Open-Meteo 不回显底层模式的真实起报轮次，共享时间轴首点固
 from __future__ import annotations
 
 import logging
-import time
 from typing import Any
 
 import requests
 
 from .base import ForecastProvider
+from .http import request_with_retries
 
 logger = logging.getLogger(__name__)
 
@@ -92,19 +92,13 @@ class OpenMeteoProvider(ForecastProvider):
             "temperature_unit": "celsius",
             "precipitation_unit": "mm",
         }
-        last_err = None
-        for attempt in range(self.retries + 1):
-            try:
-                resp = self.session.get(ENDPOINT, params=params, headers=HEADERS, timeout=self.timeout)
-                resp.raise_for_status()
-                payload = resp.json()
-                break
-            except Exception as e:  # noqa: BLE001
-                last_err = e
-                logger.warning("Open-Meteo 站点 %s 请求失败（第%d次）: %s", station.id, attempt + 1, e)
-                time.sleep(3 * (attempt + 1))
-        else:
-            raise RuntimeError(f"Open-Meteo 站点 {station.id} 请求失败: {last_err}") from last_err
+        # 熔断/退避语义统一走共享助手：4xx 立即失败，网络错误/5xx/429 退避重试，
+        # 末次尝试后不再 sleep
+        resp = request_with_retries(
+            self.session, ENDPOINT, params=params, headers=HEADERS, timeout=self.timeout,
+            retries=self.retries, source=f"Open-Meteo 站点 {station.id}",
+        )
+        payload = resp.json()
 
         hourly = payload.get("hourly", {})
         hourly_units = payload.get("hourly_units", {})
