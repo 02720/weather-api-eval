@@ -2336,8 +2336,8 @@
     "pressure": 1002.7,
     "humidity": 93.0,
     "rain": 0.0,
-    "wind_speed": 2.0,
-    "wind_dir": 54.0
+    "wind_speed": 1.4,
+    "wind_dir": 33.0
   },
   "2026-09-10T23:00": {
     "time": "2026-09-10T23:00",
@@ -2398,5 +2398,85 @@
     "rain": 0.0,
     "wind_speed": 2.2,
     "wind_dir": 74.0
+  },
+  "2026-09-11T07:00": {
+    "time": "2026-09-11T07:00",
+    "source": "wd",
+    "temp": 22.8,
+    "pressure": 1006.0,
+    "humidity": 76.0,
+    "rain": 0.0,
+    "wind_speed": 3.4,
+    "wind_dir": 45.0
+  },
+  "2026-09-11T06:00": {
+    "time": "2026-09-11T06:00",
+    "source": "wd",
+    "temp": 23.2,
+    "pressure": 1005.3,
+    "humidity": 75.0,
+    "rain": 0.0,
+    "wind_speed": 4.9,
+    "wind_dir": 47.0
+  },
+  "2026-09-11T05:00": {
+    "time": "2026-09-11T05:00",
+    "source": "wd",
+    "temp": 23.7,
+    "pressure": 1005.1,
+    "humidity": 74.0,
+    "rain": 0.0,
+    "wind_speed": 3.9,
+    "wind_dir": 53.0
+  },
+  "2026-09-11T04:00": {
+    "time": "2026-09-11T04:00",
+    "source": "wd",
+    "temp": 24.2,
+    "pressure": 1004.7,
+    "humidity": 75.0,
+    "rain": 0.0,
+    "wind_speed": 4.6,
+    "wind_dir": 41.0
+  },
+  "2026-09-11T03:00": {
+    "time": "2026-09-11T03:00",
+    "source": "wd",
+    "temp": 24.5,
+    "pressure": 1004.9,
+    "humidity": 80.0,
+    "rain": 0.0,
+    "wind_speed": 3.1,
+    "wind_dir": 43.0
+  },
+  "2026-09-11T02:00": {
+    "time": "2026-09-11T02:00",
+    "source": "wd",
+    "temp": 25.1,
+    "pressure": 1005.2,
+    "humidity": 76.0,
+    "rain": 0.0,
+    "wind_speed": 2.7,
+    "wind_dir": 39.0
+  },
+  "2026-09-11T01:00": {
+    "time": "2026-09-11T01:00",
+    "source": "wd",
+    "temp": 25.0,
+    "pressure": 1005.1,
+    "humidity": 78.0,
+    "rain": 0.0,
+    "wind_speed": 1.8,
+    "wind_dir": 35.0
+  },
+  "2026-09-11T00:00": {
+    "time": "2026-09-11T00:00",
+    "source": "wd",
+    "temp": 25.4,
+    "pressure": 1005.1,
+    "humidity": 76.0,
+    "rain": 0.0,
+    "wind_speed": null,
+    "wind_dir": null
   }
 }
