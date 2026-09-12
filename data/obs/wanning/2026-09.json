@@ -2838,5 +2838,35 @@
     "rain": 2.8,
     "wind_speed": 4.1,
     "wind_dir": 46.0
+  },
+  "2026-09-12T22:00": {
+    "time": "2026-09-12T22:00",
+    "source": "wd",
+    "temp": 25.5,
+    "pressure": 1006.6,
+    "humidity": 97.0,
+    "rain": 1.9,
+    "wind_speed": 5.9,
+    "wind_dir": 44.0
+  },
+  "2026-09-12T21:00": {
+    "time": "2026-09-12T21:00",
+    "source": "wd",
+    "temp": 25.4,
+    "pressure": 1005.9,
+    "humidity": 96.0,
+    "rain": 3.5,
+    "wind_speed": 5.2,
+    "wind_dir": 37.0
+  },
+  "2026-09-12T20:00": {
+    "time": "2026-09-12T20:00",
+    "source": "wd",
+    "temp": 25.2,
+    "pressure": 1005.3,
+    "humidity": 96.0,
+    "rain": 6.5,
+    "wind_speed": 5.0,
+    "wind_dir": 39.0
   }
 }
