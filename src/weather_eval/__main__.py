@@ -42,7 +42,7 @@ from .obs import EiaDataObsSource
 from .forecast import (
     OpenMeteoProvider, CaiyunProvider, QWeatherProvider, TianjiProvider,
     FuxiC88Provider, FuxiDetProvider, FengWuProvider, GevisProvider,
-    AccuWeatherProvider, MsnProvider,
+    AccuWeatherProvider, MsnProvider, Ew4allProvider,
 )
 from .forecast.caiyun import DEFAULT_NAME as CAIYUN_DEFAULT_MODEL
 from .forecast.qweather import DEFAULT_NAME as QWEATHER_DEFAULT_MODEL
@@ -53,6 +53,7 @@ from .forecast.fengwu import MODEL_NAME as FENGWU_MODEL
 from .forecast.geovis import MODEL_NAME as GEVIS_MODEL
 from .forecast.accuweather import MODEL_NAME as ACCUWEATHER_MODEL
 from .forecast.msn import MODEL_NAME as MSN_MODEL
+from .forecast.ew4all import MODEL_SPECS as EW4ALL_MODEL_SPECS
 # 独立抓取源（非 Open-Meteo 模型）的登记处：source -> (模型集合, 提供方类)。
 # 单一数据源：模型集合与提供方类必须同步登记，此前分成两张表（SOURCE_MODELS 与
 # _build_provider 内的内联字典）手工同步，新增源漏登其一会退化成运行期 KeyError
@@ -70,6 +71,9 @@ SOURCE_SPECS: dict[str, tuple[set[str], Any]] = {
     # AccuWeather：需 ACCUWEATHER_API_KEY（Enterprise 入口）
     "accuweather": ({ACCUWEATHER_MODEL}, lambda: AccuWeatherProvider()),
     "msn": ({MSN_MODEL}, lambda: MsnProvider()),                # MSN 天气：无凭据，底层中国天气网
+    # EW4ALL（云上早期预警支撑系统）：网页接口，无凭据；一次抓取返回两个模型
+    # 各自的独立快照（起报轮次发布进度不同步，见 forecast/ew4all.py）
+    "ew4all": (set(EW4ALL_MODEL_SPECS), lambda: Ew4allProvider()),
 }
 # 各独立源的模型集合（config 中按此过滤，防止把别家的模型传进去刷缺失警告）
 SOURCE_MODELS: dict[str, set[str]] = {s: ms for s, (ms, _) in SOURCE_SPECS.items()}
@@ -273,7 +277,7 @@ def main(argv=None):
     p_fetch.add_argument(
         "--source", choices=["open_meteo", "caiyun", "qweather", "tianji",
                              "fuxi", "fuxi_data", "fengwu", "geovis",
-                             "accuweather", "msn"],
+                             "accuweather", "msn", "ew4all"],
         default="open_meteo",
         help="预报源：open_meteo（默认）、caiyun（需 CAIYUN_TOKEN）、qweather"
              "（需 QWEATHER_API_KEY）、tianji（网页接口，无需凭据）、fuxi（伏羲中期"
@@ -281,7 +285,8 @@ def main(argv=None):
              "FUXI_DATA_TOKEN）、fengwu（FengWu-GHR-9km，可选 FENGWU_API_KEY 延长"
              "时效）、geovis（中科星图，需 GEVIS_TOKEN）、accuweather（AccuWeather"
              " Enterprise，需 ACCUWEATHER_API_KEY）、msn（MSN 天气/中国天气网，"
-             "无需凭据，时效上限约 9.3 天）",
+             "无需凭据，时效上限约 9.3 天）、ew4all（CMA 云上早期预警支撑系统，"
+             "无需凭据，含 CMA-NDFS 与 风清AI模式；温度 10/15 天，降水 10 天）",
     )
     sub.add_parser("report")
     pm = sub.add_parser("monthly")

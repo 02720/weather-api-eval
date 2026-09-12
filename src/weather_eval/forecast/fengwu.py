@@ -63,6 +63,9 @@ import requests
 
 from .base import ForecastProvider
 from .http import request_with_retries
+# 重采样（3h 采样→逐小时插值、6h 累计→逐小时均摊）的实现在 resample.py 中唯一一份，
+# EW4ALL 接入也复用同一套；本模块保留原函数名作为薄封装，既有调用方/测试不受影响。
+from .resample import interpolate_hourly, spread_accumulation
 
 logger = logging.getLogger(__name__)
 
@@ -115,61 +118,17 @@ def _num(v: Any) -> float | None:
     return f if (f == f and f not in (float("inf"), float("-inf"))) else None
 
 
-def interpolate_hourly(samples: list[tuple[datetime, float | None]]) \
-        -> list[tuple[datetime, float | None]]:
-    """把按时间升序的采样点线性插值到逐小时（首末采样之间；不外推）。
-
-    端点缺测的区段（任一端为 None）不插值，产出 None；既有整点采样原样保留。
-    """
-    if len(samples) < 2:
-        return list(samples)
-    out: list[tuple[datetime, float | None]] = []
-    for (t0, v0), (t1, v1) in zip(samples, samples[1:]):
-        out.append((t0, v0))
-        if v0 is None or v1 is None:
-            continue
-        span = int((t1 - t0).total_seconds() // 3600)
-        for k in range(1, span):
-            frac = k / span
-            out.append((t0 + timedelta(hours=k), v0 + (v1 - v0) * frac))
-    out.append(samples[-1])
-    # 按小时取整并去重（采样可能落在非整点，先地板到整点）
-    seen: dict[datetime, float | None] = {}
-    for t, v in out:
-        th = t.replace(minute=0, second=0, microsecond=0)
-        seen.setdefault(th, v)
-    return sorted(seen.items())
-
-
 def spread_precip_6h(samples: list[tuple[datetime, float | None]],
                      hours: list[datetime]) -> list[float | None]:
     """6 小时累计降水 → 逐小时 mm/h 速率（非重叠平铺窗口均摊 /6）。
 
-    采样间隔 3h < 窗口 6h，相邻窗口 (t_k-6h, t_k] 相互重叠——若把每个窗口都摊到
-    自己的 6 个小时会重复计总量。故取**相位平铺子集**：以首个采样为相位、每隔 6h
-    取一个窗口端点（如采样在 +1,+4,+7,+10… 则取 +1,+7,+13,…），这些窗口
-    (t-6h, t] 两两无缝拼接、恰好覆盖时间轴；每个小时 h 归属包含它的唯一平铺窗口
-    （端点 t ∈ [h, h+6h)），precip[h] = tp6h(t)/6。效果：
-      a) 每小时恰属一个窗口，任意完整覆盖跨度上的求和 == 原始累计总量（BIAS 不失真）；
+    算法同 ``resample.spread_accumulation(..., window_hours=6)``（本函数是其薄封装，
+    详细论证见该模块 docstring）。要点：
+      a) 每小时恰属一个平铺窗口，任意完整覆盖跨度上的求和 == 原始累计总量（BIAS 不失真）；
       b) mm/h 速率与观测 rain@t（前 1h 累计）配对口径 = 中科天机 pratesfc 同款近似；
       c) 6h 窗口均摊对 0.1mm 晴雨阈值偏保守（短时强降水被摊薄），属已知局限。
-    未被平铺窗口覆盖的小时（首窗之前/末窗之后）为 None。
     """
-    by_time: dict[datetime, float | None] = {}
-    for t, v in samples:
-        by_time.setdefault(t, v)  # 重复时刻保留首见（与温度插值去重口径一致）
-    times = sorted(by_time)
-    if not times or not hours:
-        return [None] * len(hours)
-    t0 = times[0]
-    tile = [t for t in times
-            if (t - t0) % timedelta(hours=6) == timedelta(0)]
-    out: list[float | None] = []
-    for h in hours:
-        tk = next((t for t in tile if h <= t < h + timedelta(hours=6)), None)
-        v = by_time[tk] if tk is not None else None
-        out.append(None if v is None else v / 6.0)
-    return out
+    return spread_accumulation(samples, hours, 6)
 
 
 class FengWuProvider(ForecastProvider):

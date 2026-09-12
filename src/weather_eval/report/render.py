@@ -57,6 +57,8 @@ MODEL_LABELS = {
     "geovis_v1": "中科星图逐小时",
     "accuweather_v1": "AccuWeather 逐小时",
     "msn_v1": "MSN 天气（中国天气网）",
+    "cma_ndfs": "CMA-NDFS 智能网格",
+    "fengqing_ai": "风清AI模式",
 }
 
 # 模型家族分组（选源器按此分组展示）。源多了以后，读者按"这家是什么来头"找源，
@@ -80,6 +82,9 @@ MODEL_FAMILIES = [
     ]},
     {"icon": "🤖", "name": "AI 气象大模型", "models": [
         "fuxi_c88", "fuxi_det", "fengwu_ghr_9km", "geovis_v1",
+    ]},
+    {"icon": "🇨🇳", "name": "中国气象局智能预报（EW4ALL）", "models": [
+        "cma_ndfs", "fengqing_ai",
     ]},
 ]
 
@@ -110,6 +115,8 @@ MODEL_COLORS = {
     "geovis_v1": "#6b7280",      # 灰
     "accuweather_v1": "#b45309", # 棕橙（AccuWeather 橙红系，与现有橙/红均拉开明度）
     "msn_v1": "#4d7c0f",         # 橄榄绿（与既有亮绿/黄绿拉开明度与色相）
+    "cma_ndfs": "#1e3a8a",       # 深海军蓝（明显暗于既有各蓝）
+    "fengqing_ai": "#c026d3",    # 洋红（与亮紫/品红拉开明度）
 }
 
 

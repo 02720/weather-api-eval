@@ -154,6 +154,19 @@ jobs:
           TZ: Asia/Shanghai
         run: python -m weather_eval fetch-forecast --source msn
 
+      - name: 抓取 EW4ALL（CMA-NDFS / 风清AI模式）预报（网页接口抓取，无需凭据）
+        # 抓取 ew4all.wmc-bj.net/EW4ALL 模式预报页背后的公开接口（前端 bundle 逆向，
+        # 契约与口径见 src/weather_eval/forecast/ew4all.py docstring）。
+        # 每站每模型最多 3 次请求（温度 + 1 小时降水 + 兜底累计降水）+ 每模型一次
+        # 起报轮次探测，4 站 2 模型实测约 24 次/轮。
+        # 接口无官方契约：失效形态是"返回空 data"而非报错，代码按"空数据不建快照"
+        # 守卫（空快照会被幂等键锁死），且起报轮次必须温度与兜底降水都有非缺测值
+        # 才采纳（该源一轮内分要素先后出数）；失败只影响该源，不阻断主流程。
+        continue-on-error: true
+        env:
+          TZ: Asia/Shanghai
+        run: python -m weather_eval fetch-forecast --source ew4all
+
       - name: 抓取观测 + 预报快照 + 更新主报告（本月累计，覆盖写 index.html）
         env:
           TZ: Asia/Shanghai
