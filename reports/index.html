@@ -26,10 +26,17 @@ window.addEventListener("DOMContentLoaded", function () {
     --radius:16px; --shadow:0 1px 3px rgba(15,23,42,.06),0 4px 14px rgba(15,23,42,.05);
   }
   * { box-sizing:border-box; }
+  /* 兜底：任何局部横向滚动（榜单/明细表）都应锁在自己的容器里，
+     页面级永不出横向滚动条——手机上整页左右晃动是最糟的阅读体验 */
+  html, body { overflow-x:clip; }
   /* author 样式（如 .chart-empty 的 display:flex）会压过 UA 的 [hidden]{display:none}，
      这里统一把 hidden 属性 restoring 成最强语义，防止"hidden 了却还显示"的空态常驻 */
   [hidden] { display:none !important; }
   html { scroll-behavior:smooth; }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior:auto; }
+    * { animation-duration:.01ms !important; transition-duration:.01ms !important; }
+  }
   body { margin:0; background:var(--bg); color:var(--text);
          font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB",
                      "Microsoft YaHei","Segoe UI",Roboto,sans-serif; line-height:1.6; }
@@ -89,6 +96,48 @@ window.addEventListener("DOMContentLoaded", function () {
   .lb-search { max-width:210px; flex:none; }
   .lb-scroll { overflow-x:auto; border:1px solid var(--line); border-radius:12px;
                box-shadow:0 1px 2px rgba(15,23,42,.04); }
+  /* 移动端排序控件（卡片视图配套；桌面端点表头排序，这里只在小屏出现） */
+  .lb-sortm { display:none; align-items:center; gap:6px; }
+  .lb-sortm select { margin:0; }
+  .lb-sortm button { border:1px solid var(--line); background:#fff; border-radius:9px;
+                     padding:7px 11px; font-size:13px; cursor:pointer; color:#334155; }
+  /* ---- 排行榜移动端卡片视图（≤640px 由 JS 渲染进此容器，桌面不出现） ----
+     首屏即读：一行 = 名次 + 源名 + 综合分；二行 = 关键指标格；三行 = 走势 + 样本 + 聚焦 */
+  .lb-cards { display:none; }
+  .lb-card { border:1px solid var(--line); border-radius:12px; padding:11px 12px;
+             margin:0 0 10px; background:#fff; box-shadow:0 1px 2px rgba(15,23,42,.04); }
+  .lb-card.lb-first { background:#fffbeb; border-color:#fcd34d; }
+  .lb-card.lb-none { color:#94a3b8; }
+  .lb-card-top { display:flex; align-items:center; gap:10px; }
+  .lb-card-rank { flex:none; width:34px; height:34px; border-radius:10px; background:#f1f5f9;
+                  display:flex; align-items:center; justify-content:center;
+                  font-weight:700; font-size:15px; color:#475569;
+                  font-variant-numeric:tabular-nums; }
+  .lb-card.lb-first .lb-card-rank { background:#fef3c7; }
+  .lb-card-name { flex:1; min-width:0; font-size:14.5px; line-height:1.35; }
+  .lb-card-name .id { display:block; font-size:11px; color:var(--muted);
+                      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .lb-card-score { flex:none; text-align:right; min-width:58px; }
+  .lb-card-score b { display:block; font-size:19px; line-height:1.1;
+                     font-variant-numeric:tabular-nums; }
+  .lb-card-score .lb-pri { display:block; height:5px; border-radius:3px; margin-top:4px;
+    background-color:#e2e8f0;
+    background-image:linear-gradient(90deg,#dbeafe,#bfdbfe); background-repeat:no-repeat;
+    background-size:var(--w,0%) 100%; }
+  .lb-card-score .na, .lb-card .na { font-size:12px; font-weight:400; }
+  .lb-card-metrics { display:grid; grid-template-columns:repeat(4, minmax(0,1fr));
+                     gap:6px; margin-top:10px; }
+  .lb-card-metrics > div { background:#f8fafc; border-radius:8px; padding:6px 4px;
+                           text-align:center; min-width:0; }
+  .lb-card.lb-first .lb-card-metrics > div { background:rgba(255,255,255,.75); }
+  .lb-card-metrics i { display:block; font-style:normal; font-size:10.5px; color:var(--muted);
+                       margin-bottom:2px; white-space:nowrap; }
+  .lb-card-metrics b { font-size:13px; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .lb-card-foot { display:flex; align-items:center; gap:10px; margin-top:10px; }
+  .lb-card-foot .c-spark { flex:1; min-width:0; }
+  .lb-card-foot .c-spark svg { display:block; width:100%; height:32px; }
+  .lb-card-foot .lb-n { flex:none; font-size:11px; }
+  .lb-card-foot .rank-focus { flex:none; }
   .lb-table { font-size:12.5px; min-width:1000px; }
   .lb-table th, .lb-table td { border:none; border-bottom:1px solid var(--line);
                                padding:7px 8px; white-space:nowrap; }
@@ -140,7 +189,7 @@ window.addEventListener("DOMContentLoaded", function () {
                                  font-weight:400; }
   .lb-weights[open] > summary::after { content:"▾"; }
   .lb-weights-body { padding:0 14px 14px; }
-  .lb-weights-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(330px,1fr));
+  .lb-weights-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(330px,100%),1fr));
                      gap:4px 18px; }
   .lb-weights h4 { margin:12px 0 6px; font-size:13.5px; }
   .lb-weights table { font-size:12px; background:#fff; }
@@ -224,7 +273,7 @@ window.addEventListener("DOMContentLoaded", function () {
   .num { font-variant-numeric:tabular-nums; }
 
   /* ---------- 名词小词典 ---------- */
-  .glossary { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr));
+  .glossary { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr));
               gap:4px 28px; margin:0; }
   .glossary > div { padding:9px 0; border-bottom:1px dashed var(--line); }
   .glossary dt { font-weight:700; font-size:13.5px; }
@@ -249,9 +298,30 @@ window.addEventListener("DOMContentLoaded", function () {
 
   @media (max-width:640px) {
     .hero h1 { font-size:26px; }
-    .card { padding:18px 16px; }
+    .hero-inner { padding:34px 16px 30px; }
+    .card { padding:18px 14px; }
     .chart { height:300px; }
-    select { max-width:160px; }
+    /* 排行榜：表格视图让位给卡片视图（渲染分叉见 renderLeaderboard） */
+    .lb-scroll { display:none; }
+    .lb-cards { display:block; }
+    .lb-sortm { display:flex; }
+    .lb-table { min-width:1000px; }   /* 极窄桌面窗口兜底仍可横滑（此断点下已隐藏） */
+    /* 触控目标 ≥36px： pills / 分段开关 / 聚焦按钮 / 下拉 */
+    .lb-pill { padding:8px 14px; font-size:13px; }
+    .lb-search { max-width:none; flex:1 1 100%; padding:8px 10px; }
+    .seg button { padding:8px 14px; font-size:13px; }
+    .rank-focus { padding:7px 12px; font-size:12px; }
+    .cmp-btn, .cmp-presets button { padding:8px 13px; }
+    .cmp-chip { padding:7px 12px; }
+    /* 下拉在窄屏吃满剩余宽度，长源名不再被硬截断 */
+    .chart-controls select { max-width:none; flex:1 1 150px; min-width:0; padding:8px 10px; }
+    .chart-controls label { flex:none; }
+    .cmp-mount { flex:1 1 100%; }
+    select { max-width:none; }
+    /* 图表说明文字随窗口变窄微缩一档，避免三字一行 */
+    .hint { font-size:12.5px; }
+    details.card > summary { padding:16px; }
+    details.card .body { padding:0 14px 16px; }
   }
 </style>
 </head>
@@ -326,6 +396,10 @@ window.addEventListener("DOMContentLoaded", function () {
       样本不足、有效样本量未达 30、或温度/降水缺一个维度的源沉底显示"样本积累中"，不参与冠军竞争。</p>
     <div class="lb-controls">
       <div class="lb-buckets" id="lbBuckets" aria-label="选择提前天数"></div>
+      <div class="lb-sortm">
+        <select id="lbSortKeyM" aria-label="选择排序列"></select>
+        <button type="button" id="lbSortDirM" aria-label="切换升序降序" title="切换升序/降序">↓</button>
+      </div>
       <input type="search" id="lbSearch" class="lb-search" placeholder="🔍 搜索预报源…" aria-label="搜索预报源">
     </div>
     <noscript><p class="desc">榜单表格需要启用 JavaScript 渲染；无 JS 时本页仍提供顶部冠军结论与下方完整的"评分构成"权重表。</p></noscript>
@@ -335,6 +409,7 @@ window.addEventListener("DOMContentLoaded", function () {
         <tbody id="lbBody"></tbody>
       </table>
     </div>
+    <div class="lb-cards" id="lbCards"></div>
     <div id="lbEmpty" class="chart-empty" hidden>本榜单暂无足够样本（数据积累中）——各源都在持续积累，通常再过几天就会出现。</div>
     
     <div class="hint" style="border-left-color:var(--amber);background:#fffbeb;color:#92400e">
@@ -670,6 +745,8 @@ const STATION_LABEL = {"wuzhou":"梧州气象站","bobai":"博白气象站","pin
 
 const labelOf   = m => MODEL_LABEL[m] || m;
 const stationOf = s => STATION_LABEL[s] || s;
+/* 手机断点（与 CSS @media 保持一致）：榜单卡片/图表紧凑布局共用这一个判定 */
+const MQ_NARROW = window.matchMedia("(max-width:640px)");
 const PALETTE = ["#2563eb","#f59e0b","#10b981","#8b5cf6","#ef4444","#0ea5e9"];
 const colorOf = m => MODEL_COLOR[m] || PALETTE[report.meta.models.indexOf(m) % PALETTE.length] || "#64748b";
 
@@ -745,10 +822,26 @@ function fieldStats(getVal, n) {
   return out;
 }
 
+/* tooltip 位置钳制：小屏上 ECharts 默认跟随指针，长标签会把它顶出画布右缘
+ * （confine 只能"尽量收"，钳不回来）。这里手动翻转/贴边，保证永不越界。 */
+function tipClampPos(point, params, dom, rect, size) {
+  const px = point[0], py = point[1];
+  const vw = size.viewSize[0], vh = size.viewSize[1];
+  const tw = size.contentSize[0], th = size.contentSize[1];
+  let x = px + 14, y = py - th - 10;
+  if (x + tw > vw - 4) x = px - tw - 14;   // 右侧放不下 → 翻到指针左侧
+  if (x < 4) x = 4;                        // 还放不下 → 贴左边（限宽后内容会换行）
+  if (y < 4) y = py + 16;
+  if (y + th > vh - 4) y = Math.max(4, vh - th - 4);
+  return [x, y];
+}
+
 /* 对比图 option：三层视觉各答一个问题 ——
    灰带看"全体"，彩色粗线看"个体"，灰细线/hover 看"任意一家" */
 function compareOption(x, getVal, yName, opts) {
   opts = opts || {};
+  // 窄屏（与排行榜卡片同一断点）：轴标签缩短、网格收紧、线尾名字缩小
+  const narrow = MQ_NARROW.matches;
   const stats = fieldStats(getVal, x.length);
   const fmtV = opts.valueFmt || (v => fmt(v));
   const series = [
@@ -780,9 +873,12 @@ function compareOption(x, getVal, yName, opts) {
       connectNulls:false, z:4, showSymbol:false, triggerLineEvent:true,
       data:x.map((_, i) => getVal(m, i)),
       itemStyle:{color:colorOf(m)}, lineStyle:{width:2.4, color:colorOf(m)},
-      endLabel:{show:true, formatter:labelOf(m), color:colorOf(m), fontSize:11,
+      endLabel:{show:true, formatter:labelOf(m), color:colorOf(m),
+                fontSize:narrow ? 10 : 11,
+                // 窄屏右缘留白有限，超长源名截断省略（完整名在 tooltip 里）
+                width: narrow ? 82 : null, overflow: narrow ? "truncate" : "break",
                 fontWeight:600, backgroundColor:"rgba(255,255,255,.9)",
-                padding:[2, 5], borderRadius:4, distance:5,
+                padding:[2, 5], borderRadius:4, distance: narrow ? 4 : 5,
                 // 统一上浮：线在 0 值处结束时（如 TS 归零）避免压到 x 轴刻度文字
                 offset:[0, -12]},
       labelLayout:{moveOverlap:"shiftY"}, emphasis:{focus:"series"}});
@@ -790,6 +886,10 @@ function compareOption(x, getVal, yName, opts) {
   return {
     animationDuration:150,
     tooltip:{trigger:"axis", confine:true, axisPointer:{type:"line"},
+      position:tipClampPos,
+      // 限宽换行：战场行在窄屏上不再横向顶出屏幕
+      extraCssText:"max-width:" + (narrow ? "78vw" : "440px") +
+                   ";white-space:normal;line-height:1.55",
       formatter: params => {
         const i = params && params.length ? params[0].dataIndex : 0;
         const rows = [];
@@ -800,17 +900,27 @@ function compareOption(x, getVal, yName, opts) {
             '　<b style="font-variant-numeric:tabular-nums">' + fmtV(getVal(m, i)) + "</b>");
         });
         const s = stats[i];
-        if (s) rows.push('<span style="color:#64748b">战场 ' + s.n + " 家：最高 " + fmtV(s.max) +
-          "（" + labelOf(s.maxBy) + "）· 中位 " + fmtV(s.median) + " · 最低 " + fmtV(s.min) +
-          "（" + labelOf(s.minBy) + "）</span>");
+        if (s) rows.push(narrow
+          ? '<span style="color:#64748b">战场 ' + s.n + " 家 · 最高 " + fmtV(s.max) +
+            "（" + labelOf(s.maxBy) + "）<br>中位 " + fmtV(s.median) + " · 最低 " + fmtV(s.min) +
+            "（" + labelOf(s.minBy) + "）</span>"
+          : '<span style="color:#64748b">战场 ' + s.n + " 家：最高 " + fmtV(s.max) +
+            "（" + labelOf(s.maxBy) + "）· 中位 " + fmtV(s.median) + " · 最低 " + fmtV(s.min) +
+            "（" + labelOf(s.minBy) + "）</span>");
         return '<div style="font-weight:600;margin-bottom:2px">' + x[i] + "</div>" +
                rows.join("<br>");
       }},
-    // 右侧留白给线尾名字；未聚焦时收紧
-    grid:{left:62, right:focus.size ? 104 : 30, top:26, bottom:44},
+    // 右侧留白给线尾名字；containLabel 让 y 轴标签宽度自适应（窄屏不裁刻度）
+    grid:{left: narrow ? 6 : 62, right: focus.size ? (narrow ? 84 : 104) : (narrow ? 12 : 30),
+          top: narrow ? 32 : 26, bottom: narrow ? 34 : 44, containLabel:true},
     xAxis:{type:"category", data:x, name:opts.xName || "",
-           axisLabel:{rotate: x.length > 10 ? 30 : 0}},
-    yAxis:{type:"value", name:yName, scale:!!opts.scale},
+           axisLabel:{rotate: narrow ? 0 : (x.length > 10 ? 30 : 0),
+                      fontSize: narrow ? 10 : 12,
+                      // 窄屏把"提前1天"缩成"1天"：横向塞得下更多刻度，也不遮挡曲线
+                      formatter: narrow ? (v => String(v).replace("提前", "").replace("第", "")) : null}},
+    yAxis:{type:"value", name:yName, scale:!!opts.scale,
+           axisLabel:{fontSize: narrow ? 10 : 12},
+           nameTextStyle:{fontSize: narrow ? 11 : 12, align:"left"}},
     series: series
   };
 }
@@ -1054,8 +1164,74 @@ try {
     }).join("");
   }
 
-  function lbRowHtml(row, rank, markIdx) {
+  /* 手机端（≤640px）榜单改用卡片视图：宽表格在小屏上要么横向滚动丢上下文、
+   * 要么列挤到不可读。卡片把"谁在榜首、各维度几分"放进首屏，一屏 3~4 家正好。
+   * 断点用脚本顶层的 MQ_NARROW；跨断点拖拽窗口时由 change 事件触发重渲染。 */
+
+  /* 移动端排序控件：卡片没有表头可点，用下拉选列 + 按钮切方向替代 */
+  function renderSortSelectM() {
+    const sel = document.getElementById("lbSortKeyM");
+    const dirBtn = document.getElementById("lbSortDirM");
+    if (!sel || !dirBtn) return;
+    sel.innerHTML = lbCols(board).map(c =>
+      '<option value="' + c.key + '"' + (c.key === sortKey ? " selected" : "") + ">" +
+      c.label + (c.dir === "asc" ? " ↑" : " ↓") + "</option>").join("");
+    sel.value = sortKey;
+    dirBtn.textContent = sortDir === "desc" ? "↓" : "↑";
+  }
+
+  function lbCardHtml(row, rank, markIdx) {
     const m = row.model;
+    const none = row.score === null || row.score === undefined;
+    const notQ = row.qualified === false;
+    const fmtC = (v, dec, unit) =>
+      (v === null || v === undefined) ? "—" : Number(v).toFixed(dec) + (unit || "");
+    const barStyle = (none || notQ) ? "" : ' style="--w:' + Math.max(0, Math.min(100, row.score)).toFixed(1) + '%"';
+    const rankCell = (rank === 1 && !none && !notQ) ? "🥇" : (rank === 2 && !none && !notQ) ? "🥈" :
+                     (rank === 3 && !none && !notQ) ? "🥉" : (rank || "·");
+    const spark = sparkDomain
+      ? sparkSVG(sparkDomain.byModel[m] || [], sparkDomain.lo, sparkDomain.hi, colorOf(m), markIdx)
+      : "";
+    const crown = (rank === 1 && !none && !notQ) ? "👑 " : "";
+    const dagger = (board === "all" && !none && !notQ && row.sig_vs_top === false)
+      ? ' <span title="与第一名的得分差在 90% 置信下与 0 分不开（差异不显著），前后名次更多是抽样运气" style="cursor:help">†</span>' : "";
+    const naTip = notQ && row.n_eff !== null && row.n_eff !== undefined
+      ? '<span class="na" title="有效样本量 n_eff=' + row.n_eff + '，未达门槛 ' + (report.meta.min_board_neff || 30) + '">样本积累中</span>'
+      : '<span class="na">样本积累中</span>';
+    const cell = (label, v, tip) =>
+      "<div" + (tip ? ' title="' + tip + '"' : "") + "><i>" + label + "</i><b>" + v + "</b></div>";
+    const ciV = row.ci90 ? Math.round(row.ci90[0]) + "~" + Math.round(row.ci90[1]) : "—";
+    const leadV = (row.lead_days === null || row.lead_days === undefined ? "—" : row.lead_days) + "/" +
+                  (row.rain_days === null || row.rain_days === undefined ? "—" : row.rain_days);
+    return '<article class="lb-card' + (rank === 1 && !none && !notQ ? " lb-first" : "") +
+        ((none || notQ) ? " lb-none" : "") + '">' +
+      '<div class="lb-card-top">' +
+        '<span class="lb-card-rank">' + rankCell + "</span>" +
+        '<div class="lb-card-name">' + crown +
+          '<span class="dot" style="background:' + colorOf(m) + '"></span>' +
+          '<span class="fam">' + (FAMILY_ICON[m] || "") + "</span><b>" + labelOf(m) + dagger + "</b>" +
+          '<span class="id">' + m + "</span></div>" +
+        '<div class="lb-card-score"' + barStyle + ">" +
+          ((none || notQ) ? naTip : "<b>" + fmtC(row.score, 1) + '</b><span class="lb-pri"></span>') +
+        "</div>" +
+      "</div>" +
+      '<div class="lb-card-metrics">' +
+        cell("温度分", fmtC(row.temp_score, 1), "温度 7 项指标加权（0~100）") +
+        cell("降水分", fmtC(row.precip_score, 1), "降水 5 项指标加权（0~100）") +
+        cell("±2°C", fmtC(row.acc2, 1, "%"), "温度 ±2°C 命中率，越高越好") +
+        cell("RMSE", fmtC(row.rmse, 2), "温度均方根误差 °C，越低越好") +
+        (board === "all" ? cell("90% CI", ciV, "综合分 90% 置信区间（按天重采样）") : "") +
+        (board === "all" ? cell("覆盖时效", leadV, "温度/降水两轨分别统计的最长覆盖天数") : "") +
+      "</div>" +
+      '<div class="lb-card-foot">' +
+        '<span class="c-spark" title="得分随提前量 1~' + LEAD_DAYS + ' 天的衰减全程">' + spark + "</span>" +
+        '<span class="lb-n" title="名义样本对（温度/降水）">' + (row.n || 0) + "/" + (row.n_precip || 0) + "</span>" +
+        '<button type="button" class="rank-focus" data-focus-model="' + m +
+          '" title="在下方所有对比图中聚焦/取消这一家">👁 聚焦</button>' +
+      "</div></article>";
+  }
+
+  function lbRowHtml(row, rank, markIdx) {    const m = row.model;
     const none = row.score === null || row.score === undefined;
     const notQ = row.qualified === false;   // 有分但 n_eff 未达标：不参与冠军竞争（P0-2.3）
     const fmtC = (v, dec, unit) =>
@@ -1105,11 +1281,13 @@ try {
     const head = document.getElementById("lbHead");
     const body = document.getElementById("lbBody");
     const scroll = document.getElementById("lbScroll");
+    const cards = document.getElementById("lbCards");
     const empty = document.getElementById("lbEmpty");
     if (!head || !body) return;
     // 排序键在总榜/分榜之间切换时可能失效（如"覆盖时效"只存在于总榜），此时复位为综合分
     if (!lbCols(board).some(c => c.key === sortKey)) { sortKey = "score"; sortDir = "desc"; }
     renderBoardPills();
+    renderSortSelectM();
     head.innerHTML = lbHeadHtml();
     const rows = (LEADERBOARDS[board] || []).slice();
     const hasScore = rows.some(r => r.score !== null);
@@ -1118,8 +1296,10 @@ try {
         ? "还没有源达到总榜的入围门槛（有效样本量 n_eff ≥ " + (report.meta.min_board_neff || 30) + "）——各源持续抓取，攒够样本后总榜就会出现。"
         : "该时效暂无足够样本（数据积累中）——各源都在持续积累，通常再过几天这一档就会出现榜单。";
       scroll.hidden = true;
+      cards.hidden = true;
       empty.hidden = false;
       body.innerHTML = "";
+      cards.innerHTML = "";
       return;
     }
     scroll.hidden = false;
@@ -1142,13 +1322,27 @@ try {
     if (!shown.length) {      // 搜索无匹配：给出提示行而非无声空表
       const esc = s => s.replace(/[&<>"']/g,
         c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-      // colspan 直接取当前表头列数，表头增删时提示行永不脱节
-      body.innerHTML = '<tr><td colspan="' + head.children.length +
-        '" style="text-align:center;color:#94a3b8;padding:18px">' +
-        '没有匹配「' + esc(lbQuery.trim()) + '」的预报源，清空搜索框可看完整榜单</td></tr>';
+      const msg = '没有匹配「' + esc(lbQuery.trim()) + '」的预报源，清空搜索框可看完整榜单';
+      if (MQ_NARROW.matches) {   // 卡片视图：提示铺在卡片容器里
+        cards.innerHTML = '<div style="text-align:center;color:#94a3b8;padding:18px 10px;font-size:13px">' + msg + "</div>";
+        body.innerHTML = "";
+      } else {
+        // colspan 直接取当前表头列数，表头增删时提示行永不脱节
+        body.innerHTML = '<tr><td colspan="' + head.children.length +
+          '" style="text-align:center;color:#94a3b8;padding:18px">' + msg + "</td></tr>";
+      }
       return;
     }
-    body.innerHTML = shown.map(r => lbRowHtml(r, ranks[r.model] || null, markIdx)).join("");
+    if (MQ_NARROW.matches) {   // 手机：卡片列表（宽表格在小屏会丢上下文，见 lbCardHtml 注释）
+      scroll.hidden = true;
+      cards.hidden = false;
+      body.innerHTML = "";
+      cards.innerHTML = shown.map(r => lbCardHtml(r, ranks[r.model] || null, markIdx)).join("");
+    } else {                   // 桌面：表格式主视图
+      cards.hidden = true;
+      cards.innerHTML = "";
+      body.innerHTML = shown.map(r => lbRowHtml(r, ranks[r.model] || null, markIdx)).join("");
+    }
     renderRankFocus();
   };
 
@@ -1163,6 +1357,22 @@ try {
     else { sortKey = col.key; sortDir = col.dir; }
     renderLeaderboard();
   });
+  // 移动端排序控件：下拉选列（取该列默认方向），按钮切换升/降序
+  const sortSelM = document.getElementById("lbSortKeyM");
+  const sortDirM = document.getElementById("lbSortDirM");
+  if (sortSelM) sortSelM.addEventListener("change", () => {
+    const col = lbCols(board).find(c => c.key === sortSelM.value);
+    if (!col) return;
+    sortKey = col.key;
+    sortDir = col.dir;
+    renderLeaderboard();
+  });
+  if (sortDirM) sortDirM.addEventListener("click", () => {
+    sortDir = sortDir === "desc" ? "asc" : "desc";
+    renderLeaderboard();
+  });
+  // 跨断点拖拽窗口 / 旋转平板：卡片与表格互切
+  if (MQ_NARROW.addEventListener) MQ_NARROW.addEventListener("change", () => renderLeaderboard());
   const lbSearch = document.getElementById("lbSearch");
   // input 覆盖键入；search 兜住 type="search" 原生 ✕ 清空按钮（Chromium 上两者都会发）
   const onSearch = () => { lbQuery = lbSearch.value; renderLeaderboard(); };
@@ -1180,7 +1390,11 @@ function makeChart(id, option) {
   charts.push(ch);
   return ch;
 }
-window.addEventListener("resize", () => charts.forEach(c => c.resize()));
+window.addEventListener("resize", () => {
+  charts.forEach(c => c.resize());
+  // 窄屏断点的 grid/轴/tooltip 都在 option 里，resize 后需重算而非仅重排画布
+  cmpRegistry.forEach(refreshCompare);
+});
 
 // 数据为空时把图容器换成提示文案（月初数据积累期常见）
 function emptyNote(id, text) {
@@ -1323,22 +1537,47 @@ try {
       tsEl.textContent = "";
     }
     if (!tsChart) { tsChart = echarts.init(tsEl); charts.push(tsChart); }
+    const narrowTs = MQ_NARROW.matches;
     tsChart.setOption({
-      tooltip:{trigger:"axis"},
-      legend:{top:0},
-      grid:{left:50, right:60, top:42, bottom:56},
-      xAxis:{type:"category", data:obs.map(p => fmtT(p.t)), axisLabel:{rotate:45}},
-      yAxis:[{type:"value", name:"气温°C", scale:true},
-             {type:"value", name:"降水mm", position:"right", splitLine:{show:false}}],
+      tooltip:{trigger:"axis", confine:true, position:tipClampPos,
+               extraCssText:"max-width:" + (narrowTs ? "78vw" : "440px") + ";white-space:normal",
+               // 源名放进标题行（图例已短名化，不再重复源名）
+               formatter: params => {
+                 const ps = params || [];
+                 const t = ps.length ? ps[0].axisValue : "";
+                 const rows = ps.map(p => p.marker + " " + p.seriesName +
+                   "　<b style='font-variant-numeric:tabular-nums'>" +
+                   ((p.value === null || p.value === undefined) ? "—" : p.value +
+                     (p.seriesName === "预报降水" ? " mm" : " °C")) + "</b>");
+                 return '<div style="font-weight:600;margin-bottom:2px">' + t +
+                        " · " + labelOf(m) + "</div>" + rows.join("<br>");
+               }},
+      // 图例只回答"哪条线是什么"，不重复源名——源名由正上方的下拉说明，
+      // 长源名（如"MSN 天气（中国天气网）预报气温"）在窄屏会把图例挤成三行糊掉
+      legend:{top:0, left:4, type:"scroll",
+              itemWidth: narrowTs ? 16 : 25, itemHeight: narrowTs ? 9 : 14,
+              textStyle:{fontSize: narrowTs ? 10 : 12}},
+      // 窄屏 top 加高一档：给"气温°C"轴名让位，避免与首行图例叠字
+      grid:{left:6, right: narrowTs ? 12 : 60, top: narrowTs ? 40 : 42, bottom:6, containLabel:true},
+      xAxis:{type:"category", data:obs.map(p => fmtT(p.t)),
+             axisLabel:{rotate:45, fontSize: narrowTs ? 9 : 12, interval:"auto"}},
+      yAxis:[{type:"value", name:"气温°C", scale:true,
+              axisLabel:{fontSize: narrowTs ? 10 : 12},
+              nameTextStyle:{fontSize: narrowTs ? 10 : 12, align:"left"}},
+             {type:"value", name:"降水mm", position:"right", splitLine:{show:false},
+              axisLabel:{fontSize: narrowTs ? 10 : 12},
+              nameTextStyle:{fontSize: narrowTs ? 10 : 12, align:"right"}}],
       series:[
         {name:"实况气温", type:"line", data:obs.map(p=>p.temp), itemStyle:{color:"#0f172a"}, lineStyle:{width:2.5}, symbol:"circle"},
-        {name:labelOf(m)+" 预报气温", type:"line", data:fcst.map(p=>p?p.temp:null), itemStyle:{color:colorOf(m)}, lineStyle:{width:2, type:"dashed"}},
-        {name:labelOf(m)+" 预报降水", type:"bar", yAxisIndex:1, data:fcst.map(p=>p?p.rain:null), itemStyle:{color:"#93c5fd"}}
+        {name:"预报气温", type:"line", data:fcst.map(p=>p?p.temp:null), itemStyle:{color:colorOf(m)}, lineStyle:{width:2, type:"dashed"}},
+        {name:"预报降水", type:"bar", yAxisIndex:1, data:fcst.map(p=>p?p.rain:null), itemStyle:{color:"#93c5fd"}}
       ]
     }, {notMerge:true});                     // 切换站点/模型时整体替换，避免残留旧序列
   }
   selS.onchange = drawTs; selM.onchange = drawTs;
   drawTs();
+  // 旋转屏幕/拖拽窗口时重算 option（tooltip 限宽、grid 断点值都在 option 里）
+  window.addEventListener("resize", () => { if (tsChart) drawTs(); });
 } catch(e) { console.error("timeseries", e); }
 
 /* ---------------- 每日 × 模型 温度准确率热力图（行按排行榜排序） ---------------- */
@@ -1354,21 +1593,29 @@ try {
     const el = document.getElementById("chartHeat");
     // 行数多时容器相应加高，避免每行被压扁到不可读
     el.style.height = Math.max(360, 19 * ms.length + 150) + "px";
-    makeChart("chartHeat", {
-      tooltip:{position:"top", formatter:p =>
+    // 窄屏收窄左侧源名列、缩小字号，把像素留给热力格子本身
+    const narrowHeat = el.clientWidth < 480;
+    const heatOption = () => ({
+      tooltip:{position:"top", confine:true, formatter:p =>
         `${dates[p.data[0]]} · ${labelOf(ms[p.data[1]])}<br>温度准确率：` +
         (p.data[2]===null ? "样本不足" : fmt(p.data[2])+"%") + `（样本 ${p.data[3]||0}）`},
-      grid:{left:110, right:24, top:14, bottom:64},
-      xAxis:{type:"category", data:dates.map(d=>d.slice(5)), axisLabel:{rotate:45}},
+      grid:{left: narrowHeat ? 6 : 110, right: narrowHeat ? 8 : 24, top:14,
+            bottom: narrowHeat ? 74 : 64, containLabel: narrowHeat},
+      xAxis:{type:"category", data:dates.map(d=>d.slice(5)),
+             axisLabel:{rotate:45, fontSize: narrowHeat ? 9 : 12}},
       // 类目轴默认自下而上绘制，不加 inverse 时榜首会沉底、与"第一名在最上"的说明相反
       yAxis:{type:"category", data:ms.map(labelOf), inverse:true,
-             axisLabel:{width:100, overflow:"truncate"}},
-      visualMap:{min:0, max:100, dimension:2, calculable:true, orient:"horizontal", left:"center", bottom:4,
-                 text:["准","翻车"], inRange:{color:["#ef4444","#fbbf24","#22c55e"]}},
+             axisLabel:{width: narrowHeat ? 72 : 100, overflow:"truncate",
+                        fontSize: narrowHeat ? 10 : 12}},
+      visualMap:{min:0, max:100, dimension:2, calculable:true, orient:"horizontal", left:"center",
+                 bottom:4, text:["准","翻车"], textStyle:{fontSize: narrowHeat ? 10 : 12},
+                 inRange:{color:["#ef4444","#fbbf24","#22c55e"]}},
       series:[{type:"heatmap", data,
                itemStyle:{borderColor:"#fff", borderWidth:1},
                emphasis:{itemStyle:{shadowBlur:6, shadowColor:"rgba(0,0,0,.3)"}}}]
     });
+    const heatChart = makeChart("chartHeat", heatOption());
+    window.addEventListener("resize", () => { if (heatChart) heatChart.setOption(heatOption()); });
   }
 } catch(e) { console.error("heatmap", e); }
 
