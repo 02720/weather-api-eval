@@ -3016,8 +3016,8 @@
     "pressure": 1003.7,
     "humidity": 69.0,
     "rain": 0.0,
-    "wind_speed": 4.0,
-    "wind_dir": 68.0
+    "wind_speed": 5.5,
+    "wind_dir": 55.0
   },
   "2026-09-13T17:00": {
     "time": "2026-09-13T17:00",
@@ -3118,5 +3118,85 @@
     "rain": 0.0,
     "wind_speed": 1.6,
     "wind_dir": 43.0
+  },
+  "2026-09-14T07:00": {
+    "time": "2026-09-14T07:00",
+    "source": "wd",
+    "temp": 24.1,
+    "pressure": 1004.2,
+    "humidity": 96.0,
+    "rain": 0.0,
+    "wind_speed": 3.1,
+    "wind_dir": 46.0
+  },
+  "2026-09-14T06:00": {
+    "time": "2026-09-14T06:00",
+    "source": "wd",
+    "temp": 24.1,
+    "pressure": 1003.9,
+    "humidity": 95.0,
+    "rain": 0.0,
+    "wind_speed": 2.5,
+    "wind_dir": 55.0
+  },
+  "2026-09-14T05:00": {
+    "time": "2026-09-14T05:00",
+    "source": "wd",
+    "temp": 24.2,
+    "pressure": 1003.8,
+    "humidity": 95.0,
+    "rain": 0.0,
+    "wind_speed": 3.4,
+    "wind_dir": 65.0
+  },
+  "2026-09-14T04:00": {
+    "time": "2026-09-14T04:00",
+    "source": "wd",
+    "temp": 24.3,
+    "pressure": 1003.5,
+    "humidity": 96.0,
+    "rain": 0.0,
+    "wind_speed": 3.7,
+    "wind_dir": 51.0
+  },
+  "2026-09-14T03:00": {
+    "time": "2026-09-14T03:00",
+    "source": "wd",
+    "temp": 24.5,
+    "pressure": 1004.3,
+    "humidity": 97.0,
+    "rain": 0.0,
+    "wind_speed": 3.2,
+    "wind_dir": 59.0
+  },
+  "2026-09-14T02:00": {
+    "time": "2026-09-14T02:00",
+    "source": "wd",
+    "temp": 24.4,
+    "pressure": 1004.8,
+    "humidity": 97.0,
+    "rain": 0.0,
+    "wind_speed": 1.7,
+    "wind_dir": 65.0
+  },
+  "2026-09-14T01:00": {
+    "time": "2026-09-14T01:00",
+    "source": "wd",
+    "temp": 24.4,
+    "pressure": 1004.9,
+    "humidity": 97.0,
+    "rain": 0.0,
+    "wind_speed": 1.4,
+    "wind_dir": 30.0
+  },
+  "2026-09-14T00:00": {
+    "time": "2026-09-14T00:00",
+    "source": "wd",
+    "temp": 24.4,
+    "pressure": 1005.5,
+    "humidity": 97.0,
+    "rain": 0.0,
+    "wind_speed": 2.9,
+    "wind_dir": 71.0
   }
 }
