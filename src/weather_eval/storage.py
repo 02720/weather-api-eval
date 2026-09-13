@@ -102,8 +102,16 @@ def save_obs(station_id: str, records: list[dict]) -> int:
         with _exclusive_lock(path):
             existing: dict = _load_json(path) or {}
             for k, v in rec_map.items():
+                old = existing.get(k)
                 if k not in existing or v != existing[k]:
                     updated += 1
+                # 观测被回改时留痕（P2-4）：存档的可审计性要求"改了什么"可见——
+                # 观测源会修正早期错报，静默覆盖会让"当时的实况"无法复原。
+                if old is not None and old != v:
+                    logger.warning(
+                        "观测回改 %s %s：temp %s→%s，rain %s→%s",
+                        station_id, k, old.get("temp"), v.get("temp"),
+                        old.get("rain"), v.get("rain"))
                 existing[k] = v
             _atomic_write_json(path, existing)
     return updated

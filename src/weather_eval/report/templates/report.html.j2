@@ -363,9 +363,13 @@ window.addEventListener("DOMContentLoaded", function () {
 {# 冠军横幅默认读全时效总榜中"达标"（n_eff 门槛 + 温度/降水两维度齐备）的第一名；
    全部未达标时回退提前 1 天分榜中两维度齐备的第一行 #}
 {% set lb_all_q = lb_all | selectattr('qualified') | list %}
-{% set lb_all_champ = lb_all_q[0] if (lb_all_q and lb_all_q[0].score is not none) else none %}
+{# 总榜名次以"共同窗口分"为准（P0-2）：只在所有入围源都覆盖的天桶上比较，
+   消除"覆盖越短越占便宜"的偏置；全窗口冠军并列披露，两个结论都给读者。 #}
+{% set champ_common = (lb_all | selectattr('score_common') | list)[0] if lb_all else none %}
+{% set champ_full = (lb_all_q | selectattr('score') | list)[0] if lb_all_q else none %}
 {% set lb1_q = lb1 | selectattr('temp_score') | selectattr('precip_score') | selectattr('score') | list %}
-{% set champ = lb_all_champ if lb_all_champ else (lb1_q[0] if lb1_q else none) %}
+{% set champ = champ_common if champ_common else (champ_full if champ_full else (lb1_q[0] if lb1_q else none)) %}
+{% set cw = report.meta.get('common_window') or {} %}
 {# 数值格式化宏：None（样本不足）统一显示为 — #}
 {% macro pct(v) %}{{ '—' if v is none else '%.1f%%'|format(v) }}{% endmacro %}
 {% macro num(v, d=2) %}{{ '—' if v is none else ('%.' ~ d ~ 'f')|format(v) }}{% endmacro %}
@@ -391,10 +395,15 @@ window.addEventListener("DOMContentLoaded", function () {
     </div>
     {% if champ %}
     <!-- 全页唯一的"一句话结论"：小白只看这一句也够 -->
-    <div class="champion">🏆 {{ report.meta.period_label }} 月{% if not report.meta.is_monthly %}至今{% endif %}{% if lb_all_champ %}全时效总榜{% else %}提前 1 天{% endif %}综合表现最好的是
+    <div class="champion">🏆 {{ report.meta.period_label }} 月{% if not report.meta.is_monthly %}至今{% endif %}
+      {% if champ_common %}<b>共同窗口</b>（所有入围源都覆盖的提前 1~{{ cw.get('days', 0) }} 天，{{ cw.get('models', 0) }} 家同台）里综合表现最好的是{% else %}{% if lb1_q %}提前 1 天{% else %}综合{% endif %}表现最好的是{% endif %}
       <b>{{ model_labels.get(champ.model, champ.model) }}</b>
-      <div class="sub">综合得分 {{ num(champ.score, 1) }}{% if champ.ci90 %}（90% 置信区间 {{ num(champ.ci90[0], 1) }}~{{ num(champ.ci90[1], 1) }}，按天重采样 {{ report.meta.bootstrap_runs }} 次）{% endif %}（温度 {{ num(champ.temp_score, 1) }} 分 + 降水 {{ num(champ.precip_score, 1) }} 分）{% if champ.lead_days %}· 覆盖预报至提前 {{ champ.lead_days }} 天{% endif %} ·
+      <div class="sub">{% if champ_common %}共同窗口得分 {{ num(champ.score_common, 1) }}{% if champ.ci90 %}（90% 置信区间 {{ num(champ.ci90[0], 1) }}~{{ num(champ.ci90[1], 1) }}，按 {{ report.meta.get('bootstrap_block_days', 1) }} 天为一块重采样 {{ report.meta.bootstrap_runs }} 次）{% endif %}{% if champ.skill is not none %}· 比"明天=今天"的零技巧基准高 {{ num(champ.skill, 1) }} 分{% endif %}{% else %}综合得分 {{ num(champ.score, 1) }}{% endif %}
+        （温度 {{ num(champ.temp_score, 1) }} 分 + 降水 {{ num(champ.precip_score, 1) }} 分）{% if champ.lead_days %}· 覆盖预报至提前 {{ champ.lead_days }} 天{% endif %} ·
         温度准确率 {{ pct(champ.acc2) }}（误差 ≤2°C 即算准）· 日雨评分 TS {{ num(champ.ts, 2) }}（24h 累计 ≥{{ report.meta.rain_daily_threshold_mm }}mm 报中程度，0~1，越高越好）。
+        {% if champ_full and champ_common and champ_full.model != champ_common.model %}
+        <br>🥈 <b>全窗口</b>（各源自家全部可用时效，覆盖 {{ champ_full.n_buckets }} 个天桶）最高的是 <b>{{ model_labels.get(champ_full.model, champ_full.model) }}</b>（{{ num(champ_full.score, 1) }} 分）——覆盖越短越占便宜，这个数字不与上面的名次混用。
+        {% endif %}
         提前更久谁守得住？见下方<a href="#leaderboard" style="color:#dbeafe">🏅 排行榜（总榜 + 可切提前天数）</a>与<a href="#score-trend" style="color:#dbeafe">📉 得分衰减曲线</a>。</div>
     </div>
     {% else %}
@@ -426,8 +435,9 @@ window.addEventListener("DOMContentLoaded", function () {
   <!-- ==================== 排行榜（表格式主视图）：总榜 + 每个提前量档一张榜 ==================== -->
   <section class="card" id="leaderboard">
     <h2>🏅 预报源排行榜</h2>
-    <p class="desc">榜单分两层，用按钮切换：<b>「总榜」</b>把各源在每个「提前 N 天」档的得分做<b>等权平均</b>（每个源先在自己的每个可用时效各得一分、再跨时效平均），
-      回答"综合来看谁最准"；<b>「提前 N 天」分榜</b>按时效分档、每档一张，保证同一难度下比较。
+    <p class="desc">榜单分两层，用按钮切换：<b>「总榜」</b>的名次是<b>共同窗口分</b>——只在{% if report.meta.get('common_window') and report.meta.common_window.get('days') %}所有入围源都覆盖的提前 1~{{ report.meta.common_window.days }} 天{% else %}所有入围源都覆盖的天桶{% endif %}上比较，
+      把"覆盖越短越占便宜"的系统性偏置消掉（短时效天然好报，直接平均全窗口会让只报近几天的源白拿十几分）；<b>全窗口分</b>与<b>覆盖桶数</b>并列披露供参照，但不作名次。
+      <b>「提前 N 天」分榜</b>按时效分档、每档一张，保证同一难度下比较。
       点<b>任意列名</b>可改排序（如按 RMSE 找误差最小、按 TS 找晴雨最准）；数字全部来自与趋势图同一套加权公式。
       名次列始终是综合名次（👑 = 当前榜单第一）；右侧走势线是该源得分随提前量 1~{{ report.meta.hourly_lead_days }} 天的衰减全程（总榜视图不标圆点）。
       样本不足、有效样本量未达 {{ report.meta.min_board_neff }}、或温度/降水缺一个维度的源沉底显示"样本积累中"，不参与冠军竞争。</p>
@@ -454,12 +464,33 @@ window.addEventListener("DOMContentLoaded", function () {
       <b>{{ model_labels.get(m, m) }}</b>：{{ note }}。{% endfor %}
       该源在榜单中的名次应结合这一差异解读。</div>
     {% endif %}
-    <p class="hint">💡 <b>怎么看：</b>① 先看<b>综合分</b>列的名次与梯队（底纹条越长分越高）；
-      ② 总榜每个源先在每个可用时效各得一分再平均，"只报短时效"不再占便宜——但可用时效数本身就是信息，
-      总榜视图下请结合<b>「覆盖时效」</b>列与<b>置信区间</b>解读，要同难度硬碰硬就切「提前 N 天」分榜；
-      ③ 名字带 <b>†</b> = 与第一名的差距在统计上不显著（按天重采样区分不开）；
+    <p class="hint">💡 <b>怎么看：</b>① 总榜先看<b>共同窗口分</b>列的名次与梯队（底纹条越长分越高）——这是公平比较后的名次；
+      ② 想看"这家能把多远的预报做下来"，看<b>覆盖桶数</b>与<b>全窗口分</b>（覆盖越长越吃亏，两列要一起读）；
+      <b>技巧差</b>是相对零技巧基准 persistence（明天 = 今天的实况）高出的分数，≤0 意味着不比"原地不动"强；
+      ③ 名字带 <b>†</b> = 与第一名（共同窗口分）的差距经 Holm–Bonferroni 多重比较校正后仍不显著——26 家同榜逐对比，
+      不做校正的话"显著"基本是抽样运气；置信区间按 <b>{{ report.meta.get('bootstrap_block_days', 1) }} 天</b>为一块重采样（块长 = 误差去相关时间，块长 1 天会把区间算窄近一倍）；
+      ④ <b>起报轮次</b>与<b>验证日数</b>说的是"这份分数有多厚的底子"——同样覆盖 6 天，23 个起报、8 个验证日与 57 个起报、12 个验证日不是一个可信度量级；
       ④ 点列名按单一指标排队，<b>RMSE 等误差类越低越好，其余越高越好</b>；⑤ 走势线向右下掉是自然规律，
       <b>谁掉得慢、谁在右边还站得高</b>，谁的长效预报就更可靠。</p>
+    {% set no_data = [] %}
+    {% set truncated = [] %}
+    {% for m, st in (report.meta.get('model_status') or {}).items() %}{% if st != 'ok' %}{% set _ = no_data.append(m) %}{% endif %}{% endfor %}
+    {% for m, q in (report.meta.get('snapshot_quality') or {}).items() %}{% if q.get('truncated') %}{% set _ = truncated.append((m, q)) %}{% endif %}{% endfor %}
+    {% if no_data or truncated %}
+    <div class="hint" style="border-left-color:var(--amber);background:#fffbeb;color:#92400e">
+      🧪 <b>数据充分性：</b>
+      {% if no_data %}{% for m in no_data %}<b>{{ model_labels.get(m, m) }}</b>{% if not loop.last %}、{% endif %}{% endfor %} 已配置但本窗口内<b>从未产出数据</b>（多为需要凭据/尚未接入），榜上无分不等于"报得差"。{% endif %}
+      {% if truncated %}{% for m, q in truncated %}<b>{{ model_labels.get(m, m) }}</b> 有 {{ q.truncated }}/{{ q.snapshots }} 份残缺快照（序列最短 {{ q.min_len }} 小时，中位 {{ q.median_len }} 小时）；{% endfor %}残缺快照仍参与评估，其样本对时间的覆盖更薄，请结合<b>起报轮次</b>列解读。{% endif %}
+    </div>
+    {% endif %}
+    {% set cspan = report.meta.get('calendar_span') or {} %}
+    {% if cspan.get('min_days') and cspan.get('max_days') and cspan['max_days'] >= cspan['min_days'] + 3 %}
+    <div class="hint" style="border-left-color:var(--amber);background:#fffbeb;color:#92400e">
+      📆 <b>验证期不齐：</b>入围源被验证的自然日数从 <b>{{ cspan['min_days'] }} 天</b>到 <b>{{ cspan['max_days'] }} 天</b>不等——
+      新接入的源只在自己入榜之后的日子上被检验。同一批源换到较短的那段日子重算，分数变动可达数分，
+      这类"时期效应"与预报技巧无关。请结合<b>验证日数</b>列解读名次。
+    </div>
+    {% endif %}
     {% if report.meta.weight_sensitivity and report.meta.weight_sensitivity.champions %}
     <div class="hint" style="border-left-color:var(--amber);background:#fffbeb;color:#92400e">
       ⚖️ <b>冠军有多稳？</b>把 12 项评分权重各随机扰动 ±40%、重复 {{ report.meta.weight_sensitivity.runs }} 次，
@@ -775,20 +806,20 @@ const fmtT = t => t.slice(5,10).replace("-","/") + " " + t.slice(11,13) + "时";
 
 /* ---------------- 模型顺序与"聚焦对比"体系 ---------------- */
 const LEADERBOARDS = report.leaderboards || {};
-// 排名基准榜：优先全时效总榜（"综合谁最准"的总答案），总榜未成形时回退提前 1 天分榜
-const RANK_BOARD = (LEADERBOARDS.all || []).some(r => r.score !== null && r.score !== undefined)
-  ? LEADERBOARDS.all : (LEADERBOARDS["1d"] || []);
-// 图表系列顺序与默认聚焦 = 基准榜名次（无分的排后面）
-const rankedModels = RANK_BOARD.length ? RANK_BOARD.map(r => r.model) : report.meta.models;
-const scoredModels = RANK_BOARD.filter(r => r.score !== null && r.score !== undefined)
-                           .map(r => r.model);
+// 共同覆盖窗口（P0-2）：总榜名次只在"入围源都有分的天桶"上比，见 evaluate._common_bucket_window
+const COMMON_WIN = (report.meta || {}).common_window || {};
+const COMMON_DAYS = COMMON_WIN.days || 0;
+const COMMON_LABEL = COMMON_DAYS ? ("提前 1~" + COMMON_DAYS + " 天") : "共同覆盖窗口";
+// 图表系列顺序与默认聚焦 = 总榜名次（无分的排后面）
+const rankedModels = (LEADERBOARDS.all && LEADERBOARDS.all.length
+  ? LEADERBOARDS.all.map(r => r.model) : report.meta.models);
 const rankOf = m => rankedModels.indexOf(m) + 1;
 // 选源器的家族分组数据（render.py 注入）
 const MODEL_FAMILIES = {{ model_families_json | safe }};
 
 /* 全局聚焦状态：所有对比图共享同一组源，默认聚焦排行榜前 3 名 */
 const MAX_FOCUS = 5;
-const focus = new Set(scoredModels.slice(0, 3));
+const focus = new Set(rankedModels.slice(0, 3));
 let showPack = false;   // 灰细线层开关：显示全体非聚焦源
 let cmpMsg = "";        // 选源器临时提示（如超出家数上限）
 let cmpMsgTimer = null;
@@ -875,6 +906,18 @@ function compareOption(x, getVal, yName, opts) {
      smooth:true, symbol:"none", z:3, connectNulls:false,
      itemStyle:{color:"#94a3b8"}, lineStyle:{width:1.4, type:"dashed", color:"#94a3b8"}}
   ];
+  // 零技巧基准（persistence：明天 = 今天）：给"分高不高"一个绝对参照系（P1-2）。
+  // 点线 + 末端直标名字，与各家本色曲线明确区分，不参与战场的 min/max 统计。
+  if (opts.baseline) {
+    series.push({id:"zero-skill", name:"零技巧基准", type:"line", smooth:true,
+      connectNulls:false, z:3, symbol:"none",
+      data:x.map((_, i) => { const v = opts.baseline(i); return (v === null || v === undefined) ? null : +v.toFixed(4); }),
+      itemStyle:{color:"#b45309"}, lineStyle:{width:1.6, type:"dotted", color:"#b45309"},
+      endLabel:{show:true, formatter:"零技巧基准", color:"#b45309", fontSize:10,
+                backgroundColor:"rgba(255,255,255,.9)", padding:[2, 4], borderRadius:4,
+                distance:4, offset:[0, -10]},
+      labelLayout:{moveOverlap:"shiftY"}});
+  }
   if (showPack) {   // 灰细线层：其余各家；hover 高亮本色，点击即聚焦
     rankedModels.forEach(m => {
       if (focus.has(m)) return;
@@ -1015,8 +1058,8 @@ function renderPickerMount(mount) {
   });
   if (open) {
     mount.querySelectorAll("[data-preset]").forEach(b => b.addEventListener("click", () => {
-      if (b.dataset.preset === "champ") setFocus(scoredModels.slice(0, 1));
-      else if (b.dataset.preset === "top3") setFocus(scoredModels.slice(0, 3));
+      if (b.dataset.preset === "champ") setFocus(rankedModels.slice(0, 1));
+      else if (b.dataset.preset === "top3") setFocus(rankedModels.slice(0, 3));
       else setFocus([]);
     }));
     const search = mount.querySelector(".cmp-search");
@@ -1081,20 +1124,44 @@ try {
   // 置信区间（P0-2）：按天分块 bootstrap 的综合分 90% 区间；† = 与第一名差异不显著
   const CI_COL = {key:"_ci", label:"90% 置信区间", nosort:true,
                   title:"按天重采样 " + (report.meta.bootstrap_runs || 500) + " 次的综合分波动范围；区间越窄分数越稳"};
+  // 总榜（P0-2）：名次用"共同窗口分"——只在所有入围源都覆盖的天桶上比，
+  // 把"覆盖越短越占便宜"的系统性偏置消掉；全窗口分、覆盖桶数并列披露，
+  // 让读者一眼看出"分高是因为准，还是因为覆盖短"。
+  const COMMON_COL = {key:"score_common", label:"共同窗口分", dir:"desc", dec:1, primary:true,
+    title:"只在所有入围源都覆盖的提前 " + COMMON_DAYS + " 天内比较（同名次依据），各家比的是同一批天桶"};
+  const FULL_COL = {key:"score", label:"全窗口分", dir:"desc", dec:1,
+    title:"各源自家全部可用天桶的等权平均：覆盖越长越吃亏，仅供参照，不作名次"};
+  const SKILL_COL = {key:"skill", label:"技巧差", dir:"desc", dec:1,
+    title:"相对零技巧基准 persistence（明天 = 今天）高出的分数；≤0 表示不比'原地不动'强"};
+  const NB_COL = {key:"n_buckets", label:"覆盖桶数", dir:"desc", dec:0, unit:" 桶",
+    title:"温度与降水两维度齐备的天桶数——全窗口分的实际分母"};
+  // 起报轮次（P2-1）：同样"覆盖 6 天"，1 个起报的几十条样本与 17 个起报的上万条
+  // 不是一个可信度量级；只披露覆盖天数会把两者显示成同一档
+  const ISSUE_COL = {key:"n_issues", label:"起报轮次", dir:"desc", dec:0, unit:" 轮",
+    title:"该源在本窗口内实际产出样本的起报时刻数——轮次越多，样本的时间覆盖越厚"};
+  // 验证日数（P0-2 的日历维度）：样本量相同也可能只覆盖几天。新接入的源只在
+  // 自己入榜之后的日子上被验证，那几天的天气形势偏难/偏易会变成"时期效应"
+  // 混进分数（实测同一批源换到 8 天重算，分数变动最高 7.3 分）。
+  const DAYS_COL = {key:"n_days", label:"验证日数", dir:"desc", dec:0, unit:" 天",
+    title:"该源真正被验证过的自然日数（含降水维的日数）"};
   const lbCols = board => board === "all"
-    ? LB_COLS.concat([CI_COL, LEAD_COL])
+    ? [COMMON_COL, FULL_COL, SKILL_COL].concat(LB_COLS.slice(1), [NB_COL, ISSUE_COL, DAYS_COL, CI_COL, LEAD_COL])
     : LB_COLS;
+  // 名次依据：总榜按共同窗口分，分时效榜按综合分；未达标源不参与名次
+  const rankKeyOf = b => (b === "all" ? "score_common" : "score");
   // 默认展示总榜；总榜整体样本不足时落到第一个有分的分时效榜
   let board = (LEADERBOARDS.all || []).some(r => r.qualified === true) ? "all"
     : (BUCKETS.find(b => (LEADERBOARDS[b] || []).some(r => r.score !== null)) || "all");
   let sortKey = "score", sortDir = "desc", lbQuery = "";
+  sortKey = rankKeyOf(board);   // 初始排序 = 名次依据列
 
-  // 名次只跟综合分绑定：无论当前按哪列排序，名次列始终显示该源在本时效的综合名次。
-  // 总榜的未达标源（n_eff 门槛，qualified=false）不参与名次（P0-2.3）
+  // 名次只跟"名次依据列"绑定：无论当前按哪列排序，名次列始终显示该源在本时效的名次。
+  // 总榜依据共同窗口分（P0-2），分时效榜依据综合分；未达标源（qualified=false）不参与名次。
   function lbRankMap(rows) {
     const map = {};
-    rows.filter(r => r.score !== null && r.score !== undefined && r.qualified !== false)
-        .sort((a, b) => b.score - a.score)
+    const k = rankKeyOf(board);
+    rows.filter(r => r[k] !== null && r[k] !== undefined && r.qualified !== false)
+        .sort((a, b) => b[k] - a[k])
         .forEach((r, i) => { map[r.model] = i + 1; });
     return map;
   }
@@ -1149,18 +1216,18 @@ try {
     const el = document.getElementById("lbBuckets");
     if (!el) return;
     el.innerHTML = BOARDS.map(b => {
-      const cnt = (LEADERBOARDS[b] || []).filter(r => r.score !== null).length;
+      const cnt = (LEADERBOARDS[b] || []).filter(r => r[rankKeyOf(b)] !== null && r[rankKeyOf(b)] !== undefined).length;
       const isAll = b === "all";
       const label = isAll ? "🏅 总榜" : "提前" + parseInt(b, 10) + "天";
       const tip = isAll
-        ? "全部时效（提前 1~" + LEAD_DAYS + " 天）样本合并的总榜"
+        ? (COMMON_DAYS ? "名次只在全员共有的提前 1~" + COMMON_DAYS + " 天内比较（消除覆盖长短的不公平）；全窗口分并列披露" : "全部时效样本合并的总榜")
         : "提前 " + parseInt(b, 10) + " 天预报的排行榜" + (cnt ? "" : "（暂无足够样本）");
       return '<button type="button" class="lb-pill' + (b === board ? " on" : "") +
         (cnt ? "" : " empty") + '" data-board="' + b + '" aria-pressed="' + (b === board) +
         '" title="' + tip + '">' + label + (cnt ? "<i>" + cnt + "</i>" : "") + "</button>";
     }).join("");
     el.querySelectorAll("[data-board]").forEach(btn =>
-      btn.addEventListener("click", () => { board = btn.dataset.board; renderLeaderboard(); }));
+      btn.addEventListener("click", () => { board = btn.dataset.board; sortKey = rankKeyOf(board); sortDir = "desc"; renderLeaderboard(); }));
   }
 
   function lbHeadHtml() {
@@ -1198,13 +1265,38 @@ try {
     dirBtn.textContent = sortDir === "desc" ? "↓" : "↑";
   }
 
+  // 榜单共用的格式化与单元格辅助（卡片视图与表格视图必须显示同一套数字）
+  const fmtC = (v, dec, unit) =>
+    (v === null || v === undefined) ? "—" : Number(v).toFixed(dec) + (unit || "");
+  function scoreCell(row, none, notQ) {
+    if (board !== "all") {
+      return '<td class="num lb-pri"' + (none || notQ ? "" : barStyle(row.score)) + ">" +
+        ((none || notQ) ? naTip(row) : fmtC(row.score, 1)) + "</td>";
+    }
+    // 总榜：共同窗口分（带底纹条、名次依据）+ 全窗口分 + 技巧差
+    const cNone = row.score_common === null || row.score_common === undefined;
+    return '<td class="num lb-pri"' + (cNone || notQ ? "" : barStyle(row.score_common)) + ">" +
+      ((cNone || notQ) ? naTip(row) : fmtC(row.score_common, 1)) + "</td>" +
+      '<td class="num" title="各源全部可用天桶的等权平均（覆盖越长越吃亏，不作名次）">' +
+      fmtC(row.score, 1) + "</td>" +
+      '<td class="num" title="相对零技巧基准 persistence（明天 = 今天）高出的分数">' +
+      fmtC(row.skill, 1) + "</td>";
+  }
+  function naTip(row) {
+    return row.qualified === false && row.n_eff !== null && row.n_eff !== undefined
+      ? '<span class="na" title="有效样本量 n_eff=' + row.n_eff + '，未达门槛 ' +
+        (report.meta.min_board_neff || 30) + '">样本积累中</span>'
+      : '<span class="na">样本积累中</span>';
+  }
+  function barStyle(v) {
+    return ' style="--w:' + Math.max(0, Math.min(100, v)).toFixed(1) + '%"';
+  }
+
   function lbCardHtml(row, rank, markIdx) {
     const m = row.model;
-    const none = row.score === null || row.score === undefined;
+    const key = rankKeyOf(board);
+    const none = row[key] === null || row[key] === undefined;
     const notQ = row.qualified === false;
-    const fmtC = (v, dec, unit) =>
-      (v === null || v === undefined) ? "—" : Number(v).toFixed(dec) + (unit || "");
-    const barStyle = (none || notQ) ? "" : ' style="--w:' + Math.max(0, Math.min(100, row.score)).toFixed(1) + '%"';
     const rankCell = (rank === 1 && !none && !notQ) ? "🥇" : (rank === 2 && !none && !notQ) ? "🥈" :
                      (rank === 3 && !none && !notQ) ? "🥉" : (rank || "·");
     const spark = sparkDomain
@@ -1212,15 +1304,14 @@ try {
       : "";
     const crown = (rank === 1 && !none && !notQ) ? "👑 " : "";
     const dagger = (board === "all" && !none && !notQ && row.sig_vs_top === false)
-      ? ' <span title="与第一名的得分差在 90% 置信下与 0 分不开（差异不显著），前后名次更多是抽样运气" style="cursor:help">†</span>' : "";
-    const naTip = notQ && row.n_eff !== null && row.n_eff !== undefined
-      ? '<span class="na" title="有效样本量 n_eff=' + row.n_eff + '，未达门槛 ' + (report.meta.min_board_neff || 30) + '">样本积累中</span>'
-      : '<span class="na">样本积累中</span>';
+      ? ' <span title="与第一名（共同窗口分）的差距经多重比较校正后仍不显著" style="cursor:help">†</span>' : "";
     const cell = (label, v, tip) =>
       "<div" + (tip ? ' title="' + tip + '"' : "") + "><i>" + label + "</i><b>" + v + "</b></div>";
     const ciV = row.ci90 ? Math.round(row.ci90[0]) + "~" + Math.round(row.ci90[1]) : "—";
     const leadV = (row.lead_days === null || row.lead_days === undefined ? "—" : row.lead_days) + "/" +
                   (row.rain_days === null || row.rain_days === undefined ? "—" : row.rain_days);
+    const bar = (none || notQ) ? "" : barStyle(row[key]);
+    const mainLabel = board === "all" ? "共同窗口分" : "综合分";
     return '<article class="lb-card' + (rank === 1 && !none && !notQ ? " lb-first" : "") +
         ((none || notQ) ? " lb-none" : "") + '">' +
       '<div class="lb-card-top">' +
@@ -1229,8 +1320,8 @@ try {
           '<span class="dot" style="background:' + colorOf(m) + '"></span>' +
           '<span class="fam">' + (FAMILY_ICON[m] || "") + "</span><b>" + labelOf(m) + dagger + "</b>" +
           '<span class="id">' + m + "</span></div>" +
-        '<div class="lb-card-score"' + barStyle + ">" +
-          ((none || notQ) ? naTip : "<b>" + fmtC(row.score, 1) + '</b><span class="lb-pri"></span>') +
+        '<div class="lb-card-score"' + bar + ">" +
+          ((none || notQ) ? naTip(row) : "<b>" + fmtC(row[key], 1) + '</b><span class="lb-pri">' + mainLabel + "</span>") +
         "</div>" +
       "</div>" +
       '<div class="lb-card-metrics">' +
@@ -1238,8 +1329,12 @@ try {
         cell("降水分", fmtC(row.precip_score, 1), "降水 5 项指标加权（0~100）") +
         cell("±2°C", fmtC(row.acc2, 1, "%"), "温度 ±2°C 命中率，越高越好") +
         cell("RMSE", fmtC(row.rmse, 2), "温度均方根误差 °C，越低越好") +
-        (board === "all" ? cell("90% CI", ciV, "综合分 90% 置信区间（按天重采样）") : "") +
-        (board === "all" ? cell("覆盖时效", leadV, "温度/降水两轨分别统计的最长覆盖天数") : "") +
+        (board === "all" ? cell("全窗口分", fmtC(row.score, 1), "各源全部可用天桶的等权平均；覆盖越长越吃亏，不作名次") : "") +
+        (board === "all" ? cell("技巧差", fmtC(row.skill, 1), "相对零技巧基准 persistence（明天=今天）高出的分数") : "") +
+        (board === "all" ? cell("90% CI", ciV, "名次依据分数的 90% 置信区间") : "") +
+        (board === "all" ? cell("覆盖", leadV + " 天 / " + (row.n_buckets === null || row.n_buckets === undefined ? "—" : row.n_buckets) + " 桶", "覆盖时效（温度/降水）+ 两维齐备的天桶数") : "") +
+        (board === "all" ? cell("起报轮次", (row.n_issues === null || row.n_issues === undefined ? "—" : row.n_issues) + " 轮", "该源在本窗口内实际产出样本的起报时刻数") : "") +
+        (board === "all" ? cell("验证日数", (row.n_days === null || row.n_days === undefined ? "—" : row.n_days) + " 天", "该源真正被验证过的自然日数") : "") +
       "</div>" +
       '<div class="lb-card-foot">' +
         '<span class="c-spark" title="得分随提前量 1~' + LEAD_DAYS + ' 天的衰减全程">' + spark + "</span>" +
@@ -1249,12 +1344,12 @@ try {
       "</div></article>";
   }
 
-  function lbRowHtml(row, rank, markIdx) {    const m = row.model;
-    const none = row.score === null || row.score === undefined;
+  function lbRowHtml(row, rank, markIdx) {
+    const m = row.model;
+    // 总榜的名次依据是 score_common（共同窗口分），分时效榜是 score
+    const key = rankKeyOf(board);
+    const none = row[key] === null || row[key] === undefined;
     const notQ = row.qualified === false;   // 有分但 n_eff 未达标：不参与冠军竞争（P0-2.3）
-    const fmtC = (v, dec, unit) =>
-      (v === null || v === undefined) ? "—" : Number(v).toFixed(dec) + (unit || "");
-    const barStyle = (none || notQ) ? "" : ' style="--w:' + Math.max(0, Math.min(100, row.score)).toFixed(1) + '%"';
     const rankCell = (rank === 1 && !none && !notQ) ? "🥇" : (rank === 2 && !none && !notQ) ? "🥈" :
                      (rank === 3 && !none && !notQ) ? "🥉" : (rank || "·");
     const spark = sparkDomain
@@ -1262,12 +1357,11 @@ try {
       : "";
     const crown = (rank === 1 && !none && !notQ) ? "👑 " : "";
     const dagger = (board === "all" && !none && !notQ && row.sig_vs_top === false)
-      ? ' <span title="与第一名的得分差在 90% 置信下与 0 分不开（差异不显著），前后名次更多是抽样运气" style="cursor:help">†</span>' : "";
-    const naTip = notQ && row.n_eff !== null && row.n_eff !== undefined
-      ? '<span class="na" title="有效样本量 n_eff=' + row.n_eff + '，未达门槛 ' + (report.meta.min_board_neff || 30) + '">样本积累中</span>'
-      : '<span class="na">样本积累中</span>';
+      ? ' <span title="与第一名（共同窗口分）的差距经 Holm–Bonferroni 多重比较校正后仍不显著，前后名次更多是抽样运气" style="cursor:help">†</span>' : "";
     const ciCell = board === "all"
-      ? '<td class="num" title="按天重采样 ' + (report.meta.bootstrap_runs || 500) + ' 次的综合分波动范围">' +
+      ? '<td class="num" title="名次依据分数（共同窗口分）的 90% 置信区间：按 ' +
+        (report.meta.bootstrap_block_days || 1) + ' 天为一块重采样 ' +
+        (report.meta.bootstrap_runs || 500) + ' 次">' +
         (row.ci90 ? fmtC(row.ci90[0], 1) + "~" + fmtC(row.ci90[1], 1) : "—") + "</td>"
       : "";
     const leadCell = board === "all"
@@ -1275,20 +1369,32 @@ try {
         (row.lead_days === null || row.lead_days === undefined ? "—" : row.lead_days) + "/" +
         (row.rain_days === null || row.rain_days === undefined ? "—" : row.rain_days) + " 天</td>"
       : "";
+    const nbCell = board === "all"
+      ? '<td class="num" title="温度与降水两维度齐备的天桶数——全窗口分的实际分母">' +
+        (row.n_buckets === null || row.n_buckets === undefined ? "—" : row.n_buckets) + "</td>"
+      : "";
+    const issueCell = board === "all"
+      ? '<td class="num" title="该源在本窗口内实际产出样本的起报时刻数">' +
+        (row.n_issues === null || row.n_issues === undefined ? "—" : row.n_issues) + "</td>"
+      : "";
+    const daysCell = board === "all"
+      ? '<td class="num" title="该源真正被验证过的自然日数（括号为其中的按天降水日数）">' +
+        (row.n_days === null || row.n_days === undefined ? "—" : row.n_days) +
+        " (" + (row.n_days_rain === null || row.n_days_rain === undefined ? "—" : row.n_days_rain) + ")</td>"
+      : "";
     return '<tr class="' + (rank === 1 && !none && !notQ ? "lb-first" : "") + ((none || notQ) ? " lb-none" : "") + '">' +
       '<td class="c-rank lb-rank">' + rankCell + "</td>" +
       '<td class="c-name l">' + crown + '<span class="dot" style="background:' + colorOf(m) +
         '"></span><span class="fam">' + (FAMILY_ICON[m] || "") + "</span><b>" + labelOf(m) + dagger +
         '</b><span class="id">' + m + "</span></td>" +
-      '<td class="num lb-pri"' + barStyle + ">" +
-        ((none || notQ) ? naTip : fmtC(row.score, 1)) + "</td>" +
+      scoreCell(row, none, notQ) +
       "<td class=\"num\">" + fmtC(row.temp_score, 1) + "</td>" +
       "<td class=\"num\">" + fmtC(row.precip_score, 1) + "</td>" +
       "<td class=\"num\">" + fmtC(row.acc2, 1, "%") + "</td>" +
       "<td class=\"num\">" + fmtC(row.rmse, 2) + "</td>" +
       "<td class=\"num\">" + fmtC(row.ts, 2) + "</td>" +
       "<td class=\"num\">" + fmtC(row.ets, 2) + "</td>" +
-      ciCell + leadCell +
+      nbCell + issueCell + daysCell + ciCell + leadCell +
       '<td class="c-spark">' + spark + "</td>" +
       '<td class="num lb-n" title="名义样本对（温度/降水）；总榜另附有效样本量 n_eff">' + (row.n || 0) + "/" + (row.n_precip || 0) + "</td>" +
       '<td class="c-act"><button type="button" class="rank-focus" data-focus-model="' + m +
@@ -1302,16 +1408,19 @@ try {
     const cards = document.getElementById("lbCards");
     const empty = document.getElementById("lbEmpty");
     if (!head || !body) return;
-    // 排序键在总榜/分榜之间切换时可能失效（如"覆盖时效"只存在于总榜），此时复位为综合分
-    if (!lbCols(board).some(c => c.key === sortKey)) { sortKey = "score"; sortDir = "desc"; }
+    // 排序键在总榜/分榜之间切换时可能失效（如"覆盖时效"只存在于总榜），
+    // 此时复位为该榜的名次依据列（总榜=共同窗口分，分榜=综合分）
+    if (!lbCols(board).some(c => c.key === sortKey)) { sortKey = rankKeyOf(board); sortDir = "desc"; }
     renderBoardPills();
     renderSortSelectM();
     head.innerHTML = lbHeadHtml();
     const rows = (LEADERBOARDS[board] || []).slice();
-    const hasScore = rows.some(r => r.score !== null);
+    const rk = rankKeyOf(board);
+    const hasScore = rows.some(r => r[rk] !== null && r[rk] !== undefined);
     if (!hasScore) {          // 该榜单整体样本不足：空态提示而非空表
       empty.textContent = board === "all"
-        ? "还没有源达到总榜的入围门槛（有效样本量 n_eff ≥ " + (report.meta.min_board_neff || 30) + "）——各源持续抓取，攒够样本后总榜就会出现。"
+        ? "还没有源达到总榜的入围门槛（有效样本量 n_eff ≥ " + (report.meta.min_board_neff || 30) +
+          "，且温度/降水两维度齐备）——各源持续抓取，攒够样本后总榜就会出现。"
         : "该时效暂无足够样本（数据积累中）——各源都在持续积累，通常再过几天这一档就会出现榜单。";
       scroll.hidden = true;
       cards.hidden = true;
@@ -1491,7 +1600,10 @@ try {
     const cfg = {el:"chartScoreTrend", x,
       getVal:(m, i) => { const v = (report.score_trend[key][m] || {})[buckets[i]];
                          return (v === null || v === undefined) ? null : v; },
-      yName:"综合得分(0~100)", opts:{scale:false, valueFmt:v => fmt(v, 1)}};
+      yName:"综合得分(0~100)",
+      // 棕色点线 = 零技巧基准 persistence（明天 = 今天的实况）：各家都在它之上才算有技巧
+      opts:{scale:false, valueFmt:v => fmt(v, 1),
+            baseline:i => ((report.score_trend.baseline || {})[key] || {})[buckets[i]]}};
     const ch = compareLineChart(cfg);
     const tab = document.getElementById("scoreTrendTab");
     tab.querySelectorAll("button").forEach(btn => {
