@@ -12,6 +12,7 @@
   python -m weather_eval fetch-forecast --source geovis    抓取中科星图逐小时预报起报（需 GEVIS_TOKEN）
   python -m weather_eval fetch-forecast --source accuweather 抓取 AccuWeather 逐小时预报起报（需 ACCUWEATHER_API_KEY）
   python -m weather_eval fetch-forecast --source msn        抓取 MSN 天气（中国天气网）起报（网页接口，无需凭据）
+  python -m weather_eval fetch-forecast --source cma_public 抓取中国气象局公众网（weather.cma.cn）起报（公开接口，无需凭据）
   python -m weather_eval report                   用本月至今数据更新主报告 reports/index.html
   python -m weather_eval monthly [--month YYYY-MM] 生成月度归档报告 reports/monthly/YYYY-MM.html
   python -m weather_eval archive [--days 60] [--apply]  把超窗口的旧快照 gzip 归档（默认 dry-run）
@@ -42,7 +43,7 @@ from .obs import EiaDataObsSource
 from .forecast import (
     OpenMeteoProvider, CaiyunProvider, QWeatherProvider, TianjiProvider,
     FuxiC88Provider, FuxiDetProvider, FengWuProvider, GevisProvider,
-    AccuWeatherProvider, MsnProvider, Ew4allProvider,
+    AccuWeatherProvider, MsnProvider, Ew4allProvider, CmaPublicProvider,
 )
 from .forecast.caiyun import DEFAULT_NAME as CAIYUN_DEFAULT_MODEL
 from .forecast.qweather import DEFAULT_NAME as QWEATHER_DEFAULT_MODEL
@@ -54,6 +55,7 @@ from .forecast.geovis import MODEL_NAME as GEVIS_MODEL
 from .forecast.accuweather import MODEL_NAME as ACCUWEATHER_MODEL
 from .forecast.msn import MODEL_NAME as MSN_MODEL
 from .forecast.ew4all import MODEL_SPECS as EW4ALL_MODEL_SPECS
+from .forecast.cma_public import MODEL_NAME as CMA_PUBLIC_MODEL
 # 独立抓取源（非 Open-Meteo 模型）的登记处：source -> (模型集合, 提供方类)。
 # 单一数据源：模型集合与提供方类必须同步登记，此前分成两张表（SOURCE_MODELS 与
 # _build_provider 内的内联字典）手工同步，新增源漏登其一会退化成运行期 KeyError
@@ -74,6 +76,8 @@ SOURCE_SPECS: dict[str, tuple[set[str], Any]] = {
     # EW4ALL（云上早期预警支撑系统）：网页接口，无凭据；一次抓取返回两个模型
     # 各自的独立快照（起报轮次发布进度不同步，见 forecast/ew4all.py）
     "ew4all": (set(EW4ALL_MODEL_SPECS), lambda: Ew4allProvider()),
+    # 中国气象局公众气象服务网：公开 JSON 接口，无凭据（站点须配 cma_id = WMO 站号）
+    "cma_public": ({CMA_PUBLIC_MODEL}, lambda: CmaPublicProvider()),
 }
 # 各独立源的模型集合（config 中按此过滤，防止把别家的模型传进去刷缺失警告）
 SOURCE_MODELS: dict[str, set[str]] = {s: ms for s, (ms, _) in SOURCE_SPECS.items()}
@@ -277,7 +281,7 @@ def main(argv=None):
     p_fetch.add_argument(
         "--source", choices=["open_meteo", "caiyun", "qweather", "tianji",
                              "fuxi", "fuxi_data", "fengwu", "geovis",
-                             "accuweather", "msn", "ew4all"],
+                             "accuweather", "msn", "ew4all", "cma_public"],
         default="open_meteo",
         help="预报源：open_meteo（默认）、caiyun（需 CAIYUN_TOKEN）、qweather"
              "（需 QWEATHER_API_KEY）、tianji（网页接口，无需凭据）、fuxi（伏羲中期"
@@ -286,7 +290,9 @@ def main(argv=None):
              "时效）、geovis（中科星图，需 GEVIS_TOKEN）、accuweather（AccuWeather"
              " Enterprise，需 ACCUWEATHER_API_KEY）、msn（MSN 天气/中国天气网，"
              "无需凭据，时效上限约 9.3 天）、ew4all（CMA 云上早期预警支撑系统，"
-             "无需凭据，含 CMA-NDFS 与 风清AI模式；温度 10/15 天，降水 10 天）",
+             "无需凭据，含 CMA-NDFS 与 风清AI模式；温度 10/15 天，降水 10 天）、"
+             "cma_public（中国气象局公众气象服务网 weather.cma.cn，无需凭据，"
+             "以 WMO 站号寻址、站点须配 cma_id；3 小时分辨率，覆盖约 7 天）",
     )
     sub.add_parser("report")
     pm = sub.add_parser("monthly")

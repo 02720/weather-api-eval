@@ -41,6 +41,9 @@ class Station:
         self.lat: float = float(data["lat"])
         self.lon: float = float(data["lon"])
         self.obs_url: str = data.get("obs_url", "")
+        # CMA 公众气象服务网（weather.cma.cn）以 WMO 站号寻址；未配置时该源的
+        # 抓取会响亮失败（见 forecast/cma_public.py），绝不猜站号
+        self.cma_id: str | None = str(data["cma_id"]) if data.get("cma_id") else None
 
 
 class Config:

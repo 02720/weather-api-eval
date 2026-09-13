@@ -37,6 +37,9 @@ models:
   # —— EW4ALL 云上早期预警支撑系统（2026-09 新增独立源；网页接口，无需凭据）——
   - cma_ndfs             # CMA-NDFS 中国气象局智能数字天气预报系统（--source ew4all；温度 10 天，降水 3 小时累计平铺）
   - fengqing_ai          # 风清AI模式（--source ew4all；温度 15 天逐 6 小时、降水 10 天，6 小时累计平铺）
+  # —— 中国气象局公众气象服务网（2026-09 新增独立源；公开 JSON 接口，无需凭据）——
+  - cma_public_v1        # weather.cma.cn/api/hourly，按 WMO 站号取站；3 小时分辨率、覆盖约 7 天
+                         # （--source cma_public；降水为后向 3 小时累计，见 forecast/cma_public.py）
 
 stations:
   - id: wuzhou
@@ -44,21 +47,25 @@ stations:
     lat: 23.4783
     lon: 111.304
     obs_url: http://eia-data.com/%E6%A2%A7%E5%B7%9E%E6%B0%94%E8%B1%A1%E7%AB%99%E5%9F%BA%E6%9C%AC%E4%BF%A1%E6%81%AF/
+    cma_id: 59265     # CMA 公众气象服务网（weather.cma.cn）的 WMO 站号
   - id: bobai
     name: 博白气象站
     lat: 22.2981
     lon: 109.99
     obs_url: http://eia-data.com/%E5%8D%9A%E7%99%BD%E6%B0%94%E8%B1%A1%E7%AB%99%E5%9F%BA%E6%9C%AC%E4%BF%A1%E6%81%AF/
+    cma_id: 59449     # CMA 公众气象服务网（weather.cma.cn）的 WMO 站号
   - id: pingnan
     name: 平南气象站
     lat: 23.5431
     lon: 110.419
     obs_url: http://eia-data.com/%E5%B9%B3%E5%8D%97%E6%B0%94%E8%B1%A1%E7%AB%99%E5%9F%BA%E6%9C%AC%E4%BF%A1%E6%81%AF/
+    cma_id: 59255     # CMA 公众气象服务网（weather.cma.cn）的 WMO 站号
   - id: wanning
     name: 万宁气象站
     lat: 18.8006
     lon: 110.327
     obs_url: http://eia-data.com/%E4%B8%87%E5%AE%81%E6%B0%94%E8%B1%A1%E7%AB%99%E5%9F%BA%E6%9C%AC%E4%BF%A1%E6%81%AF/
+    cma_id: 59951     # CMA 公众气象服务网（weather.cma.cn）的 WMO 站号
 
 eval:
   temp_accuracy_limits: [1, 2]          # ±1°C、±2°C 准确率

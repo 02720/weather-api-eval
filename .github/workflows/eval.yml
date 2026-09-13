@@ -167,6 +167,18 @@ jobs:
           TZ: Asia/Shanghai
         run: python -m weather_eval fetch-forecast --source ew4all
 
+      - name: 抓取中国气象局公众网预报（公开 JSON 接口，无需凭据）
+        # 抓取 weather.cma.cn/api/hourly/{WMO 站号}（站点站号在 config/stations.yaml 的
+        # cma_id，契约与口径见 src/weather_eval/forecast/cma_public.py docstring）。
+        # 单模型、每站 1 次请求，4 站 4 次/轮，是本仓库请求量最小的源。
+        # 无官方契约：失效形态是"HTTP 200 + 空 data"而非报错，代码按"空数据不建快照"
+        # 守卫；另注意该站按 UA 反爬名单拒绝 python-requests/curl（403 立即熔断），
+        # 故 UA 集中在 provider 的 HEADERS 单点定义。失败只影响该源，不阻断主流程。
+        continue-on-error: true
+        env:
+          TZ: Asia/Shanghai
+        run: python -m weather_eval fetch-forecast --source cma_public
+
       - name: 抓取观测 + 预报快照 + 更新主报告（本月累计，覆盖写 index.html）
         env:
           TZ: Asia/Shanghai
