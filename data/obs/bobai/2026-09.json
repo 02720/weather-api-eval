@@ -3918,5 +3918,105 @@
     "rain": 0.0,
     "wind_speed": 0.0,
     "wind_dir": 999017.0
+  },
+  "2026-09-17T17:00": {
+    "time": "2026-09-17T17:00",
+    "source": "wd",
+    "temp": 30.4,
+    "pressure": 999.9,
+    "humidity": 67.0,
+    "rain": 0.0,
+    "wind_speed": 1.7,
+    "wind_dir": 188.0
+  },
+  "2026-09-17T16:00": {
+    "time": "2026-09-17T16:00",
+    "source": "wd",
+    "temp": 30.7,
+    "pressure": 999.9,
+    "humidity": 63.0,
+    "rain": 0.0,
+    "wind_speed": 0.8,
+    "wind_dir": 77.0
+  },
+  "2026-09-17T15:00": {
+    "time": "2026-09-17T15:00",
+    "source": "wd",
+    "temp": 31.7,
+    "pressure": 1000.3,
+    "humidity": 62.0,
+    "rain": 0.0,
+    "wind_speed": 1.6,
+    "wind_dir": 138.0
+  },
+  "2026-09-17T14:00": {
+    "time": "2026-09-17T14:00",
+    "source": "wd",
+    "temp": 31.7,
+    "pressure": 1001.3,
+    "humidity": 59.0,
+    "rain": 0.0,
+    "wind_speed": 2.6,
+    "wind_dir": 165.0
+  },
+  "2026-09-17T13:00": {
+    "time": "2026-09-17T13:00",
+    "source": "wd",
+    "temp": 31.1,
+    "pressure": 1002.0,
+    "humidity": 62.0,
+    "rain": 0.0,
+    "wind_speed": 0.7,
+    "wind_dir": 159.0
+  },
+  "2026-09-17T12:00": {
+    "time": "2026-09-17T12:00",
+    "source": "wd",
+    "temp": 30.3,
+    "pressure": 1002.6,
+    "humidity": 63.0,
+    "rain": 0.0,
+    "wind_speed": 0.4,
+    "wind_dir": 132.0
+  },
+  "2026-09-17T11:00": {
+    "time": "2026-09-17T11:00",
+    "source": "wd",
+    "temp": 30.6,
+    "pressure": 1003.0,
+    "humidity": 61.0,
+    "rain": 0.0,
+    "wind_speed": 3.2,
+    "wind_dir": 114.0
+  },
+  "2026-09-17T10:00": {
+    "time": "2026-09-17T10:00",
+    "source": "wd",
+    "temp": 29.5,
+    "pressure": 1003.1,
+    "humidity": 70.0,
+    "rain": 0.0,
+    "wind_speed": 3.5,
+    "wind_dir": 42.0
+  },
+  "2026-09-17T09:00": {
+    "time": "2026-09-17T09:00",
+    "source": "wd",
+    "temp": 27.3,
+    "pressure": 1003.1,
+    "humidity": 83.0,
+    "rain": 0.1,
+    "wind_speed": 3.0,
+    "wind_dir": 22.0
+  },
+  "2026-09-17T08:00": {
+    "time": "2026-09-17T08:00",
+    "source": "wd",
+    "temp": 25.1,
+    "pressure": 1002.9,
+    "humidity": 91.0,
+    "rain": 0.0,
+    "wind_speed": 0.7,
+    "wind_dir": 72.0
   }
 }
