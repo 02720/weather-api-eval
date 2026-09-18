@@ -1174,8 +1174,15 @@ def test_degenerate_bootstrap_reproduces_point_estimate(tmp_path, monkeypatch):
                     for b in range(1, 17)] for m in models])
     rv = np.array([[precip_score(data["precip_score_daily"][m].get(f"{b}d") or {}) is not None
                     for b in range(1, 17)] for m in models])
+    # 退化 bootstrap（权重全 1）必须**逐格**复现点估计的总榜综合分——
+    # 名次换了尺子（难度对齐），这条不变量不能跟着换：bootstrap 与点估计走的是
+    # 同一张劈分设计、同一个归总函数（stats.difficulty_adjusted）。
+    dw = data["meta"]["difficulty_window"]
+    adj_row = np.array(dw["row_keep"], dtype=bool)
+    adj_col = np.array(dw["col_keep"], dtype=bool)
     macro = stats.macro_scores_from_weights(
-        W, T, R, TEMP_SCORE_PARTS, PRECIP_SCORE_PARTS, 5, tv, rv, tv & rv)
+        W, T, R, TEMP_SCORE_PARTS, PRECIP_SCORE_PARTS, 5, tv, rv, tv & rv,
+        adj_row=adj_row, adj_col=adj_col)
     board = {r["model"]: r for r in data["leaderboards"]["all"]}
     checked = 0
     for mi, m in enumerate(models):
@@ -1184,16 +1191,6 @@ def test_degenerate_bootstrap_reproduces_point_estimate(tmp_path, monkeypatch):
         assert abs(macro[0, mi] - board[m]["score"]) < 0.05, (m, macro[0, mi], board[m]["score"])
         checked += 1
     assert checked >= 1
-    # 同一条不变量对"共同窗口分"也必须成立——名次换尺子，不变量不能跟着换
-    common = [b - 1 for b in (data["meta"].get("common_window") or {}).get("buckets") or []]
-    if common:
-        macro_c = stats.macro_scores_from_weights(
-            W, T, R, TEMP_SCORE_PARTS, PRECIP_SCORE_PARTS, 5, tv, rv, tv & rv, common)
-        for mi, m in enumerate(models):
-            sc = board[m].get("score_common")
-            if sc is None:
-                continue
-            assert abs(macro_c[0, mi] - sc) < 0.05, (m, macro_c[0, mi], sc)
     # 验证日数 / 降水维有效样本量（P0-2 的日历维度披露）
     for m in models:
         assert board[m]["n_days"] >= 1
@@ -1249,14 +1246,15 @@ def test_day_block_weights_weights_sum_to_n_days():
                 assert len(set(grp.tolist())) == 1
 
 
-def test_common_window_removes_coverage_bias(tmp_path, monkeypatch):
-    """P0-2：总榜名次只在入围源共同覆盖的天桶上比较。
+def test_difficulty_adjusted_board_removes_coverage_bias(tmp_path, monkeypatch):
+    """总榜公平性：名次由"真本事"决定，不受"这家能预报多少天"影响。
 
-    构造两家（同样的"误差随时效增长"规律，只是起点不同）：
+    构造三家（同样的"误差随时效增长"规律，只有起点偏差不同）：
       short 只覆盖第 1 桶，且第 1 桶报得**更差**（起点偏差 0.6°C）；
+      mid   覆盖 1~3 桶，起点偏差 0.3°C；
       wide  覆盖 1~5 桶，第 1 桶报得**更准**（起点偏差 0.05°C）。
-    全窗口 macro 下 short 只吃最容易的第 1 桶 -> 名次被覆盖长度顶上去；
-    共同窗口（第 1 桶，两家同台）下 wide 凭真本事第一。这正是要消掉的偏置。
+    旧口径（各源自家桶等权平均）下 short 只吃最容易的第 1 桶 -> 名次被覆盖长度
+    顶上去；难度对齐后各家都在同一批天桶上比，名次回到真本事（wide > mid > short）。
     """
     monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
     start = datetime(2026, 8, 1, 0, 0)
@@ -1283,25 +1281,33 @@ def test_common_window_removes_coverage_bias(tmp_path, monkeypatch):
 
     for sid in stations:
         storage.save_forecast_snapshot(sid, "short", snap(sid, "short", 48, 0.6))
+        storage.save_forecast_snapshot(sid, "mid", snap(sid, "mid", 3 * 24, 0.3))
         storage.save_forecast_snapshot(sid, "wide", snap(sid, "wide", 6 * 24, 0.05))
     cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
            "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 5,
            "min_board_neff": 5, "min_board_neff_rain": 5,
            "bootstrap_runs": 30, "sensitivity_runs": 30}
     end = start + timedelta(hours=7 * 24)
-    data = build_report(stations, ["short", "wide"], cfg, start, end, "2026-08")
+    data = build_report(stations, ["short", "mid", "wide"], cfg, start, end, "2026-08")
     board = data["leaderboards"]["all"]
     by_model = {r["model"]: r for r in board}
     assert by_model["short"]["qualified"] and by_model["wide"]["qualified"]
-    # 共同窗口 = 两家都覆盖的第 1 桶；wide 覆盖 5 桶、short 只有 1 桶
-    assert data["meta"]["common_window"]["buckets"] == [1]
-    assert by_model["wide"]["n_buckets"] > by_model["short"]["n_buckets"] == 1
-    # 第 1 桶 wide 更准 -> 共同窗口分更高 -> 名次第一（真本事说话）
-    assert by_model["wide"]["score_common"] > by_model["short"]["score_common"]
-    assert [r["model"] for r in board][0] == "wide"
-    # 若按全窗口 macro 排名，只覆盖最容易一档的 short 反而会登顶——偏置的实证
-    assert by_model["short"]["score"] > by_model["wide"]["score"]
-
+    # 覆盖：wide 最远、short 最近（这是要被消掉的混淆变量）
+    assert by_model["wide"]["n_buckets"] > by_model["mid"]["n_buckets"] > by_model["short"]["n_buckets"]
+    # 名次由真本事决定：起点偏差最小的 wide 第一，其次 mid，short 垫底
+    assert [r["model"] for r in board] == ["wide", "mid", "short"]
+    # 旧口径（各源自家桶等权平均）会把只覆盖最容易一档的 short 顶到前面——偏置的实证
+    raw = {}
+    for m in ("short", "mid", "wide"):
+        vals = [overall_score(data["temp_hourly"][m].get(f"{b}d") or {},
+                              data["precip_score_daily"][m].get(f"{b}d") or {})
+                for b in range(1, 17)]
+        vals = [v for v in vals if v is not None]
+        raw[m] = sum(vals) / len(vals)
+    assert raw["short"] > raw["wide"]
+    # 设计信息随报告披露（各天桶难度、参与家数），供读者核对
+    dw = data["meta"]["difficulty_window"]
+    assert dw["buckets"] and len(dw["difficulty"]) == 16 and dw["coverage"]
 
 def test_baseline_persistence_is_zero_skill_reference(tmp_path, monkeypatch):
     """P1-2：persistence 基准（明天 = 今天）存在，且预报源相对它有正技巧。"""
@@ -1334,7 +1340,7 @@ def test_baseline_persistence_is_zero_skill_reference(tmp_path, monkeypatch):
     row = data["leaderboards"]["all"][0]
     # 基准是零技巧参照：好的预报必须显著高于它
     assert row["skill"] is not None and row["skill"] > 10
-    assert row["baseline_score"] < row["score_common"]
+    assert row["baseline_score"] < row["score"]
     # 趋势图带基准参考线数据（与曲线同一坐标系）
     assert data["score_trend"]["baseline"]["overall"]["1d"] is not None
 

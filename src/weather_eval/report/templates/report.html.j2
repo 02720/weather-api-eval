@@ -9,7 +9,8 @@
      默认为**总榜**（评估窗口内全部逐小时样本合并），可切到每个提前量档
      （提前 1~16 天）的分榜——同难度下比较；读者自选榜单、点列名排序、搜索过滤；
      每行附"得分随时效衰减"迷你走势线。折线图退居辅助（趋势图 + 聚焦对比图），
-     "战场带 + 聚焦线"三层结构保留（灰带 = 全体范围，彩色粗线 = 自选聚焦 ≤5 家）。
+     "战场带 + 聚焦线"三层结构保留（灰带 = 全体范围，彩色粗线 = 自选聚焦，不限家数；
+     选得多会自动切换为"分屏"——一源一张小图，不再挤在一张图上）。
   3. 处处有注释 —— 每张图表配"💡 怎么看"，页面底部内置"名词小词典"，
      读者不需要任何气象/统计背景；
   4. 一页即全部 —— 本页（index.html）每次运行覆盖更新，永远展示"本月至今"
@@ -229,6 +230,8 @@ window.addEventListener("DOMContentLoaded", function () {
   /* ---------- 图表容器与控制条（指标下拉 + 前8/全部分段开关） ---------- */
   .chart { width:100%; height:360px; margin-top:6px; }
   .chart.tall { height:420px; }
+  /* 分屏（小多图）时高度由小图数量决定，交给脚本按家数设置 */
+  .chart.cmp-grid-host { height:auto; }
   .chart-empty { display:flex; align-items:center; justify-content:center; height:200px;
                  color:var(--muted); background:#f8fafc; border:1px dashed var(--line);
                  border-radius:12px; font-size:13.5px; }
@@ -271,6 +274,25 @@ window.addEventListener("DOMContentLoaded", function () {
   .cmp-chip.on { background:var(--blue); border-color:var(--blue); color:#fff; }
   .cmp-chip.on i { color:#dbeafe; }
   .cmp-msg { font-size:12px; color:var(--muted); margin-top:10px; }
+  /* 布局切换（合并 / 分屏 / 自动）：线一多就挤成一团，分屏是"一源一张小图" */
+  .cmp-layout { display:flex; gap:8px; flex-wrap:wrap; align-items:center;
+                margin:0 0 10px; font-size:12px; color:var(--muted); }
+  .cmp-layout button { border:1px solid var(--line); background:#fff; border-radius:8px;
+                       padding:4px 10px; font-size:12.5px; cursor:pointer; color:var(--text); }
+  .cmp-layout button.on { background:var(--blue); border-color:var(--blue); color:#fff; }
+  /* 分屏（小多图）：每家一张小图，共用同一纵轴，彼此不叠线也不抢颜色 */
+  .cmp-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(208px,1fr));
+              gap:10px; }
+  .cmp-tile { margin:0; border:1px solid var(--line); border-radius:10px; background:#fff;
+              padding:7px 8px 2px; cursor:pointer; }
+  .cmp-tile:hover { border-color:var(--blue); }
+  .cmp-tile figcaption { display:flex; align-items:center; gap:6px; font-size:12px;
+                         font-weight:600; margin-bottom:2px; white-space:nowrap;
+                         overflow:hidden; text-overflow:ellipsis; }
+  .cmp-tile figcaption i { font-style:normal; font-weight:400; font-size:10.5px;
+                           color:var(--muted); }
+  .cmp-tile .cmp-tile-chart { height:124px; }
+  .cmp-grid-empty { color:var(--muted); font-size:13px; text-align:center; padding:18px 0; }
 
   /* ---------- 排行榜行内聚焦按钮（表格行 + 选源器共用同一状态） ---------- */
   .rank-focus { border:1px solid var(--line); background:#fff; border-radius:999px;
@@ -360,16 +382,12 @@ window.addEventListener("DOMContentLoaded", function () {
 
 {% set lb_all = (report.leaderboards or {}).get('all', []) %}
 {% set lb1 = (report.leaderboards or {}).get('1d', []) %}
-{# 冠军横幅默认读全时效总榜中"达标"（n_eff 门槛 + 温度/降水两维度齐备）的第一名；
-   全部未达标时回退提前 1 天分榜中两维度齐备的第一行 #}
-{% set lb_all_q = lb_all | selectattr('qualified') | list %}
-{# 总榜名次以"共同窗口分"为准（P0-2）：只在所有入围源都覆盖的天桶上比较，
-   消除"覆盖越短越占便宜"的偏置；全窗口冠军并列披露，两个结论都给读者。 #}
-{% set champ_common = (lb_all | selectattr('score_common') | list)[0] if lb_all else none %}
-{% set champ_full = (lb_all_q | selectattr('score') | list)[0] if lb_all_q else none %}
+{# 冠军横幅读总榜中"达标"的第一名（n_eff 门槛 + 温度/降水两维度齐备 + 进得了
+   难度对齐的劈分设计）；全部未达标时回退提前 1 天分榜中两维度齐备的第一行 #}
+{% set champ = (lb_all | selectattr('qualified') | selectattr('score') | list)[0] if lb_all else none %}
 {% set lb1_q = lb1 | selectattr('temp_score') | selectattr('precip_score') | selectattr('score') | list %}
-{% set champ = champ_common if champ_common else (champ_full if champ_full else (lb1_q[0] if lb1_q else none)) %}
-{% set cw = report.meta.get('common_window') or {} %}
+{% set champ = champ if champ else (lb1_q[0] if lb1_q else none) %}
+{% set dw = report.meta.get('difficulty_window') or {} %}
 {# 数值格式化宏：None（样本不足）统一显示为 — #}
 {% macro pct(v) %}{{ '—' if v is none else '%.1f%%'|format(v) }}{% endmacro %}
 {% macro num(v, d=2) %}{{ '—' if v is none else ('%.' ~ d ~ 'f')|format(v) }}{% endmacro %}
@@ -396,14 +414,13 @@ window.addEventListener("DOMContentLoaded", function () {
     {% if champ %}
     <!-- 全页唯一的"一句话结论"：小白只看这一句也够 -->
     <div class="champion">🏆 {{ report.meta.period_label }} 月{% if not report.meta.is_monthly %}至今{% endif %}
-      {% if champ_common %}<b>共同窗口</b>（所有入围源都覆盖的提前 1~{{ cw.get('days', 0) }} 天，{{ cw.get('models', 0) }} 家同台）里综合表现最好的是{% else %}{% if lb1_q %}提前 1 天{% else %}综合{% endif %}表现最好的是{% endif %}
+      {% if champ %}删掉各家"能预报多少天"的差异后综合表现最好的是{% else %}{% if lb1_q %}提前 1 天{% else %}综合{% endif %}表现最好的是{% endif %}
       <b>{{ model_labels.get(champ.model, champ.model) }}</b>
-      <div class="sub">{% if champ_common %}共同窗口得分 {{ num(champ.score_common, 1) }}{% if champ.ci90 %}（90% 置信区间 {{ num(champ.ci90[0], 1) }}~{{ num(champ.ci90[1], 1) }}，按 {{ report.meta.get('bootstrap_block_days', 1) }} 天为一块重采样 {{ report.meta.bootstrap_runs }} 次）{% endif %}{% if champ.skill is not none %}· 比"明天=今天"的零技巧基准高 {{ num(champ.skill, 1) }} 分{% endif %}{% else %}综合得分 {{ num(champ.score, 1) }}{% endif %}
+      {# champ 可能是分时效榜回退行（有些键不存在），统一用 .get 取，避免 Undefined 炸模板 #}
+      <div class="sub">难度对齐综合分 {{ num(champ.score, 1) }}{% if champ.get('ci90') %}（90% 置信区间 {{ num(champ.get('ci90')[0], 1) }}~{{ num(champ.get('ci90')[1], 1) }}，按 {{ report.meta.get('bootstrap_block_days', 1) }} 天为一块重采样 {{ report.meta.bootstrap_runs }} 次）{% endif %}{% if champ.get('skill') is not none %}· 比"明天=今天"的零技巧基准高 {{ num(champ.get('skill'), 1) }} 分{% endif %}
         （温度 {{ num(champ.temp_score, 1) }} 分 + 降水 {{ num(champ.precip_score, 1) }} 分）{% if champ.lead_days %}· 覆盖预报至提前 {{ champ.lead_days }} 天{% endif %} ·
         温度准确率 {{ pct(champ.acc2) }}（误差 ≤2°C 即算准）· 日雨评分 TS {{ num(champ.ts, 2) }}（24h 累计 ≥{{ report.meta.rain_daily_threshold_mm }}mm 报中程度，0~1，越高越好）。
-        {% if champ_full and champ_common and champ_full.model != champ_common.model %}
-        <br>🥈 <b>全窗口</b>（各源自家全部可用时效，覆盖 {{ champ_full.n_buckets }} 个天桶）最高的是 <b>{{ model_labels.get(champ_full.model, champ_full.model) }}</b>（{{ num(champ_full.score, 1) }} 分）——覆盖越短越占便宜，这个数字不与上面的名次混用。
-        {% endif %}
+        <br>（"难度对齐"= 把每一档提前量有多难先算出来并统一扣掉，再比各家高低；各家能预报的天数不同也照样公平。）
         提前更久谁守得住？见下方<a href="#leaderboard" style="color:#dbeafe">🏅 排行榜（总榜 + 可切提前天数）</a>与<a href="#score-trend" style="color:#dbeafe">📉 得分衰减曲线</a>。</div>
     </div>
     {% else %}
@@ -420,7 +437,7 @@ window.addEventListener("DOMContentLoaded", function () {
     <p class="desc">只需记住 5 个概念，遇到别的术语可直达页面底部 <a href="#glossary">📖 名词小词典</a>。</p>
     <div class="guide-grid">
       <div class="guide-item"><div class="t">⏱️ 时效 = 提前量</div>
-        <div class="d">预报是<b>提前多久</b>做的。总榜把所有时效的样本合并算总账；「提前 N 天」分榜则一档一张榜——提前 1 天大家都准，提前 10 天谁守得住，切着看才知道。</div></div>
+        <div class="d">预报是<b>提前多久</b>做的。总榜把每一档的难度先扣掉再算总账（各家能报的天数不同也公平）；「提前 N 天」分榜则一档一张榜——提前 1 天大家都准，提前 10 天谁守得住，切着看才知道。</div></div>
       <div class="guide-item"><div class="t">🏅 综合得分</div>
         <div class="d"><b>温度分</b>（7 项指标加权）与<b>降水分</b>（6 项指标加权）各算一个 0~100 的分，再取平均。一项"瘸腿"拿不了高分，构成明细见排行榜下方。</div></div>
       <div class="guide-item"><div class="t">🌡️ 温度准确率（±2°C）</div>
@@ -435,9 +452,10 @@ window.addEventListener("DOMContentLoaded", function () {
   <!-- ==================== 排行榜（表格式主视图）：总榜 + 每个提前量档一张榜 ==================== -->
   <section class="card" id="leaderboard">
     <h2>🏅 预报源排行榜</h2>
-    <p class="desc">榜单分两层，用按钮切换：<b>「总榜」</b>的名次是<b>共同窗口分</b>——只在{% if report.meta.get('common_window') and report.meta.common_window.get('days') %}所有入围源都覆盖的提前 1~{{ report.meta.common_window.days }} 天{% else %}所有入围源都覆盖的天桶{% endif %}上比较，
-      把"覆盖越短越占便宜"的系统性偏置消掉（短时效天然好报，直接平均全窗口会让只报近几天的源白拿十几分）；<b>全窗口分</b>与<b>覆盖桶数</b>并列披露供参照，但不作名次。
-      <b>「提前 N 天」分榜</b>按时效分档、每档一张，保证同一难度下比较。
+    <p class="desc">榜单分两层，用按钮切换：<b>「总榜」</b>是本页面唯一的"谁最准"答案，用的是<b>难度对齐综合分</b>——
+      先把每一档提前量有多难算出来（各家往往只能用上其中几档），把这层难度统一扣掉后再比高低，
+      所以<b>能预报 3 天的源和能预报 15 天的源在同一个榜上是公平的</b>；具体做法见下方"⏱️ 难度对齐是怎么做的"。
+      <b>「提前 N 天」分榜</b>按时效分档、每档一张，同一难度直接对照，想看"某一天谁最准"用它。
       点<b>任意列名</b>可改排序（如按 RMSE 找误差最小、按 TS 找晴雨最准）；数字全部来自与趋势图同一套加权公式。
       名次列始终是综合名次（👑 = 当前榜单第一）；右侧走势线是该源得分随提前量 1~{{ report.meta.hourly_lead_days }} 天的衰减全程（总榜视图不标圆点）。
       样本不足、有效样本量未达 {{ report.meta.min_board_neff }}、或温度/降水缺一个维度的源沉底显示"样本积累中"，不参与冠军竞争。</p>
@@ -464,13 +482,13 @@ window.addEventListener("DOMContentLoaded", function () {
       <b>{{ model_labels.get(m, m) }}</b>：{{ note }}。{% endfor %}
       该源在榜单中的名次应结合这一差异解读。</div>
     {% endif %}
-    <p class="hint">💡 <b>怎么看：</b>① 总榜先看<b>共同窗口分</b>列的名次与梯队（底纹条越长分越高）——这是公平比较后的名次；
-      ② 想看"这家能把多远的预报做下来"，看<b>覆盖桶数</b>与<b>全窗口分</b>（覆盖越长越吃亏，两列要一起读）；
+    <p class="hint">💡 <b>怎么看：</b>① 总榜先看<b>难度对齐分</b>列的名次与梯队（底纹条越长分越高）——跨覆盖长度的公平比较都在这一列；
+      ② 想看"这家能把多远的预报做下来"，看<b>覆盖时效</b>与<b>覆盖桶数</b>（两家分数接近时，能预报更久的那家更难得）；
       <b>技巧差</b>是相对零技巧基准 persistence（明天 = 今天的实况）高出的分数，≤0 意味着不比"原地不动"强；
-      ③ 名字带 <b>†</b> = 与第一名（共同窗口分）的差距经 Holm–Bonferroni 多重比较校正后仍不显著——26 家同榜逐对比，
+      ③ 名字带 <b>†</b> = 与第一名（难度对齐分）的差距经 Holm–Bonferroni 多重比较校正后仍不显著——26 家同榜逐对比，
       不做校正的话"显著"基本是抽样运气；置信区间按 <b>{{ report.meta.get('bootstrap_block_days', 1) }} 天</b>为一块重采样（块长 = 误差去相关时间，块长 1 天会把区间算窄近一倍）；
       ④ <b>起报轮次</b>与<b>验证日数</b>说的是"这份分数有多厚的底子"——同样覆盖 6 天，23 个起报、8 个验证日与 57 个起报、12 个验证日不是一个可信度量级；
-      ④ 点列名按单一指标排队，<b>RMSE 等误差类越低越好，其余越高越好</b>；⑤ 走势线向右下掉是自然规律，
+      ⑤ 点列名按单一指标排队，<b>RMSE 等误差类越低越好，其余越高越好</b>；⑥ 走势线向右下掉是自然规律，
       <b>谁掉得慢、谁在右边还站得高</b>，谁的长效预报就更可靠。</p>
     {% set no_data = [] %}
     {% set truncated = [] %}
@@ -498,6 +516,39 @@ window.addEventListener("DOMContentLoaded", function () {
       {% for c in report.meta.weight_sensitivity.champions %}<b>{{ model_labels.get(c.model, c.model) }}</b> {{ c.pct }}%{% if not loop.last %}、{% endif %}{% endfor %}。
       多家轮换说明头名之争在当前样本量下并不"一锤定音"，请结合置信区间解读。</div>
     {% endif %}
+    <details class="lb-weights">
+      <summary>⏱️ 难度对齐是怎么做的：为什么报 3 天的和报 15 天的能同榜比较（点开看明细）</summary>
+      <div class="lb-weights-body">
+        <p class="lb-why">各家能预报的天数差很多（3 天到 16 天不等），而<b>越往后越难报</b>：直接把每家"自己覆盖得到那几档"的分数平均，
+          只报近几天的源就白拿了简单档的分（实测每多覆盖一档平均要掉 0.74 分）。反过来，只取所有源都覆盖的交集来比，
+          {{ dw.get('models', report.meta.models|length) }} 家同榜时窗口只剩 4 天 —— 九成样本被扔掉。</p>
+        {% if dw.get('degraded') %}
+        <p class="lb-why">⚠️ <b>本份报告已降级为"各源可用天桶的等权平均"</b>：当前可用格子凑不出一张能横向
+          比较的表（通常是因为只接了一个源，或各源之间几乎没有重合的天桶），此时"这一档有多难"无从估计，
+          只能按各家自己的平均分排——请结合<b>覆盖时效</b>列解读名次。</p>
+        {% else %}
+        <p class="lb-why">本页用的是<b>双向加法劈分</b>：把"（源 × 提前 N 天）"这张表格看成
+          <b>分数 = 这家水平 + 这一档有多难 + 噪声</b>，用全部格子一起估出"各家水平"与"各档难度"两件事，
+          再回答"若各家都被验证在同一批难度上，谁排前面"。<b>数据一格不扔，也不要求各家覆盖一致。</b></p>
+        {% endif %}
+        {% if dw.get('difficulty') and not dw.get('degraded') %}
+        <h4>每一档提前量有多难（相对全部档位的平均水平，单位：分）</h4>
+        <table>
+          <thead><tr>{% for b in range(1, report.meta.hourly_lead_days + 1) %}<th class="num">提前 {{ b }} 天</th>{% endfor %}</tr></thead>
+          <tbody>
+            <tr>{% for b in range(1, report.meta.hourly_lead_days + 1) %}{% set dv = dw['difficulty'].get(b) %}<td class="num">{{ '—' if dv is none else ('%+.1f'|format(dv)) }}</td>{% endfor %}</tr>
+            <tr>{% for b in range(1, report.meta.hourly_lead_days + 1) %}<td class="num" style="color:var(--muted)">{{ dw['coverage'].get(b, 0) }} 家</td>{% endfor %}</tr>
+          </tbody>
+        </table>
+        <p class="lb-why">第一行＝该档比平均水平<b>高/低</b>多少分（正数＝这一档好报），这就是被扣掉的"蹭难度"部分；
+          第二行＝这一档上有多少家参与比较（少于 {{ dw.get('min_models_per_bucket', 3) }} 家的档没有横向信息，不进比较）。
+          总榜的名次就是各家"扣掉上表第一行之后"的平均分。</p>
+        {% endif %}
+        <p class="lb-why">要留一分清醒：这是<b>加法假设</b>——若某家在短时效特别强、长时效特别弱（"源 × 时效"的交互），
+          对齐后的单一数字表达不了这种差异，那就请看<b>「提前 N 天」分榜</b>，那里是同一难度下的直接对照。
+          另外，各家被验证的<b>自然日</b>不完全相同（见下方"验证期不齐"与<b>验证日数</b>列），这部分差异只披露、不硬拉平。</p>
+      </div>
+    </details>
     <details class="lb-weights">
       <summary>🧮 综合分怎么算：12 项指标的加权构成（点开看明细）</summary>
       <div class="lb-weights-body">
@@ -533,7 +584,7 @@ window.addEventListener("DOMContentLoaded", function () {
         <p class="lb-why">各子分都截断到 0~100；某项缺数据时按<b>剩余权重</b>折算（"存疑不计亏"口径：缺数据≠差数据，
           不让单一缺项把整行踢出局，也不因缺项额外扣分）——缺失的维度在榜单里以 — 显示，读者可自行判断。
           综合分 = 温度分与降水分各占一半。把"报得准、误差小、节奏对、不偏科、雨报得实"分别记账再合并，比只用一两个指标更能区分真实水平。
-          <b>总榜与分榜用同一套桶得分</b>：分榜只取该天桶，总榜把各桶得分等权平均。</p>
+          <b>总榜与分榜用同一套桶得分</b>：分榜只取该天桶；总榜先把各档难度劈掉（见上一条"难度对齐"），再做平均。</p>
       </div>
     </details>
   </section>
@@ -541,7 +592,7 @@ window.addEventListener("DOMContentLoaded", function () {
   <!-- ==================== 得分随时效衰减（排行榜的趋势版） ==================== -->
   <section class="card" id="score-trend">
     <h2>📉 得分随时效衰减：谁"掉秤"掉得慢？</h2>
-    <p class="desc">上面的榜单中，除了合并全部时效的总榜，分时效榜每次只看一个提前量档；这一节把<b>每一档提前量（第 1~16 天）的得分</b>连成曲线，
+    <p class="desc">上面的榜单中，总榜给的是"扣掉难度后的总账"，分时效榜每次只看一个提前量档；这一节把<b>每一档提前量（第 1~16 天）的得分</b>连成曲线，
       一张图看清全部走势。同一套打分公式（综合 = 温度分 + 降水分），切换下方维度：</p>
     <div class="chart-controls">
       <div class="seg" id="scoreTrendTab">
@@ -554,8 +605,10 @@ window.addEventListener("DOMContentLoaded", function () {
     <div id="chartScoreTrend" class="chart"></div>
     <p class="hint">💡 <b>怎么看：</b><b>灰带</b> = 全体预报源在各档时效的得分范围（虚线 = 全体中位），
       <b>彩色粗线</b> = 你聚焦的源（线尾直接标着名字）。所有线都会往右掉（提前量越大、预报越难），
-      <b>谁掉得慢、谁在右边还站得高</b>，谁的中长期预报就更可靠。点图中的灰线可把它加入对比，
-      或用"🎯 对比源"按钮任选几家。某条线中途断掉 = 该时效"样本不足"（还没有那么多天的数据，攒着攒着就有了）。</p>
+      <b>谁掉得慢、谁在右边还站得高</b>，谁的中长期预报就更可靠。
+      <b>选几家都不限</b>：用"🎯 对比源"里的「全选」一次看全体，选到 7 家以上会自动切成<b>分屏</b>
+      （一源一张小图、共用纵轴，再多家也不会挤成一团），也可以在同一个面板里手动切回「合并」；
+      合并模式下把鼠标停在某条线上会压暗其余各线。某条线中途断掉 = 该时效"样本不足"（还没有那么多天的数据，攒着攒着就有了）。</p>
   </section>
 
   <!-- ==================== 分区一：气温 ==================== -->
@@ -572,7 +625,8 @@ window.addEventListener("DOMContentLoaded", function () {
     <p class="hint">💡 <b>怎么看：</b>准确率/相关系数<b>越高越好</b>，RMSE/MAE/MBE <b>越低越好</b>。
       灰带 = 全体 {{ report.meta.models|length }} 家的范围，虚线 = 全体中位；彩色粗线 = 你聚焦的源，
       越贴着灰带下沿（误差类）或上沿（准确率类）越强。默认聚焦<b>排行榜前 3 名</b>——
-      点图中的灰线可把任何一家加入对比，或用"🎯 对比源"按钮自选（最多 5 家）。</p>
+      点图中的灰线可把任何一家加入对比，或用"🎯 对比源"按钮自选——<b>不限家数</b>，
+      选得多会自动切成"分屏"（一源一张小图）。</p>
   </section>
 
   <!-- ==================== 分区二：降水 ==================== -->
@@ -702,8 +756,8 @@ window.addEventListener("DOMContentLoaded", function () {
       <div><dt>天桶</dt><dd>把时效按天分组：提前 1~24 小时算"第 1 天桶"，25~48 小时算"第 2 天桶"，以此类推。</dd></div>
       <div><dt>综合得分 / 温度分 / 降水分</dt><dd>把多个指标压缩成一个 0~100 的总分方便排名。温度分 = 7 项温度指标（±2°C/±1°C 准确率、RMSE/MAE 换算分、相关系数、偏差分、斜率分）按 25/25/15/10/10/10/5 加权；降水分 = 6 项降水指标（TS、ETS、晴雨准确率、命中率、空报率换算分、频率偏差分）按 30/25/15/15/10/5 加权；综合得分 = 两者均分。某项缺数据按剩余权重折算。总榜与分时效榜用同一套公式，区别只在参与计算的样本。点开排行榜的「评分构成」可看每个指标的换算公式。</dd></div>
       <div><dt>为什么有的指标不进综合分</dt><dd>χ²=RMSE²、RSS=样本量×χ²，是样本量的函数而非预报技巧；漏报率 = 100−命中率（纯重复）；空报频率与空报率同族（仅分母不同）；雨量 RMSE/MAE/MBE 由个别强降水时段主导、随当期气候波动大，跨源比较不公平——它们照常计算，只是不参与打分，可在进阶区明细表查看。</dd></div>
-      <div><dt>总榜（全时效汇总）</dt><dd>把该源在<b>每个「提前 N 天」档的得分做等权平均</b>后的总排行，回答"综合来看谁最准"。每个源先在自己的每个可用时效各得一分、再跨时效平均——预报难度随时效上升，这样"只提供短时效"的源不再因样本构成偏"易"而占便宜；可用时效数本身也是信息，请结合「覆盖时效」列解读。要同难度硬碰硬，切「提前 N 天」分榜。</dd></div>
-      <div><dt>覆盖时效</dt><dd>该源在本评估窗口内<b>实际参与指标计算的样本</b>（预报与实况两侧同时有值）中最长覆盖到提前第几天，按"温度 / 降水"两条轨道分别统计（向上取整到天；取最大值，不代表逐天连续覆盖）。受三件事限制：源本身的最长时效，"起报 + 时效"是否已落进可对账的时段，以及序列尾部缺测（尾部全是 null 的时段不参与计算，也不计入覆盖）。总榜把各时效等权平均，可用时效数越少，平均所依据的"桶"就越少。</dd></div>
+      <div><dt>总榜（难度对齐）</dt><dd>回答"综合来看谁最准"的唯一排名。各家能预报的天数不同，而越往后越难报，所以先把<b>每一档「提前 N 天」有多难算出来、统一扣掉</b>，再比高低——能报 3 天的源和能报 15 天的源同榜比较也不会吃亏。做法是把（源 × 提前 N 天）这张表拆成"这家水平 + 这一档难度 + 噪声"两件���（双向加法模型）。可用时效数本身也是信息，请结合「覆盖时效」列解读。要同难度硬碰硬，切「提前 N 天」分榜。</dd></div>
+      <div><dt>覆盖时效</dt><dd>该源在本评估窗口内<b>实际参与指标计算的样本</b>（预报与实况两侧同时有值）中最长覆盖到提前第几天，按"温度 / 降水"两条轨道分别统计（向上取整到天；取最大值，不代表逐天连续覆盖）。受三件事限制：源本身的最长时效，"起报 + 时效"是否已落进可对账的时段，以及序列尾部缺测（尾部全是 null 的时段不参与计算，也不计入覆盖）。总榜按各时效等权汇总，可用时效数越少，结论所依据的"桶"就越少。</dd></div>
       <div><dt>90% 置信区间与显著性</dt><dd>把评估窗口内的<b>天</b>做有放回重采样（块长 1 天，{{ report.meta.bootstrap_runs }} 次），每次都重算一遍完整榜单，得到综合分的波动范围——区间越窄说明分数越"站得稳"。名字带 <b>†</b> 表示该源与第一名的得分差在 90% 置信下与 0 分不开（差异不显著）：两者谁先谁后更多是抽样运气，不宜过度解读。样本期只有一两周时区间天然很宽，随数据积累收窄。</dd></div>
       <div><dt>有效样本量 n_eff 与门槛</dt><dd>逐小时误差强自相关（这一小时的预报误差和上 hour 高度相似），名义样本对数 n 会把同一信息重复计数——n_eff 按"每天真正带来多少新信息"折算（n·(1−ρ)/(1+ρ)），跨源比较请以它为准。总榜另设入围门槛 n_eff ≥ {{ report.meta.min_board_neff }}：未达标的源列"样本积累中"，不参与冠军竞争。</dd></div>
       <div><dt>日雨评分（TS/ETS，按天轨道）</dt><dd>降水入分口径为<b>北京时自然日 24h 累计</b>、日雨量 ≥{{ report.meta.rain_daily_threshold_mm }}mm 记"有效降水日"（业务惯用口径）。逐小时 ≥0.1mm 的口径下数值模式普遍每小时报微量降水（drizzle bias），实测超报最高 15 倍、所有源 ETS 都接近 0、评分失去区分度；24h 累计让毛毛雨在求和中自然抵消。逐小时晴雨指标仍在进阶区保留为诊断视图。</dd></div>
@@ -778,12 +832,14 @@ window.addEventListener("DOMContentLoaded", function () {
  * 数据由 Python 端 evaluate.py 计算后以 JSON 内联；本脚本只负责"画出来"。
  * 每个图表块都套 try/catch：任何一张图出错都不影响页面其余部分。
  *
- * 多源对比的统一解法（24 家预报源，一条线一个颜色必然糊成一团）：
+ * 多源对比的统一解法（20+ 家预报源，一条线一个颜色必然糊成一团）：
  *   - 主视图 = 表格式排行榜（每个提前量档一张榜，行内附得分衰减走势线），
  *     折线图退居辅助；
  *   - 对比图 = 战场带（全体 min-max 灰带 + 中位虚线）
- *     + 聚焦线（读者自选 ≤5 家的彩色粗线，线尾直标名字，无图例）
+ *     + 聚焦线（读者自选，不限家数；线尾直标名字，无图例）
  *     + 可选灰细线层（全体各家，hover 高亮、点击即聚焦）；
+ *   - **选多了自动分屏**：超过 6 家改为"一源一张小图"（共用纵轴、共享灰带做背景），
+ *     彻底避开"线条挤成一团、颜色不够用"；读者也能手动切回合并视图；
  *   - 聚焦状态全局共享：改一处（选源器/排行榜行按钮/点灰线），全页图表同步刷新；
  *   - 指标维度用下拉切换，一张图承载一个指标族。
  * ========================================================================== */
@@ -799,6 +855,9 @@ const MQ_NARROW = window.matchMedia("(max-width:640px)");
 const PALETTE = ["#2563eb","#f59e0b","#10b981","#8b5cf6","#ef4444","#0ea5e9"];
 const colorOf = m => MODEL_COLOR[m] || PALETTE[report.meta.models.indexOf(m) % PALETTE.length] || "#64748b";
 
+// HTML 转义：任何拼进 innerHTML 的可见文本（源名等）都必须先过这一层
+const escHtml = s => String(s).replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
 const fmt = (v, d=1) => (v===null||v===undefined) ? "—" : Number(v).toFixed(d);
 const pct = v => (v===null||v===undefined) ? "—" : Number(v).toFixed(1)+"%";
 // 时间轴标签压缩："2026-08-27T15:00" → "08/27 15时"，避免横轴文字挤爆
@@ -806,10 +865,9 @@ const fmtT = t => t.slice(5,10).replace("-","/") + " " + t.slice(11,13) + "时";
 
 /* ---------------- 模型顺序与"聚焦对比"体系 ---------------- */
 const LEADERBOARDS = report.leaderboards || {};
-// 共同覆盖窗口（P0-2）：总榜名次只在"入围源都有分的天桶"上比，见 evaluate._common_bucket_window
-const COMMON_WIN = (report.meta || {}).common_window || {};
-const COMMON_DAYS = COMMON_WIN.days || 0;
-const COMMON_LABEL = COMMON_DAYS ? ("提前 1~" + COMMON_DAYS + " 天") : "共同覆盖窗口";
+// 难度对齐（双向加法劈分）：总榜把"每档提前量有多难"先扣掉再比，见 evaluate._overall_board
+const DIFF_WIN = (report.meta || {}).difficulty_window || {};
+const DIFF_DAYS = DIFF_WIN.days || 0;
 // 图表系列顺序与默认聚焦 = 总榜名次（无分的排后面）
 const rankedModels = (LEADERBOARDS.all && LEADERBOARDS.all.length
   ? LEADERBOARDS.all.map(r => r.model) : report.meta.models);
@@ -817,18 +875,31 @@ const rankOf = m => rankedModels.indexOf(m) + 1;
 // 选源器的家族分组数据（render.py 注入）
 const MODEL_FAMILIES = {{ model_families_json | safe }};
 
-/* 全局聚焦状态：所有对比图共享同一组源，默认聚焦排行榜前 3 名 */
-const MAX_FOCUS = 5;
+/* 全局聚焦状态：所有对比图共享同一组源，默认聚焦排行榜前 3 名。
+   家数**不设上限**——限制家数是为了不糊成一团，而真正的解法是换布局（见下），
+   不是拒绝读者的选择。 */
 const focus = new Set(rankedModels.slice(0, 3));
-let showPack = false;   // 灰细线层开关：显示全体非聚焦源
-let cmpMsg = "";        // 选源器临时提示（如超出家数上限）
+let showPack = false;        // 灰细线层开关：显示全体非聚焦源
+let cmpMsg = "";             // 选源器临时提示（如"已选满全体"）
 let cmpMsgTimer = null;
+/* 布局：合并（一张图多条线）/ 分屏（一源一张小多图）/ 自动（按家数切换） */
+const GRID_AUTO_AT = 6;      // 超过几家自动切分屏
+let cmpLayout = "auto";      // "auto" | "single" | "grid"
+const layoutName = {auto:"自动", single:"合并", grid:"分屏"};
+const activeLayout = () => cmpLayout === "auto"
+  ? (focus.size > GRID_AUTO_AT ? "grid" : "single") : cmpLayout;
 
-const cmpRegistry = []; // 全部对比图 cfg：{el, x, getVal, yName, opts, chart}
+const cmpRegistry = [];      // 全部对比图 cfg：{el, x, getVal, yName, opts, chart, tiles}
 
+function flashCmpMsg(text) {
+  cmpMsg = text;
+  renderPickers();
+  clearTimeout(cmpMsgTimer);
+  cmpMsgTimer = setTimeout(() => { cmpMsg = ""; renderPickers(); }, 2600);
+}
 function refreshCompare(cfg) {
-  if (cfg.chart) cfg.chart.setOption(
-    compareOption(cfg.x, cfg.getVal, cfg.yName, cfg.opts || {}), {notMerge:true});
+  if (activeLayout() === "grid") { dropSingle(cfg); renderTiles(cfg); }
+  else { dropTiles(cfg); ensureSingle(cfg); }
 }
 function refreshAllCompare() {
   cmpRegistry.forEach(refreshCompare);
@@ -837,18 +908,19 @@ function refreshAllCompare() {
 }
 function setFocus(list) {
   focus.clear();
-  list.slice(0, MAX_FOCUS).forEach(m => focus.add(m));
+  list.forEach(m => focus.add(m));
   refreshAllCompare();
 }
 function toggleFocus(m) {
   if (focus.has(m)) focus.delete(m);
-  else if (focus.size >= MAX_FOCUS) {
-    cmpMsg = "最多同时对比 " + MAX_FOCUS + " 家，请先取消一家再试";
-    renderPickers();
-    clearTimeout(cmpMsgTimer);
-    cmpMsgTimer = setTimeout(() => { cmpMsg = ""; renderPickers(); }, 2600);
+  else if (focus.size >= rankedModels.length) {
+    flashCmpMsg("全体都已加入对比了");
     return;
   } else focus.add(m);
+  refreshAllCompare();
+}
+function setCmpLayout(v) {
+  cmpLayout = v;
   refreshAllCompare();
 }
 
@@ -893,6 +965,10 @@ function compareOption(x, getVal, yName, opts) {
   const narrow = MQ_NARROW.matches;
   const stats = fieldStats(getVal, x.length);
   const fmtV = opts.valueFmt || (v => fmt(v));
+  // 密度自适应：线越多越细；超过 8 条就收起线尾名字（改用 hover 高亮 + 排序 tooltip 认线）
+  const nF = focus.size;
+  const LW = nF > 10 ? 1.5 : (nF > 6 ? 1.9 : 2.4);
+  const SHOW_EBLABEL = nF <= 8;
   const series = [
     // 战场带下沿（min，透明占位）+ 带体（max-min，浅灰）—— 堆叠面积画法
     {id:"band-min", type:"line", stack:"band", data:stats.map(s => s ? s.min : null),
@@ -933,8 +1009,11 @@ function compareOption(x, getVal, yName, opts) {
     series.push({id:"focus-" + m, name:labelOf(m), type:"line", smooth:true,
       connectNulls:false, z:4, showSymbol:false, triggerLineEvent:true,
       data:x.map((_, i) => getVal(m, i)),
-      itemStyle:{color:colorOf(m)}, lineStyle:{width:2.4, color:colorOf(m)},
-      endLabel:{show:true, formatter:labelOf(m), color:colorOf(m),
+      itemStyle:{color:colorOf(m)}, lineStyle:{width:LW, color:colorOf(m)},
+      // hover 时压暗其余各线（blur），二十条线同屏也能一眼看清一条
+      blur:{lineStyle:{opacity:0.13}, itemStyle:{opacity:0.15}},
+      emphasis:{focus:"series", lineStyle:{width:LW + 1.4, color:colorOf(m)}},
+      endLabel:{show:SHOW_EBLABEL, formatter:labelOf(m), color:colorOf(m),
                 fontSize:narrow ? 10 : 11,
                 // 窄屏右缘留白有限，超长源名截断省略（完整名在 tooltip 里）
                 width: narrow ? 82 : null, overflow: narrow ? "truncate" : "break",
@@ -942,7 +1021,7 @@ function compareOption(x, getVal, yName, opts) {
                 padding:[2, 5], borderRadius:4, distance: narrow ? 4 : 5,
                 // 统一上浮：线在 0 值处结束时（如 TS 归零）避免压到 x 轴刻度文字
                 offset:[0, -12]},
-      labelLayout:{moveOverlap:"shiftY"}, emphasis:{focus:"series"}});
+      labelLayout:{moveOverlap:"shiftY"}});
   });
   return {
     animationDuration:150,
@@ -953,13 +1032,25 @@ function compareOption(x, getVal, yName, opts) {
                    ";white-space:normal;line-height:1.55",
       formatter: params => {
         const i = params && params.length ? params[0].dataIndex : 0;
-        const rows = [];
-        rankedModels.forEach(m => {
-          if (!focus.has(m)) return;
-          rows.push('<span style="display:inline-block;width:9px;height:9px;border-radius:50%;' +
-            'background:' + colorOf(m) + ';margin-right:6px"></span>' + labelOf(m) +
-            '　<b style="font-variant-numeric:tabular-nums">' + fmtV(getVal(m, i)) + "</b>");
-        });
+        const dotHtml = m => '<span style="display:inline-block;width:9px;height:9px;' +
+          'border-radius:50%;background:' + colorOf(m) + ';margin-right:6px"></span>';
+        // 家数多时按数值降序排——读者要的是"这一档谁高谁低"，不是固定的名次顺序
+        let ms = rankedModels.filter(m => focus.has(m));
+        if (ms.length > 6) {
+          ms = ms.slice().sort((a, b) => {
+            const va = getVal(a, i), vb = getVal(b, i);
+            if (va === null || va === undefined || isNaN(va)) return 1;
+            if (vb === null || vb === undefined || isNaN(vb)) return -1;
+            return vb - va;
+          });
+        }
+        const MAX_ROWS = 14;
+        const shownM = ms.slice(0, MAX_ROWS);
+        const rows = shownM.map(m => dotHtml(m) + labelOf(m) +
+          '　<b style="font-variant-numeric:tabular-nums">' + fmtV(getVal(m, i)) + "</b>");
+        if (ms.length > MAX_ROWS)
+          rows.push('<span style="color:#64748b">… 另有 ' + (ms.length - MAX_ROWS) +
+                    " 家（已选中 " + ms.length + " 家；可切「分屏」一源一张看）</span>");
         const s = stats[i];
         if (s) rows.push(narrow
           ? '<span style="color:#64748b">战场 ' + s.n + " 家 · 最高 " + fmtV(s.max) +
@@ -986,24 +1077,152 @@ function compareOption(x, getVal, yName, opts) {
   };
 }
 
+/* ---------------- ECharts 实例的生命周期：合并图与分屏小图会相互切换 ----------
+ * 切换布局时旧实例必须 dispose 并清出 charts 列表——否则 resize 时会去 resize
+ * 一个已脱离 DOM 的实例，且容器里会残留上一个布局的画布。 */
+function newChart(el) { const ch = echarts.init(el); charts.push(ch); return ch; }
+function dropChart(ch) {
+  if (!ch) return;
+  const i = charts.indexOf(ch);
+  if (i >= 0) charts.splice(i, 1);
+  ch.dispose();
+}
+
+/* ---------------- 分屏（小多图）：一源一张，共用纵轴 ----------------
+ * 线数一多，"再多选几种颜色、再把线调细"都救不回来——真正的问题是同一个坐标系
+ * 里塞了太多条。分屏把每家拆成一张小图：灰带（全体范围）作背景，前景只有一条
+ * 彩色线，所有小图共用同一纵轴，于是"谁高谁低"仍然可以横向扫一眼比出来。 */
+function renderTiles(cfg) {
+  const el = document.getElementById(cfg.el);
+  if (!el) return;
+  dropTiles(cfg);
+  el.classList.add("cmp-grid-host");
+  el.style.height = "";   // 高度交给 CSS（由小图数量自然撑开）
+  const list = rankedModels.filter(m => focus.has(m));
+  if (!list.length) {
+    el.innerHTML = '<div class="cmp-grid-empty">还没有选预报源——用「🎯 对比源」选几家，' +
+      "或用上方「前 3 名 / 全选」快捷按钮。</div>";
+    cfg.tiles = null;
+    return;
+  }
+  const stats = fieldStats(cfg.getVal, cfg.x.length);
+  const opts = cfg.opts || {};
+  const fmtV = opts.valueFmt || (v => fmt(v));
+  // 统一纵轴：取聚焦源的实际取值范围（留 8% 边距），小图之间才可比
+  let lo = Infinity, hi = -Infinity;
+  list.forEach(m => cfg.x.forEach((_, i) => {
+    const v = cfg.getVal(m, i);
+    if (v !== null && v !== undefined && !isNaN(v)) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+  }));
+  if (lo === Infinity) { lo = 0; hi = 1; }
+  const pad = Math.max(0.4, (hi - lo) * 0.08);
+  const yMin = lo - pad, yMax = hi + pad;
+  const narrow = MQ_NARROW.matches;
+  const tickStep = Math.max(1, Math.ceil(cfg.x.length / (narrow ? 3 : 4)));
+
+  el.innerHTML = '<div class="cmp-grid">' + list.map(m =>
+    '<figure class="cmp-tile" data-tile="' + m + '" title="点击可把这一家移出对比">' +
+      '<figcaption><span class="dot" style="background:' + colorOf(m) + '"></span>' +
+        escHtml(labelOf(m)) + "<i>#" + rankOf(m) + "</i></figcaption>" +
+      '<div class="cmp-tile-chart" data-tile-chart="' + m + '"></div></figure>').join("") +
+    "</div>";
+  const tileCharts = [];
+  list.forEach(m => {
+    const box = el.querySelector('[data-tile-chart="' + m + '"]');
+    if (!box) return;
+    const series = [
+      {type:"line", stack:"tb", data:stats.map(s => s ? s.min : null), lineStyle:{width:0},
+       symbol:"none", silent:true, z:1, connectNulls:false, areaStyle:{opacity:0}},
+      {type:"line", stack:"tb",
+       data:stats.map(s => s ? +(s.max - s.min).toFixed(4) : null), lineStyle:{width:0},
+       symbol:"none", silent:true, z:1, connectNulls:false,
+       areaStyle:{color:"rgba(100,116,139,.14)"}},
+      {type:"line", data:stats.map(s => s ? +s.median.toFixed(4) : null), smooth:true,
+       symbol:"none", z:2, connectNulls:false,
+       itemStyle:{color:"#94a3b8"}, lineStyle:{width:1.2, type:"dashed", color:"#94a3b8"}}
+    ];
+    if (opts.baseline) series.push({type:"line", smooth:true, connectNulls:false, z:2,
+      symbol:"none", data:cfg.x.map((_, i) => {
+        const v = opts.baseline(i); return (v === null || v === undefined) ? null : +v.toFixed(4); }),
+      itemStyle:{color:"#b45309"}, lineStyle:{width:1.3, type:"dotted", color:"#b45309"}});
+    series.push({type:"line", name:labelOf(m), smooth:true, connectNulls:false, z:4,
+      showSymbol:false, data:cfg.x.map((_, i) => getValTile(cfg, m, i)),
+      itemStyle:{color:colorOf(m)}, lineStyle:{width:2.2, color:colorOf(m)}});
+    const ch = newChart(box);
+    ch.setOption({
+      animationDuration:150,
+      tooltip:{trigger:"axis", confine:true, axisPointer:{type:"line"}, position:tipClampPos,
+        extraCssText:"max-width:70vw;white-space:normal;line-height:1.5",
+        formatter: ps => {
+          const i = ps && ps.length ? ps[0].dataIndex : 0;
+          const s = stats[i];
+          return '<div style="font-weight:600;margin-bottom:2px">' + escHtml(labelOf(m)) +
+            "　" + cfg.x[i] + "</div>" +
+            '<b style="color:' + colorOf(m) + '">' + fmtV(getValTile(cfg, m, i)) + "</b>" +
+            (s ? '<br><span style="color:#64748b">战场 ' + s.n + " 家：最高 " + fmtV(s.max) +
+                 "（" + escHtml(labelOf(s.maxBy)) + "）· 中位 " + fmtV(s.median) + " · 最低 " +
+                 fmtV(s.min) + "</span>" : "");
+        }},
+      grid:{left:2, right:8, top:6, bottom:2, containLabel:true},
+      xAxis:{type:"category", data:cfg.x, boundaryGap:false,
+             axisLabel:{fontSize:9, interval:tickStep - 1,
+                        formatter:v => String(v).replace("提前", "").replace("第", "")
+                                                .replace("天", "")},
+             axisTick:{show:false}},
+      yAxis:{type:"value", min:+yMin.toFixed(3), max:+yMax.toFixed(3),
+             axisLabel:{fontSize:9, showMinLabel:false, showMaxLabel:false},
+             splitLine:{lineStyle:{color:"#eef2f7"}}},
+      series:series});
+    tileCharts.push(ch);
+  });
+  cfg.tiles = tileCharts;
+  // 点小图 = 把这一家移出对比（分屏下每家都已在图上，无需"再点一次加入"）
+  el.querySelectorAll("[data-tile]").forEach(t => t.addEventListener("click", () => {
+    const m = t.getAttribute("data-tile");
+    if (m && focus.has(m)) toggleFocus(m);
+  }));
+}
+function getValTile(cfg, m, i) {
+  const v = cfg.getVal(m, i);
+  return (v === null || v === undefined) ? null : v;
+}
+function dropTiles(cfg) {
+  if (cfg.tiles) { cfg.tiles.forEach(dropChart); cfg.tiles = null; }
+  const el = document.getElementById(cfg.el);
+  if (!el) return;
+  el.classList.remove("cmp-grid-host");
+  if (el.querySelector(".cmp-grid, .cmp-grid-empty")) el.innerHTML = "";
+}
+function dropSingle(cfg) { dropChart(cfg.chart); cfg.chart = null; }
+function ensureSingle(cfg) {
+  const el = document.getElementById(cfg.el);
+  if (!el) return;
+  if (!cfg.chart) {
+    cfg.chart = newChart(el);
+    // 点灰线 = 把这一家加入聚焦（看到哪条有意思，点它就行）。
+    // 线体事件（triggerLineEvent）的参数只有 seriesName/seriesIndex，没有 seriesId，
+    // 故用中文名反查模型 id；聚焦线再点不动作（取消聚焦走选源器/排行卡，避免误删）。
+    cfg.chart.on("click", p => {
+      if (!p || p.componentType !== "series" || !p.seriesName) return;
+      const m = rankedModels.find(k => labelOf(k) === p.seriesName);
+      if (m && !focus.has(m)) toggleFocus(m);
+    });
+  }
+  // 合并视图的高度随家数增长：20 条线挤在 360px 里谁都看不清，纵向多给一点最有效
+  const base = MQ_NARROW.matches ? 300 : 360;
+  el.style.height = (base + Math.min(240, Math.max(0, (focus.size - 3) * 20))) + "px";
+  cfg.chart.setOption(
+    compareOption(cfg.x, cfg.getVal, cfg.yName, cfg.opts || {}), {notMerge:true});
+  cfg.chart.resize();
+}
+
 /* 对比图工厂：所有多源折线图的入口；cfg = {el, x, getVal, yName, opts} */
 function compareLineChart(cfg) {
   const el = document.getElementById(cfg.el);
   if (!el || typeof echarts === "undefined") return null;
-  const ch = echarts.init(el);
-  charts.push(ch);
-  cfg.chart = ch;
-  ch.setOption(compareOption(cfg.x, cfg.getVal, cfg.yName, cfg.opts || {}), {notMerge:true});
-  // 点灰线 = 把这一家加入聚焦（看到哪条有意思，点它就行）。
-  // 注意：线体事件（triggerLineEvent）的参数只有 seriesName/seriesIndex，没有 seriesId，
-  // 故用中文名反查模型 id；聚焦线再点不动作（取消聚焦只走选源器/排行卡，避免误删）。
-  ch.on("click", p => {
-    if (!p || p.componentType !== "series" || !p.seriesName) return;
-    const m = rankedModels.find(k => labelOf(k) === p.seriesName);
-    if (m && !focus.has(m)) toggleFocus(m);
-  });
   cmpRegistry.push(cfg);
-  return ch;
+  refreshCompare(cfg);
+  return cfg;
 }
 
 /* ---------------- 选源器：家族分组 + 搜索 + 预设（多挂载点共享同一状态） ---------------- */
@@ -1023,10 +1242,17 @@ function renderPickerMount(mount) {
     let body = '<div class="cmp-presets">' +
       '<button type="button" data-preset="champ">🥇 只看冠军</button>' +
       '<button type="button" data-preset="top3">前 3 名</button>' +
+      '<button type="button" data-preset="all">全选</button>' +
       '<button type="button" data-preset="clear">清空</button>' +
       '<input type="search" class="cmp-search" placeholder="搜源名…" value="' +
-      String(q).replace(/[&<>"']/g,
-        c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])) + '"></div>';
+      escHtml(q) + '"></div>' +
+      // 布局：线多了自动分屏（一源一张小图），也可以手动固定
+      '<div class="cmp-layout"><span>布局</span>' +
+        ["single","grid","auto"].map(k => '<button type="button" data-layout="' + k +
+          '"' + (cmpLayout === k ? ' class="on"' : "") +
+          ">" + layoutName[k] + "</button>").join("") +
+        '<span style="color:#64748b">（自动：超过 ' + GRID_AUTO_AT +
+          " 家改为一源一张小图，不再挤在一张图上）</span></div>";
     MODEL_FAMILIES.forEach(fam => {
       const ms = (fam.models || [])
         .filter(m => rankedModels.indexOf(m) !== -1)
@@ -1044,7 +1270,8 @@ function renderPickerMount(mount) {
       body += "</div></div>";
     });
     body += '<div class="cmp-msg">' +
-      (cmpMsg || ("最多同时对比 " + MAX_FOCUS + " 家；点图中的灰线也可加入对比")) + "</div>";
+      (cmpMsg || ("不限家数（当前 " + n + " 家 · " + layoutName[activeLayout()] +
+        "）；点图中的线可直接加入，分屏模式下点小图即移出")) + "</div>";
     html += '<div class="cmp-panel">' + body + "</div>";
   }
   mount.innerHTML = html;
@@ -1060,8 +1287,11 @@ function renderPickerMount(mount) {
     mount.querySelectorAll("[data-preset]").forEach(b => b.addEventListener("click", () => {
       if (b.dataset.preset === "champ") setFocus(rankedModels.slice(0, 1));
       else if (b.dataset.preset === "top3") setFocus(rankedModels.slice(0, 3));
+      else if (b.dataset.preset === "all") setFocus(rankedModels);
       else setFocus([]);
     }));
+    mount.querySelectorAll("[data-layout]").forEach(b =>
+      b.addEventListener("click", () => setCmpLayout(b.dataset.layout)));
     const search = mount.querySelector(".cmp-search");
     search.addEventListener("input", () => {
       mount._q = search.value;
@@ -1124,17 +1354,14 @@ try {
   // 置信区间（P0-2）：按天分块 bootstrap 的综合分 90% 区间；† = 与第一名差异不显著
   const CI_COL = {key:"_ci", label:"90% 置信区间", nosort:true,
                   title:"按天重采样 " + (report.meta.bootstrap_runs || 500) + " 次的综合分波动范围；区间越窄分数越稳"};
-  // 总榜（P0-2）：名次用"共同窗口分"——只在所有入围源都覆盖的天桶上比，
-  // 把"覆盖越短越占便宜"的系统性偏置消掉；全窗口分、覆盖桶数并列披露，
-  // 让读者一眼看出"分高是因为准，还是因为覆盖短"。
-  const COMMON_COL = {key:"score_common", label:"共同窗口分", dir:"desc", dec:1, primary:true,
-    title:"只在所有入围源都覆盖的提前 " + COMMON_DAYS + " 天内比较（同名次依据），各家比的是同一批天桶"};
-  const FULL_COL = {key:"score", label:"全窗口分", dir:"desc", dec:1,
-    title:"各源自家全部可用天桶的等权平均：覆盖越长越吃亏，仅供参照，不作名次"};
+  // 总榜：名次就一个数字——难度对齐综合分。先把每一档提前量有多难算出来并统一
+  // 扣掉，各家覆盖的天数不同也照样公平（见榜单下方"难度对齐是怎么做的"）。
+  const FULL_COL = {key:"score", label:"难度对齐分", dir:"desc", dec:1, primary:true,
+    title:"名次依据：把每一档提前量有多难先算出来并统一扣掉之后的综合分——能报 3 天的源与能报 15 天的源同榜比较，靠的就是这一步"};
   const SKILL_COL = {key:"skill", label:"技巧差", dir:"desc", dec:1,
     title:"相对零技巧基准 persistence（明天 = 今天）高出的分数；≤0 表示不比'原地不动'强"};
   const NB_COL = {key:"n_buckets", label:"覆盖桶数", dir:"desc", dec:0, unit:" 桶",
-    title:"温度与降水两维度齐备的天桶数——全窗口分的实际分母"};
+    title:"温度与降水两维度齐备的天桶数——该源真正被验证过的时效档数"};
   // 起报轮次（P2-1）：同样"覆盖 6 天"，1 个起报的几十条样本与 17 个起报的上万条
   // 不是一个可信度量级；只披露覆盖天数会把两者显示成同一档
   const ISSUE_COL = {key:"n_issues", label:"起报轮次", dir:"desc", dec:0, unit:" 轮",
@@ -1145,10 +1372,10 @@ try {
   const DAYS_COL = {key:"n_days", label:"验证日数", dir:"desc", dec:0, unit:" 天",
     title:"该源真正被验证过的自然日数（含降水维的日数）"};
   const lbCols = board => board === "all"
-    ? [COMMON_COL, FULL_COL, SKILL_COL].concat(LB_COLS.slice(1), [NB_COL, ISSUE_COL, DAYS_COL, CI_COL, LEAD_COL])
+    ? [FULL_COL, SKILL_COL].concat(LB_COLS.slice(1), [NB_COL, ISSUE_COL, DAYS_COL, CI_COL, LEAD_COL])
     : LB_COLS;
-  // 名次依据：总榜按共同窗口分，分时效榜按综合分；未达标源不参与名次
-  const rankKeyOf = b => (b === "all" ? "score_common" : "score");
+  // 名次依据：始终是该榜的综合分列（总榜 = 难度对齐分）
+  const rankKeyOf = b => "score";
   // 默认展示总榜；总榜整体样本不足时落到第一个有分的分时效榜
   let board = (LEADERBOARDS.all || []).some(r => r.qualified === true) ? "all"
     : (BUCKETS.find(b => (LEADERBOARDS[b] || []).some(r => r.score !== null)) || "all");
@@ -1156,7 +1383,7 @@ try {
   sortKey = rankKeyOf(board);   // 初始排序 = 名次依据列
 
   // 名次只跟"名次依据列"绑定：无论当前按哪列排序，名次列始终显示该源在本时效的名次。
-  // 总榜依据共同窗口分（P0-2），分时效榜依据综合分；未达标源（qualified=false）不参与名次。
+  // 未达标源（qualified=false）不参与名次。
   function lbRankMap(rows) {
     const map = {};
     const k = rankKeyOf(board);
@@ -1220,7 +1447,7 @@ try {
       const isAll = b === "all";
       const label = isAll ? "🏅 总榜" : "提前" + parseInt(b, 10) + "天";
       const tip = isAll
-        ? (COMMON_DAYS ? "名次只在全员共有的提前 1~" + COMMON_DAYS + " 天内比较（消除覆盖长短的不公平）；全窗口分并列披露" : "全部时效样本合并的总榜")
+        ? (DIFF_DAYS ? "难度对齐后的综合排名：能报 3 天与能报 15 天的源同榜公平比较（覆盖到提前 " + DIFF_DAYS + " 天）" : "难度对齐后的综合排名")
         : "提前 " + parseInt(b, 10) + " 天预报的排行榜" + (cnt ? "" : "（暂无足够样本）");
       return '<button type="button" class="lb-pill' + (b === board ? " on" : "") +
         (cnt ? "" : " empty") + '" data-board="' + b + '" aria-pressed="' + (b === board) +
@@ -1273,16 +1500,17 @@ try {
       return '<td class="num lb-pri"' + (none || notQ ? "" : barStyle(row.score)) + ">" +
         ((none || notQ) ? naTip(row) : fmtC(row.score, 1)) + "</td>";
     }
-    // 总榜：共同窗口分（带底纹条、名次依据）+ 全窗口分 + 技巧差
-    const cNone = row.score_common === null || row.score_common === undefined;
-    return '<td class="num lb-pri"' + (cNone || notQ ? "" : barStyle(row.score_common)) + ">" +
-      ((cNone || notQ) ? naTip(row) : fmtC(row.score_common, 1)) + "</td>" +
-      '<td class="num" title="各源全部可用天桶的等权平均（覆盖越长越吃亏，不作名次）">' +
-      fmtC(row.score, 1) + "</td>" +
+    // 总榜：难度对齐分（带底纹条、名次依据）+ 技巧差
+    return '<td class="num lb-pri"' + (none || notQ ? "" : barStyle(row.score)) + ">" +
+      ((none || notQ) ? naTip(row) : fmtC(row.score, 1)) + "</td>" +
       '<td class="num" title="相对零技巧基准 persistence（明天 = 今天）高出的分数">' +
       fmtC(row.skill, 1) + "</td>";
   }
   function naTip(row) {
+    // 有天桶却进不了劈分设计 = "暂不可比"；一个天桶都没有 = 单纯的样本积累中
+    if (row.comparable === false && (row.n_buckets || 0) > 0)
+      return '<span class="na" title="这一家可用天桶太少、或所在天桶同台的家数不足，' +
+        '无从把「这一档有多难」与「这一家有多强」分开，暂不参与横向比较">暂不可比</span>';
     return row.qualified === false && row.n_eff !== null && row.n_eff !== undefined
       ? '<span class="na" title="有效样本量 n_eff=' + row.n_eff + '，未达门槛 ' +
         (report.meta.min_board_neff || 30) + '">样本积累中</span>'
@@ -1304,14 +1532,14 @@ try {
       : "";
     const crown = (rank === 1 && !none && !notQ) ? "👑 " : "";
     const dagger = (board === "all" && !none && !notQ && row.sig_vs_top === false)
-      ? ' <span title="与第一名（共同窗口分）的差距经多重比较校正后仍不显著" style="cursor:help">†</span>' : "";
+      ? ' <span title="与第一名（难度对齐分）的差距经多重比较校正后仍不显著" style="cursor:help">†</span>' : "";
     const cell = (label, v, tip) =>
       "<div" + (tip ? ' title="' + tip + '"' : "") + "><i>" + label + "</i><b>" + v + "</b></div>";
     const ciV = row.ci90 ? Math.round(row.ci90[0]) + "~" + Math.round(row.ci90[1]) : "—";
     const leadV = (row.lead_days === null || row.lead_days === undefined ? "—" : row.lead_days) + "/" +
                   (row.rain_days === null || row.rain_days === undefined ? "—" : row.rain_days);
     const bar = (none || notQ) ? "" : barStyle(row[key]);
-    const mainLabel = board === "all" ? "共同窗口分" : "综合分";
+    const mainLabel = board === "all" ? "难度对齐分" : "综合分";
     return '<article class="lb-card' + (rank === 1 && !none && !notQ ? " lb-first" : "") +
         ((none || notQ) ? " lb-none" : "") + '">' +
       '<div class="lb-card-top">' +
@@ -1329,7 +1557,6 @@ try {
         cell("降水分", fmtC(row.precip_score, 1), "降水 5 项指标加权（0~100）") +
         cell("±2°C", fmtC(row.acc2, 1, "%"), "温度 ±2°C 命中率，越高越好") +
         cell("RMSE", fmtC(row.rmse, 2), "温度均方根误差 °C，越低越好") +
-        (board === "all" ? cell("全窗口分", fmtC(row.score, 1), "各源全部可用天桶的等权平均；覆盖越长越吃亏，不作名次") : "") +
         (board === "all" ? cell("技巧差", fmtC(row.skill, 1), "相对零技巧基准 persistence（明天=今天）高出的分数") : "") +
         (board === "all" ? cell("90% CI", ciV, "名次依据分数的 90% 置信区间") : "") +
         (board === "all" ? cell("覆盖", leadV + " 天 / " + (row.n_buckets === null || row.n_buckets === undefined ? "—" : row.n_buckets) + " 桶", "覆盖时效（温度/降水）+ 两维齐备的天桶数") : "") +
@@ -1346,7 +1573,7 @@ try {
 
   function lbRowHtml(row, rank, markIdx) {
     const m = row.model;
-    // 总榜的名次依据是 score_common（共同窗口分），分时效榜是 score
+    // 总榜的名次依据是难度对齐后的综合分，分时效榜是该天桶的综合分
     const key = rankKeyOf(board);
     const none = row[key] === null || row[key] === undefined;
     const notQ = row.qualified === false;   // 有分但 n_eff 未达标：不参与冠军竞争（P0-2.3）
@@ -1357,9 +1584,9 @@ try {
       : "";
     const crown = (rank === 1 && !none && !notQ) ? "👑 " : "";
     const dagger = (board === "all" && !none && !notQ && row.sig_vs_top === false)
-      ? ' <span title="与第一名（共同窗口分）的差距经 Holm–Bonferroni 多重比较校正后仍不显著，前后名次更多是抽样运气" style="cursor:help">†</span>' : "";
+      ? ' <span title="与第一名（难度对齐分）的差距经 Holm–Bonferroni 多重比较校正后仍不显著，前后名次更多是抽样运气" style="cursor:help">†</span>' : "";
     const ciCell = board === "all"
-      ? '<td class="num" title="名次依据分数（共同窗口分）的 90% 置信区间：按 ' +
+      ? '<td class="num" title="名次依据分数（难度对齐分）的 90% 置信区间：按 ' +
         (report.meta.bootstrap_block_days || 1) + ' 天为一块重采样 ' +
         (report.meta.bootstrap_runs || 500) + ' 次">' +
         (row.ci90 ? fmtC(row.ci90[0], 1) + "~" + fmtC(row.ci90[1], 1) : "—") + "</td>"
@@ -1370,7 +1597,7 @@ try {
         (row.rain_days === null || row.rain_days === undefined ? "—" : row.rain_days) + " 天</td>"
       : "";
     const nbCell = board === "all"
-      ? '<td class="num" title="温度与降水两维度齐备的天桶数——全窗口分的实际分母">' +
+      ? '<td class="num" title="温度与降水两维度齐备的天桶数——该源真正被验证过的时效档数">' +
         (row.n_buckets === null || row.n_buckets === undefined ? "—" : row.n_buckets) + "</td>"
       : "";
     const issueCell = board === "all"
@@ -1409,7 +1636,7 @@ try {
     const empty = document.getElementById("lbEmpty");
     if (!head || !body) return;
     // 排序键在总榜/分榜之间切换时可能失效（如"覆盖时效"只存在于总榜），
-    // 此时复位为该榜的名次依据列（总榜=共同窗口分，分榜=综合分）
+    // 此时复位为该榜的名次依据列（= 综合分列）
     if (!lbCols(board).some(c => c.key === sortKey)) { sortKey = rankKeyOf(board); sortDir = "desc"; }
     renderBoardPills();
     renderSortSelectM();

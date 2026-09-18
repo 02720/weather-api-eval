@@ -23,19 +23,24 @@
   让毛毛雨在求和中自然抵消，1mm/日（业务"有效降水日"）阈值下 ETS 上限恢复到
   0.25（标定扫描见 scripts/calibrate_daily_threshold.py，结论在 README 留档）。
   逐小时晴雨指标保留为诊断视图（明细表），不进综合分。
-- **总榜 = 各天桶得分的等权平均（macro-average）**，不再把全部时效样本倒进
-  同一个池子。池化总榜把"时效构成差异"直接混进结论：实测 25 源中 14 个在
-  同难度对照下名次变动 ≥5。
-- **总榜名次只看"共同覆盖窗口"**（2026-09-13 修正，对抗式审查 P0-2）：macro
-  平均本身仍有残余偏置——短时效的桶天然好报，覆盖短的源白拿分。实测全窗口分
-  与覆盖桶数 r = −0.54、每多覆盖 1 个天桶平均扣 0.74 分（旧口径下单维桶也进
-  平均时 r = −0.67、1.04 分/桶）。故名次改由**所有入围源都覆盖的天桶**上的
-  分数决定（交集，不是多数覆盖）；全窗口分与覆盖桶数降级为并列的披露列。
-  **macro 只统计温度与降水两维齐备的桶**——单维分不是综合分（此前 MSN 的
-  8 个桶里有 2 个缺降水维，却按纯温度分 88 分进了平均）。
+- **总榜 = 难度对齐后的期望分**（2026-09-18 重构，取代"共同窗口/全窗口"双轨）：
+  总榜要回答的问题只有一个——"谁家预报最准"。但各家能预报的天数长短不一，而
+  预报难度随时效单调上升：把自己覆盖到的天桶直接平均，短覆盖的源白拿简单桶的
+  分；只取所有源共同覆盖的交集，又要把九成样本扔掉（实测 26 源同榜时窗口只剩
+  4 天）。正解是**双向加法劈分**（核心实现见 stats.two_way_adjust）：把每个
+  （源, 天桶）格子看成 S(m,b) = 技巧_m + 难度_b + 噪声，用全部格子联合估计
+  行效应与列效应，再回答"若各家都被验证在同一批难度上谁排前面"。不扔数据、
+  不要求覆盖一致，也从根上消掉了"每多覆盖 1 个天桶平均扣 0.74 分"的偏置。
+  **矩阵只收温度与降水两维齐备的桶**——单维分不是综合分（此前 MSN 的 8 个桶
+  里有 2 个缺降水维，却按纯温度分 88 分进了平均）；同时要求每个格子至少
+  MIN_MODELS_PER_BUCKET 家同台（同台家数不足时该档被剔除；全体只有 2 家时阈值
+  自动降到 2；只剩 1 家则无从比较，退回各源可用桶的等权平均），因为"这一档有
+  多难"与"这一家有多强"在少于 2 家的档上根本分不开。
+  代价要说清楚：这是**加法假设**，源的相对强弱若随天桶系统性变化（源×时效交互），
+  总榜的单一数字表达不了——这类差异见分时效榜。
 - **不确定性入榜**：按天分块 bootstrap 给出名次依据分数的 90% 置信区间、
   冠军频率、与第一名的显著性（经 Holm–Bonferroni 多重比较校正）；权重 ±40%
-  扰动的冠军分布进报告（P0-2），且同样只在共同窗口上比。实现见 stats.py。
+  扰动的冠军分布进报告，且同样走同一张劈分设计。实现见 stats.py。
   **块长不再是固定 1 天**：由日尺度误差的去相关时间决定（ρ≈0.46 → 2~3 天），
   受"块数 ≥ 6"约束——块长 1 天只捕获日内相关，实测把置信区间算窄 40%~90%（P1-1）。
 - **零技巧基准 persistence**（P1-2）：明天 = 今天（起报时刻的实况）是最朴素的
@@ -85,9 +90,11 @@
   * 分时效榜（"1d".."16d"）：每个天桶一份按综合分排序的完整行。预报难度随时效单调
     上升，天桶是"难度分层"——同桶内各源比较的是同一难度的预报，这是横向比较的公平基准。
     桶内温度分来自逐小时轨道，降水分来自按天累计轨道（该桶 = 起报后第 N 天）。
-  * 总榜（"all"）：各天桶综合分的等权平均（macro），行附 90% 置信区间、
-    冠军频率、与第一名显著性、n_eff 门槛（min_board_neff）达标标记
-    （未达标 = 样本积累中，不参与冠军竞争）与覆盖时效（按各指标实际有效样本）。
+  * 总榜（"all"）：**难度对齐综合分**——用双向加法模型把"天桶难度"与"源技巧"
+    劈开后给出的期望分（详见上方"评分轨道"），回答"谁家预报最准"这一个问
+    题。行附 90% 置信区间、冠军频率、与第一名显著性、n_eff 门槛
+    （min_board_neff）达标标记（未达标 = 样本积累中，不参与冠军竞争）与覆盖
+    时效（按各指标实际有效样本）。
   两层共用同一行结构与打分公式，主报告表格排行榜（总榜 + 可切时效）与冠军横幅共用这份数据。
 """
 from __future__ import annotations
@@ -118,9 +125,11 @@ from .stats import (
     binary_counts,
     binary_metrics_from_counts,
     day_block_bootstrap,
+    difficulty_adjusted,
     effective_n,
     r_slope_numpy,
     temp_core_numpy,
+    two_way_adjust,
     weight_champion_distribution,
 )
 from .timeutil import parse_iso, hour_bucket_days, floor_to_hour, iso
@@ -981,24 +990,6 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     model_status = _model_status(models, snapshots, station_ids)
     snapshot_quality = _snapshot_quality(models, snapshots)
 
-    # ---- 排行榜：分时效榜（每个天桶一份）+ 总榜（天桶 macro 平均 + 不确定性）----
-    # 表格排行榜、冠军横幅与趋势图共用同一套桶得分。
-    # 块长（P1-1）：块长 1 天只捕获日内相关，块间相关被当成独立 ⇒ CI 偏窄。
-    # 由日尺度温度误差的 lag-1 自相关推出去相关时间，再受"块数下限"约束。
-    n_boot_days = len(_stats.eval_days(hourly, daily))
-    boot_rho = _stats.daily_error_lag1_rho(hourly)
-    block_days = _stats.resolve_block_days(n_boot_days, bootstrap_block_days, boot_rho)
-    leaderboards = _lead_leaderboards(models, temp_hourly, precip_score_daily,
-                                      hourly_lead_days)
-    common_window: dict = {}
-    leaderboards["all"] = _overall_board(
-        models, temp_hourly, precip_score_daily, hourly_lead_days,
-        by_model, daily_by_model,
-        n_eff_all={m: _n_eff_temp(by_model[m]) for m in models},
-        min_sample=min_sample, min_board_neff=min_board_neff,
-        thr_daily=thr_daily, bootstrap_runs=bootstrap_runs,
-        block_days=block_days, min_board_neff_rain=min_board_neff_rain,
-        window_out=common_window)
     # ---- 零技巧基准 persistence（P1-2）：给所有"裸分"一个参照系 ----
     # 明天的天气 = 今天的实况，是最朴素的零技巧基准。每个模型都在**自己的样本对**
     # 上与它比（配对），得到"比'原地不动'高多少分"；同时给出一份全库口径的
@@ -1009,34 +1000,42 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     baseline_by_model = persistence_baseline(
         by_model, daily_by_model, obs_maps, thr_daily, hourly_lead_days,
         daily_min_hours)
-    common_buckets = common_window.get("buckets") or []
-    # 日历跨度（P0-2 的日历维度）：入围源各自的验证日数差异有多大
+
+    # ---- 排行榜：分时效榜（每个天桶一份）+ 总榜（难度对齐 + 不确定性）----
+    # 表格排行榜、冠军横幅与趋势图共用同一套桶得分。
+    # 块长（P1-1）：块长 1 天只捕获日内相关，块间相关被当成独立 ⇒ CI 偏窄。
+    # 由日尺度温度误差的 lag-1 自相关推出去相关时间，再受"块数下限"约束。
+    n_boot_days = len(_stats.eval_days(hourly, daily))
+    boot_rho = _stats.daily_error_lag1_rho(hourly)
+    block_days = _stats.resolve_block_days(n_boot_days, bootstrap_block_days, boot_rho)
+    leaderboards = _lead_leaderboards(models, temp_hourly, precip_score_daily,
+                                      hourly_lead_days)
+    difficulty_window: dict = {}
+    leaderboards["all"] = _overall_board(
+        models, temp_hourly, precip_score_daily, hourly_lead_days,
+        by_model, daily_by_model,
+        n_eff_all={m: _n_eff_temp(by_model[m]) for m in models},
+        min_sample=min_sample, min_board_neff=min_board_neff,
+        thr_daily=thr_daily, bootstrap_runs=bootstrap_runs,
+        block_days=block_days, min_board_neff_rain=min_board_neff_rain,
+        baseline_by_model=baseline_by_model, window_out=difficulty_window)
+    # 日历跨度（日历维度）：入围源各自的验证日数差异有多大
     qdays = [r["n_days"] for r in leaderboards["all"]
              if r.get("qualified") and r.get("n_days")]
     calendar_span = {
         "min_days": min(qdays) if qdays else 0,
         "max_days": max(qdays) if qdays else 0,
     }
-    for r in leaderboards["all"]:
-        bl = baseline_by_model.get(r["model"], {})
-        keys = ([f"{b}d" for b in common_buckets] if r.get("score_common") is not None
-                else [k for k, v in bl.items() if v.get("overall") is not None])
-        bscore = _mean_or_none([bl.get(k, {}).get("overall") for k in keys])
-        r["baseline_score"] = bscore
-        shown = (r.get("score_common") if r.get("score_common") is not None
-                 else r.get("score"))
-        r["skill"] = (round(shown - bscore, 2)
-                      if (bscore is not None and shown is not None) else None)
 
     qualified_models = {r["model"] for r in leaderboards["all"] if r.get("qualified")}
+    # 权重敏感性：与总榜同走一张劈分设计——回答的必须是"同一个估计量"的稳定性
     weight_sensitivity = {
         "runs": sensitivity_runs,
         "champions": _weight_sensitivity_champions(
             models, temp_hourly, precip_score_daily, hourly_lead_days,
             sensitivity_runs, qualified_models,
-            # 与总榜名次同尺：只在共同覆盖窗口上比（P0-2）
-            macro_buckets=[b - 1 for b in common_window.get("buckets") or []]
-            or None),
+            adj_row=np.array(difficulty_window.get("row_keep") or [], dtype=bool),
+            adj_col=np.array(difficulty_window.get("col_keep") or [], dtype=bool)),
     }
 
     # ---- 得分随时效衰减（综合/温度/降水，天桶 1..N）：排行榜的"趋势版" ----
@@ -1074,8 +1073,8 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
             "bootstrap_blocks": (n_boot_days // block_days) if n_boot_days else 0,
             "bootstrap_days": n_boot_days,
             "bootstrap_daily_rho": (round(boot_rho, 3) if boot_rho is not None else None),
-            # 共同覆盖窗口（P0-2）：总榜名次以它为准，全窗口分并列披露
-            "common_window": common_window,
+            # 天桶难度的劈分设计与各桶难度值：总榜公平性的可核对凭据
+            "difficulty_window": difficulty_window,
             # 日历跨度：入围源各自被验证的自然日数区间（差异大 = 时期效应风险）
             "calendar_span": calendar_span,
             # 零技巧基准 persistence（P1-2）：逐桶的综合/温度/降水分与样本量
@@ -1112,7 +1111,8 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
 def _weight_sensitivity_champions(models, temp_hourly, precip_score_daily,
                                   hourly_lead_days, runs,
                                   qualified: set[str],
-                                  macro_buckets: list[int] | None = None) -> list[dict]:
+                                  adj_row: np.ndarray | None = None,
+                                  adj_col: np.ndarray | None = None) -> list[dict]:
     """权重 ±40% 扰动下的冠军分布（P0-2.2）：桶得分重组冠军计 500 次。
 
     指标值不随权重变化，只需把**已换算并截断**的子分张量按扰动权重重组——
@@ -1142,7 +1142,7 @@ def _weight_sensitivity_champions(models, temp_hourly, precip_score_daily,
     p_sub = tensor(precip_score_daily, PRECIP_SCORE_PARTS, eligible)
     dist = weight_champion_distribution(t_sub, p_sub, TEMP_SCORE_PARTS,
                                         PRECIP_SCORE_PARTS, runs=runs,
-                                        macro_buckets=macro_buckets)
+                                        adj_row=adj_row, adj_col=adj_col)
     return [{"model": models[d["index"]], "pct": d["pct"]} for d in dist]
 
 
@@ -1306,9 +1306,7 @@ def _rank_rows(rows: list[dict], keys: tuple[str, ...] = ("score",)) -> list[dic
     """综合分降序、None 沉底；未达 n_eff 门槛的源（qualified=False）排在其后、
     仍按分数序——榜单语义是"达标者先竞技，未达标者列样本积累中"（P0-2.3）。
 
-    keys：依次降级的排序键。总榜传 ("score_common", "score")——先按全员可比的
-    **共同窗口分**排名，没有共同窗口分的源（未覆盖该窗口）退回全窗口分；
-    keys 内第一个非 None 的键决定名次，全 None 者沉底。
+    keys：依次降级的排序键——取第一个非 None 的键决定名次，全 None 者沉底。
     """
     def key(r):
         q = r.get("qualified", True)
@@ -1318,13 +1316,6 @@ def _rank_rows(rows: list[dict], keys: tuple[str, ...] = ("score",)) -> list[dic
                 return (0, not q, -s)
         return (1, not q, 0.0)
     return sorted(rows, key=key)
-
-
-def _macro_over_buckets(temp_hourly, precip_score_daily, m, buckets) -> float | None:
-    """指定桶集合上的综合分 macro 平均（与总榜同一套桶得分，绝不重算）。"""
-    return _mean_or_none([overall_score(temp_hourly.get(m, {}).get(f"{b}d") or {},
-                                        precip_score_daily.get(m, {}).get(f"{b}d") or {})
-                          for b in buckets])
 
 
 def _lead_leaderboards(models, temp_hourly, precip_score_daily, hourly_lead_days) -> dict:
@@ -1353,64 +1344,124 @@ def _lead_leaderboards(models, temp_hourly, precip_score_daily, hourly_lead_days
     return boards
 
 
-def _bucket_display_mean(metric_dicts: dict, key: str, hourly_lead_days: int):
-    """各天桶某指标值的等权平均（总榜行展示用；与 macro 得分同一平均口径）。"""
-    vals = []
-    for b in range(1, hourly_lead_days + 1):
-        md = metric_dicts.get(f"{b}d") or {}
-        v = md.get(key)
-        if v is not None:
-            vals.append(v)
-    return round(sum(vals) / len(vals), 3) if vals else None
+def _metric_matrix(models: list[str], hourly_lead_days: int, value_of) -> np.ndarray:
+    """(m, b) 指标矩阵：value_of(model, "Nd") → 数值，None 一律记 NaN。"""
+    S = np.full((len(models), hourly_lead_days), np.nan)
+    for i, m in enumerate(models):
+        for b in range(1, hourly_lead_days + 1):
+            v = value_of(m, f"{b}d")
+            if v is not None:
+                S[i, b - 1] = float(v)
+    return S
+
+
+def _composite_cells(temp_hourly, precip_score_daily, m, bk):
+    """该（模型, 天桶）的 (综合分, 温度分, 降水分)；缺任一维则全 None——不进总榜。"""
+    t = temp_hourly[m].get(bk) or {}
+    p = precip_score_daily[m].get(bk) or {}
+    ts, ps = temp_score(t), precip_score(p)
+    if ts is None or ps is None:
+        return (None, None, None)
+    return (overall_score(t, p), ts, ps)
+
+
+def _fin(x, digits: int = 3):
+    """NaN/inf/None → None（在页面上显示 —），有限值按位数取整。"""
+    if x is None:
+        return None
+    x = float(x)
+    return round(x, digits) if np.isfinite(x) else None
 
 
 def _overall_board(models, temp_hourly, precip_score_daily, hourly_lead_days,
                    by_model, daily_by_model, n_eff_all, min_sample, min_board_neff,
                    thr_daily, bootstrap_runs, block_days: int = 1,
                    min_board_neff_rain: int = 20,
+                   baseline_by_model: dict | None = None,
                    window_out: dict | None = None) -> list[dict]:
-    """全时效总榜：各天桶综合分的**等权平均**（macro-average）。
+    """总榜：**难度对齐综合分**——各家覆盖天数不同时唯一公平的答法。
 
-    公平性（第一性原理，P0-1）：预报难度随时效单调上升，"综合谁最准"只有两种
-    不作弊的答法——限定共同覆盖窗口（扔掉大半数据），或让每个源先在自己的每个
-    可用天桶各得一分、再跨桶平均。采用后者：时效构成差异从"改变结论"降级为
-    "影响各源的可用桶数"；桶内难度对齐由天桶划分保证，跨桶平均不引入
-    "临近时效样本天然更多"的池化偏置。旧池化口径的问题（实测 25 源中 14 个
-    在同难度对照下名次变动 ≥5）见对抗式审查报告 P0-1。
+    公平性（第一性原理）：预报难度随时效单调上升，而各家能预报的天数长短不一。
+    把自己覆盖到的天桶直接平均，"只报近几天"的源白拿简单桶的分（实测全窗口分
+    与覆盖桶数 r = −0.54、每多覆盖 1 个天桶平均扣 0.74 分）；只取所有源共同覆盖
+    的交集，26 源同榜时窗口只剩 4 天——九成样本被扔掉。本实现走第三条路：把每个
+    （源, 天桶）格子看成
 
-    不确定性（P0-2）：每行附 90% 置信区间（按天分块 bootstrap）、冠军频率、
-    与第一名显著性；n_eff < min_board_neff 的源 qualified=False，排在其后
-    显示"样本积累中"，不参与冠军竞争（156 条样本争冠军的教训）。
+        S(m, b) = 技巧_m + 难度_b + 噪声
+
+    用**全部**格子联合估计行效应与列效应（双向加法模型 / 交替最小二乘，见
+    stats.two_way_adjust），再回答"若各家都被验证在同一批难度上，谁排前面"。
+    既不扔数据，也不要求各家覆盖一致。
+
+    榜单所有数字列（综合/温度/降水/±2°C/RMSE/TS/ETS）走**同一张行列设计**做
+    难度对齐——读者按任何一列排序，看到的都是同一批格子上的同类比较。
+
+    不确定性：每行附 90% 置信区间（按天分块 bootstrap）、冠军频率、与第一名
+    显著性；n_eff < min_board_neff 的源 qualified=False，排在其后显示"样本
+    积累中"，不参与冠军竞争（156 条样本争冠军的教训）。
     """
-    rows = []
-    # 两维齐备的桶集合（macro 的实际分母）。旧实现把"只有温度分"的单维桶也算进
-    # macro——那不是综合分，是"温度分换个名字"（实测 MSN 的 8 个桶里有 2 个缺
-    # 降水维，却按纯温度分 88 分进了平均）。综合分承诺温度/降水各半，缺一维的
-    # 桶不入 macro；分时效榜早已按同一口径把这类行标为未达标，此处补齐一致性。
-    both_buckets: dict[str, list[int]] = {}
-    for m in models:
-        bucket_overalls, bucket_temps, bucket_precips = [], [], []
-        bs: list[int] = []
-        for b in range(1, hourly_lead_days + 1):
-            t = temp_hourly[m].get(f"{b}d") or {}
-            p = precip_score_daily[m].get(f"{b}d") or {}
-            ts, ps = temp_score(t), precip_score(p)
-            if ts is None or ps is None:
-                continue
-            bs.append(b)
-            bucket_overalls.append(overall_score(t, p))
-            bucket_temps.append(ts)
-            bucket_precips.append(ps)
-        both_buckets[m] = bs
+    rows: list[dict] = []
+    # ---- 1. 组装"综合分 × 天桶"矩阵，劈分出行列设计与天桶难度 ----
+    # 两维齐备的桶才进矩阵。旧实现把"只有温度分"的单维桶也算进平均——那不是综合
+    # 分，是"温度分换个名字"（实测 MSN 的 8 个桶里有 2 个缺降水维，却按纯温度分
+    # 88 分进了平均）。综合分承诺温度/降水各半，缺一维的桶不可用。
+    S = _metric_matrix(
+        models, hourly_lead_days,
+        lambda m, bk: _composite_cells(temp_hourly, precip_score_daily, m, bk)[0])
+    # 同台门槛随"实际有几家"自适应：只有 2 家时要求 ≥3 家同台会把两家一起踢出局
+    # （2 家同桶已经足够分离行效应与列效应）；低于 2 家则无从比较，走下面的降级。
+    n_with_data = int(np.isfinite(S).any(axis=1).sum())
+    min_col = max(2, min(_stats.MIN_MODELS_PER_BUCKET, n_with_data)) if n_with_data else 1
+    adj = two_way_adjust(S, min_col=min_col, min_row=1)
+    row_keep, col_keep = adj["row_keep"], adj["col_keep"]
+    if not (row_keep.any() and col_keep.any()):
+        # 降级：可用格子凑不出一张能比较的表（典型是只接了一个源）。此时"难度"
+        # 无从估计，各源自家可用天桶的等权平均就是唯一诚实的数字——劈分在此
+        # 退化情形下的解正好等于它（单行的行效应 = 该行的桶平均分）。
+        row_keep = np.isfinite(S).any(axis=1)
+        col_keep = np.isfinite(S).any(axis=0)
+    scores = difficulty_adjusted(S[None, ...], row_keep, col_keep)[0]
+
+    def _aligned(matrix: np.ndarray) -> np.ndarray:
+        """用总榜同一张设计把任意指标矩阵归总成"难度对齐后的一行一个数"。"""
+        return difficulty_adjusted(matrix[None, ...], row_keep, col_keep)[0]
+
+    matrices = {
+        "temp_score": _metric_matrix(
+            models, hourly_lead_days,
+            lambda m, bk: _composite_cells(temp_hourly, precip_score_daily, m, bk)[1]),
+        "precip_score": _metric_matrix(
+            models, hourly_lead_days,
+            lambda m, bk: _composite_cells(temp_hourly, precip_score_daily, m, bk)[2]),
+        "acc2": _metric_matrix(models, hourly_lead_days,
+                               lambda m, bk: (temp_hourly[m].get(bk) or {}).get("acc2")),
+        "rmse": _metric_matrix(models, hourly_lead_days,
+                               lambda m, bk: (temp_hourly[m].get(bk) or {}).get("rmse")),
+        "ts": _metric_matrix(models, hourly_lead_days,
+                             lambda m, bk: (precip_score_daily[m].get(bk) or {}).get("ts")),
+        "ets": _metric_matrix(models, hourly_lead_days,
+                              lambda m, bk: (precip_score_daily[m].get(bk) or {}).get("ets")),
+    }
+    aligned = {k: _aligned(v) for k, v in matrices.items()}
+    # 零技巧基准 persistence 也用同一把尺子对齐——否则"技巧差"里会残留各家覆盖
+    # 范围的差异（persistence 在短时效本就接近各家自己的分）
+    base_aligned: np.ndarray | None = None
+    if baseline_by_model is not None:
+        base_aligned = _aligned(_metric_matrix(
+            models, hourly_lead_days,
+            lambda m, bk: (baseline_by_model.get(m, {}).get(bk) or {}).get("overall")))
+
+    # ---- 2. 逐行：难度对齐后的各项数值 + 样本充分性披露 ----
+    for i, m in enumerate(models):
+        bs = [b for b in range(1, hourly_lead_days + 1) if np.isfinite(S[i, b - 1])]
         # 降水维的有效样本量（各桶 n_eff 之和）：温度侧早有 n_eff 门槛，降水侧
-        # 此前完全没设总榜级门槛——一个只攒到十几个独立雨日样本、却靠温度分
-        # 达标的源也能上榜（实测 MSN 各桶降水的 n_eff 只有 16~28，低于温度侧的
-        # 门槛 30，却在综合分里占了半壁江山）。两个维度必须同门槛。
+        # 此前完全没设总榜级门槛——一个只攒到十几个独立雨日样本、却靠温度分达标
+        # 的源也能上榜（实测 MSN 各桶降水的 n_eff 只有 16~28，低于温度侧门槛 30，
+        # 却在综合分里占了半壁江山）。两个维度必须同门槛。
         neff_rain = _n_eff_rain(daily_by_model[m], thr_daily, "valid_day", "offset")
-        score = _mean_or_none(bucket_overalls)
-        t_score = _mean_or_none(bucket_temps)
-        p_score = _mean_or_none(bucket_precips)
         neff = n_eff_all.get(m)
+        score, t_score, p_score = _fin(scores[i], 2), _fin(aligned["temp_score"][i], 2), \
+            _fin(aligned["precip_score"][i], 2)
         # 覆盖时效（P1-1）：按各指标实际参与计算的样本（两侧值同时非缺测）计算
         lead_days = _valid_lead_days(by_model[m], "temp_obs", "temp_fcst")
         rain_days = _valid_rain_days(daily_by_model[m])
@@ -1418,77 +1469,82 @@ def _overall_board(models, temp_hourly, precip_score_daily, hourly_lead_days,
                      if r["temp_obs"] is not None and r["temp_fcst"] is not None)
         n_rain = sum(1 for r in daily_by_model[m]
                      if r["rain_obs"] is not None and r["rain_fcst"] is not None)
-        # 验证日数（P0-2 的日历维度）：样本量相同也可能只覆盖几天。
-        # 新接入的源只在自己入榜之后的日子上被验证——若那几天的天气形势偏难/偏易，
-        # 分数里就混进了"时期效应"而非技巧（实测同一批源换到 8 天重算，分数变动
-        # 最高 7.3 分）。这不是能靠门槛挡住的，只能显式披露。
+        # 验证日数（日历维度）：样本量相同也可能只覆盖几天。新接入的源只在自己
+        # 入榜之后的日子上被验证——若那几天的天气形势偏难/偏易，分数里就混进了
+        # "时期效应"而非技巧（实测同一批源换到 8 天重算，分数变动最高 7.3 分）。
+        # 这不是能靠门槛挡住的，只能显式披露。
         days_temp = {r["valid_iso"][:10] for r in by_model[m]
                      if r["temp_obs"] is not None and r["temp_fcst"] is not None}
         days_rain = {r["valid_day"] for r in daily_by_model[m]
                      if r["rain_obs"] is not None and r["rain_fcst"] is not None}
+        bscore = _fin(base_aligned[i], 2) if base_aligned is not None else None
         row = _board_row(
             m,
-            {"acc2": _bucket_display_mean(temp_hourly[m], "acc2", hourly_lead_days),
-             "rmse": _bucket_display_mean(temp_hourly[m], "rmse", hourly_lead_days),
+            {"acc2": _fin(aligned["acc2"][i]), "rmse": _fin(aligned["rmse"][i], 3),
              "n": n_temp},
-            {"ts": _bucket_display_mean(precip_score_daily[m], "ts", hourly_lead_days),
-             "ets": _bucket_display_mean(precip_score_daily[m], "ets", hourly_lead_days),
+            {"ts": _fin(aligned["ts"][i], 3), "ets": _fin(aligned["ets"][i], 3),
              "n": n_rain},
             score=score, temp_score=t_score, precip_score=p_score,
             n=n_temp, n_precip=n_rain, n_eff=neff, n_eff_rain=neff_rain,
-            # 达标三条件（P0-2.3）：n_eff 门槛 + 温度/降水两个维度都有分。
-            # "综合"承诺的是两维各半——只有温度维有分的源拿温度分与别人的
-            # (温度+降水)/2 比不是同口径（实测 MSN 无按天降水样本却凭温度分
-            # 坐上 95.9 的"综合冠军"），维度不齐 = 综合结论未到位 = 样本积累中。
+            # 达标条件（P0-2.3）：n_eff 门槛 + 温度/降水两个维度都有分 + 进得了
+            # 劈分设计。"综合"承诺的是两维各半——只有温度维有分的源拿温度分与
+            # 别人的 (温度+降水)/2 比不是同口径（实测 MSN 无按天降水样本却凭温度
+            # 分坐上 95.9 的"综合冠军"），维度不齐 = 综合结论未到位 = 样本积累中。
             qualified=(score is not None and neff is not None and neff >= min_board_neff
                        and neff_rain is not None and neff_rain >= min_board_neff_rain
-                       and t_score is not None and p_score is not None),
+                       and t_score is not None and p_score is not None
+                       and bool(row_keep[i])),
             lead_days=lead_days, rain_days=rain_days, n_buckets=len(bs),
             n_days=len(days_temp | days_rain), n_days_rain=len(days_rain),
+            baseline_score=bscore,
+            skill=(round(score - bscore, 2)
+                   if (score is not None and bscore is not None) else None),
             # 起报轮次数（P2-1）：1 个起报的 56 条样本与 17 个起报的 15,992 条，
             # 可信度不是一个量级——只披露覆盖天数会把它俩显示成同一档
             n_issues=len({r.get("issue_iso") for r in by_model[m] if r.get("issue_iso")}),
+            # 未进入劈分设计的源（可用天桶太少/所在的桶同台家数不足）无法横向比较
+            comparable=bool(row_keep[i]),
         )
         rows.append(row)
-    # ---- 共同覆盖窗口（P0-2）：只在"入围源都有分的桶"上做跨源比较 ----
-    # 覆盖长短与预报难度强相关（短时效的桶天然容易），直接 macro 全窗口会让
-    # "只覆盖前几天的源"系统性占便宜——实测全窗口分与覆盖桶数 r = −0.54、
-    # 每多覆盖 1 个天桶平均扣 0.74 分（旧口径下单维桶也进平均时 r = −0.67、
-    # 1.04 分/桶）。共同窗口把时效构成这个混淆变量彻底消掉：窗口内各家比的是
-    # 同一批桶，名次只反映技巧。全窗口分保留为第二列并强制并列披露覆盖天数。
-    common_buckets = _common_bucket_window(both_buckets,
-                                           [r["model"] for r in rows
-                                            if r.get("qualified")])
-    for r in rows:
-        covered = set(both_buckets[r["model"]])
-        r["score_common"] = (_macro_over_buckets(temp_hourly, precip_score_daily,
-                                                 r["model"], common_buckets)
-                             if common_buckets and set(common_buckets) <= covered
-                             else None)
+    # ---- 3. 把"难度对齐"这件事本身做成可读的披露信息 ----
     if window_out is not None:
+        cols = adj["col_effects"]
+        kept = [b for b in range(1, hourly_lead_days + 1) if col_keep[b - 1]]
+        degraded = not (adj["row_keep"].any() and adj["col_keep"].any())
         window_out.update({
-            "buckets": list(common_buckets),
-            "days": common_buckets[-1] if common_buckets else 0,
-            "models": sum(1 for r in rows if r.get("score_common") is not None),
+            "buckets": kept,
+            "days": max(kept) if kept else 0,
+            "models": int(row_keep.sum()),
             "qualified": sum(1 for r in rows if r.get("qualified")),
-            # 各桶的入围源覆盖数：供页面做"覆盖 ≥N 天"的分层展示
-            "coverage": {b: sum(1 for m in both_buckets if b in both_buckets[m] and
-                                next(r for r in rows if r["model"] == m).get("qualified"))
+            "n_components": adj["n_components"],
+            # 降级标记：True = 可用格子凑不出可比较的设计，名次退回各源桶平均分
+            "degraded": degraded,
+            # 各天桶难度相对"窗口平均难度"的偏离（分）：−6.2 表示该桶全场平均分
+            # 比窗口平均低 6.2 分——这正是"覆盖越长分数越低"的那部分，已被扣掉
+            "difficulty": {b: (round(float(cols[b - 1]), 2)
+                               if np.isfinite(cols[b - 1]) else None)
+                           for b in range(1, hourly_lead_days + 1)},
+            # 各桶真正参与比较的家数（只计入设计内的源）：不足阈值的桶不进比较
+            "coverage": {b: int((np.isfinite(S[:, b - 1]) & row_keep).sum())
                          for b in range(1, hourly_lead_days + 1)},
+            "min_models_per_bucket": int(_stats.MIN_MODELS_PER_BUCKET),
+            # 设计本身（行=源 / 列=天桶 是否进入横向比较）：权重敏感性等派生
+            # 分析必须用同一张设计，否则答的是另一个估计量
+            "row_keep": [bool(v) for v in row_keep],
+            "col_keep": [bool(v) for v in col_keep],
         })
     # 显著性/冠军频率的参照必须是**榜单上戴冠那个源**（点估计名次），
     # 而不是 bootstrap 分布均值最高的源——两者偶尔会分叉，那时 † 标记就会
     # 指向一个并非冠军的源，读者完全无法察觉
-    point_champ = next((r["model"] for r in _rank_rows(rows, keys=("score_common", "score"))
-                        if r.get("qualified") and (r.get("score_common") is not None
-                                                   or r.get("score") is not None)), None)
+    point_champ = next((r["model"] for r in _rank_rows(rows, keys=("score",))
+                        if r.get("qualified") and r.get("score") is not None), None)
     if point_champ is not None:
         row_top = next((r for r in rows if r["model"] == point_champ), None)
         if row_top is not None:
             row_top["is_top"] = True
     # bootstrap 的冠军频率/显著性只作用于入围者（行内 qualified 已含 n_eff
     # 门槛与维度齐备两个条件）；置信区间全员提供。
-    # 点估计的缺项口径以掩码注入（P0-1）：摄氏度/降水各自的 (m, b) 是否有结论。
+    # 点估计的缺项口径以掩码注入（P0-1）：温度/降水各自的 (m, b) 是否有结论。
     # 缺这一层时 bootstrap 只能按重采样样本数判门槛，与点估计的 n_eff 门槛
     # 不同构，CI 中心会系统性偏离点估计。
     temp_point_valid = np.array(
@@ -1497,9 +1553,8 @@ def _overall_board(models, temp_hourly, precip_score_daily, hourly_lead_days,
     rain_point_valid = np.array(
         [[precip_score(precip_score_daily[m].get(f"{b}d") or {}) is not None
           for b in range(1, hourly_lead_days + 1)] for m in models], dtype=bool)
-    # CI / 冠军频率 / 显著性都按**名次所用那个分数**计算（共同窗口优先）：
-    # 给 A 数字配 B 数字的区间会直接误导读者（P0-2 的连带修正）。
-    macro_buckets = [b - 1 for b in common_buckets] if common_buckets else None
+    # CI / 冠军频率 / 显著性必须对应**榜单上那个分数**（P0-2：不能给 A 数字配 B
+    # 数字的区间）——故 bootstrap 走同一张劈分设计、同一个归总函数。
     bootstrap = day_block_bootstrap(
         [r for m in models for r in by_model[m]],
         [r for m in models for r in daily_by_model[m]],
@@ -1509,50 +1564,16 @@ def _overall_board(models, temp_hourly, precip_score_daily, hourly_lead_days,
         eligible=[r.get("qualified", False) for r in rows],
         temp_point_valid=temp_point_valid, rain_point_valid=rain_point_valid,
         bucket_valid=(temp_point_valid & rain_point_valid),
-        block_days=block_days, macro_buckets=macro_buckets,
+        block_days=block_days, adj_row=row_keep, adj_col=col_keep,
         top_model=point_champ)
-    # 全窗口分的区间另行给出一份（共同窗口为空时它就是主区间）
-    bootstrap_full = (bootstrap if macro_buckets is None else
-                      day_block_bootstrap(
-                          [r for m in models for r in by_model[m]],
-                          [r for m in models for r in daily_by_model[m]],
-                          models, hourly_lead_days, thr_daily,
-                          TEMP_SCORE_PARTS, PRECIP_SCORE_PARTS, min_sample,
-                          runs=max(100, bootstrap_runs), seed=BOOTSTRAP_SEED,
-                          eligible=[r.get("qualified", False) for r in rows],
-                          temp_point_valid=temp_point_valid,
-                          rain_point_valid=rain_point_valid,
-                          bucket_valid=(temp_point_valid & rain_point_valid),
-                          block_days=block_days, top_model=point_champ))
     for r in rows:
         b = bootstrap.get(r["model"], {})
-        # ci90 对应**名次所用那个分数**（共同窗口分），不是另一个数字；
-        # 无共同窗口分时退回全窗口分的区间
-        r["ci90"] = (b.get("ci90") if r.get("score_common") is not None
-                     else (bootstrap_full.get(r["model"], {}).get("ci90")
-                           if r.get("score") is not None else None))
+        r["ci90"] = b.get("ci90") if r.get("score") is not None else None
         r["champion_pct"] = b.get("champion_pct")
         r["sig_vs_top"] = b.get("sig_vs_top")
         r["sig_vs_top_raw"] = b.get("sig_vs_top_raw")
         r["p_vs_top"] = b.get("p_vs_top")
-        r["ci90_full"] = bootstrap_full.get(r["model"], {}).get("ci90")
-    return _rank_rows(rows, keys=("score_common", "score"))
-
-
-def _common_bucket_window(both_buckets: dict[str, list[int]],
-                          qualified: list[str]) -> list[int]:
-    """入围源共同覆盖的桶集合（交集），按天升序。
-
-    取交集而非"多数覆盖"：只要有一个入围源没覆盖某个桶，该桶上就不是全员可比，
-    把它放进窗口等于把公平性换回样本量。入围源为空（全部样本积累中）时返回空
-    列表——此时总榜退回全窗口分排序。
-    """
-    if not qualified:
-        return []
-    common: set[int] = set(both_buckets.get(qualified[0], ()))
-    for m in qualified[1:]:
-        common &= set(both_buckets.get(m, ()))
-    return sorted(common)
+    return _rank_rows(rows, keys=("score",))
 
 
 def _valid_lead_days(recs: list[dict], ka: str, kb: str) -> int | None:
