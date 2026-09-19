@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 {# ============================================================================
   天气预报准确度检验报告模板（2026-08 重设计，2026-08-29 排行榜表格化改版，
-  2026-08-30 增加全时效总榜）
+  2026-08-30 增加全时效总榜，2026-09-19 界面精简）
 
   设计原则：
   1. 结论先行 —— 打开页面第一眼就看到"谁家预报最准"，而不是一堆术语和图表；
@@ -11,16 +11,15 @@
      每行附"得分随时效衰减"迷你走势线。折线图退居辅助（趋势图 + 聚焦对比图），
      "战场带 + 聚焦线"三层结构保留（灰带 = 全体范围，彩色粗线 = 自选聚焦，不限家数；
      选得多会自动切换为"分屏"——一源一张小图，不再挤在一张图上）。
-  3. 处处有注释 —— 每张图表配"💡 怎么看"，页面底部内置"名词小词典"，
+  3. 文字克制 —— 图表只配一行"💡 怎么看"，深入解释收进折叠区与页底"名词小词典"，
      读者不需要任何气象/统计背景；
   4. 一页即全部 —— 本页（index.html）每次运行覆盖更新，永远展示"本月至今"
      的累积结果；历史月份见页脚"月度归档"。
-  5. 多指标加权综合分 —— 温度 7 项 + 降水 6 项指标加权入分（评分构成表在
+  5. 多指标加权综合分 —— 温度 7 项 + 降水 5 项指标加权入分（评分构成表在
      排行榜区可展开；权重定义在 evaluate.py，模板只负责展示，单一数据源）。
 
   页面结构（自上而下）：
     Hero 横幅            标题 + 一句话结论（全时效总榜冠军）
-    🌱 30秒看懂本报告    5 个核心概念的小白解释
     🏅 预报源排行榜      表格式主视图：总榜 + 切提前天数 / 列排序 / 搜索 / 名次走势
     📉 得分随时效衰减    综合/温度/降水三个维度的得分趋势（榜单的趋势版）
     🌡️ 气温预报          指标下拉：准确率/误差/相关系数 随时效
@@ -104,12 +103,6 @@ window.addEventListener("DOMContentLoaded", function () {
   .hint { background:#eff6ff; border-left:4px solid var(--blue); border-radius:8px;
           color:#1e40af; font-size:13px; padding:9px 14px; margin:10px 0 0; }
   .hint b { color:#1e3a8a; }
-
-  /* ---------- 30 秒看懂：核心概念卡 ---------- */
-  .guide-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px; }
-  .guide-item { border:1px solid var(--line); border-radius:12px; padding:14px 16px; background:#f8fafc; }
-  .guide-item .t { font-weight:700; font-size:14.5px; margin-bottom:6px; }
-  .guide-item .d { font-size:13px; color:#334155; }
 
   /* ---------- 排行榜：表格式主视图 ---------- */
   .lb-controls { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin:4px 0 10px; }
@@ -413,15 +406,13 @@ window.addEventListener("DOMContentLoaded", function () {
     </div>
     {% if champ %}
     <!-- 全页唯一的"一句话结论"：小白只看这一句也够 -->
-    <div class="champion">🏆 {{ report.meta.period_label }} 月{% if not report.meta.is_monthly %}至今{% endif %}
-      {% if champ %}删掉各家"能预报多少天"的差异后综合表现最好的是{% else %}{% if lb1_q %}提前 1 天{% else %}综合{% endif %}表现最好的是{% endif %}
+    <div class="champion">🏆 {{ report.meta.period_label }} 月{% if not report.meta.is_monthly %}至今{% endif %}综合表现最好的是
       <b>{{ model_labels.get(champ.model, champ.model) }}</b>
       {# champ 可能是分时效榜回退行（有些键不存在），统一用 .get 取，避免 Undefined 炸模板 #}
-      <div class="sub">难度对齐综合分 {{ num(champ.score, 1) }}{% if champ.get('ci90') %}（90% 置信区间 {{ num(champ.get('ci90')[0], 1) }}~{{ num(champ.get('ci90')[1], 1) }}，按 {{ report.meta.get('bootstrap_block_days', 1) }} 天为一块重采样 {{ report.meta.bootstrap_runs }} 次）{% endif %}{% if champ.get('skill') is not none %}· 比"明天=今天"的零技巧基准高 {{ num(champ.get('skill'), 1) }} 分{% endif %}
+      <div class="sub">难度对齐综合分 {{ num(champ.score, 1) }}{% if champ.get('ci90') %}（90% 置信区间 {{ num(champ.get('ci90')[0], 1) }}~{{ num(champ.get('ci90')[1], 1) }}）{% endif %}
         （温度 {{ num(champ.temp_score, 1) }} 分 + 降水 {{ num(champ.precip_score, 1) }} 分）{% if champ.lead_days %}· 覆盖预报至提前 {{ champ.lead_days }} 天{% endif %} ·
-        温度准确率 {{ pct(champ.acc2) }}（误差 ≤2°C 即算准）· 日雨评分 TS {{ num(champ.ts, 2) }}（24h 累计 ≥{{ report.meta.rain_daily_threshold_mm }}mm 报中程度，0~1，越高越好）。
-        <br>（"难度对齐"= 把每一档提前量有多难先算出来并统一扣掉，再比各家高低；各家能预报的天数不同也照样公平。）
-        提前更久谁守得住？见下方<a href="#leaderboard" style="color:#dbeafe">🏅 排行榜（总榜 + 可切提前天数）</a>与<a href="#score-trend" style="color:#dbeafe">📉 得分衰减曲线</a>。</div>
+        温度准确率 {{ pct(champ.acc2) }} · 日雨评分 TS {{ num(champ.ts, 2) }}。
+        <a href="#leaderboard" style="color:#dbeafe">看完整榜单 →</a></div>
     </div>
     {% else %}
     <div class="champion">🌱 数据积累中——样本攒够后，这里会显示本月的"预报冠军"。</div>
@@ -431,34 +422,12 @@ window.addEventListener("DOMContentLoaded", function () {
 
 <div class="wrap">
 
-  <!-- ==================== 新手引导：30 秒看懂 ==================== -->
-  <section class="card">
-    <h2>🌱 30 秒看懂本报告</h2>
-    <p class="desc">只需记住 5 个概念，遇到别的术语可直达页面底部 <a href="#glossary">📖 名词小词典</a>。</p>
-    <div class="guide-grid">
-      <div class="guide-item"><div class="t">⏱️ 时效 = 提前量</div>
-        <div class="d">预报是<b>提前多久</b>做的。总榜把每一档的难度先扣掉再算总账（各家能报的天数不同也公平）；「提前 N 天」分榜则一档一张榜——提前 1 天大家都准，提前 10 天谁守得住，切着看才知道。</div></div>
-      <div class="guide-item"><div class="t">🏅 综合得分</div>
-        <div class="d"><b>温度分</b>（7 项指标加权）与<b>降水分</b>（6 项指标加权）各算一个 0~100 的分，再取平均。一项"瘸腿"拿不了高分，构成明细见排行榜下方。</div></div>
-      <div class="guide-item"><div class="t">🌡️ 温度准确率（±2°C）</div>
-        <div class="d">预报温度与实况相差 <b>不超过 2°C</b> 就算报准。比例<b>越高越好</b>，100% = 满分。</div></div>
-      <div class="guide-item"><div class="t">📉 温度误差（RMSE）</div>
-        <div class="d">温度平均<b>报错了多少 °C</b>，<b>越小越好</b>，0 = 完美。它对"偶尔离谱的大误差"更敏感。</div></div>
-      <div class="guide-item"><div class="t">🌧️ 日雨评分（TS）</div>
-        <div class="d">按<b>天</b>结算的"下没下雨"报对程度（24h 累计 ≥{{ report.meta.rain_daily_threshold_mm }}mm 算雨日；0~1），同时惩罚漏报和瞎报，<b>越高越好</b>。</div></div>
-    </div>
-  </section>
-
   <!-- ==================== 排行榜（表格式主视图）：总榜 + 每个提前量档一张榜 ==================== -->
   <section class="card" id="leaderboard">
     <h2>🏅 预报源排行榜</h2>
-    <p class="desc">榜单分两层，用按钮切换：<b>「总榜」</b>是本页面唯一的"谁最准"答案，用的是<b>难度对齐综合分</b>——
-      先把每一档提前量有多难算出来（各家往往只能用上其中几档），把这层难度统一扣掉后再比高低，
-      所以<b>能预报 3 天的源和能预报 15 天的源在同一个榜上是公平的</b>；具体做法见下方"⏱️ 难度对齐是怎么做的"。
-      <b>「提前 N 天」分榜</b>按时效分档、每档一张，同一难度直接对照，想看"某一天谁最准"用它。
-      点<b>任意列名</b>可改排序（如按 RMSE 找误差最小、按 TS 找晴雨最准）；数字全部来自与趋势图同一套加权公式。
-      名次列始终是综合名次（👑 = 当前榜单第一）；右侧走势线是该源得分随提前量 1~{{ report.meta.hourly_lead_days }} 天的衰减全程（总榜视图不标圆点）。
-      样本不足、有效样本量未达 {{ report.meta.min_board_neff }}、或温度/降水缺一个维度的源沉底显示"样本积累中"，不参与冠军竞争。</p>
+    <p class="desc"><b>「总榜」</b>用<b>难度对齐综合分</b>回答"综合来看谁最准"——先把每一档提前量的难度统一扣掉再比，
+      能报 3 天的和能报 15 天的同榜也公平（点开下方"⏱️ 难度对齐是怎么做的"看明细）。
+      <b>「提前 N 天」分榜</b>是同一难度下的直接对照；点<b>任意列名</b>可改排序，右侧走势线 = 得分随提前量的衰减全程。</p>
     <div class="lb-controls">
       <div class="lb-buckets" id="lbBuckets" aria-label="选择提前天数"></div>
       <div class="lb-sortm">
@@ -482,14 +451,9 @@ window.addEventListener("DOMContentLoaded", function () {
       <b>{{ model_labels.get(m, m) }}</b>：{{ note }}。{% endfor %}
       该源在榜单中的名次应结合这一差异解读。</div>
     {% endif %}
-    <p class="hint">💡 <b>怎么看：</b>① 总榜先看<b>难度对齐分</b>列的名次与梯队（底纹条越长分越高）——跨覆盖长度的公平比较都在这一列；
-      ② 想看"这家能把多远的预报做下来"，看<b>覆盖时效</b>与<b>覆盖桶数</b>（两家分数接近时，能预报更久的那家更难得）；
-      <b>技巧差</b>是相对零技巧基准 persistence（明天 = 今天的实况）高出的分数，≤0 意味着不比"原地不动"强；
-      ③ 名字带 <b>†</b> = 与第一名（难度对齐分）的差距经 Holm–Bonferroni 多重比较校正后仍不显著——26 家同榜逐对比，
-      不做校正的话"显著"基本是抽样运气；置信区间按 <b>{{ report.meta.get('bootstrap_block_days', 1) }} 天</b>为一块重采样（块长 = 误差去相关时间，块长 1 天会把区间算窄近一倍）；
-      ④ <b>起报轮次</b>与<b>验证日数</b>说的是"这份分数有多厚的底子"——同样覆盖 6 天，23 个起报、8 个验证日与 57 个起报、12 个验证日不是一个可信度量级；
-      ⑤ 点列名按单一指标排队，<b>RMSE 等误差类越低越好，其余越高越好</b>；⑥ 走势线向右下掉是自然规律，
-      <b>谁掉得慢、谁在右边还站得高</b>，谁的长效预报就更可靠。</p>
+    <p class="hint">💡 <b>怎么看：</b>名次看<b>难度对齐分</b>列（底纹条越长分越高）；<b>RMSE 等误差类越低越好，其余越高越好</b>；
+      <b>覆盖时效 / 起报轮次 / 验证日数</b>大 = 分数的底子厚；名字带 <b>†</b> = 与第一名的差距经 Holm–Bonferroni 校正后仍不显著（前后名次更多是抽样运气）；
+      走势线向右下掉是自然规律——<b>谁在右边还站得高，谁的长期预报就更可靠</b>。</p>
     {% set no_data = [] %}
     {% set truncated = [] %}
     {% for m, st in (report.meta.get('model_status') or {}).items() %}{% if st != 'ok' %}{% set _ = no_data.append(m) %}{% endif %}{% endfor %}
@@ -504,32 +468,27 @@ window.addEventListener("DOMContentLoaded", function () {
     {% set cspan = report.meta.get('calendar_span') or {} %}
     {% if cspan.get('min_days') and cspan.get('max_days') and cspan['max_days'] >= cspan['min_days'] + 3 %}
     <div class="hint" style="border-left-color:var(--amber);background:#fffbeb;color:#92400e">
-      📆 <b>验证期不齐：</b>入围源被验证的自然日数从 <b>{{ cspan['min_days'] }} 天</b>到 <b>{{ cspan['max_days'] }} 天</b>不等——
-      新接入的源只在自己入榜之后的日子上被检验。同一批源换到较短的那段日子重算，分数变动可达数分，
-      这类"时期效应"与预报技巧无关。请结合<b>验证日数</b>列解读名次。
+      📆 <b>验证期不齐：</b>入围源被验证的自然日数相差较大（{{ cspan['min_days'] }}~{{ cspan['max_days'] }} 天），
+      新源只在自己入榜之后的日子里受检，这段"时期效应"请结合<b>验证日数</b>列解读名次。
     </div>
     {% endif %}
     {% if report.meta.weight_sensitivity and report.meta.weight_sensitivity.champions %}
     <div class="hint" style="border-left-color:var(--amber);background:#fffbeb;color:#92400e">
-      ⚖️ <b>冠军有多稳？</b>把 12 项评分权重各随机扰动 ±40%、重复 {{ report.meta.weight_sensitivity.runs }} 次，
-      冠军在各家之间的分布：
-      {% for c in report.meta.weight_sensitivity.champions %}<b>{{ model_labels.get(c.model, c.model) }}</b> {{ c.pct }}%{% if not loop.last %}、{% endif %}{% endfor %}。
-      多家轮换说明头名之争在当前样本量下并不"一锤定音"，请结合置信区间解读。</div>
+      ⚖️ <b>冠军有多稳？</b>把 12 项评分权重随机扰动 ±40% 重复 {{ report.meta.weight_sensitivity.runs }} 次，
+      冠军分布：{% for c in report.meta.weight_sensitivity.champions %}<b>{{ model_labels.get(c.model, c.model) }}</b> {{ c.pct }}%{% if not loop.last %}、{% endif %}{% endfor %}。
+      多家轮换说明头名之争尚不"一锤定音"，请结合置信区间解读。</div>
     {% endif %}
     <details class="lb-weights">
       <summary>⏱️ 难度对齐是怎么做的：为什么报 3 天的和报 15 天的能同榜比较（点开看明细）</summary>
       <div class="lb-weights-body">
-        <p class="lb-why">各家能预报的天数差很多（3 天到 16 天不等），而<b>越往后越难报</b>：直接把每家"自己覆盖得到那几档"的分数平均，
-          只报近几天的源就白拿了简单档的分（实测每多覆盖一档平均要掉 0.74 分）。反过来，只取所有源都覆盖的交集来比，
-          {{ dw.get('models', report.meta.models|length) }} 家同榜时窗口只剩 4 天 —— 九成样本被扔掉。</p>
+        <p class="lb-why">越往后越难报，而各家能预报的天数差很多：直接平均"自己覆盖的那几档"，只报近几天的源白拿简单档的分；
+          只取全体共同覆盖的交集，又要把九成样本扔掉。</p>
         {% if dw.get('degraded') %}
-        <p class="lb-why">⚠️ <b>本份报告已降级为"各源可用天桶的等权平均"</b>：当前可用格子凑不出一张能横向
-          比较的表（通常是因为只接了一个源，或各源之间几乎没有重合的天桶），此时"这一档有多难"无从估计，
-          只能按各家自己的平均分排——请结合<b>覆盖时效</b>列解读名次。</p>
+        <p class="lb-why">⚠️ <b>本份报告已降级为"各源可用天桶的等权平均"</b>：可用格子凑不出能横向比较的表（通常只接了一个源，或各源几乎没有重合天桶），
+          请结合<b>覆盖时效</b>列解读名次。</p>
         {% else %}
-        <p class="lb-why">本页用的是<b>双向加法劈分</b>：把"（源 × 提前 N 天）"这张表格看成
-          <b>分数 = 这家水平 + 这一档有多难 + 噪声</b>，用全部格子一起估出"各家水平"与"各档难度"两件事，
-          再回答"若各家都被验证在同一批难度上，谁排前面"。<b>数据一格不扔，也不要求各家覆盖一致。</b></p>
+        <p class="lb-why">本页用<b>双向加法劈分</b>：把"（源 × 提前 N 天）"表格看成 <b>分数 = 这家水平 + 这一档难度 + 噪声</b>，
+          用全部格子一起估出行、列效应——<b>数据一格不扔，也不要求各家覆盖一致</b>。</p>
         {% endif %}
         {% if dw.get('difficulty') and not dw.get('degraded') %}
         <h4>每一档提前量有多难（相对全部档位的平均水平，单位：分）</h4>
@@ -540,13 +499,10 @@ window.addEventListener("DOMContentLoaded", function () {
             <tr>{% for b in range(1, report.meta.hourly_lead_days + 1) %}<td class="num" style="color:var(--muted)">{{ dw['coverage'].get(b, 0) }} 家</td>{% endfor %}</tr>
           </tbody>
         </table>
-        <p class="lb-why">第一行＝该档比平均水平<b>高/低</b>多少分（正数＝这一档好报），这就是被扣掉的"蹭难度"部分；
-          第二行＝这一档上有多少家参与比较（少于 {{ dw.get('min_models_per_bucket', 3) }} 家的档没有横向信息，不进比较）。
-          总榜的名次就是各家"扣掉上表第一行之后"的平均分。</p>
+        <p class="lb-why">第一行＝该档比平均水平<b>高/低</b>多少分（正数＝好报），这就是被扣掉的"蹭难度"部分；
+          第二行＝该档参与比较的家数（少于 {{ dw.get('min_models_per_bucket', 3) }} 家的档不进比较）。</p>
         {% endif %}
-        <p class="lb-why">要留一分清醒：这是<b>加法假设</b>——若某家在短时效特别强、长时效特别弱（"源 × 时效"的交互），
-          对齐后的单一数字表达不了这种差异，那就请看<b>「提前 N 天」分榜</b>，那里是同一难度下的直接对照。
-          另外，各家被验证的<b>自然日</b>不完全相同（见下方"验证期不齐"与<b>验证日数</b>列），这部分差异只披露、不硬拉平。</p>
+        <p class="lb-why">这是<b>加法假设</b>：若某家短时效强、长时效弱（源 × 时效交互），单一数字表达不了，请看「提前 N 天」分榜的同难度直接对照。</p>
       </div>
     </details>
     <details class="lb-weights">
@@ -563,7 +519,7 @@ window.addEventListener("DOMContentLoaded", function () {
                 {% endfor %}
               </tbody>
             </table>
-            <p class="lb-why">不入分：RSS、χ²——χ²=RMSE²、RSS=n×χ²，是样本量的函数而非预报技巧（数值仍可在进阶区明细表查看）。</p>
+            <p class="lb-why">不入分：RSS、χ²——是样本量的函数而非预报技巧（数值仍可在进阶区明细表查看）。</p>
           </div>
           <div>
             <h4>🌧️ 降水分（5 项，权重和 100%；按天 24h 累计 ≥{{ report.meta.rain_daily_threshold_mm }}mm 口径）</h4>
@@ -575,16 +531,12 @@ window.addEventListener("DOMContentLoaded", function () {
                 {% endfor %}
               </tbody>
             </table>
-            <p class="lb-why">不入分：晴雨准确率（干燥气候下"全答无雨"也能拿高分，主要由气候基率决定而非技巧，
-              ETS 已做过基率校正）、漏报率（=100−命中率）、空报频率（与空报率同族仅分母不同）、
-              雨量 RMSE/MAE/MBE（由个别强降水时段主导、随样本期气候波动大，跨源比较不公平）。
-              命中率权重低于空报率+偏差之和——评分不奖励"多报占便宜"。</p>
+            <p class="lb-why">不入分：晴雨准确率（主要由气候基率决定，ETS 已做过基率校正）、漏报率（=100−命中率）、
+              空报频率（与空报率同族）、雨量 RMSE/MAE/MBE（由个别强降水时段主导，跨源比较不公平）。</p>
           </div>
         </div>
-        <p class="lb-why">各子分都截断到 0~100；某项缺数据时按<b>剩余权重</b>折算（"存疑不计亏"口径：缺数据≠差数据，
-          不让单一缺项把整行踢出局，也不因缺项额外扣分）——缺失的维度在榜单里以 — 显示，读者可自行判断。
-          综合分 = 温度分与降水分各占一半。把"报得准、误差小、节奏对、不偏科、雨报得实"分别记账再合并，比只用一两个指标更能区分真实水平。
-          <b>总榜与分榜用同一套桶得分</b>：分榜只取该天桶；总榜先把各档难度劈掉（见上一条"难度对齐"），再做平均。</p>
+        <p class="lb-why">各子分截断到 0~100；某项缺数据时按<b>剩余权重</b>折算（缺数据≠差数据），缺失维度在榜单里以 — 显示。
+          综合分 = 温度分与降水分各半；<b>总榜与分榜用同一套桶得分</b>，总榜只是先劈掉各档难度再平均。</p>
       </div>
     </details>
   </section>
@@ -592,8 +544,7 @@ window.addEventListener("DOMContentLoaded", function () {
   <!-- ==================== 得分随时效衰减（排行榜的趋势版） ==================== -->
   <section class="card" id="score-trend">
     <h2>📉 得分随时效衰减：谁"掉秤"掉得慢？</h2>
-    <p class="desc">上面的榜单中，总榜给的是"扣掉难度后的总账"，分时效榜每次只看一个提前量档；这一节把<b>每一档提前量（第 1~16 天）的得分</b>连成曲线，
-      一张图看清全部走势。同一套打分公式（综合 = 温度分 + 降水分），切换下方维度：</p>
+    <p class="desc">把每一档提前量（第 1~16 天）的得分连成曲线，一张图看清全部走势；综合 = 温度分与降水分的均分，可切换维度：</p>
     <div class="chart-controls">
       <div class="seg" id="scoreTrendTab">
         <button class="on" data-key="overall">综合得分</button>
@@ -603,83 +554,66 @@ window.addEventListener("DOMContentLoaded", function () {
       <div class="cmp-mount" data-cmp></div>
     </div>
     <div id="chartScoreTrend" class="chart"></div>
-    <p class="hint">💡 <b>怎么看：</b><b>灰带</b> = 全体预报源在各档时效的得分范围（虚线 = 全体中位），
-      <b>彩色粗线</b> = 你聚焦的源（线尾直接标着名字）。所有线都会往右掉（提前量越大、预报越难），
-      <b>谁掉得慢、谁在右边还站得高</b>，谁的中长期预报就更可靠。
-      <b>选几家都不限</b>：用"🎯 对比源"里的「全选」一次看全体，选到 7 家以上会自动切成<b>分屏</b>
-      （一源一张小图、共用纵轴，再多家也不会挤成一团），也可以在同一个面板里手动切回「合并」；
-      合并模式下把鼠标停在某条线上会压暗其余各线。某条线中途断掉 = 该时效"样本不足"（还没有那么多天的数据，攒着攒着就有了）。</p>
+    <p class="hint">💡 <b>怎么看：</b>灰带 = 全体范围（虚线 = 中位），彩色粗线 = 聚焦的源（线尾标名字，可用"🎯 对比源"自选、不限家数，选多会自动分屏）。
+      谁掉得慢、谁在右边还站得高，谁的长期预报就更可靠；线中断 = 该时效样本不足。</p>
   </section>
 
   <!-- ==================== 分区一：气温 ==================== -->
   <section class="card">
     <h2>🌡️ 气温预报准不准？</h2>
-    <p class="desc">横轴是"预报提前量"（往右 = 预报更久以后的天气）。灰带是全体 {{ report.meta.models|length }} 家的范围，
-      彩色粗线是你聚焦的源（线尾直标名字）。右侧指标下拉可切换温度的全部指标。</p>
+    <p class="desc">横轴 = 预报提前量；指标下拉可切换温度的全部指标。</p>
     <div class="chart-controls">
       <label for="tempMetricSel">指标</label>
       <select id="tempMetricSel" aria-label="选择温度指标"></select>
       <div class="cmp-mount" data-cmp></div>
     </div>
     <div id="chartTempMetrics" class="chart"></div>
-    <p class="hint">💡 <b>怎么看：</b>准确率/相关系数<b>越高越好</b>，RMSE/MAE/MBE <b>越低越好</b>。
-      灰带 = 全体 {{ report.meta.models|length }} 家的范围，虚线 = 全体中位；彩色粗线 = 你聚焦的源，
-      越贴着灰带下沿（误差类）或上沿（准确率类）越强。默认聚焦<b>排行榜前 3 名</b>——
-      点图中的灰线可把任何一家加入对比，或用"🎯 对比源"按钮自选——<b>不限家数</b>，
-      选得多会自动切成"分屏"（一源一张小图）。</p>
+    <p class="hint">💡 准确率/相关系数<b>越高越好</b>，RMSE/MAE/MBE <b>越低越好</b>。默认聚焦排行榜前 3 名，点图中灰线或用"🎯 对比源"可加选任意家。</p>
   </section>
 
   <!-- ==================== 分区二：降水 ==================== -->
   <section class="card">
     <h2>🌧️ 下雨预报准不准？</h2>
-    <p class="desc">把"降水量 ≥ {{ report.meta.rain_threshold_mm }}mm"记为"有雨"。指标下拉可切换降水的全部指标
-      （晴雨评分族 + 降水量误差族）。分级降水（小/中/大/暴雨）见页面下方"进阶数据"。</p>
+    <p class="desc">把"降水量 ≥ {{ report.meta.rain_threshold_mm }}mm"记为"有雨"；指标下拉可切换晴雨评分族 + 雨量误差族。</p>
     <div class="chart-controls">
       <label for="precipMetricSel">指标</label>
       <select id="precipMetricSel" aria-label="选择降水指标"></select>
       <div class="cmp-mount" data-cmp></div>
     </div>
     <div id="chartPrecipMetrics" class="chart"></div>
-    <p class="hint">💡 <b>怎么看：</b>TS / ETS / 准确率 / 命中率<b>越高越好</b>；空报率、漏报率<b>越低越好</b>；
-      频率偏差 BIAS 越接近 1 越好（&gt;1 = 爱报雨，&lt;1 = 不爱报雨）。
-      降水比温度难报得多——TS 到 0.3~0.5 已属正常水平，各家普遍不高不是报错了，而是下雨本身就难预测。</p>
+    <p class="hint">💡 TS / ETS / 准确率 / 命中率<b>越高越好</b>；空报率、漏报率<b>越低越好</b>；BIAS 越接近 1 越好。
+      降水比温度难报得多，TS 到 0.3~0.5 已属正常水平。</p>
   </section>
 
   <!-- ==================== 分区三：预报 vs 实况 ==================== -->
   <section class="card">
     <h2>🔍 亲眼对比：预报 vs 实况（最近 72 小时）</h2>
-    <p class="desc">不看指标，直接用眼睛检验：黑线是气象站实测气温，彩线是预报（取每个时刻当时已发布的最新一版），蓝柱是预报降水量（右轴）。</p>
+    <p class="desc">黑线 = 气象站实测气温，彩线 = 预报气温，蓝柱 = 预报降水（右轴）。彩线越贴近黑线越准，可切换站点与预报源。</p>
     <div class="chart-controls">
       <label for="tsStation">站点</label><select id="tsStation" aria-label="选择站点"></select>
       <label for="tsModel">预报源</label><select id="tsModel" aria-label="选择预报源"></select>
     </div>
     <div id="chartTs" class="chart tall"></div>
-    <p class="hint">💡 <b>怎么看：</b>彩线越贴近黑线越准。可以切换不同站点和预报源，
-      看看谁家能跟上气温的起伏节奏（尤其是每天最高/最低点的位置和幅度）。</p>
   </section>
 
   <!-- ==================== 分区四：逐日热力图 ==================== -->
   <section class="card">
     <h2>🗓️ 每日表现热力图</h2>
-    <p class="desc">每个格子 = 某一天 × 某家预报源当天的温度准确率（±2°C）。行按排行榜名次排列（第一名在最上）。</p>
+    <p class="desc">每个格子 = 某天 × 某家预报源的温度准确率（±2°C），行按排行榜名次排列。<b>绿</b> = 准，<b>红</b> = 翻车，空白 = 数据不足；
+      整列发红往往是天气突变，整行偏红才是这家整体拉胯。</p>
     <div id="chartHeat" class="chart"></div>
-    <p class="hint">💡 <b>怎么看：</b><b>绿色</b> = 当天报得准，<b>红色</b> = 当天翻车，空白 = 数据不足。
-      如果某天<b>整列发红</b>，说明那天所有预报源都没报准——往往是天气突变（如冷空气、突发降雨），不是某一家的锅；
-      若某一行常年偏红，说明这一家整体拉胯。</p>
   </section>
 
   <!-- ==================== 分区五：分站对比 ==================== -->
   <section class="card">
     <h2>📍 各站点表现对比</h2>
-    <p class="desc">同样是"提前 1 天"的预报，对比各家在不同气象站的表现。</p>
+    <p class="desc">同一"提前 1 天"的预报在不同气象站的表现（地形、气候不同会有差异），只关心某个城市就看对应柱子。</p>
     <div class="chart-controls">
       <label for="stationMetricSel">指标</label>
       <select id="stationMetricSel" aria-label="选择分站指标"></select>
       <div class="cmp-mount" data-cmp></div>
     </div>
     <div id="chartStation" class="chart"></div>
-    <p class="hint">💡 <b>怎么看：</b>同一预报源在不同站点表现可能有差异（地形、气候不同）。
-      如果你只关心某个城市，找到对应的柱子比一比即可。</p>
   </section>
 
   <!-- ==================== 进阶数据（默认折叠，保持主页清爽） ==================== -->
@@ -688,8 +622,7 @@ window.addEventListener("DOMContentLoaded", function () {
     <div class="body">
       <h3>按天评估：日最高 / 最低气温准确率（日偏移 1~16 天）</h3>
       <p class="desc">把一天浓缩成两个数（最高/最低温），按"预报的是起报后第几天"分组。
-        {% if report.meta.daily_source_fallback %}逐小时预报够不着的日子，只要这一家还提供了自己的逐日预报，
-        该日仍会参与按天评估（<b>日产品补位</b>，明细表里可看每条的来源构成）；逐小时样本从不由日预报伪造。{% endif %}</p>
+        {% if report.meta.daily_source_fallback %}逐小时够不着的日子用该源自带的逐日预报补位（明细表②可看来源构成）；逐小时样本从不由日预报伪造。{% endif %}</p>
       <div class="chart-controls">
         <div class="cmp-mount" data-cmp></div>
       </div>
@@ -726,10 +659,8 @@ window.addEventListener("DOMContentLoaded", function () {
       <div id="chartTempLead" class="chart"></div>
 
       <h3>明细表 ①：逐小时口径全指标（按提前量选一天）</h3>
-      <p class="desc">cyeva 温度 9 项 + 降水 16 项（晴雨 8 项 / 雨量误差 3 项 / 1h 雨强分级 TS 5 档）。
-        n温 / n降 = 温度 / 降水列各自的有效样本对数（两者可能不同：降水缺测通常更多）；某一口径 n &lt;
-        {{ report.meta.min_sample }} 时该组指标视为样本不足，显示 —。
-        表格可左右滚动，模型列固定在左侧。</p>
+      <p class="desc">温度 9 项 + 降水 16 项全指标。n温 / n降 = 各自的有效样本对数，某一口径 n &lt;
+        {{ report.meta.min_sample }} 时该组指标显示 —。表格可左右滚动，模型列固定在左侧。</p>
       <div class="chart-controls">
         <label for="hourlyBucketSel">时效</label>
         <select id="hourlyBucketSel" aria-label="选择时效"></select>
@@ -751,41 +682,28 @@ window.addEventListener("DOMContentLoaded", function () {
     <h2>📖 名词小词典</h2>
     <p class="desc">页面里出现的术语，全部用大白话解释一遍。</p>
     <dl class="glossary">
-      <div><dt>起报 / 起报快照</dt><dd>预报发布的那一刻叫"起报"。我们把每次起报的"未来 16 天逐小时预报"原样存档封存，等真实天气发生后再对账——预报不能事后改，检验才算数。</dd></div>
-      <div><dt>时效（lead）</dt><dd>有效时刻 − 起报时刻，即"提前多久做的预报"。"3 天时效" = 提前 3 天报的。</dd></div>
-      <div><dt>天桶</dt><dd>把时效按天分组：提前 1~24 小时算"第 1 天桶"，25~48 小时算"第 2 天桶"，以此类推。</dd></div>
-      <div><dt>综合得分 / 温度分 / 降水分</dt><dd>把多个指标压缩成一个 0~100 的总分方便排名。温度分 = 7 项温度指标（±2°C/±1°C 准确率、RMSE/MAE 换算分、相关系数、偏差分、斜率分）按 25/25/15/10/10/10/5 加权；降水分 = 6 项降水指标（TS、ETS、晴雨准确率、命中率、空报率换算分、频率偏差分）按 30/25/15/15/10/5 加权；综合得分 = 两者均分。某项缺数据按剩余权重折算。总榜与分时效榜用同一套公式，区别只在参与计算的样本。点开排行榜的「评分构成」可看每个指标的换算公式。</dd></div>
-      <div><dt>为什么有的指标不进综合分</dt><dd>χ²=RMSE²、RSS=样本量×χ²，是样本量的函数而非预报技巧；漏报率 = 100−命中率（纯重复）；空报频率与空报率同族（仅分母不同）；雨量 RMSE/MAE/MBE 由个别强降水时段主导、随当期气候波动大，跨源比较不公平——它们照常计算，只是不参与打分，可在进阶区明细表查看。</dd></div>
-      <div><dt>总榜（难度对齐）</dt><dd>回答"综合来看谁最准"的唯一排名。各家能预报的天数不同，而越往后越难报，所以先把<b>每一档「提前 N 天」有多难算出来、统一扣掉</b>，再比高低——能报 3 天的源和能报 15 天的源同榜比较也不会吃亏。做法是把（源 × 提前 N 天）这张表拆成"这家水平 + 这一档难度 + 噪声"两件���（双向加法模型）。可用时效数本身也是信息，请结合「覆盖时效」列解读。要同难度硬碰硬，切「提前 N 天」分榜。</dd></div>
-      <div><dt>覆盖时效</dt><dd>该源在本评估窗口内<b>实际参与指标计算的样本</b>（预报与实况两侧同时有值）中最长覆盖到提前第几天，按"温度 / 降水"两条轨道分别统计（向上取整到天；取最大值，不代表逐天连续覆盖）。受三件事限制：源本身的最长时效，"起报 + 时效"是否已落进可对账的时段，以及序列尾部缺测（尾部全是 null 的时段不参与计算，也不计入覆盖）。总榜按各时效等权汇总，可用时效数越少，结论所依据的"桶"就越少。</dd></div>
-      <div><dt>90% 置信区间与显著性</dt><dd>把评估窗口内的<b>天</b>做有放回重采样（块长 1 天，{{ report.meta.bootstrap_runs }} 次），每次都重算一遍完整榜单，得到综合分的波动范围——区间越窄说明分数越"站得稳"。名字带 <b>†</b> 表示该源与第一名的得分差在 90% 置信下与 0 分不开（差异不显著）：两者谁先谁后更多是抽样运气，不宜过度解读。样本期只有一两周时区间天然很宽，随数据积累收窄。</dd></div>
-      <div><dt>有效样本量 n_eff 与门槛</dt><dd>逐小时误差强自相关（这一小时的预报误差和上 hour 高度相似），名义样本对数 n 会把同一信息重复计数——n_eff 按"每天真正带来多少新信息"折算（n·(1−ρ)/(1+ρ)），跨源比较请以它为准。总榜另设入围门槛 n_eff ≥ {{ report.meta.min_board_neff }}：未达标的源列"样本积累中"，不参与冠军竞争。</dd></div>
-      <div><dt>日雨评分（TS/ETS，按天轨道）</dt><dd>降水入分口径为<b>北京时自然日 24h 累计</b>、日雨量 ≥{{ report.meta.rain_daily_threshold_mm }}mm 记"有效降水日"（业务惯用口径）。逐小时 ≥0.1mm 的口径下数值模式普遍每小时报微量降水（drizzle bias），实测超报最高 15 倍、所有源 ETS 都接近 0、评分失去区分度；24h 累计让毛毛雨在求和中自然抵消。逐小时晴雨指标仍在进阶区保留为诊断视图。</dd></div>
-      <div><dt>提前量档与分时效排行榜</dt><dd>把时效按天分档（提前 1~24 小时 = 第 1 档…），每档一张排行榜。预报难度随时效上升，同档内比较对各家才是同难度的。同一预报源在短时效可能领先、长时效掉队，切档对比才能看出谁"衰减得慢"。</dd></div>
-      <div><dt>RMSE（均方根误差）</dt><dd>温度误差的"典型大小"，单位 °C，越小越好。比起 MAE，它对偶尔的大误差惩罚更重。</dd></div>
-      <div><dt>MAE（平均绝对误差）</dt><dd>每次预报误差绝对值的平均，单位 °C，越小越好。最朴素的"平均差多少度"。</dd></div>
-      <div><dt>MBE（平均偏差）</dt><dd>预报 − 实况的平均值。正数 = 习惯性报偏高，负数 = 报偏低，接近 0 最好。</dd></div>
-      <div><dt>RSS（残差平方和）</dt><dd>所有样本误差的平方加总（°C²）。是 RMSE 的"未开方、未平均"版本，样本越多天然越大，只适合同一样本数的横向对比。</dd></div>
-      <div><dt>χ²（卡方）</dt><dd>误差平方的平均（°C²），即 MSE。与 RMSE 的关系：RMSE = √χ²。越小越好。</dd></div>
-      <div><dt>相关系数 r</dt><dd>预报与实况起伏的同步程度（−1~1）。越接近 1，预报越能跟上天气的"节奏"；接近 0 = 报了个寂寞。</dd></div>
-      <div><dt>回归斜率</dt><dd>以预报为横轴、实况为纵轴做回归的斜率。&gt;1 = 预报的起伏幅度偏小（该热不热该冷不冷）；&lt;1 = 预报反应过激；=1 最理想。</dd></div>
+      <div><dt>起报 / 起报快照</dt><dd>预报发布的那一刻叫"起报"。每次起报的"未来 16 天逐小时预报"原样存档封存，等真实天气发生后对账——预报不能事后改，检验才算数。</dd></div>
+      <div><dt>时效（lead）与天桶</dt><dd>有效时刻 − 起报时刻 = "提前多久做的预报"。按天分组：提前 1~24 小时算"第 1 天桶"，25~48 小时算"第 2 天桶"，以此类推；每个天桶一张「提前 N 天」分榜，同档内比较才是同难度。</dd></div>
+      <div><dt>综合得分 / 温度分 / 降水分</dt><dd>把多个指标压缩成 0~100 的总分方便排名：温度 7 项、降水 5 项指标加权，综合 = 两者各半；缺项按剩余权重折算。点开排行榜「评分构成」可看换算公式。</dd></div>
+      <div><dt>总榜（难度对齐）</dt><dd>回答"综合来看谁最准"的唯一排名：先把每一档「提前 N 天」有多难算出来、统一扣掉再比（双向加法模型），能报 3 天的和能报 15 天的同榜也不吃亏。可用时效数本身也是信息，请结合「覆盖时效」列解读。</dd></div>
+      <div><dt>覆盖时效</dt><dd>该源实际参与计算的样本最长覆盖到提前第几天（温度/降水两轨分别统计，向上取整、不代表逐天连续覆盖）。可用时效越少，总榜平均所依据的"桶"越少。</dd></div>
+      <div><dt>90% 置信区间与显著性</dt><dd>对评估窗口内的<b>天</b>做分块重采样 {{ report.meta.bootstrap_runs }} 次重算榜单，得到分数的波动范围。名字带 <b>†</b> = 与第一名的差距在 90% 置信下与 0 分不开（差异不显著），不宜过度解读名次先后。</dd></div>
+      <div><dt>有效样本量 n_eff 与门槛</dt><dd>逐小时误差强自相关，名义 n 会把同一信息重复计数；n_eff 按"每天真正带来多少新信息"折算，跨源比较请以它为准。总榜入围门槛 n_eff ≥ {{ report.meta.min_board_neff }}，未达标源列"样本积累中"。</dd></div>
+      <div><dt>日雨评分（TS/ETS，按天轨道）</dt><dd>降水入分口径为北京时自然日 24h 累计、日雨量 ≥{{ report.meta.rain_daily_threshold_mm }}mm 记"有效降水日"（业务惯用口径）；24h 累计让逐小时口径下普遍的毛毛雨超报在求和中自然抵消。逐小时晴雨指标仍在进阶区保留为诊断视图。</dd></div>
+      <div><dt>RMSE / MAE / MBE</dt><dd>温度误差的典型大小（°C，越小越好）：RMSE 对偶尔的大误差惩罚更重；MAE 是最朴素的"平均差多少度"；MBE 是预报 − 实况的均值，正 = 习惯性报偏高，负 = 报偏低。</dd></div>
+      <div><dt>RSS / χ²</dt><dd>误差平方的加总（°C²）与平均（χ² = MSE，RMSE = √χ²）。样本越多天然越大，只适合同样本量横向对比，不进综合分。</dd></div>
+      <div><dt>相关系数 r</dt><dd>预报与实况起伏的同步程度（−1~1），越接近 1 越能跟上天气的"节奏"。</dd></div>
+      <div><dt>回归斜率</dt><dd>&gt;1 = 预报起伏幅度偏小（该热不热该冷不冷）；&lt;1 = 反应过激；=1 最理想。</dd></div>
       <div><dt>准确率（±1°C / ±2°C）</dt><dd>预报与实况相差不超过 1°C（或 2°C）的样本占比，越高越好。</dd></div>
-      <div><dt>晴雨</dt><dd>把降水简化成是非题：降水量 ≥ {{ report.meta.rain_threshold_mm }}mm 算"有雨"，否则"无雨"。</dd></div>
-      <div><dt>晴雨准确率</dt><dd>上述是非题"答对"的比例（报有雨确实下了 + 报没雨确实没下），越高越好。</dd></div>
-      <div><dt>命中率（POD）</dt><dd>实际真的下雨的次数里，预报也报雨的比例。越高 = 漏报越少。</dd></div>
-      <div><dt>空报率（FAR）</dt><dd>预报说会下雨的次数里，实际没下的比例。越低越好（"狼来了"次数）。</dd></div>
-      <div><dt>空报频率（POFD）</dt><dd>实际没下雨的次数里，预报却报了雨的比例（与空报率分母不同）。越低越好。</dd></div>
-      <div><dt>漏报率</dt><dd>实际下雨但预报没报出来的比例，越低越好。与命中率互补：漏报率 = 1 − POD。</dd></div>
-      <div><dt>TS 评分</dt><dd>命中 ÷（命中 + 空报 + 漏报），0~1。降水检验最常用的综合分，同时奖励报中、惩罚误报。</dd></div>
-      <div><dt>ETS 评分</dt><dd>对 TS 做"随机命中校正"的版本（0~1）。考虑"瞎蒙也能蒙对一部分"，ETS 更公平：瞎蒙的预报 ETS≈0，好预报才为正。</dd></div>
+      <div><dt>晴雨与准确率</dt><dd>降水量 ≥ {{ report.meta.rain_threshold_mm }}mm 算"有雨"；准确率 = 这道是非题答对的比例，越高越好。</dd></div>
+      <div><dt>命中率（POD）/ 漏报率</dt><dd>真下雨的次数里预报也报出的比例（越高越好）；漏报率 = 1 − POD。</dd></div>
+      <div><dt>空报率（FAR）/ 空报频率（POFD）</dt><dd>报了雨却没下的比例（"狼来了"次数）；POFD 是实际没雨时却报雨的比例——两者仅分母不同。</dd></div>
+      <div><dt>TS / ETS 评分</dt><dd>命中 ÷（命中 + 空报 + 漏报），0~1，同时奖励报中、惩罚误报。ETS 对"瞎蒙也能蒙对"做过随机命中校正（瞎蒙的预报 ETS≈0），更公平。</dd></div>
       <div><dt>频率偏差（BIAS）</dt><dd>报雨次数 ÷ 实际下雨次数。=1 频率正好；&gt;1 爱报雨；&lt;1 不爱报雨。</dd></div>
-      <div><dt>雨量误差（RMSE / MAE / MBE）</dt><dd>不只看下没下，还看预报的降水量数值差多少（mm），越小越好。降水数值比晴雨难报得多。</dd></div>
-      <div><dt>雨强分级（1h 口径）</dt><dd>按每小时雨量分档检验：小雨(0.1~1.9mm/h)、中雨(2~4.9)、大雨(5~9.9)、暴雨(10~19.9)、大暴雨(≥20)。每档可算全套晴雨类指标。</dd></div>
-      <div><dt>累计分级（24h 口径）</dt><dd>按日累计雨量"达到某档以上"检验：≥0.1（小雨以上）、≥10（中雨以上）、≥25（大雨以上）、≥50（暴雨以上）、≥100（大暴雨以上）、≥250mm（特大暴雨以上）。</dd></div>
-      <div><dt>样本数 n</dt><dd>参与指标计算的"预报-实况"对数。n 或有效样本量 n_eff &lt; {{ report.meta.min_sample }} 时本报告判"样本不足"，不下结论（显示 —）。逐小时数据里 n 明显大于 n_eff（同一信息被相邻小时重复计数），比较"谁的信息更足"请看 n_eff。</dd></div>
-      <div><dt>观测覆盖率</dt><dd>评估窗口内成功抓到实况的小时占比。分母按各站<b>实际有实况的时段</b>计算（实况接入前的时段不算缺失）；{% if report.coverage.first_obs %}本窗口实况自 {{ report.coverage.first_obs[:10] }} 起。{% endif %}覆盖率低会让指标样本变少。</dd></div>
-      <div><dt>起报锚点（各源差异）</dt><dd>计算"提前量"的参照时刻。多数源锚定真实起报轮次或抓取时刻；Open-Meteo 不回显真实轮次，锚点是北京时"当日 00:00"且每天只封存 1 份快照——同一「提前 N 天」桶内各源的实际难度与样本新鲜度因此略有差异（详见"口径与已知差异"）。</dd></div>
-      <div><dt>月度归档</dt><dd>每月 1 号把上个月的结果冻结成一份永久档案（见下方归档区），之后不再变动（重复触发会自动跳过，绝不重写）。</dd></div>
+      <div><dt>雨量误差（RMSE / MAE / MBE）</dt><dd>预报降水量数值差多少（mm），越小越好。降水数值比晴雨难报得多。</dd></div>
+      <div><dt>雨强分级（1h）/ 累计分级（24h）</dt><dd>按每小时雨量分档：小雨(0.1~1.9mm/h)、中雨(2~4.9)、大雨(5~9.9)、暴雨(10~19.9)、大暴雨(≥20)；按日累计分档：≥0.1 / ≥10 / ≥25 / ≥50 / ≥100 / ≥250mm。每档可算全套晴雨类指标。</dd></div>
+      <div><dt>样本数 n</dt><dd>参与计算的"预报-实况"对数；n 或 n_eff &lt; {{ report.meta.min_sample }} 时判"样本不足"，不下结论（显示 —）。</dd></div>
+      <div><dt>观测覆盖率</dt><dd>评估窗口内成功抓到实况的小时占比（实况接入前的时段不算缺失）；{% if report.coverage.first_obs %}本窗口实况自 {{ report.coverage.first_obs[:10] }} 起。{% endif %}覆盖率低会让指标样本变少。</dd></div>
     </dl>
   </section>
 
@@ -978,22 +896,10 @@ function compareOption(x, getVal, yName, opts) {
      lineStyle:{width:0}, symbol:"none", silent:true, z:1, connectNulls:false,
      areaStyle:{color:"rgba(100,116,139,.14)"}},
     // 全体中位虚线
-    {id:"field-median", type:"line", data:stats.map(s => s ? +s.median.toFixed(4) : null),
-     smooth:true, symbol:"none", z:3, connectNulls:false,
-     itemStyle:{color:"#94a3b8"}, lineStyle:{width:1.4, type:"dashed", color:"#94a3b8"}}
+  {id:"field-median", type:"line", data:stats.map(s => s ? +s.median.toFixed(4) : null),
+   smooth:true, symbol:"none", z:3, connectNulls:false,
+   itemStyle:{color:"#94a3b8"}, lineStyle:{width:1.4, type:"dashed", color:"#94a3b8"}}
   ];
-  // 零技巧基准（persistence：明天 = 今天）：给"分高不高"一个绝对参照系（P1-2）。
-  // 点线 + 末端直标名字，与各家本色曲线明确区分，不参与战场的 min/max 统计。
-  if (opts.baseline) {
-    series.push({id:"zero-skill", name:"零技巧基准", type:"line", smooth:true,
-      connectNulls:false, z:3, symbol:"none",
-      data:x.map((_, i) => { const v = opts.baseline(i); return (v === null || v === undefined) ? null : +v.toFixed(4); }),
-      itemStyle:{color:"#b45309"}, lineStyle:{width:1.6, type:"dotted", color:"#b45309"},
-      endLabel:{show:true, formatter:"零技巧基准", color:"#b45309", fontSize:10,
-                backgroundColor:"rgba(255,255,255,.9)", padding:[2, 4], borderRadius:4,
-                distance:4, offset:[0, -10]},
-      labelLayout:{moveOverlap:"shiftY"}});
-  }
   if (showPack) {   // 灰细线层：其余各家；hover 高亮本色，点击即聚焦
     rankedModels.forEach(m => {
       if (focus.has(m)) return;
@@ -1141,10 +1047,6 @@ function renderTiles(cfg) {
        symbol:"none", z:2, connectNulls:false,
        itemStyle:{color:"#94a3b8"}, lineStyle:{width:1.2, type:"dashed", color:"#94a3b8"}}
     ];
-    if (opts.baseline) series.push({type:"line", smooth:true, connectNulls:false, z:2,
-      symbol:"none", data:cfg.x.map((_, i) => {
-        const v = opts.baseline(i); return (v === null || v === undefined) ? null : +v.toFixed(4); }),
-      itemStyle:{color:"#b45309"}, lineStyle:{width:1.3, type:"dotted", color:"#b45309"}});
     series.push({type:"line", name:labelOf(m), smooth:true, connectNulls:false, z:4,
       showSymbol:false, data:cfg.x.map((_, i) => getValTile(cfg, m, i)),
       itemStyle:{color:colorOf(m)}, lineStyle:{width:2.2, color:colorOf(m)}});
@@ -1358,8 +1260,6 @@ try {
   // 扣掉，各家覆盖的天数不同也照样公平（见榜单下方"难度对齐是怎么做的"）。
   const FULL_COL = {key:"score", label:"难度对齐分", dir:"desc", dec:1, primary:true,
     title:"名次依据：把每一档提前量有多难先算出来并统一扣掉之后的综合分——能报 3 天的源与能报 15 天的源同榜比较，靠的就是这一步"};
-  const SKILL_COL = {key:"skill", label:"技巧差", dir:"desc", dec:1,
-    title:"相对零技巧基准 persistence（明天 = 今天）高出的分数；≤0 表示不比'原地不动'强"};
   const NB_COL = {key:"n_buckets", label:"覆盖桶数", dir:"desc", dec:0, unit:" 桶",
     title:"温度与降水两维度齐备的天桶数——该源真正被验证过的时效档数"};
   // 起报轮次（P2-1）：同样"覆盖 6 天"，1 个起报的几十条样本与 17 个起报的上万条
@@ -1372,7 +1272,7 @@ try {
   const DAYS_COL = {key:"n_days", label:"验证日数", dir:"desc", dec:0, unit:" 天",
     title:"该源真正被验证过的自然日数（含降水维的日数）"};
   const lbCols = board => board === "all"
-    ? [FULL_COL, SKILL_COL].concat(LB_COLS.slice(1), [NB_COL, ISSUE_COL, DAYS_COL, CI_COL, LEAD_COL])
+    ? [FULL_COL].concat(LB_COLS.slice(1), [NB_COL, ISSUE_COL, DAYS_COL, CI_COL, LEAD_COL])
     : LB_COLS;
   // 名次依据：始终是该榜的综合分列（总榜 = 难度对齐分）
   const rankKeyOf = b => "score";
@@ -1495,16 +1395,10 @@ try {
   // 榜单共用的格式化与单元格辅助（卡片视图与表格视图必须显示同一套数字）
   const fmtC = (v, dec, unit) =>
     (v === null || v === undefined) ? "—" : Number(v).toFixed(dec) + (unit || "");
+  // 综合分列：总榜 = 难度对齐分（带底纹条、名次依据），分榜 = 该天桶综合分
   function scoreCell(row, none, notQ) {
-    if (board !== "all") {
-      return '<td class="num lb-pri"' + (none || notQ ? "" : barStyle(row.score)) + ">" +
-        ((none || notQ) ? naTip(row) : fmtC(row.score, 1)) + "</td>";
-    }
-    // 总榜：难度对齐分（带底纹条、名次依据）+ 技巧差
     return '<td class="num lb-pri"' + (none || notQ ? "" : barStyle(row.score)) + ">" +
-      ((none || notQ) ? naTip(row) : fmtC(row.score, 1)) + "</td>" +
-      '<td class="num" title="相对零技巧基准 persistence（明天 = 今天）高出的分数">' +
-      fmtC(row.skill, 1) + "</td>";
+      ((none || notQ) ? naTip(row) : fmtC(row.score, 1)) + "</td>";
   }
   function naTip(row) {
     // 有天桶却进不了劈分设计 = "暂不可比"；一个天桶都没有 = 单纯的样本积累中
@@ -1557,7 +1451,6 @@ try {
         cell("降水分", fmtC(row.precip_score, 1), "降水 5 项指标加权（0~100）") +
         cell("±2°C", fmtC(row.acc2, 1, "%"), "温度 ±2°C 命中率，越高越好") +
         cell("RMSE", fmtC(row.rmse, 2), "温度均方根误差 °C，越低越好") +
-        (board === "all" ? cell("技巧差", fmtC(row.skill, 1), "相对零技巧基准 persistence（明天=今天）高出的分数") : "") +
         (board === "all" ? cell("90% CI", ciV, "名次依据分数的 90% 置信区间") : "") +
         (board === "all" ? cell("覆盖", leadV + " 天 / " + (row.n_buckets === null || row.n_buckets === undefined ? "—" : row.n_buckets) + " 桶", "覆盖时效（温度/降水）+ 两维齐备的天桶数") : "") +
         (board === "all" ? cell("起报轮次", (row.n_issues === null || row.n_issues === undefined ? "—" : row.n_issues) + " 轮", "该源在本窗口内实际产出样本的起报时刻数") : "") +
@@ -1828,9 +1721,7 @@ try {
       getVal:(m, i) => { const v = (report.score_trend[key][m] || {})[buckets[i]];
                          return (v === null || v === undefined) ? null : v; },
       yName:"综合得分(0~100)",
-      // 棕色点线 = 零技巧基准 persistence（明天 = 今天的实况）：各家都在它之上才算有技巧
-      opts:{scale:false, valueFmt:v => fmt(v, 1),
-            baseline:i => ((report.score_trend.baseline || {})[key] || {})[buckets[i]]}};
+      opts:{scale:false, valueFmt:v => fmt(v, 1)}};
     const ch = compareLineChart(cfg);
     const tab = document.getElementById("scoreTrendTab");
     tab.querySelectorAll("button").forEach(btn => {

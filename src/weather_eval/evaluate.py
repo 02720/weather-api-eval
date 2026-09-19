@@ -43,9 +43,6 @@
   扰动的冠军分布进报告，且同样走同一张劈分设计。实现见 stats.py。
   **块长不再是固定 1 天**：由日尺度误差的去相关时间决定（ρ≈0.46 → 2~3 天），
   受"块数 ≥ 6"约束——块长 1 天只捕获日内相关，实测把置信区间算窄 40%~90%（P1-1）。
-- **零技巧基准 persistence**（P1-2）：明天 = 今天（起报时刻的实况）是最朴素的
-  参照系。每个（模型, 天桶）都在自己的同一批样本对上与它比（配对），给出
-  "比原地不动高多少分"的技巧差；趋势图画棕色点线作为绝对参照。
 
 逐日预报补位（2026-09 新增，daily_source_fallback 开关控制，默认开）：
   多数 API 的逐日预报比逐小时预报覆盖得更远（逐小时常止于 5~10 天，逐日可到
@@ -132,7 +129,7 @@ from .stats import (
     two_way_adjust,
     weight_champion_distribution,
 )
-from .timeutil import parse_iso, hour_bucket_days, floor_to_hour, iso
+from .timeutil import parse_iso, hour_bucket_days, floor_to_hour
 from .storage import load_obs, list_forecast_snapshots
 
 # 逐小时降水分级：cyeva 1h 雨强区间级别（小雨 0.1~1.9 … 大暴雨 ≥20 mm/h）
@@ -378,83 +375,6 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                             "temp_src": temp_src, "rain_src": rain_src,
                         })
     return hourly_records, daily_records
-
-
-def _obs_daily_rain(obs_map: dict, daily_min_hours: int) -> dict[str, float | None]:
-    """观测的日降水累计（日覆盖不足 daily_min_hours 的天记 None——与按天评估同门槛）。"""
-    acc: dict[str, list] = defaultdict(lambda: [0.0, 0])
-    for tstr, rec in obs_map.items():
-        v = rec.get("rain")
-        if v is None:
-            continue
-        slot = acc[tstr[:10]]
-        slot[0] += v
-        slot[1] += 1
-    return {d: (s if n >= max(daily_min_hours, 1) else None)
-            for d, (s, n) in acc.items()}
-
-
-def persistence_baseline(by_model: dict[str, list[dict]],
-                         daily_by_model: dict[str, list[dict]],
-                         obs_maps: dict[str, dict],
-                         thr_daily: float, hourly_lead_days: int,
-                         daily_min_hours: int) -> dict[str, dict]:
-    """零技巧基准 persistence：明天的天气 = 今天（起报时刻）的实况。
-
-    对每个（模型, 天桶），把该模型的**预报值整条换成 persistence**，在同一批
-    样本对上重算桶综合分——配对比较，避免"样本不同"混进技巧差。温度用起报
-    时刻的实况气温（提前 L 小时就搬 L 小时前的实况），日降水用起报日的实况
-    日累计（提前 N 天就搬 N 天前的实况日雨量）。
-
-    返回 {model: {bucket_label: {"temp": 分, "precip": 分, "overall": 分,
-    "n_temp": int, "n_rain": int}}}。样本缺失（起报时刻无实况）的条目直接跳过，
-    绝不折算成 0——与本项目"缺测绝不伪装成数值"的口径一致。
-    """
-    obs_rain_day = {sid: _obs_daily_rain(omap, daily_min_hours)
-                    for sid, omap in obs_maps.items()}
-    out: dict[str, dict] = {}
-    for m, recs in by_model.items():
-        temp_pairs: dict[int, list[tuple[float, float]]] = defaultdict(list)
-        for r in recs:
-            o = r.get("temp_obs")
-            if o is None:
-                continue
-            omap = obs_maps.get(r["station"], {})
-            # 起报时刻 = 有效时刻 − 时效；persistence 就是那一刻的实况
-            issue_key = iso(parse_iso(r["valid_iso"]) - timedelta(hours=r["lead"]))
-            base = omap.get(issue_key)
-            if not base or base.get("temp") is None:
-                continue
-            temp_pairs[r["bucket"]].append((o, base["temp"]))
-        rain_pairs: dict[int, list[tuple[float, float]]] = defaultdict(list)
-        for r in daily_by_model.get(m, []):
-            o = r.get("rain_obs")
-            if o is None:
-                continue
-            issue_day = (parse_iso(r["valid_day"]) - timedelta(days=r["offset"])).strftime("%Y-%m-%d")
-            base = obs_rain_day.get(r["station"], {}).get(issue_day)
-            if base is None:
-                continue
-            rain_pairs[r["offset"]].append((o, base))
-        buckets: dict[str, dict] = {}
-        for b in range(1, hourly_lead_days + 1):
-            to_f = temp_pairs.get(b) or []
-            ro_f = rain_pairs.get(b) or []
-            entry = {"temp": None, "precip": None, "overall": None,
-                     "n_temp": len(to_f), "n_rain": len(ro_f)}
-            if to_f:
-                o_arr = np.asarray([p[0] for p in to_f], dtype=float)
-                f_arr = np.asarray([p[1] for p in to_f], dtype=float)
-                entry["temp"] = temp_score(temp_core_numpy(o_arr, f_arr))
-            if ro_f:
-                o_arr = np.asarray([p[0] for p in ro_f], dtype=float)
-                f_arr = np.asarray([p[1] for p in ro_f], dtype=float)
-                h, fa, mi, c = binary_counts(o_arr, f_arr, thr_daily)
-                entry["precip"] = precip_score(binary_metrics_from_counts(h, fa, mi, c))
-            entry["overall"] = _mean_or_none([entry["temp"], entry["precip"]])
-            buckets[f"{b}d"] = entry
-        out[m] = buckets
-    return out
 
 
 def daily_source_mix(models: list[str], daily: list[dict]) -> dict[str, dict[str, dict]]:
@@ -990,17 +910,6 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     model_status = _model_status(models, snapshots, station_ids)
     snapshot_quality = _snapshot_quality(models, snapshots)
 
-    # ---- 零技巧基准 persistence（P1-2）：给所有"裸分"一个参照系 ----
-    # 明天的天气 = 今天的实况，是最朴素的零技巧基准。每个模型都在**自己的样本对**
-    # 上与它比（配对），得到"比'原地不动'高多少分"；同时给出一份全库口径的
-    # 逐桶基准值，供分时效榜与衰减曲线做参考线。
-    baseline_all = persistence_baseline(
-        {"__baseline__": hourly}, {"__baseline__": daily}, obs_maps,
-        thr_daily, hourly_lead_days, daily_min_hours).get("__baseline__", {})
-    baseline_by_model = persistence_baseline(
-        by_model, daily_by_model, obs_maps, thr_daily, hourly_lead_days,
-        daily_min_hours)
-
     # ---- 排行榜：分时效榜（每个天桶一份）+ 总榜（难度对齐 + 不确定性）----
     # 表格排行榜、冠军横幅与趋势图共用同一套桶得分。
     # 块长（P1-1）：块长 1 天只捕获日内相关，块间相关被当成独立 ⇒ CI 偏窄。
@@ -1018,7 +927,7 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
         min_sample=min_sample, min_board_neff=min_board_neff,
         thr_daily=thr_daily, bootstrap_runs=bootstrap_runs,
         block_days=block_days, min_board_neff_rain=min_board_neff_rain,
-        baseline_by_model=baseline_by_model, window_out=difficulty_window)
+        window_out=difficulty_window)
     # 日历跨度（日历维度）：入围源各自的验证日数差异有多大
     qdays = [r["n_days"] for r in leaderboards["all"]
              if r.get("qualified") and r.get("n_days")]
@@ -1041,15 +950,6 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     # ---- 得分随时效衰减（综合/温度/降水，天桶 1..N）：排行榜的"趋势版" ----
     score_trend = _score_trend(models, temp_hourly, precip_score_daily,
                                hourly_lead_days)
-    # 基准参考线（与趋势图同一坐标系）：persistence 的逐桶综合分
-    score_trend["baseline"] = {
-        "overall": {f"{b}d": (baseline_all.get(f"{b}d") or {}).get("overall")
-                    for b in range(1, hourly_lead_days + 1)},
-        "temp": {f"{b}d": (baseline_all.get(f"{b}d") or {}).get("temp")
-                 for b in range(1, hourly_lead_days + 1)},
-        "precip": {f"{b}d": (baseline_all.get(f"{b}d") or {}).get("precip")
-                   for b in range(1, hourly_lead_days + 1)},
-    }
 
     return {
         "meta": {
@@ -1077,8 +977,6 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
             "difficulty_window": difficulty_window,
             # 日历跨度：入围源各自被验证的自然日数区间（差异大 = 时期效应风险）
             "calendar_span": calendar_span,
-            # 零技巧基准 persistence（P1-2）：逐桶的综合/温度/降水分与样本量
-            "baseline_persistence": baseline_all,
             "daily_min_hours": daily_min_hours,
             "daily_source_fallback": daily_source_fallback,
             "model_caveats": model_caveats,
@@ -1377,7 +1275,6 @@ def _overall_board(models, temp_hourly, precip_score_daily, hourly_lead_days,
                    by_model, daily_by_model, n_eff_all, min_sample, min_board_neff,
                    thr_daily, bootstrap_runs, block_days: int = 1,
                    min_board_neff_rain: int = 20,
-                   baseline_by_model: dict | None = None,
                    window_out: dict | None = None) -> list[dict]:
     """总榜：**难度对齐综合分**——各家覆盖天数不同时唯一公平的答法。
 
@@ -1443,13 +1340,6 @@ def _overall_board(models, temp_hourly, precip_score_daily, hourly_lead_days,
                               lambda m, bk: (precip_score_daily[m].get(bk) or {}).get("ets")),
     }
     aligned = {k: _aligned(v) for k, v in matrices.items()}
-    # 零技巧基准 persistence 也用同一把尺子对齐——否则"技巧差"里会残留各家覆盖
-    # 范围的差异（persistence 在短时效本就接近各家自己的分）
-    base_aligned: np.ndarray | None = None
-    if baseline_by_model is not None:
-        base_aligned = _aligned(_metric_matrix(
-            models, hourly_lead_days,
-            lambda m, bk: (baseline_by_model.get(m, {}).get(bk) or {}).get("overall")))
 
     # ---- 2. 逐行：难度对齐后的各项数值 + 样本充分性披露 ----
     for i, m in enumerate(models):
@@ -1477,7 +1367,6 @@ def _overall_board(models, temp_hourly, precip_score_daily, hourly_lead_days,
                      if r["temp_obs"] is not None and r["temp_fcst"] is not None}
         days_rain = {r["valid_day"] for r in daily_by_model[m]
                      if r["rain_obs"] is not None and r["rain_fcst"] is not None}
-        bscore = _fin(base_aligned[i], 2) if base_aligned is not None else None
         row = _board_row(
             m,
             {"acc2": _fin(aligned["acc2"][i]), "rmse": _fin(aligned["rmse"][i], 3),
@@ -1496,9 +1385,6 @@ def _overall_board(models, temp_hourly, precip_score_daily, hourly_lead_days,
                        and bool(row_keep[i])),
             lead_days=lead_days, rain_days=rain_days, n_buckets=len(bs),
             n_days=len(days_temp | days_rain), n_days_rain=len(days_rain),
-            baseline_score=bscore,
-            skill=(round(score - bscore, 2)
-                   if (score is not None and bscore is not None) else None),
             # 起报轮次数（P2-1）：1 个起报的 56 条样本与 17 个起报的 15,992 条，
             # 可信度不是一个量级——只披露覆盖天数会把它俩显示成同一档
             n_issues=len({r.get("issue_iso") for r in by_model[m] if r.get("issue_iso")}),

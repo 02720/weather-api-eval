@@ -236,7 +236,7 @@ def test_build_report_end_to_end(tmp_path, monkeypatch):
 
     # 得分趋势：综合 = 温度/降水的均分，且逐桶键齐备；与榜单共用同一套桶得分
     st = data["score_trend"]
-    assert set(st.keys()) == {"overall", "temp", "precip", "baseline"}
+    assert set(st.keys()) == {"overall", "temp", "precip"}
     for b in ("1d", "2d"):
         tv = st["temp"]["ecmwf_ifs"][b]
         pv = st["precip"]["ecmwf_ifs"][b]
@@ -1308,41 +1308,6 @@ def test_difficulty_adjusted_board_removes_coverage_bias(tmp_path, monkeypatch):
     # 设计信息随报告披露（各天桶难度、参与家数），供读者核对
     dw = data["meta"]["difficulty_window"]
     assert dw["buckets"] and len(dw["difficulty"]) == 16 and dw["coverage"]
-
-def test_baseline_persistence_is_zero_skill_reference(tmp_path, monkeypatch):
-    """P1-2：persistence 基准（明天 = 今天）存在，且预报源相对它有正技巧。"""
-    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
-    start = datetime(2026, 8, 1, 0, 0)
-    stations = [f"s{i}" for i in range(1, 6)]
-    # 温度有明显日变化（persistence 会明显出错），预报接近实况
-    obs = [{"time": iso(start + timedelta(hours=h)), "temp": 24.0 + 3.0 * math.sin(h / 4.0),
-            "rain": 2.0 if h % 48 < 3 else 0.0} for h in range(8 * 24)]
-    for sid in stations:
-        storage.save_obs(sid, obs)
-    for sid in stations:
-        times = [iso(start + timedelta(hours=h)) for h in range(1, 8 * 24)]
-        storage.save_forecast_snapshot(sid, "good", {
-            "issue_iso": iso(start), "station_id": sid, "source": "test",
-            "models": ["good"], "grid_lat": 23.0, "grid_lon": 111.0, "elevation": 50,
-            "hourly_time": times,
-            "data": {"good": {
-                "temperature_2m": [24.0 + 3.0 * math.sin(h / 4.0) + 0.2
-                                   for h in range(1, 8 * 24)],
-                "precipitation": [2.0 if h % 48 < 3 else 0.0 for h in range(1, 8 * 24)]}}})
-    cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
-           "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 5,
-           "min_board_neff": 10, "min_board_neff_rain": 5,
-           "bootstrap_runs": 30, "sensitivity_runs": 30}
-    data = build_report(stations, ["good"], cfg, start,
-                        start + timedelta(hours=7 * 24), "2026-08")
-    base = data["meta"]["baseline_persistence"]
-    assert base["1d"]["n_temp"] > 0 and base["1d"]["overall"] is not None
-    row = data["leaderboards"]["all"][0]
-    # 基准是零技巧参照：好的预报必须显著高于它
-    assert row["skill"] is not None and row["skill"] > 10
-    assert row["baseline_score"] < row["score"]
-    # 趋势图带基准参考线数据（与曲线同一坐标系）
-    assert data["score_trend"]["baseline"]["overall"]["1d"] is not None
 
 
 def test_snapshot_quality_and_model_status_disclosed(tmp_path, monkeypatch):
