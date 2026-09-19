@@ -2,8 +2,10 @@
 
 所有数据以 JSON 落盘到 <项目根>/data/ 下，并在 git 中跟踪：
   data/obs/{station_id}/{YYYY-MM}.json           观测（按时间键去重合并）
-  data/forecasts/{station_id}/{model}/{issue}.json  起报快照（幂等）
-  data/metrics/{period}/{file}.json              评估结果（可选缓存）
+  data/forecasts/{station_id}/{model}/{issue}.json  起报快照（幂等，当月的热层）
+  data/forecasts/{station_id}/{model}/{YYYY-MM}.json.gz  已结束月份的月度 bundle（冷层）
+  data/metrics/{period}/{file}.json              评估结果（月度摘要纳入 git，见 §体积治理）
+  data/manifest/{period}.json                    哈希链清单
 
 写入采用"临时文件 + 原子 rename"避免半文件；观测月文件与预报快照的读-改-写
 合并窗口都用文件锁（POSIX flock，锁文件 *.lock 不入 git）保护——CI 有
@@ -11,10 +13,37 @@ concurrency 组兜底，本地多进程并发抓取时无锁会丢合并更新�
 读取容错：损坏文件（git 冲突残留、外部改写等导致 JSONDecodeError）告警并跳过，
 不拖垮整体评估/报告。
 
-历史归档（P3-5）：起报快照按天增长（实测约 139 份/天），全量进 git 会让仓库
-持续退化。`archive_old_snapshots` 把超过保留窗口的快照原样 gzip 成 .json.gz
-（文本压缩比通常 8~12×），原 .json 删除；list_forecast_snapshots 对两种扩展名
-一视同仁地读取，评估口径不受归档影响。
+--------------------------------------------------------------- 体积治理（2026-09）
+**问题的第一性原理**：本项目的预报快照是**只增不减的证据流**（实测 ~170 份/天、
+单份中位 18.9 KB、约 2.8 MB/天），而 git 会永久保存每一个版本。于是仓库体积
+单调增长，与"能否持续自动化运行"直接冲突。两个独立的增长机制必须分开治理：
+
+  (1) **新数据的字节数**——由布局决定。实测单份快照的 59.8% 是**同一条时间轴**
+      （`hourly_time` 在 27 个模型间几乎完全相同），而逐文件 gzip 完全吃不到这份
+      跨快照冗余。
+  (2) **git 永久保存每个版本**——工作区压缩只能减缓、不能封顶。真正的封顶只有两条
+      路：让数据离开仓库（保留期），或重写历史（人工决策，见 README）。
+
+本模块负责 (1) 与保留期的机械部分：把**已结束的自然月**的逐份快照合并成一份
+`{YYYY-MM}.json.gz`（容器格式见 `BUNDLE_MARK`）。实测收益（单站 27 模型 17.0 MB
+原始 JSON）：
+
+    逐文件 gzip      1.95 MB（8.7×）     ← 旧 `archive` 命令的口径
+    月度 bundle gzip 0.70 MB（24.2×）    ← 现在：再省 66%
+    文件数           4119 份 → 27 份/月/站
+
+**冻结不变量**：bundle 一经写出即永不重写（与 `reports/monthly/` 的冻结档案同一
+哲学）。这不是为了省事，而是为了让 git 侧可预测——一份永不改动的 .gz 在 git 里
+只存一次，不产生任何后续 delta；而"每月重新打包一次"会让每个版本都是全新 blob，
+把省下的字节又还给 git。
+
+**安全不变量**：先写临时文件 → **解压回读并逐份比对** → 原子改名 → **最后才删除
+源文件**。中途任何一步失败，源 `.json` 都原封不动（沿用 `_atomic_gzip_replace` 的
+纪律：绝不允许出现"半截归档 + 源文件已删"）。
+
+**口径不变**：读取侧（`list_forecast_snapshots`）对 bundle 与散装 `.json` 一视同仁，
+并把两层展开成同一批快照。归档因此**不改变任何指标口径，也不改变 Merkle 根**——
+后者由回归测试钉死（`test_bundle_preserves_merkle_root`）。
 """
 from __future__ import annotations
 
@@ -24,8 +53,9 @@ import json
 import logging
 import os
 import tempfile
+from collections import defaultdict
 from contextlib import contextmanager
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +64,17 @@ from .timeutil import now_beijing, ym, ymd
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+# 月度 bundle 容器格式版本。容器是自描述的（带 BUNDLE_MARK），读取侧据此区分
+# "一份快照"与"一包快照"——两种 .gz 在同一目录里共存也不会被搞混。
+BUNDLE_MARK = "__bundle__"
+BUNDLE_SCHEMA_VERSION = 1
+BUNDLE_SUFFIX = ".json.gz"
+
+# 观测记录里"不参与变化比较"的字段：source 记录的是这条实况由哪条链路抓回来
+# （抓取通道的元数据，不是可测量的实况值），revisions 是历史数组本身。
+_PROVENANCE_KEYS = frozenset({"source", "revisions"})
+
 
 
 def _root() -> Path:
@@ -61,8 +102,7 @@ def _load_json(path: Path) -> Any | None:
     """读取 JSON（自动识别 .json.gz）；损坏文件告警并返回 None（调用方按缺失处理）。"""
     try:
         if path.suffix == ".gz":
-            with gzip.open(path, "rt", encoding="utf-8") as f:
-                return json.load(f)
+            return _read_gz(path)
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except FileNotFoundError:
@@ -70,6 +110,12 @@ def _load_json(path: Path) -> Any | None:
     except (json.JSONDecodeError, UnicodeDecodeError, OSError, EOFError) as e:
         logger.warning("存档文件损坏，已跳过: %s (%s)", path, e)
         return None
+
+
+def _read_gz(path: Path) -> Any:
+    """读 gzip 压缩的 JSON（失败时抛原始异常，由调用方决定是告警还是致命）。"""
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+        return json.load(f)
 
 
 def _atomic_write_json(path: Path, obj: Any) -> None:
@@ -95,6 +141,11 @@ def save_obs(station_id: str, records: list[dict]) -> int:
     早期错报，旧实现静默覆盖旧值，"当时的实况"从此不可复原——而实况是评估里
     唯一的真值来源，它一旦不可追溯，所有历史结论都失去了可复核性。revisions
     保留每次改动的时间戳与新旧值，日志照打（可见性不变），但证据不再丢失。
+
+    **"变化"的定义排除来源标记**（2026-09，随观测多源编排引入）：抓取通道
+    （`source`）不是可测量的实况值。主源故障恢复后，同一小时会从备用源换成主源，
+    若把来源计入比较，每一小时都会被记成一次"回改"，revisions 立刻被噪声淹没，
+    真正的错报修正反而看不见了。故比较时只看要素本身（见 `_comparable`）。
     """
     if not records:
         return 0
@@ -109,9 +160,10 @@ def save_obs(station_id: str, records: list[dict]) -> int:
             existing: dict = _load_json(path) or {}
             for k, v in rec_map.items():
                 old = existing.get(k)
-                if k not in existing or v != existing[k]:
+                changed = old is None or not _same_obs(old, v)
+                if changed:
                     updated += 1
-                if old is not None and old != v:
+                if old is not None and changed:
                     logger.warning(
                         "观测回改 %s %s：temp %s→%s，rain %s→%s",
                         station_id, k, old.get("temp"), v.get("temp"),
@@ -120,6 +172,16 @@ def save_obs(station_id: str, records: list[dict]) -> int:
                 existing[k] = v
             _atomic_write_json(path, existing)
     return updated
+
+
+def _comparable(rec: dict) -> dict:
+    """观测记录的"可测量部分"：剔除来源标记与历史数组，供变化比较使用。"""
+    return {k: v for k, v in rec.items() if k not in _PROVENANCE_KEYS}
+
+
+def _same_obs(a: dict, b: dict) -> bool:
+    """两条观测在"可测量部分"上是否等价（来源通道不同不算变化）。"""
+    return _comparable(a) == _comparable(b)
 
 
 # revisions 数组的长度上限：回改是罕见事件，但畸形/抖动源可能反复改写同一时刻；
@@ -191,15 +253,42 @@ def save_forecast_snapshot(station_id: str, model: str, snapshot: dict) -> bool:
 
 
 def list_forecast_snapshots(station_id: str, model: str) -> list[dict]:
+    """该站该模型的全部快照（热层散装 .json 与冷层月度 bundle 透明合并）。
+
+    两层展开成同一批快照，**按 `issue_iso` 去重**：同一份起报在两处出现时以
+    **散装 .json 为准**——bundle 冻结之后才补进来的快照不可能在 bundle 里，
+    它就是更新的真相（正常情况下两者不会并存；此规则是防御，不是常态）。
+    """
     base = _root() / "forecasts" / station_id / model
     if not base.exists():
         return []
-    out = []
+    out: dict[Any, dict] = {}
+    anon = 0
     for p in sorted(_snapshot_files(base)):
-        snap = _load_json(p)
-        if isinstance(snap, dict):
-            out.append(snap)
-    return out
+        # _snapshot_files 已按文件名排序，且散装 .json（"2026-08-26T2100.json"）的
+        # 文件名恒排在 bundle（"2026-08.json.gz"）之前，故"先到者优先 + 散装覆盖"
+        # 的组合即为"散装优先"。
+        for snap in _expand_snapshots(_load_json(p)):
+            issue = snap.get("issue_iso")
+            if issue is None:
+                anon += 1
+                out[f"__anon__{anon}"] = snap   # 无起报时刻的存档仍须保留，不得丢弃
+            elif issue not in out or p.suffix == ".json":
+                out[issue] = snap
+    return [out[k] for k in out]
+
+
+def _expand_snapshots(loaded: Any) -> list[dict]:
+    """把一次文件读取的结果展开成快照列表（兼容"单份快照"与"月度 bundle"两种布局）。"""
+    if not isinstance(loaded, dict):
+        return []
+    if loaded.get(BUNDLE_MARK):
+        snaps = loaded.get("snapshots")
+        if not isinstance(snaps, dict):
+            logger.warning("bundle 容器缺少 snapshots 映射，已跳过（%s）", loaded.get("period"))
+            return []
+        return [v for _, v in sorted(snaps.items()) if isinstance(v, dict)]
+    return [loaded]
 
 
 def _snapshot_files(base: Path) -> list[Path]:
@@ -277,9 +366,266 @@ def _snapshot_files_iter(forecasts_root: Path):
         yield from _snapshot_files(model_dir)
 
 
+# ------------------------------------------------------- 月度 bundle（体积治理）
+def _looks_like_month(s: str) -> bool:
+    """'2026-08' 形态的月份串（用于从文件名安全地区分月份与起报时刻）。"""
+    return (len(s) == 7 and s[4] == "-" and s[:4].isdigit() and s[5:].isdigit())
+
+
+def shift_month(period: str, delta: int) -> str:
+    """月份串位移（'2026-09' −13 → '2025-08'）。"""
+    year, month = int(period[:4]), int(period[5:7])
+    total = year * 12 + (month - 1) + delta
+    return f"{total // 12:04d}-{total % 12 + 1:02d}"
+
+
+def compact_snapshots(*, grace_days: int = 2, retain_months: int = 13,
+                      apply: bool = False, force: bool = False,
+                      now: datetime | None = None) -> dict:
+    """把快照从"逐份 .json（热层）"降级为"月度 bundle（冷层）"，并把超期冷层出仓。
+
+    这是让仓库能**持续**自动化运行的那一步：不做它，`data/` 每天新增约 170 个文件、
+    2.8 MB，一年后 6 万文件、约 1 GB。
+
+    分层规则（用自然月而不是"最近 N 天"，因此**幂等、可重放、结果与运行时刻无关**）：
+
+        当月（及宽限期内）   逐份 .json，追加写入、随时可读 —— 支撑主报告/月度冻结/verify
+        已结束的自然月       一份 {YYYY-MM}.json.gz（冻结，永不重写）
+        超过 retain_months   出仓（删除）—— 其结论已由冻结的月度报告与该月指标摘要固化
+
+    **先固化、后删除**是这里的核心纪律：删除原始快照之前，调用方（CLI 的 `monthly`）
+    必须已经写下该月的指标摘要。"体积变小"永远不能以"结论不可复核"为代价。
+
+    默认 dry-run（只报告不落盘）。返回报告 dict：
+      bundles_created / bundles_skipped / files_removed / bytes_before / bytes_after /
+      expired / expired_bytes / errors
+    """
+    now = now or now_beijing()
+    # 满 grace_days 天的已结束月份才冻结：月初那几轮运行仍可能补上月末最后几小时的
+    # 预报与观测，抢在那之前冻结会把它们挡在归档之外。
+    freezable_before = ym(now - timedelta(days=grace_days))
+    expire_before = shift_month(ym(now), -abs(retain_months))
+
+    report: dict[str, Any] = {
+        "apply": bool(apply),
+        "force": bool(force),
+        "grace_days": grace_days,
+        "retain_months": retain_months,
+        "freezable_before": freezable_before,
+        "expire_before": expire_before,
+        "bundles_created": [],
+        "bundles_skipped": [],
+        "expired": [],
+        "expiry_blocked": [],      # 因结论摘要缺失而拒绝出仓的 bundle（先固化后删除）
+        "files_removed": 0,        # apply 时实际删除的源文件数
+        "files_pending": 0,        # dry-run 时"若执行将会删除"的源文件数
+        "bytes_before": 0,
+        "bytes_after": 0,
+        "expired_bytes": 0,
+        "errors": [],
+    }
+
+    forecasts_root = _root() / "forecasts"
+    if not forecasts_root.exists():
+        return report
+
+    for station_dir in sorted(p for p in forecasts_root.iterdir() if p.is_dir()):
+        for model_dir in sorted(p for p in station_dir.iterdir() if p.is_dir()):
+            # ---- (1) 冻结已结束月份 ----
+            by_month: dict[str, list[Path]] = defaultdict(list)
+            for p in sorted(model_dir.glob("*.json")):
+                month = p.stem[:7]
+                if _looks_like_month(month):
+                    by_month[month].append(p)
+            for month in sorted(by_month):
+                if month >= freezable_before:
+                    continue                      # 当月 / 宽限期内：保持逐份
+                paths = by_month[month]
+                target = model_dir / f"{month}{BUNDLE_SUFFIX}"
+                if target.exists():
+                    # 冻结档案永不重写。残留的散装 .json 交由读取侧的"散装优先"
+                    # 规则处理，绝不把它们塞进已冻结的包（那会让包每月都变一次，
+                    # 把省下来的字节原样还给 git）。
+                    report["bundles_skipped"].append(str(target))
+                    if apply and paths:
+                        logger.warning(
+                            "%s 已冻结但仍有 %d 份散装快照：按读取侧规则以散装为准，"
+                            "冻结包保持不动", target.parent.name, len(paths))
+                    continue
+                try:
+                    res = _write_month_bundle(model_dir, month, paths,
+                                              station_id=station_dir.name,
+                                              model=model_dir.name, apply=apply)
+                except Exception as e:  # noqa: BLE001  单包失败不拖垮其余模型
+                    logger.error("冻结 %s/%s %s 失败: %s",
+                                 station_dir.name, model_dir.name, month, e)
+                    report["errors"].append(f"{station_dir.name}/{model_dir.name}/{month}: {e}")
+                    continue
+                report["bundles_created"].append(res["target"])
+                report["bytes_before"] += res["bytes_before"]
+                report["bytes_after"] += res["bytes_after"]
+                report["files_removed"] += res["files_removed"]
+                report["files_pending"] += res["files_pending"]
+
+            # ---- (2) 超期冷层出仓 ----
+            for gz in sorted(model_dir.glob(f"*{BUNDLE_SUFFIX}")):
+                month = gz.name[: -len(BUNDLE_SUFFIX)]
+                if not _looks_like_month(month) or month >= expire_before:
+                    continue
+                # 先固化、后删除：该月的结论摘要不在，就不许删（见 has_period_summary）
+                if not force and not has_period_summary(month):
+                    report["expiry_blocked"].append(str(gz))
+                    logger.error(
+                        "拒绝出仓 %s：该月结论摘要缺失（data/metrics/%s/summary.json）。"
+                        "原始快照一旦删除，长期结论将无法复核——先跑 monthly 固化该月，"
+                        "或用 --force 明确接受这个代价", gz.name, month)
+                    continue
+                size = gz.stat().st_size
+                report["expired"].append(str(gz))
+                report["expired_bytes"] += size
+                if apply:
+                    try:
+                        gz.unlink()
+                    except OSError as e:
+                        report["errors"].append(f"{gz}: {e}")
+                        logger.error("出仓失败 %s: %s", gz, e)
+    return report
+
+
+def _write_month_bundle(model_dir: Path, month: str, paths: list[Path], *,
+                        station_id: str, model: str, apply: bool = False) -> dict:
+    """把某月散装快照写成一份 bundle。apply=False 时只测算收益，不落盘。
+
+    安全顺序（任何一步失败，源 .json 都原封不动）：
+        读取全部源快照 → 序列化 → 写临时文件 → **解压回读并逐份比对** →
+        原子改名 → 删除源文件
+    """
+    snaps: dict[str, dict] = {}
+    for p in paths:
+        snap = _load_json(p)
+        if not isinstance(snap, dict):
+            raise RuntimeError(f"源快照不可读，拒绝冻结（{p.name}）")
+        snaps[snap.get("issue_iso") or p.stem] = snap
+    bytes_before = sum(p.stat().st_size for p in paths)
+    container = {
+        BUNDLE_MARK: BUNDLE_SCHEMA_VERSION,
+        "station_id": station_id,
+        "model": model,
+        "period": month,
+        "n_snapshots": len(snaps),
+        "snapshots": snaps,
+    }
+    blob = json.dumps(container, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":")).encode("utf-8")
+    target = model_dir / f"{month}{BUNDLE_SUFFIX}"
+
+    if not apply:
+        est = len(gzip.compress(blob, compresslevel=9))
+        return {"target": str(target), "files_removed": 0, "files_pending": len(paths),
+                "bytes_before": bytes_before, "bytes_after": est}
+
+    with _exclusive_lock(target):
+        if target.exists():          # 并发下另一个进程已冻结：放弃并保留源文件
+            return {"target": str(target), "files_removed": 0, "files_pending": 0,
+                    "bytes_before": bytes_before, "bytes_after": target.stat().st_size}
+        fd, tmp = tempfile.mkstemp(dir=str(model_dir), suffix=".gz.tmp")
+        os.close(fd)
+        try:
+            with gzip.open(tmp, "wb", compresslevel=9) as f:
+                f.write(blob)
+            os.chmod(tmp, 0o644)
+            # 回读校验：解压后必须完整还原同一批快照，才允许进入下一步。
+            # 这是"先验证、后销毁"的落点——半截归档 + 源文件已删是唯一不可恢复的失败。
+            back = _read_gz(Path(tmp))
+            if not isinstance(back, dict) or back.get("snapshots") != snaps:
+                raise RuntimeError(f"bundle 回读校验未通过（{target.name}），源文件保持不动")
+            os.replace(tmp, target)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+
+    # bundle 已完整落盘且校验通过：此时才删除源文件
+    removed = 0
+    for p in paths:
+        try:
+            p.unlink()
+            removed += 1
+        except OSError as e:
+            logger.warning("源快照删除失败（bundle 已就绪，可安全重试）%s: %s", p, e)
+    ratio = (bytes_before / target.stat().st_size) if target.stat().st_size else 0.0
+    logger.info("冻结 %s/%s %s：%d 份快照 %.2f MB → %.2f MB（%.1f×）",
+                station_id, model, month, len(snaps),
+                bytes_before / 1e6, target.stat().st_size / 1e6, ratio)
+    return {"target": str(target), "files_removed": removed, "files_pending": len(paths),
+            "bytes_before": bytes_before, "bytes_after": target.stat().st_size}
+
+
+def data_footprint() -> dict:
+    """data/ 的体量画像（按层拆分文件数与字节数）。供体积看门狗与 compact 报告使用。
+
+    分层口径与 `compact_snapshots` 的冷热分层一一对应，"哪一层在涨"因此可分辨：
+    冷层是不可变的月度 bundle（一份只存一次），热层才是每天新增的部分。
+    """
+    root = _root()
+    out = {
+        "total_files": 0, "total_bytes": 0,
+        "forecast_hot_files": 0, "forecast_hot_bytes": 0,   # 散装起报快照（当月）
+        "forecast_cold_files": 0, "forecast_cold_bytes": 0,  # 月度 bundle（冻结）
+        "obs_files": 0, "obs_bytes": 0,
+        "manifest_files": 0, "manifest_bytes": 0,
+        "other_files": 0, "other_bytes": 0,
+    }
+    if not root.exists():
+        return out
+    for p in root.rglob("*"):
+        if not p.is_file():
+            continue
+        # 锁文件（*.lock）是 flock 机制的副产物、不入 git，且数量随 bundle 数增长
+        # （每包一个）。计入的话会把"热层是否按月冻结"这个判据稀释掉。
+        if p.suffix == ".lock":
+            continue
+        size = p.stat().st_size
+        out["total_files"] += 1
+        out["total_bytes"] += size
+        rel = p.relative_to(root)
+        top = rel.parts[0] if rel.parts else ""
+        if top == "forecasts":
+            if p.name.endswith(BUNDLE_SUFFIX):
+                key = "forecast_cold"
+            elif p.suffix == ".json":
+                key = "forecast_hot"
+            else:
+                key = "other"
+        elif top == "obs":
+            key = "obs"
+        elif top == "manifest":
+            key = "manifest"
+        else:
+            key = "other"
+        out[f"{key}_files"] += 1
+        out[f"{key}_bytes"] += size
+    return out
+
+
+
 # ------------------------------------------------------------------ 指标（可选缓存，当前实现每次重算）
 def save_metrics(period: str, name: str, obj: Any) -> None:
     _atomic_write_json(_root() / "metrics" / period / f"{name}.json", obj)
+
+
+def period_summary_path(period: str) -> Path:
+    """某月结论摘要的落点（data/metrics/{period}/summary.json）。"""
+    return _root() / "metrics" / period / "summary.json"
+
+
+def has_period_summary(period: str) -> bool:
+    """该月是否已有固化的结论摘要。
+
+    这是"先固化、后删除"的机械化落点：`compact` 出仓一个月的 bundle 之前会查这里。
+    原始快照被删掉之后，长期趋势只能靠这份摘要复核；摘要不在就不许删——宁可让
+    体积治理卡住并告警，也不能把"体积变小"换成"结论不可复核"。
+    """
+    return period_summary_path(period).is_file()
 
 
 # ------------------------------------------------------------------ 完整性清单

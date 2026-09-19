@@ -180,6 +180,10 @@ jobs:
         run: python -m weather_eval fetch-forecast --source cma_public
 
       - name: 抓取观测 + 预报快照 + 更新主报告（本月累计，覆盖写 index.html）
+        # 观测走多源编排（obs/chain.py）：主源 eia-data 可用时不惊动备用源；
+        # 主源失败，或抓通了但数据陈旧/窗口截断时，自动降级到中国气象数据网
+        # （data.cma.cn）补位。观测是本项目唯一的真值来源，单点依赖等于把全部
+        # 结论押在一个第三方页面上——降级路径的存在就是为了不让它停摆。
         env:
           TZ: Asia/Shanghai
         run: python -m weather_eval all
@@ -201,6 +205,22 @@ jobs:
           TZ: Asia/Shanghai
         run: python -m weather_eval monthly ${{
           github.event.inputs.month != '' && format('--month {0}', github.event.inputs.month) || '' }}
+
+      - name: 数据体积治理（月度冻结 + 超期出仓）
+        # 起报快照是只增不减的证据流（约 170 份/天、2.8 MB/天、一年 ≈ 6 万文件）。
+        # 不治理，仓库会在一年内涨到 GB 量级，clone/add/status 全部变慢，最终让
+        # "每天自动跑三次"变成不可能。本步做两件事（详见 storage.compact_snapshots）：
+        #   ① 已结束的自然月 → 一份 {YYYY-MM}.json.gz（冻结，永不重写；实测 21× 压缩，
+        #      文件数降两个数量级）
+        #   ② 超过保留月数的冷层出仓——出仓前会检查该月结论摘要已固化，否则拒绝删除
+        # 幂等：无可冻结时零操作。必须在提交之前跑，否则当轮冻结的收益要等下一轮才入库。
+        # 归档不改变任何指标口径：回归测试与 CI 的 verify 步骤共同钉死
+        # "压缩前后 Merkle 根与总榜逐位相同"。
+        if: always()
+        continue-on-error: true
+        env:
+          TZ: Asia/Shanghai
+        run: python -m weather_eval compact --apply
 
       - name: 变基远端最新提交（避免 push 被拒）
         # 旧实现的 `|| true` 让 rebase 失败（冲突、autostash 弹出失败）静默通过，
@@ -243,6 +263,45 @@ jobs:
         env:
           TZ: Asia/Shanghai
         run: python -m weather_eval verify
+
+      - name: 仓库体量看门狗（体积失控告警）
+        # 体积治理按月生效，而一次意外写入（源疯狂重试、分片爆炸、误提交大文件）
+        # 能在一天内把仓库推高几个数量级。本步把"某天起 clone 变慢"这种事后才被
+        # 发现的静默劣化，变成一个当场变红的信号。
+        # 注意 .git 体积是**单调不可逆**的：删掉的文件仍留在历史里——这正是需要
+        # 人来决定"是否回收历史"的原因（README「历史体积的人工回收」）。
+        if: always()
+        id: footprint
+        continue-on-error: true
+        env:
+          TZ: Asia/Shanghai
+        run: python -m weather_eval footprint --warn-mb 400 --fail-mb 900
+
+      - name: 仓库体积超阈值时自动开 Issue
+        if: always() && steps.footprint.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TZ: Asia/Shanghai
+        run: |
+          TITLE="仓库体积告警：.git 超过硬阈值"
+          EXISTING=$(gh issue list --state open --search "${TITLE} in:title" \
+                     --json number --jq 'length' 2>/dev/null || echo 0)
+          if [ "${EXISTING}" != "0" ]; then
+            echo "已有未关闭的同名 Issue，跳过创建"
+            exit 0
+          fi
+          gh issue create --title "${TITLE}" --body \
+            "仓库体量看门狗报红（详见本轮运行日志的 footprint 步骤）。
+
+          **可能原因**：热层未按月冻结（compact 步骤失败）、某源异常写入、或历史体积
+          累积到需要人工回收的程度。
+
+          **先做什么**：看 `python -m weather_eval footprint` 输出的热层/冷层拆分。
+          热层异常 → 查 compact 步骤；冷层与历史异常 → 见 README「历史体积的人工回收」
+          （需要对数据提交做一次历史压缩，属人工决策，不做自动化）。
+
+          本轮运行：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --assignee "${{ github.repository_owner }}" || echo "开 Issue 失败（权限或 gh 版本），不影响数据提交"
 
       - name: 源健康度检查（静默死亡告警）
         # P1-8：连续多轮抓不到数据的源会让这一步以非零退出；下一步据此自动开 Issue。

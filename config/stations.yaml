@@ -1,6 +1,16 @@
 # 天气预报 API 准确度评估 —— 站点与评估配置
-# 观测来源：环境气象数据服务平台 eia-data.com（各站"气象站基本信息"页，近 24h 逐小时实况）
+# 观测来源：主源 环境气象数据服务平台 eia-data.com（各站"气象站基本信息"页，近 24h 逐小时实况）；
+#           备用源 中国气象数据网 data.cma.cn 站点实况接口（按 cma_id 的 WMO 站号寻址）。
+#           编排规则见 src/weather_eval/obs/chain.py：主源可用时不惊动备用源。
 # 预报来源：Open-Meteo（多模型一次请求）、彩云天气、和风天气、中科天机（均为独立抓取源，见 models 注释）
+
+# 观测源优先级（高 → 低）。顺序即权威顺序：高优先级源已给出的小时，低优先级源
+# 只补位、不覆盖（绝不做"谁后写谁赢"——那会让权威值取决于抓取顺序）。
+# 新增源需同时登记在 src/weather_eval/obs/chain.py 的 OBS_SOURCE_PRIORITY 与
+# __main__.py 的 _build_obs_sources。
+obs_sources:
+  - eia_data     # 主源：一次请求返回整页近 24h 逐小时（字段最全、请求量最小）
+  - cma_data     # 备用源：中国气象数据网，按 WMO 站号逐整点抓取（需站点配 cma_id）
 
 models:
   - ecmwf_ifs
@@ -99,3 +109,14 @@ eval:
   require_complete_snapshots: true       # 排除快照契约标了 complete=false 的残缺快照
                                          # （历史存档无该字段，按完整处理）
   source_stale_hours: 30                 # 源健康度阈值：超过该时长未成功抓取即告警
+  # —— 观测多源编排（2026-09：解除 eia-data 单点依赖）——
+  obs_stale_hours: 3.0                   # 观测源"停摆"阈值（小时）：某源最新观测滞后超过
+                                         # 该值即判为不可直接采用（记录仍参与合并），由下一
+                                         # 优先级的源补位
+  obs_min_hours: 6                       # 单个观测源一轮至少要有多少小时才算"窗口未截断"；
+                                         # 低于该值即降级（明显截断的页面不能当完整窗口用）
+  # —— 数据体积治理（2026-09：让仓库能持续自动化运行）——
+  compact_grace_days: 2                  # 月度冻结宽限期（天）：自然月结束满该天数后，该月的
+                                         # 逐份快照才合并为月度 bundle（冻结后永不重写）
+  compact_retain_months: 13              # 月度 bundle 的保留月数：更早的 bundle 出仓，其结论
+                                         # 已由冻结的月度报告与该月指标摘要固化

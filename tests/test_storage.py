@@ -168,3 +168,37 @@ def test_archive_is_atomic_and_idempotent(tmp_path, monkeypatch):
     assert len(storage.list_forecast_snapshots("s1", "m")) == 1
     # 幂等：再归档一次没有候选
     assert storage.archive_old_snapshots(older_than_days=1, apply=True) == []
+
+
+# -------------------------------------- 跨源合并：来源通道变化不算"观测回改"
+def test_source_tag_change_is_not_a_revision(tmp_path, monkeypatch):
+    """主源故障恢复后，同一小时会从备用源换成主源——**这不是实况回改**。
+
+    若把来源标记计入变化比较，主源恢复的那一轮会把每一小时都记成一次"回改"，
+    revisions 立刻被噪声淹没，真正的错报修正反而看不见了（revisions 的存在意义
+    就是"当时的实况可复原"）。
+    """
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    t = "2026-08-26T20:00"
+    # 备用源先写入
+    assert storage.save_obs("s1", [{"time": t, "source": "cma_data",
+                                    "temp": 27.0, "rain": 1.0}]) == 1
+    # 主源恢复后给出同样的要素值，仅来源不同
+    assert storage.save_obs("s1", [{"time": t, "source": "wd",
+                                    "temp": 27.0, "rain": 1.0}]) == 0
+    rec = storage.load_obs("s1", "2026-08")[t]
+    assert "revisions" not in rec, "来源通道变化不得留下回改痕迹"
+    assert rec["source"] == "wd", "权威源应接管该小时的来源标记"
+
+
+def test_real_value_change_still_records_revision(tmp_path, monkeypatch):
+    """要素值真的变了，回改留痕必须照旧（不能被上一条放宽掉）。"""
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    t = "2026-08-26T21:00"
+    storage.save_obs("s1", [{"time": t, "source": "wd", "temp": 27.0, "rain": 0.0}])
+    assert storage.save_obs("s1", [{"time": t, "source": "wd",
+                                    "temp": 25.5, "rain": 4.6}]) == 1
+    rec = storage.load_obs("s1", "2026-08")[t]
+    assert rec["temp"] == 25.5 and rec["rain"] == 4.6
+    assert rec["revisions"][-1]["prev"]["temp"] == 27.0
+    assert rec["revisions"][-1]["prev"]["rain"] == 0.0

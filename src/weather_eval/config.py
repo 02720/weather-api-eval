@@ -47,6 +47,17 @@ DEFAULT_EVAL = {
                                         # 预报（daily_time/daily 块）为按天评估补位。
                                         # 只补按天轨道，绝不反推逐小时；关掉即回到
                                         # 纯逐小时聚合的旧口径（用于对照/回归）
+    # ---- 观测多源编排（2026-09 新增：eia-data 单点依赖的兜底）----
+    "obs_stale_hours": 3.0,             # 观测源"停摆"阈值（小时）：某源最新观测滞后超过
+                                        # 该值即判为不可直接采用（记录仍参与合并），
+                                        # 由下一优先级的源补位
+    "obs_min_hours": 6,                 # 单个观测源一轮至少要有多少小时才算"窗口未截断"；
+                                        # 低于该值即降级（明显截断的页面不能当完整窗口用）
+    # ---- 数据体积治理（2026-09 新增：让仓库能持续自动化运行）----
+    "compact_grace_days": 2,            # 月度冻结宽限期（天）：自然月结束满该天数后，
+                                        # 该月的逐份快照才合并为月度 bundle（冻结后永不重写）
+    "compact_retain_months": 13,        # 月度 bundle 的保留月数：更早的 bundle 出仓，
+                                        # 其结论已由月度报告与该月指标摘要固化
 }
 
 
@@ -68,6 +79,11 @@ class Config:
         self.models: list[str] = list(data.get("models", []))
         self.stations: list[Station] = [Station(s) for s in data.get("stations", [])]
         self.eval: dict[str, Any] = {**DEFAULT_EVAL, **(data.get("eval") or {})}
+        # 观测源优先级（高 → 低）：主源在前，备用源在后。缺省与
+        # obs/chain.py 的 OBS_SOURCE_PRIORITY 一致；在此可被配置覆盖，
+        # 但**顺序语义**由编排层实现，配置只负责"登记哪些源、谁先谁后"。
+        self.obs_sources: list[str] = list(
+            data.get("obs_sources") or ["eia_data", "cma_data"])
 
     @property
     def station_ids(self) -> list[str]:

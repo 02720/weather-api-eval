@@ -2,8 +2,9 @@
 __pycache__/
 *.pyc
 .pytest_cache/
-data/metrics/
 data/**/*.lock
+# data/metrics/ 不再忽略：月度结论摘要（summary.json）是体积治理的前提——
+# 原始快照在保留期后出仓，"那个月谁最准"只能靠它回答。它必须随仓库长期保存。
 .env
 .env.*
 .Trash-0/

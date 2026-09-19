@@ -1,7 +1,10 @@
 """命令行入口。
 
 用法：
-  python -m weather_eval fetch-obs                抓取 4 站近 24h 实况并归档
+  python -m weather_eval fetch-obs                抓取 4 站近 24h 实况并归档（多源编排：
+                                                  主源 eia-data，失败/陈旧时自动降级到
+                                                  中国气象数据网备用源）
+  python -m weather_eval fetch-obs --source cma_data   只用中国气象数据网实况源（对照/排障）
   python -m weather_eval fetch-forecast           抓取 Open-Meteo 多模型起报快照并归档
   python -m weather_eval fetch-forecast --source caiyun    抓取彩云天气 v2.6 起报
   python -m weather_eval fetch-forecast --source qweather  抓取和风天气起报
@@ -16,6 +19,10 @@
   python -m weather_eval report                   用本月至今数据更新主报告 reports/index.html
   python -m weather_eval monthly [--month YYYY-MM] 生成月度归档报告 reports/monthly/YYYY-MM.html
   python -m weather_eval archive [--days 60] [--apply]  把超窗口的旧快照 gzip 归档（默认 dry-run）
+  python -m weather_eval compact [--retain-months 13] [--apply]  月度冻结 + 超期出仓
+                                                   （体积治理主线：默认 dry-run，幂等）
+  python -m weather_eval footprint [--warn-mb 400] [--fail-mb 900]  仓库体量看门狗
+                                                   （超硬阈值非零退出，CI 据此告警）
   python -m weather_eval all                       抓取观测+预报+更新主报告（GitHub Action 调用）
 
 报告体系（2026-08 重设计）：
@@ -30,16 +37,21 @@ from __future__ import annotations
 
 import argparse
 import calendar
+import json
 import logging
 import re
 import sys
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 from .config import load_config
 from .timeutil import now_beijing, ymd, parse_iso, floor_to_hour, ym
-from .storage import save_obs, save_forecast_snapshot
-from .obs import EiaDataObsSource
+from .storage import (
+    PROJECT_ROOT, compact_snapshots, data_footprint, period_summary_path, save_obs,
+    save_forecast_snapshot,
+)
+from .obs import EiaDataObsSource, ObsChain
 from .forecast import (
     OpenMeteoProvider, CaiyunProvider, QWeatherProvider, TianjiProvider,
     FuxiC88Provider, FuxiDetProvider, FengWuProvider, GevisProvider,
@@ -111,15 +123,69 @@ def _default_month() -> str:
 _MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
 
+def _known_obs_hours(station_id: str) -> set[str]:
+    """该站已入库的观测时刻（ISO 北京时）。
+
+    给 CMA 备用源做 `skip_hours`：一次只返回一个时刻的接口，不该把上一轮刚写过的
+    24 小时再问一遍。只读最近两个月的文件——回看窗口只有 26 小时，读全量历史没有意义。
+    """
+    from .storage import load_obs
+    from .timeutil import ym as _ym
+    now = now_beijing()
+    months = {_ym(now), _ym(now - timedelta(days=31))}
+    out: set[str] = set()
+    for m in months:
+        out.update(load_obs(station_id, m))
+    return out
+
+
+def _build_obs_sources(cfg, source: str, station):
+    """按 --source 构造观测源字典（顺序由 cfg.obs_sources 决定）。
+
+    auto = 把配置里登记的全部源都交给编排层，主源可用时不惊动备用源；
+    指定单个源 = 只跑该源（用于对照、故障定位与单源复算）。
+    """
+    from .obs import CmaDataObsSource, EiaDataObsSource
+    wanted = list(cfg.obs_sources) if source == "auto" else [source]
+    out = {}
+    for name in wanted:
+        if name == "eia_data":
+            out[name] = EiaDataObsSource()
+        elif name == "cma_data":
+            out[name] = CmaDataObsSource(skip_hours=_known_obs_hours(station.id))
+        else:
+            raise RuntimeError(
+                f"未知观测源 {name!r}（可用：eia_data、cma_data；"
+                "见 obs/chain.py 的 OBS_SOURCE_PRIORITY）")
+    if not out:
+        raise RuntimeError("观测源列表为空：请检查 config 的 obs_sources")
+    return out
+
+
 def cmd_fetch_obs(args):
+    """抓取各站观测并归档。
+
+    多源编排（2026-09）：主源（eia-data）失败、或抓通了但**数据陈旧/窗口截断**时，
+    自动降级到备用源（中国气象数据网）补位；合并结果的来源构成写进日志留痕。
+    观测是评估里唯一的真值来源，单点依赖等于把全部结论押在一个第三方页面上。
+    """
     cfg = load_config(args.config)
-    src = EiaDataObsSource()
+    source = getattr(args, "source", "auto")
+    stale_hours = float(cfg.eval.get("obs_stale_hours", 3.0))
+    min_hours = int(cfg.eval.get("obs_min_hours", 6))
     failures = 0
     for st in cfg.stations:
         try:
-            recs = src.fetch(st)
+            sources = _build_obs_sources(cfg, source, st)
+            chain = ObsChain(sources, priority=tuple(cfg.obs_sources),
+                             stale_hours=stale_hours, min_hours=min_hours)
+            recs, report = chain.fetch(st)
             n = save_obs(st.id, recs)
-            log.info("站点 %s 写入 %d 条（累计去重后）", st.id, n)
+            log.info("站点 %s 写入 %d 条（累计去重后）；来源构成：%s",
+                     st.id, n, report.describe())
+            if report.degraded:
+                log.warning("站点 %s 本轮观测已降级（%d 条由备用源补位）——"
+                            "请核对首选源是否改版或停摆", st.id, report.n_filled)
         except Exception as e:  # noqa: BLE001
             failures += 1
             log.error("站点 %s 抓取失败: %s", st.id, e)
@@ -305,6 +371,10 @@ def cmd_monthly(args):
     """把某个自然月冻结为月度归档 reports/monthly/YYYY-MM.html（默认上一自然月）。
 
     已存在的归档默认拒绝重写（冻结档案永不改动）；--force 才允许重建。
+
+    同时把该月**结论**固化成 data/metrics/{month}/summary.json（体积治理的前提）：
+    原始快照将在保留期后出仓，出仓之前必须先有这份摘要，否则"删掉原始数据"就等于
+    "结论不可复核"。`compact` 出仓前会检查它是否存在，不存在就拒绝删除。
     """
     cfg = load_config(args.config)
     month = args.month or _default_month()
@@ -316,6 +386,7 @@ def cmd_monthly(args):
     out = write_monthly_report(data, station_labels={s.id: s.name for s in cfg.stations},
                                force=args.force)
     log.info("月度归档就绪（已存在的冻结档案保留不动）: %s", out)
+    _write_period_summary(month, data)
     # 归档列表是主报告渲染时快照的：立即重建一次主报告，
     # 让新归档在本次部署就出现在首页页脚，而不是等下一次定时运行。
     _update_live_report(cfg)
@@ -349,6 +420,156 @@ def cmd_archive(args):
     return 0
 
 
+def _write_period_summary(period: str, data: dict) -> Path:
+    """把某月的**结论**固化成一份轻量摘要，写进 data/metrics/{period}/summary.json。
+
+    这是"先固化、后删除"里的那一步固化，也是体积治理能安全成立的**前提**：
+    原始快照终将从仓库出仓（默认保留 13 个月），出仓之后，"那个月谁最准、差多少"
+    这个问题只能靠这份摘要回答。因此这里只保留**结论与口径**（排行榜、评分卡、
+    元数据、覆盖率），不保留逐样本的明细数组（temp_hourly / heatmap / timeseries
+    / per_station）——那些是重算用的原料，正是要出仓的东西。
+
+    摘要的体积本身必须小且稳定：它永久留在仓库里，不能变成新的增长源。
+    """
+    summary = {
+        "period": period,
+        "frozen_at": now_beijing().strftime("%Y-%m-%d %H:%M"),
+        "note": "原始预报快照出仓后，本文件是该月结论的唯一可复核来源",
+        "meta": data.get("meta", {}),
+        "coverage": data.get("coverage"),
+        "scorecard": data.get("scorecard"),
+        "leaderboards": data.get("leaderboards"),
+    }
+    path = period_summary_path(period)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=1, sort_keys=False)
+    size = path.stat().st_size
+    log.info("月度结论已固化：%s（%.0f KB，含总榜与分时效榜）", path, size / 1024)
+    return path
+
+
+def cmd_compact(args):
+    """月度冻结 + 超期出仓：让仓库能**持续**自动化运行的那一步。
+
+    为什么必须做：起报快照是只增不减的证据流（实测 ~170 份/天、单份中位 18.9 KB、
+    约 2.8 MB/天，一年 ≈ 6 万文件 / 1 GB 原始 JSON）。不治理，git 的每次
+    add/status/clone 都会肉眼可见地变慢，最终把"每天自动跑三次"变成不可能。
+
+    分层与不变量（详见 storage.compact_snapshots 的 docstring）：
+        当月                逐份 .json（热层，追加写入、随时可读）
+        已结束的自然月      一份 {YYYY-MM}.json.gz（冻结，永不重写）
+        超过保留月数        出仓（先确认该月结论摘要已固化，否则拒绝删除）
+
+    默认 dry-run。--apply 才落盘；幂等（再跑一次无候选）。
+    """
+    cfg = load_config(args.config)
+    grace = args.grace_days if args.grace_days is not None \
+        else int(cfg.eval.get("compact_grace_days", 2))
+    retain = args.retain_months if args.retain_months is not None \
+        else int(cfg.eval.get("compact_retain_months", 13))
+
+    fp0 = data_footprint()
+    log.info("治理前：data/ 共 %.1f MB / %d 个文件（热层 %d 个，冷层 %d 个）",
+             fp0["total_bytes"] / 1e6, fp0["total_files"],
+             fp0["forecast_hot_files"], fp0["forecast_cold_files"])
+
+    rep = compact_snapshots(grace_days=grace, retain_months=retain,
+                            apply=args.apply, force=args.force)
+    n_new = len(rep["bundles_created"])
+    n_pending = rep["files_pending"]
+    n_removed = rep["files_removed"]
+    saved = rep["bytes_before"] - rep["bytes_after"]
+
+    if n_new == 0 and not rep["expired"] and not rep["expiry_blocked"]:
+        log.info("没有需要冻结或出仓的月份（保留期 %d 个月，宽限 %d 天）", retain, grace)
+    if n_new:
+        verb = "已冻结" if args.apply else "可冻结"
+        log.info("%s %d 个月度 bundle：%.2f MB → %.2f MB（%.1f×），%s %d 个散装快照",
+                 verb, n_new, rep["bytes_before"] / 1e6, rep["bytes_after"] / 1e6,
+                 (rep["bytes_before"] / rep["bytes_after"]) if rep["bytes_after"] else 0.0,
+                 "已删除" if args.apply else "将删除",
+                 n_removed if args.apply else n_pending)
+    if rep["bundles_skipped"]:
+        log.info("%d 个包已冻结（冻结档案永不重写），本次跳过", len(rep["bundles_skipped"]))
+    if rep["expired"]:
+        log.info("%s %d 个超期 bundle（%.1f MB）",
+                 "已出仓" if args.apply else "可出仓",
+                 len(rep["expired"]), rep["expired_bytes"] / 1e6)
+    if rep["expiry_blocked"]:
+        log.error("有 %d 个超期 bundle 因结论摘要缺失被拒绝出仓（先跑 monthly 固化该月，"
+                  "或用 --force 明确接受代价）", len(rep["expiry_blocked"]))
+
+    if args.apply and (n_new or rep["expired"]):
+        fp1 = data_footprint()
+        log.info("治理后：data/ 共 %.1f MB / %d 个文件（热层 %d 个，冷层 %d 个）",
+                 fp1["total_bytes"] / 1e6, fp1["total_files"],
+                 fp1["forecast_hot_files"], fp1["forecast_cold_files"])
+    elif not args.apply and n_new:
+        log.info("dry-run 结束：预计释放 %.1f MB（加 --apply 执行）", saved / 1e6)
+
+    if rep["errors"]:
+        for e in rep["errors"][:10]:
+            log.error("治理错误：%s", e)
+        return len(rep["errors"])
+    return 0
+
+
+def cmd_footprint(args):
+    """仓库体量看门狗：报告 data/ 分层占用与 .git 体积，超阈值即非零退出。
+
+    为什么需要它：体积治理的所有机制（bundle 冻结、月度出仓）都只在"按月"这个
+    节奏上生效，而一次意外的写入（某源疯狂重试、分片爆炸、误提交大文件）可以在
+    一天内把仓库推高几个数量级。没有看门狗，这类事故的表现是"某天起 clone 变慢"，
+    等被发现时已经很难收拾——那正是这个项目最想避免的"静默劣化"。
+
+    阈值语义：**超过 --fail-mb 让作业变红并自动开 Issue**（CI 会据此喊人）；
+    --warn-mb 只打印提醒。默认值参考 GitHub 的实际约束：仓库软上限 1 GB、
+    单次 push 建议 2 GB 以内，超出后 Pages 部署与 clone 都会开始明显变慢。
+    """
+    from .storage import _root  # 数据根可能被 WEATHER_EVAL_DATA_ROOT 覆盖
+    fp = data_footprint()
+    root = _root()
+    git_dir = PROJECT_ROOT / ".git"
+    git_bytes = 0
+    if git_dir.is_dir():
+        for p in git_dir.rglob("*"):
+            try:
+                if p.is_file():
+                    git_bytes += p.stat().st_size
+            except OSError:
+                continue
+
+    log.info("data/      ：%.1f MB / %d 个文件", fp["total_bytes"] / 1e6, fp["total_files"])
+    log.info("  ├ 热层（当月散装快照）：%.1f MB / %d 个文件",
+             fp["forecast_hot_bytes"] / 1e6, fp["forecast_hot_files"])
+    log.info("  ├ 冷层（月度 bundle）  ：%.1f MB / %d 个文件",
+             fp["forecast_cold_bytes"] / 1e6, fp["forecast_cold_files"])
+    log.info("  ├ 观测档案             ：%.1f MB / %d 个文件",
+             fp["obs_bytes"] / 1e6, fp["obs_files"])
+    log.info("  └ 清单/其他            ：%.1f MB / %d 个文件",
+             (fp["manifest_bytes"] + fp["other_bytes"]) / 1e6,
+             fp["manifest_files"] + fp["other_files"])
+    log.info(".git/      ：%.1f MB（历史不可逆：删掉的文件仍留在历史里）", git_bytes / 1e6)
+    log.info("数据根     ：%s", root)
+
+    rc = 0
+    if git_bytes > args.fail_mb * 1e6:
+        log.error("仓库体积 %.0f MB 已超过硬阈值 %d MB：请执行 compact "
+                  "并考虑 README「历史体积的人工回收」一节", git_bytes / 1e6, args.fail_mb)
+        rc = 1
+    elif git_bytes > args.warn_mb * 1e6:
+        log.warning("仓库体积 %.0f MB 已超过提醒阈值 %d MB（硬阈值 %d MB）",
+                    git_bytes / 1e6, args.warn_mb, args.fail_mb)
+    if fp["total_files"] > args.max_files:
+        log.error("data/ 文件数 %d 已超过阈值 %d：热层可能未按月冻结，请检查 compact 步骤",
+                  fp["total_files"], args.max_files)
+        rc = 1
+    if rc == 0:
+        log.info("体积检查通过")
+    return rc
+
+
 def cmd_all(args):
     f1 = cmd_fetch_obs(args)
     f2 = cmd_fetch_forecast(args)
@@ -364,7 +585,16 @@ def main(argv=None):
     p.add_argument("--config", default=None, help="stations.yaml 路径")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("fetch-obs")
+    p_obs = sub.add_parser("fetch-obs")
+    p_obs.add_argument(
+        "--source",
+        choices=["auto", "eia_data", "cma_data"],
+        default="auto",
+        help="观测源：auto（默认，按 config 的 obs_sources 编排：主源可用时不惊动"
+             "备用源，主源失败/陈旧/截断时自动降级补位）、eia_data（环境气象数据"
+             "服务平台，页面内嵌 JSON，一次返回近 24h）、cma_data（中国气象数据网"
+             " data.cma.cn 站点实况接口，按 cma_id 的 WMO 站号逐整点抓取）",
+    )
     p_fetch = sub.add_parser("fetch-forecast")
     p_fetch.add_argument(
         "--source", choices=["open_meteo", "caiyun", "qweather", "tianji",
@@ -395,6 +625,25 @@ def main(argv=None):
     ph = sub.add_parser("health")
     ph.add_argument("--stale-hours", type=int, default=30,
                     help="陈旧阈值（小时）：超过该时长未成功抓取的源会使命令以非零退出")
+    pc = sub.add_parser("compact")
+    pc.add_argument("--grace-days", type=int, default=None,
+                    help="月度冻结宽限期（天）：自然月结束满该天数后，该月快照才合并为"
+                         "月度 bundle。缺省取 config 的 compact_grace_days（2）")
+    pc.add_argument("--retain-months", type=int, default=None,
+                    help="月度 bundle 保留月数，更早的出仓。缺省取 config 的"
+                         " compact_retain_months（13）")
+    pc.add_argument("--apply", action="store_true",
+                    help="真正落盘（冻结 bundle 并删除超期冷层）；默认 dry-run 只报告")
+    pc.add_argument("--force", action="store_true",
+                    help="出仓时跳过'该月结论摘要必须已固化'的检查（慎用：会让该月"
+                         "结论失去可复核性）")
+    pf = sub.add_parser("footprint")
+    pf.add_argument("--warn-mb", type=int, default=400,
+                    help=".git 体积提醒阈值（MB），默认 400")
+    pf.add_argument("--fail-mb", type=int, default=900,
+                    help=".git 体积硬阈值（MB），超过即非零退出，默认 900")
+    pf.add_argument("--max-files", type=int, default=20000,
+                    help="data/ 文件数硬阈值，超过即非零退出（热层可能未按月冻结）")
     pv = sub.add_parser("verify")
     pv.add_argument("--period", default=None,
                     help="要核对的清单月份 YYYY-MM（缺省 = 最新一份）")
@@ -408,6 +657,8 @@ def main(argv=None):
         "monthly": cmd_monthly,
         "archive": cmd_archive,
         "health": cmd_health,
+        "compact": cmd_compact,
+        "footprint": cmd_footprint,
         "verify": cmd_verify,
         "all": cmd_all,
     }[args.cmd](args)
