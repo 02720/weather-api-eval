@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>预报源健康度 · 2026-09</title>
+<style>
+:root{--ink:#1c1f23;--muted:#6b7280;--line:#e3e6ea;--ok:#0f7b4f;--bad:#b3261e;
+--warn:#8a5a00;--bg:#fbfbfa;--card:#fff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+font:15px/1.6 ui-sans-serif,system-ui,"Noto Sans SC",sans-serif}
+main{max-width:1080px;margin:0 auto;padding:40px 20px 80px}
+h1{font-size:24px;margin:0 0 4px}
+p.sub{color:var(--muted);margin:0 0 24px;font-size:13px}
+.alert{background:#fdecea;border-left:3px solid var(--bad);padding:12px 14px;
+margin:0 0 20px;border-radius:0 6px 6px 0}
+.fine{background:#eaf6ef;border-left:3px solid var(--ok);padding:12px 14px;
+margin:0 0 20px;border-radius:0 6px 6px 0}
+table{width:100%;border-collapse:collapse;background:var(--card);
+border:1px solid var(--line);font-size:13.5px}
+th,td{padding:9px 11px;border-bottom:1px solid var(--line);text-align:left;
+vertical-align:top}
+th{font-size:12px;color:var(--muted);font-weight:600;
+background:#f6f7f8;position:sticky;top:0}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+td.src{font-size:12px;color:var(--muted);max-width:280px}
+tr:last-child td{border-bottom:none}
+.b{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;
+border:1px solid transparent}
+.b.ok{color:var(--ok);background:#eaf6ef;border-color:#bfe3d0}
+.b.bad{color:var(--bad);background:#fdecea;border-color:#f3c6c1}
+.b.warn{color:var(--warn);background:#fdf5e6;border-color:#efd9a8}
+.b.muted{color:var(--muted);background:#f1f2f4;border-color:#dfe2e6}
+footer{margin-top:28px;color:var(--muted);font-size:12px}
+</style></head>
+<body><main>
+<h1>预报源健康度</h1>
+<p class="sub">生成于 2026-09-19 21:08 ·
+评估窗口 2026-09-01 00:00 ~ 2026-09-19 21:00 ·
+判定阈值 100000 小时（定时任务每 7 小时一轮，超过 4 轮失败即视为陈旧）</p>
+<p class="fine">✅ 所有已接入的源都在 100000 小时内成功抓取过。</p>
+<table>
+<thead><tr>
+<th>预报源</th><th>状态</th><th>快照数</th><th>覆盖站点</th><th>残缺</th>
+<th>缺抓取时刻</th><th>距上次成功</th><th>最近起报</th><th>起报锚点语义构成</th>
+</tr></thead>
+<tbody>
+<tr><td>ecmwf_ifs</td><td><span class="b ok">正常</span></td><td class=num>100</td><td class=num>4/4</td><td class=num>0</td><td class=num>100</td><td class=num>21.1 h</td><td>2026-09-19T00:00</td><td class=src>未知（无法从响应验证）(100)</td></tr><tr><td>ncep_gfs_global</td><td><span class="b ok">正常</span></td><td class=num>100</td><td class=num>4/4</td><td class=num>0</td><td class=num>100</td><td class=num>21.1 h</td><td>2026-09-19T00:00</td><td class=src>未知（无法从响应验证）(100)</td></tr><tr><td>dwd_icon_global</td><td><span class="b ok">正常</span></td><td class=num>100</td><td class=num>4/4</td><td class=num>0</td><td class=num>100</td><td class=num>21.1 h</td><td>2026-09-19T00:00</td><td class=src>未知（无法从响应验证）(100)</td></tr><tr><td>best_match</td><td><span class="b ok">正常</span></td><td class=num>96</td><td class=num>4/4</td><td class=num>0</td><td class=num>96</td><td class=num>21.1 h</td><td>2026-09-19T00:00</td><td class=src>未知（无法从响应验证）(96)</td></tr><tr><td>cma_grapes_global</td><td><span class="b ok">正常</span></td><td class=num>96</td><td class=num>4/4</td><td class=num>0</td><td class=num>96</td><td class=num>21.1 h</td><td>2026-09-19T00:00</td><td class=src>未知（无法从响应验证）(96)</td></tr><tr><td>cmc_gem_gdps</td><td><span class="b ok">正常</span></td><td class=num>96</td><td class=num>4/4</td><td class=num>0</td><td class=num>96</td><td class=num>21.1 h</td><td>2026-09-19T00:00</td><td class=src>未知（无法从响应验证）(96)</td></tr><tr><td>jma_gsm</td><td><span class="b ok">正常</span></td><td class=num>96</td><td class=num>4/4</td><td class=num>0</td><td class=num>96</td><td class=num>21.1 h</td><td>2026-09-19T00:00</td><td class=src>未知（无法从响应验证）(96)</td></tr><tr><td>ukmo_global_deterministic_10km</td><td><span class="b ok">正常</span></td><td class=num>96</td><td class=num>4/4</td><td class=num>0</td><td class=num>96</td><td class=num>21.1 h</td><td>2026-09-19T00:00</td><td class=src>未知（无法从响应验证）(96)</td></tr><tr><td>ecmwf_ifs025</td><td><span class="b ok">正常</span></td><td class=num>96</td><td class=num>4/4</td><td class=num>0</td><td class=num>96</td><td class=num>21.1 h</td><td>2026-09-19T00:00</td><td class=src>未知（无法从响应验证）(96)</td></tr><tr><td>ecmwf_aifs025_single</td><td><span class="b ok">正常</span></td><td class=num>96</td><td class=num>4/4</td><td class=num>0</td><td class=num>96</td><td class=num>21.1 h</td><td>2026-09-19T00:00</td><td class=src>未知（无法从响应验证）(96)</td></tr><tr><td>ncep_aigfs025</td><td><span class="b ok">正常</span></td><td class=num>96</td><td class=num>4/4</td><td class=num>0</td><td class=num>96</td><td class=num>21.1 h</td><td>2026-09-19T00:00</td><td class=src>未知（无法从响应验证）(96)</td></tr><tr><td>ncep_hgefs025_ensemble_mean</td><td><span class="b ok">正常</span></td><td class=num>96</td><td class=num>4/4</td><td class=num>0</td><td class=num>96</td><td class=num>21.1 h</td><td>2026-09-19T00:00</td><td class=src>未知（无法从响应验证）(96)</td></tr><tr><td>tj_km_fusion</td><td><span class="b ok">正常</span></td><td class=num>188</td><td class=num>4/4</td><td class=num>0</td><td class=num>188</td><td class=num>13.1 h</td><td>2026-09-19T08:00</td><td class=src>未知（无法从响应验证）(188)</td></tr><tr><td>tj_t2_early</td><td><span class="b ok">正常</span></td><td class=num>184</td><td class=num>4/4</td><td class=num>0</td><td class=num>184</td><td class=num>13.1 h</td><td>2026-09-19T08:00</td><td class=src>未知（无法从响应验证）(184)</td></tr><tr><td>tj_t2</td><td><span class="b ok">正常</span></td><td class=num>188</td><td class=num>4/4</td><td class=num>0</td><td class=num>188</td><td class=num>13.1 h</td><td>2026-09-19T08:00</td><td class=src>未知（无法从响应验证）(188)</td></tr><tr><td>tj_t1</td><td><span class="b ok">正常</span></td><td class=num>188</td><td class=num>4/4</td><td class=num>0</td><td class=num>188</td><td class=num>13.1 h</td><td>2026-09-19T08:00</td><td class=src>未知（无法从响应验证）(188)</td></tr><tr><td>tj_t1h_ai</td><td><span class="b ok">正常</span></td><td class=num>188</td><td class=num>4/4</td><td class=num>0</td><td class=num>188</td><td class=num>13.1 h</td><td>2026-09-19T08:00</td><td class=src>未知（无法从响应验证）(188)</td></tr><tr><td>fuxi_c88</td><td><span class="b ok">正常</span></td><td class=num>184</td><td class=num>4/4</td><td class=num>0</td><td class=num>184</td><td class=num>13.1 h</td><td>2026-09-19T08:00</td><td class=src>未知（无法从响应验证）(184)</td></tr><tr><td>fengwu_ghr_9km</td><td><span class="b ok">正常</span></td><td class=num>268</td><td class=num>4/4</td><td class=num>0</td><td class=num>268</td><td class=num>13.1 h</td><td>2026-09-19T08:00</td><td class=src>未知（无法从响应验证）(268)</td></tr><tr><td>cma_ndfs</td><td><span class="b ok">正常</span></td><td class=num>60</td><td class=num>4/4</td><td class=num>0</td><td class=num>60</td><td class=num>13.1 h</td><td>2026-09-19T08:00</td><td class=src>未知（无法从响应验证）(60)</td></tr><tr><td>fengqing_ai</td><td><span class="b ok">正常</span></td><td class=num>60</td><td class=num>4/4</td><td class=num>0</td><td class=num>60</td><td class=num>13.1 h</td><td>2026-09-19T08:00</td><td class=src>未知（无法从响应验证）(60)</td></tr><tr><td>caiyun_v2_6</td><td><span class="b ok">正常</span></td><td class=num>316</td><td class=num>4/4</td><td class=num>0</td><td class=num>316</td><td class=num>4.1 h</td><td>2026-09-19T17:00</td><td class=src>未知（无法从响应验证）(316)</td></tr><tr><td>geovis_v1</td><td><span class="b ok">正常</span></td><td class=num>292</td><td class=num>4/4</td><td class=num>0</td><td class=num>292</td><td class=num>4.1 h</td><td>2026-09-19T17:00</td><td class=src>未知（无法从响应验证）(292)</td></tr><tr><td>msn_v1</td><td><span class="b ok">正常</span></td><td class=num>180</td><td class=num>4/4</td><td class=num>0</td><td class=num>180</td><td class=num>4.1 h</td><td>2026-09-19T17:00</td><td class=src>未知（无法从响应验证）(180)</td></tr><tr><td>qweather_v1</td><td><span class="b ok">正常</span></td><td class=num>308</td><td class=num>4/4</td><td class=num>0</td><td class=num>308</td><td class=num>3.1 h</td><td>2026-09-19T18:00</td><td class=src>未知（无法从响应验证）(308)</td></tr><tr><td>accuweather_v1</td><td><span class="b ok">正常</span></td><td class=num>271</td><td class=num>4/4</td><td class=num>0</td><td class=num>271</td><td class=num>3.1 h</td><td>2026-09-19T18:00</td><td class=src>未知（无法从响应验证）(271)</td></tr><tr><td>cma_public_v1</td><td><span class="b ok">正常</span></td><td class=num>56</td><td class=num>4/4</td><td class=num>0</td><td class=num>56</td><td class=num>1.1 h</td><td>2026-09-19T20:00</td><td class=src>hour_offset(56)</td></tr><tr><td>fuxi_det</td><td><span class="b muted">未接入</span></td><td class=num>0</td><td class=num>0/4</td><td class=num>0</td><td class=num>0</td><td class=num>—</td><td>—</td><td class=src>—</td></tr>
+</tbody></table>
+<footer>「残缺」= 快照契约标了 complete=false（分片未取全）；
+「缺抓取时刻」= 该存档早于 2026-09 的元数据契约、没有 fetched_at 字段，
+属于历史存量，随归档自然递减。</footer>
+</main></body></html>

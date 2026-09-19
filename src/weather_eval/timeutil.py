@@ -33,13 +33,17 @@ def parse_iso(s: str) -> datetime:
     return _parse_iso_cached(s)
 
 
-@lru_cache(maxsize=200_000)
+@lru_cache(maxsize=20_000)
 def _parse_iso_cached(s: str) -> datetime:
     """时间戳解析（带缓存）。
 
     报告构建会对百万级时间字符串调用本函数，而各模型共享同一条时间轴，
     实际唯一值只有几千个——缓存把 strptime 的完整格式解析开销从构建热点中
     消掉（实测占构建时间约 41%）。datetime 不可变，缓存共享实例是安全的。
+
+    容量（P2-3）：原先 200,000 会让长生命周期进程（`all` 一次跑完全流程）
+    持有 20 万个 datetime 且永不释放——单次运行的实际唯一值仅数千，20,000 已
+    留足余量，同时把内存上界钉在一个可预期的量级。
     """
     return datetime.fromisoformat(s)
 

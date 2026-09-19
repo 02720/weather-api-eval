@@ -113,3 +113,58 @@ def test_concurrent_snapshot_save_is_locked(tmp_path, monkeypatch):
     files = list((tmp_path / "forecasts" / "s1" / "ecmwf_ifs").glob("*.json"))
     assert len(files) == 1
     assert _json.loads(files[0].read_text(encoding="utf-8"))["issue_iso"] == "2026-08-26T21:00"
+
+
+# ------------------------------------------------- P2-2 观测回改留痕（revisions）
+def test_obs_revision_is_preserved_not_overwritten(tmp_path, monkeypatch):
+    """观测源会修正早期错报；旧实现静默覆盖，"当时的实况"从此不可复原——
+    而实况是评估里唯一的真值来源，它一旦不可追溯，所有历史结论都失去可复核性。
+    """
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    storage.save_obs("s1", [{"time": "2026-08-26T20:00", "temp": 27.0, "rain": 0.0}])
+    storage.save_obs("s1", [{"time": "2026-08-26T20:00", "temp": 29.5, "rain": 0.0}])
+    rec = storage.load_obs("s1", "2026-08")["2026-08-26T20:00"]
+    assert rec["temp"] == 29.5                     # 新值生效
+    assert rec["revisions"], "回改必须留痕"
+    assert rec["revisions"][-1]["prev"]["temp"] == 27.0   # 旧值可复原
+    assert rec["revisions"][-1]["at"]              # 改动时间戳
+
+    # 未回改（写入相同值）不产生 revision
+    storage.save_obs("s1", [{"time": "2026-08-26T21:00", "temp": 25.0, "rain": 0.0}])
+    rec2 = storage.load_obs("s1", "2026-08")["2026-08-26T21:00"]
+    assert "revisions" not in rec2
+
+
+def test_obs_revisions_are_capped(tmp_path, monkeypatch):
+    """抖动源反复改写同一时刻时，revisions 不得无限增长。"""
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    t = "2026-08-26T20:00"
+    storage.save_obs("s1", [{"time": t, "temp": 20.0, "rain": 0.0}])
+    for i in range(30):
+        storage.save_obs("s1", [{"time": t, "temp": 20.0 + i, "rain": 0.0}])
+    rec = storage.load_obs("s1", "2026-08")[t]
+    assert len(rec["revisions"]) <= storage.MAX_OBS_REVISIONS
+
+
+# ------------------------------------------------------ P2-1 归档写入原子性
+def test_archive_is_atomic_and_idempotent(tmp_path, monkeypatch):
+    """中断只能留下临时文件，绝不留下半截 .gz（它会被 git 收进仓库，
+    变成一份永久损坏的"档案"）。"""
+    import gzip
+    import json
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    snap = {"issue_iso": "2020-01-01T00:00", "station_id": "s1", "source": "t",
+            "models": ["m"], "hourly_time": ["2020-01-01T01:00"],
+            "data": {"m": {"temperature_2m": [1.0], "precipitation": [0.0]}}}
+    storage.save_forecast_snapshot("s1", "m", snap)
+    cands = storage.archive_old_snapshots(older_than_days=1, apply=True)
+    assert len(cands) == 1
+    gz = cands[0].with_name(cands[0].name + ".gz")
+    assert gz.exists() and not cands[0].exists()
+    assert not list(gz.parent.glob("*.tmp"))          # 不留临时文件
+    with gzip.open(gz, "rt", encoding="utf-8") as f:
+        assert json.load(f)["issue_iso"] == "2020-01-01T00:00"
+    # 归档后仍能被读取（评估口径不受影响）
+    assert len(storage.list_forecast_snapshots("s1", "m")) == 1
+    # 幂等：再归档一次没有候选
+    assert storage.archive_old_snapshots(older_than_days=1, apply=True) == []

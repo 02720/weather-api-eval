@@ -204,7 +204,95 @@ def _update_live_report(cfg):
     start = parse_iso(f"{month}-01T00:00")
     data = build_report(cfg.station_ids, cfg.models, cfg.eval, start, now, period_label=month)
     out = write_live_report(data, station_labels={s.id: s.name for s in cfg.stations})
+    # 哈希链清单（§7.1）：把当轮全部快照的 Merkle 根落盘，供 verify 与月度归档公示
+    from .storage import save_manifest
+    save_manifest(month, {
+        **data["meta"].get("integrity", {}),
+        "period_label": month,
+        "generated_at": data["meta"]["generated_at"],
+    })
+    # 源健康度看板与主报告同批刷新（P1-8）：让"静默死亡"变成"一眼可见"。
+    # 它不进主报告（主报告面向读者，健康度面向维护者），但必须与主报告同时是新
+    # 的——否则看板会变成一份没人更新的摆设。
+    n_stale = write_health_report(cfg, stale_hours=int(cfg.eval.get("source_stale_hours", 30)))
+    if n_stale:
+        log.warning("有 %d 个源已陈旧，详见 reports/health.html", n_stale)
     return month, out
+
+
+def write_health_report(cfg, stale_hours: int = 30):
+    """写 reports/health.html，返回陈旧源个数（0 = 全部健康）。"""
+    from . import health as _health
+    from .evaluate import _preload
+    from .report.render import write_health_page
+    from .timeutil import now_beijing as _now
+
+    _obs_maps, snapshots = _preload(cfg.station_ids, cfg.models)
+    h = _health.of(snapshots, cfg.station_ids, cfg.models)
+    h = _health.evaluate_staleness(h, stale_hours=stale_hours)
+    now = _now()
+    meta = {
+        "period_label": ym(now),
+        "generated_at": now.strftime("%Y-%m-%d %H:%M"),
+        "start": f"{ym(now)}-01 00:00",
+        "end": floor_to_hour(now).strftime("%Y-%m-%d %H:%M"),
+    }
+    write_health_page(_health.render_health_html(h, meta, stale_hours))
+    return len(_health.stale_sources(h))
+
+
+def cmd_health(args):
+    """源健康度检查（CI 用）：陈旧源存在时以非零退出，供自动开 Issue 步骤捕捉。"""
+    cfg = load_config(args.config)
+    n_stale = write_health_report(cfg, stale_hours=args.stale_hours)
+    if n_stale:
+        log.error("有 %d 个源超过 %d 小时未成功抓取（详见 reports/health.html）",
+                  n_stale, args.stale_hours)
+        return n_stale
+    log.info("全部源健康（阈值 %d 小时）", args.stale_hours)
+    return 0
+
+
+def cmd_verify(args):
+    """重算全部快照的 Merkle 根并与清单比对（§7.1）。
+
+    这是"预报必须在实况之前封存"这条地基从**自我声明**变成**可机器核验**的那一步：
+    清单（data/manifest/{period}.json）记录了当轮全部快照的哈希聚合根，任何人克隆
+    仓库后重算一遍即可验证存档未被事后改写。根不一致 = 有文件被改过/被补写/丢失，
+    以非零退出让 CI 变红——绝不静默通过。
+    """
+    from .snapshot_meta import integrity_summary
+    from .storage import load_manifest
+
+    cfg = load_config(args.config)
+    _obs, snapshots = _preload_snapshots(cfg)
+    all_snaps = [s for lst in snapshots.values() for s in lst]
+    live = integrity_summary(all_snaps)
+    stored = load_manifest(args.period)
+    if not stored:
+        log.warning("未找到哈希链清单（data/manifest/*.json），跳过校验；"
+                    "下一次 report/all 运行会自动生成")
+        return 0
+    if stored.get("merkle_root") is None:
+        log.warning("清单中没有 Merkle 根（可能来自更早的版本），跳过校验")
+        return 0
+    if live["merkle_root"] != stored.get("merkle_root"):
+        log.error(
+            "哈希链校验失败：存档内容与清单不一致。\n"
+            "  清单（%s）：%s（%s 份快照）\n  实测：%s（%s 份快照）\n"
+            "  含义：有快照文件在清单生成之后被修改、补写或删除。",
+            stored.get("period_label") or "最新", stored.get("merkle_root"),
+            stored.get("n_snapshots"), live["merkle_root"], live["n_snapshots"])
+        return 1
+    log.info("哈希链校验通过：%d 份快照，Merkle 根 %s（抓取时刻 %s ~ %s）",
+             live["n_snapshots"], live["merkle_root"],
+             live["fetched_first"], live["fetched_last"])
+    return 0
+
+
+def _preload_snapshots(cfg):
+    from .evaluate import _preload
+    return _preload(cfg.station_ids, cfg.models)
 
 
 def cmd_report(args):
@@ -304,6 +392,12 @@ def main(argv=None):
                     help="保留窗口（天）：issue 早于该窗口的快照被归档，默认 60")
     pa.add_argument("--apply", action="store_true",
                     help="真正执行压缩并删除源文件（默认 dry-run 只列出候选）")
+    ph = sub.add_parser("health")
+    ph.add_argument("--stale-hours", type=int, default=30,
+                    help="陈旧阈值（小时）：超过该时长未成功抓取的源会使命令以非零退出")
+    pv = sub.add_parser("verify")
+    pv.add_argument("--period", default=None,
+                    help="要核对的清单月份 YYYY-MM（缺省 = 最新一份）")
     sub.add_parser("all")
 
     args = p.parse_args(argv)
@@ -313,6 +407,8 @@ def main(argv=None):
         "report": cmd_report,
         "monthly": cmd_monthly,
         "archive": cmd_archive,
+        "health": cmd_health,
+        "verify": cmd_verify,
         "all": cmd_all,
     }[args.cmd](args)
     # 抓取类命令的失败数必须反映到退出码：否则单独运行 fetch-forecast 失败也会

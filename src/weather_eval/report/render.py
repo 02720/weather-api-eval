@@ -201,6 +201,15 @@ def render_report_html(report_data: dict, title: str | None = None,
     )
 
 
+def write_health_page(html: str) -> Path:
+    """写 reports/health.html（源健康度看板，P1-8）。与主报告同根、同样原子写。"""
+    root = _reports_root()
+    root.mkdir(parents=True, exist_ok=True)
+    out = root / "health.html"
+    _atomic_write_text(out, html)
+    return out
+
+
 def write_live_report(report_data: dict, station_labels: dict[str, str] | None = None) -> Path:
     """写主报告：覆盖 reports/index.html（Pages 首页）。每次运行都基于当月全部数据重算。"""
     root = _reports_root()

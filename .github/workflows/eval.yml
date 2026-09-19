@@ -203,8 +203,24 @@ jobs:
           github.event.inputs.month != '' && format('--month {0}', github.event.inputs.month) || '' }}
 
       - name: 变基远端最新提交（避免 push 被拒）
+        # 旧实现的 `|| true` 让 rebase 失败（冲突、autostash 弹出失败）静默通过，
+        # 随后 git-auto-commit-action 照常提交——可能把当轮数据提交到一棵**陈旧的、
+        # 与远端分叉的**树上，下一次运行再重复同样的失败，而日志里只留一行被忽略的
+        # stderr（对抗式审查 P1-7）。现在：先 abort 掉半途的变基（把工作区恢复到
+        # 变基前，当轮产物一个不丢），再以非零退出让作业如实变红。
+        id: rebase
         if: always()
-        run: git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+        continue-on-error: true
+        run: |
+          set +e
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+          rc=$?
+          if [ $rc -ne 0 ]; then
+            echo "::error::git pull --rebase 失败（rc=$rc）：本地与远端已分叉，本轮数据可能未能入库"
+            git rebase --abort >/dev/null 2>&1 || true
+            git stash list | head -5
+            exit $rc
+          fi
 
       - name: 提交数据与新报告
         # if: always()：`all` 步骤任一站失败会以非零退出，但此前已成功抓取的
@@ -218,6 +234,69 @@ jobs:
           commit_user_name: weather-eval-bot
           commit_user_email: bot@weather-eval.local
           commit_author: weather-eval-bot <bot@weather-eval.local>
+
+      - name: 校验当轮快照的哈希链（可审计性）
+        # §7.1：把"预报在实况之前封存且事后未被修改"从自我声明变成可机器核验的
+        # 性质。重算全部快照的 Merkle 根并与报告 meta 里记录的值比对——任何对
+        # 存档的事后改写都会让这一步变红。
+        if: always()
+        env:
+          TZ: Asia/Shanghai
+        run: python -m weather_eval verify
+
+      - name: 源健康度检查（静默死亡告警）
+        # P1-8：连续多轮抓不到数据的源会让这一步以非零退出；下一步据此自动开 Issue。
+        if: always()
+        id: health
+        continue-on-error: true
+        env:
+          TZ: Asia/Shanghai
+        run: python -m weather_eval health --stale-hours 30
+
+      - name: 源陈旧时自动开 Issue 并 @ 维护者
+        # 只在"曾经有数据、现在超过 30 小时没成功"时触发（从未接入的可选源不算故障）。
+        # 先去重：同一标题的未关闭 Issue 已存在时不重复开，避免每天刷一条。
+        if: always() && steps.health.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TZ: Asia/Shanghai
+        run: |
+          TITLE="预报源陈旧告警：有源超过 30 小时未成功抓取"
+          EXISTING=$(gh issue list --state open --search "${TITLE} in:title" \
+                     --json number --jq 'length' 2>/dev/null || echo 0)
+          if [ "${EXISTING}" != "0" ]; then
+            echo "已有未关闭的同名 Issue，跳过创建"
+            exit 0
+          fi
+          gh issue create --title "${TITLE}" --body \
+            "自动巡检发现：有预报源超过 30 小时未成功抓取（详见 Pages 的 reports/health.html）。
+
+          **为什么紧急**：预报快照错过即无法追补，样本期会留下永久空洞。请核对
+          \`data/forecasts/<station>/<model>/\` 的最新文件、以及最近几次 Actions 运行日志中
+          该源的告警。
+
+          本轮运行：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --assignee "${{ github.repository_owner }}" || echo "开 Issue 失败（权限或 gh 版本），不影响数据提交"
+
+      - name: 变基失败时自动开 Issue
+        if: always() && steps.rebase.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TZ: Asia/Shanghai
+        run: |
+          TITLE="CI 变基失败：本地与远端分叉，本轮数据可能未入库"
+          EXISTING=$(gh issue list --state open --search "${TITLE} in:title" \
+                     --json number --jq 'length' 2>/dev/null || echo 0)
+          if [ "${EXISTING}" != "0" ]; then
+            echo "已有未关闭的同名 Issue，跳过创建"
+            exit 0
+          fi
+          gh issue create --title "${TITLE}" --body \
+            "\`git pull --rebase --autostash\` 失败，工作区已 abort 回变基前状态。
+          本轮抓取到的数据可能未被提交（预报快照不可追补，请尽快人工处理）。
+
+          本轮运行：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --assignee "${{ github.repository_owner }}" || echo "开 Issue 失败，不影响主流程"
 
       - name: 上传 Pages 产物
         if: always()

@@ -111,7 +111,7 @@ from urllib.parse import quote
 import requests
 
 from .base import ForecastProvider
-from .http import request_with_retries
+from .http import DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, request_with_retries
 from ..timeutil import BEIJING, floor_to_hour, parse_iso
 
 logger = logging.getLogger(__name__)
@@ -318,7 +318,7 @@ class MsnProvider(ForecastProvider):
 
     def __init__(
         self,
-        timeout: int | tuple = (10, 30),
+        timeout: int | tuple = HTTP_DEFAULT_TIMEOUT,
         retries: int = 3,
         session: requests.Session | None = None,
         max_day: int = MAX_DAY,
@@ -464,6 +464,21 @@ class MsnProvider(ForecastProvider):
 
         snapshot = {
             "issue_iso": issue_iso,
+            # ---- 起报锚点语义（对抗式审查 P0-6 第 1 条）----
+            # 本源的 issue_iso = floor_hour(lastUpdated)，即**数据更新时间**——它与
+            # CI 的抓取时刻一一对应（相位 07/17/23 恒定 +1h），与彩云的"请求时刻
+            # 下取整"同构，而不是 Open-Meteo 的固定锚点或伏羲的模式轮次。二者物理
+            # 语义不同：若 lastUpdated 实质接近抓取时刻，MSN 的**实际时效系统性短于
+            # 它声明的 lead**，等于被评在更容易的样本上。命名差异不能掩盖语义差异，
+            # 故此处显式声明，并把原始字段一并留档供事后复核。
+            "issue_source": "data_updated",
+            "issue_raw": base_lu,
+            "issue_anchor_field": "lastUpdated",
+            # 温度是整数摄氏度：自带 ±0.5°C 量化误差，跨源比较必须知情
+            "quantized_temp": True,
+            "resolution_hours": 1,
+            "precip_unit": "mm",
+            "precip_accum_window_hours": 1,
             "station_id": station.id,
             "source": SOURCE,
             "models": [MODEL_NAME],
@@ -482,6 +497,13 @@ class MsnProvider(ForecastProvider):
             "last_updated": base_lu,         # 服务端数据更新时间（起报锚点来源）
             "days_fetched": fetched,         # 实际合并的分片数（残缺时 < max_day）
             "dropped_days": dropped,         # 最终快照实际缺失的分片，供事后审计
+            # ---- 残缺不再伪装成完整外壳（P0-6 第 4 条）----
+            # 旧行为：10 个分片只抓到部分也照样生成完整外壳的快照，只在日志里
+            # WARNING。评估侧无从判断"这份快照少了一半时效"，于是残缺样本与完整
+            # 样本同权进榜。现在缺失分片显式落盘，评估层默认排除（可配置）。
+            "complete": fetched >= self.max_day,
+            "missing_shards": list(dropped) + [f"day={d}" for d in range(fetched + 1,
+                                                                        self.max_day + 1)],
             "drift_history": drift_history,  # 版本漂移史（重抓成功时快照并不残缺）
             "version_restarts": restarts,    # 整体重抓次数
             "precip_alignment": (

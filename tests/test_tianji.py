@@ -260,7 +260,9 @@ def test_partial_model_failure_keeps_other_models():
         id = "s2"
     snaps2 = prov.fetch_snapshot(S2(), list(MODEL_SPECS))
     assert {s["models"][0] for s in snaps2} == set(MODEL_SPECS) - {"tj_t1"}
-    assert len(sess.calls) == n + 8  # 4 模型 × (温度+降水)
+    # 失败集合按 (模型, 站点) 建键（P2-5）：s1 上失败的 tj_t1 不会让 s2 跳过它，
+    # 故 s2 会为 tj_t1 重试并再失败一次 -> n + 8 + 4 次调用
+    assert len(sess.calls) == n + 12
 
 
 def test_precip_product_empty_warns_but_archives_temperature(caplog):

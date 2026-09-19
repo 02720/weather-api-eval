@@ -413,6 +413,29 @@ window.addEventListener("DOMContentLoaded", function () {
         （温度 {{ num(champ.temp_score, 1) }} 分 + 降水 {{ num(champ.precip_score, 1) }} 分）{% if champ.lead_days %}· 覆盖预报至提前 {{ champ.lead_days }} 天{% endif %} ·
         温度准确率 {{ pct(champ.acc2) }} · 日雨评分 TS {{ num(champ.ts, 2) }}。
         <a href="#leaderboard" style="color:#dbeafe">看完整榜单 →</a></div>
+      {# ---- "别过度解读名次"的三条硬数字（对抗式审查 P0-1/P0-2/P1-5 的披露要求）----
+         这些数字原先一个都没有：读者看到精确到 0.01 分的名次，却无从知道第 1 名与
+         第 12 名在统计上不可区分、也无从知道名次对加权方式有多敏感。 ---- #}
+      {% set ns = namespace(lo=champ.get('ci90')[0] if champ.get('ci90') else none,
+                            hi=champ.get('ci90')[1] if champ.get('ci90') else none,
+                            tied=0) %}
+      {% for r in lb_all %}
+        {% if r.get('ci90') and r.get('score') is not none and ns.lo is not none
+              and not (r.get('ci90')[1] < ns.lo or r.get('ci90')[0] > ns.hi) %}
+          {% set ns.tied = ns.tied + 1 %}
+        {% endif %}
+      {% endfor %}
+      {% set cw = [] %}
+      {% for r in lb_all %}{% if r.get('ci90') %}{% set _ = cw.append(r.get('ci90')[1] - r.get('ci90')[0]) %}{% endif %}{% endfor %}
+      {% set cw_sorted = cw | sort %}
+      {% set rs = (dw.get('rank_sensitivity') or {}) %}
+      <div class="sub honesty" style="margin-top:8px;padding-top:7px;border-top:1px solid rgba(255,255,255,.22);opacity:.95">
+        📏 <b>请勿把这份名次当成"一分高下"</b>：样本期 {{ report.meta.bootstrap_days }} 天（重采样 {{ report.meta.bootstrap_blocks }} 块，块长 {{ report.meta.bootstrap_block_days }} 天）·
+        90% 置信区间中位宽 {{ '%.1f'|format(cw_sorted[cw_sorted|length // 2]) if cw_sorted else '—' }} 分{% if ns.tied > 1 %} ·
+        <b>与第一名区间有重叠的源共 {{ ns.tied }} 家</b>（即这 {{ ns.tied }} 家的先后在统计上还说不清）{% endif %}{% if rs.get('spearman') is not none %} ·
+        名次对加权方式的敏感度：Spearman {{ '%.2f'|format(rs.get('spearman')) }}（等权 vs 按样本量加权）{% endif %}{% if champ.get('disputed') %} ·
+        ⚠️ <b>该源带争议口径标记</b>，<a href="#anchors" style="color:#dbeafe">见"各源的起报时刻到底是什么"</a>{% endif %}。
+      </div>
     </div>
     {% else %}
     <div class="champion">🌱 数据积累中——样本攒够后，这里会显示本月的"预报冠军"。</div>
@@ -503,6 +526,101 @@ window.addEventListener("DOMContentLoaded", function () {
           第二行＝该档参与比较的家数（少于 {{ dw.get('min_models_per_bucket', 3) }} 家的档不进比较）。</p>
         {% endif %}
         <p class="lb-why">这是<b>加法假设</b>：若某家短时效强、长时效弱（源 × 时效交互），单一数字表达不了，请看「提前 N 天」分榜的同难度直接对照。</p>
+      </div>
+    </details>
+    {# ---- 技巧剖面（对抗式审查 P0-2 建议 2）：把"一个分数"升级为"一张剖面" ----
+       加法模型把"源 × 时效"的交互塞进残差，一个数字表达不了它。短/中/长三段各自
+       对齐后并列给出，读者能立刻看出"这家是不是只会报近几天"。 ---- #}
+    {% set prof = dw.get('profile') or {} %}
+    {% if prof.get('short') and prof.get('short', {}).get('scores') %}
+    <details class="lb-weights" open>
+      <summary>🧭 技巧剖面：短 / 中 / 长时效各段单独排名（"一个数字"之外的第二视角）</summary>
+      <div class="lb-weights-body">
+        <p class="lb-why">总榜把所有提前量压成一个数，代价是<b>抹掉了"短时效强、长时效弱"这类差异</b>。
+          下表把提前量分成三段、每段各自做一次难度对齐，所以同一家在三段里的名次可以很不一样——
+          <b>名次差得多，说明它家的能力随时效明显偏斜，请按你关心的时效段来读</b>。</p>
+        <table>
+          <thead><tr><th class="l">预报源</th>
+            <th>短时效（第 {{ prof['short']['buckets']|join('、') }} 天）</th>
+            <th>中时效（第 {{ prof.get('mid', {}).get('buckets', [])|join('、') or '—' }} 天）</th>
+            <th>长时效（第 {{ prof.get('long', {}).get('buckets', [])|join('、') or '—' }} 天）</th>
+            <th>总榜</th></tr></thead>
+          <tbody>
+            {% for r in lb_all %}
+            {% if r.get('profile_rank') %}
+            <tr>
+              <td class="l">{{ model_labels.get(r.model, r.model) }}{% if r.get('is_top') %} 🏆{% endif %}</td>
+              {% for seg in ['short', 'mid', 'long'] %}
+              {% set rk = (r.get('profile_rank') or {}).get(seg) %}
+              <td class="num">{{ ('第 %d 名'|format(rk)) if rk else '—' }}</td>
+              {% endfor %}
+              <td class="num">{{ ('第 %d 名'|format(loop.index)) if r.get('qualified') else '—' }}</td>
+            </tr>
+            {% endif %}
+            {% endfor %}
+          </tbody>
+        </table>
+        <p class="lb-why">同段内为独立难度对齐后的名次（只在该段覆盖到的源之间比较），与总榜名次不必一致。</p>
+      </div>
+    </details>
+    {% endif %}
+    {# ---- 稳健统计披露区（P0-1 / P0-2 / P0-4 / P1-4 / P1-5）：把"这份名次有多结实"量化 ---- #}
+    {% set vd = dw.get('variance') or {} %}
+    {% set st = dw.get('rank_stability') or {} %}
+    {% set lt = dw.get('long_tail') or {} %}
+    <details class="lb-weights">
+      <summary>🔬 这份名次有多结实？样本量加权、加法假设、长尾档与置信区间（点开看明细）</summary>
+      <div class="lb-weights-body">
+        <h4>① 格子样本量：跨三个数量级，所以名次不能等权算</h4>
+        <p class="lb-why">每个"（源 × 提前 N 天）"格子的有效样本量差很多（实测从个位数到上百）。
+          等权拟合会把"5 条样本的格子"与"200 条样本的格子"当成同样可信的观测，
+          于是<b>名次变成噪声排序的产物</b>。本页按 <b>{{ '√(两维有效样本量的较小者)' if dw.get('cell_weighting') == 'neff' else '等权（对照口径）' }}</b> 加权，
+          并把有效样本量低于 <b>{{ dw.get('min_cell_neff') }}</b> 的格子直接剔出设计。</p>
+        {% if dw.get('cell_weights') %}
+        <p class="lb-why">实际入设计的格子权重：最小 {{ dw['cell_weights']['min'] }}、中位 {{ dw['cell_weights']['median'] }}、最大 {{ dw['cell_weights']['max'] }}
+          {% if dw.get('dropped_thin_cells') %}；另有 <b>{{ dw['dropped_thin_cells'] }} 个</b>样本过薄的格子被剔除{% endif %}{% if dw.get('gate_relaxed') %}；
+          ⚠️ <b>本份门槛已因数据规模不足被放宽</b>（名次实际未完全用上门槛，请谨慎解读）{% endif %}。</p>
+        {% endif %}
+        {% if rs.get('spearman') is not none %}
+        <p class="lb-why"><b>名次对加权方式的敏感度：</b>{{ rs.get('spearman_label') }} 的 Spearman = <b>{{ '%.2f'|format(rs.get('spearman')) }}</b>
+          （1 = 完全一致，0.8 以下说明换成另一种加权方式前十会大洗牌）
+          {% if rs.get('top10_changed') is not none %}；前十名换掉 <b>{{ rs['top10_changed'] }} 家</b>{% endif %}。
+          {% if rs.get('movers') %}名次变动最大的几家：{% for mv in rs['movers'][:5] %}{{ model_labels.get(mv.get('model'), mv.get('model', '')) }} {{ mv['rank_equal'] }}→{{ mv['rank_weighted'] }}{% if not loop.last %}、{% endif %}{% endfor %}。{% endif %}</p>
+        {% endif %}
+        <h4>② 加法假设：总榜这个"单一数字"解释不了多少</h4>
+        {% if vd.get('residual_share') is not none %}
+        <p class="lb-why">把全部分数矩阵的方差拆开：<b>源间差异 {{ '%.0f%%'|format(vd['row_share'] * 100) }}</b>、
+          <b>时效难度 {{ '%.0f%%'|format(vd['col_share'] * 100) }}</b>、
+          <b>残差（交互 + 噪声）{{ '%.0f%%'|format(vd['residual_share'] * 100) }}</b>。
+          残差占比越高，"一个数字排座次"抹掉的真实差异越多——这些差异请到上方的<b>技巧剖面</b>与
+          <b>「提前 N 天」分榜</b>里看。</p>
+        {% endif %}
+        {% if st.get('overall_mean') is not none %}
+        <p class="lb-why">跨档名次一致性：任意两档之间的 Spearman 平均 <b>{{ st.get('overall_mean') }}</b>
+          {% if st.get('adjacent_mean') is not none %}（相邻两档 {{ st.get('adjacent_mean') }}）{% endif %}
+          {% if st.get('min_pair') %}；最低的一对是第 {{ st['min_pair']['a'] }} 天 vs 第 {{ st['min_pair']['b'] }} 天（{{ st['min_pair']['rho'] }}）{% endif %}。
+          数字越低，说明<b>同一家在不同时效档的排名越不一致</b>，"总榜第三名"并不等于"各档第三名"。</p>
+        {% endif %}
+        <h4>③ 置信区间：多宽才算"说不清"</h4>
+        <p class="lb-why">样本期 {{ report.meta.bootstrap_days }} 天，按天分块重采样得 {{ report.meta.bootstrap_blocks }} 块（块长 {{ report.meta.bootstrap_block_days }} 天，
+          由日尺度误差自相关 ρ={{ report.meta.bootstrap_daily_rho }} 推出）。
+          90% 区间中位宽 <b>{{ '%.1f'|format(cw_sorted[cw_sorted|length // 2]) if cw_sorted else '—' }} 分</b>——
+          这个宽度直接告诉我们<b>榜上相邻的十几名之间没有统计意义上的先后</b>。样本期长度是当前第一约束。</p>
+        <h4>④ 被主设计剔除的长尾档</h4>
+        {% if lt.get('buckets') %}
+        <p class="lb-why">第 {{ lt['buckets']|join('、') }} 天这些档的<b>同台家数不足主设计门槛的一半</b>（{{ dw.get('min_col_frac') }} × 最多家数），
+          其"难度"由极少数薄格子估出，会把噪声等量打进所有源的行分，因此单独列在下方参考，
+          <b>不参与总榜名次</b>。<br>
+          {% for m, s in (lt.get('scores') or {}).items() if s is not none %}
+            {{ model_labels.get(m, m) }} {{ '%.1f'|format(s) }}（{{ lt['coverage'].get(lt['buckets'][0], 0) }}～{{ lt['coverage'].get(lt['buckets'][-1], 0) }} 家）
+            {%- if not loop.last %}；{% endif %}
+          {% endfor %}</p>
+        {% else %}
+        <p class="lb-why">所有档位的同台家数都达到门槛，无需单独列出长尾参考榜。</p>
+        {% endif %}
+        <h4>⑤ 有效样本量已扣除跨站相关</h4>
+        <p class="lb-why">相邻气象站的误差由同一批天气系统驱动（实测跨站 ρ̄≈0.23），把 4 个站的有效样本量直接相加会把 1 份信息数成 4 份、<b>高估约 1.7 倍</b>。
+          本页的 n_eff 已按 <code>1+(k−1)ρ̄</code> 折算，因此入围门槛比过去更严格——这是修正，不是数据变差。</p>
       </div>
     </details>
     <details class="lb-weights">
@@ -726,12 +844,54 @@ window.addEventListener("DOMContentLoaded", function () {
       <li>本页指标每次都用当月积累的全部数据重新计算（评估计算由开源库 cyeva 完成：温度 9 项、降水晴雨 8 项 + 雨量误差 3 项 + 分级 11 档），所以打开永远是"本月至今"的最新结果。</li>
       <li>每月 1 号把上个月冻结成月度归档，永久可查。</li>
     </ol>
+    {# ---- 可审计性公示（§7.1）：把"先封存后验证"从自我声明升级为可核验 ---- #}
+    {% set integ = report.meta.get('integrity') or {} %}
+    {% if integ.get('merkle_root') %}
+    <h2 style="margin-top:22px">🔐 存档完整性（可自行核验）</h2>
+    <p class="desc">本页所有结论都建立在"预报确实在实况之前封存、且事后未被修改"这条前提上。
+      为把它从<b>自我声明</b>变成<b>可验证</b>，本轮 {{ integ.get('n_snapshots') }} 份存档内容的哈希被聚合成一个根：</p>
+    <p class="desc" style="word-break:break-all"><code>{{ integ.get('merkle_root') }}</code></p>
+    <p class="desc">任何人克隆仓库后运行 <code>python -m weather_eval verify</code> 即可重算并与
+      <code>data/manifest/</code> 中的清单比对——任何对存档的事后改写都会让校验失败。这就是本项目最核心的方法论护城河。</p>
+    {% endif %}
+    {% if report.meta.get('issue_anchors') %}
+    {# ---- 起报锚点语义（P0-6）：五种互不等价的物理语义，不再混为一谈 ---- #}
+    <h2 style="margin-top:22px" id="anchors">🧭 各源的"起报时刻"到底是什么</h2>
+    <p class="desc">同一个「提前 N 天」，各家用的起报锚点并不都是同一回事。下表逐源公示（括号内为未声明锚点的历史存档份数，
+      它们随归档自然递减，不参与争议判定）：</p>
+    <table>
+      <thead><tr><th class="l">预报源</th><th class="l">起报锚点语义</th><th class="l">口径存疑</th></tr></thead>
+      <tbody>
+      {% for m, ia in report.meta.issue_anchors.items() %}
+        {% if ia.get('issue_source') and (ia.get('issue_source') != 'unknown' or ia.get('issue_source_undeclared')) %}
+        <tr>
+          <td class="l">{{ model_labels.get(m, m) }}</td>
+          <td class="l">{{ ia.get('issue_source_label') or '—' }}{% if ia.get('issue_source_undeclared') %}（未声明 {{ ia['issue_source_undeclared'] }} 份）{% endif %}</td>
+          <td class="l">{% if ia.get('disputed') %}⚠️ {{ ia.get('disputed_reasons')|join('；') }}{% else %}—{% endif %}</td>
+        </tr>
+        {% endif %}
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
     <h2 style="margin-top:22px">📏 口径与已知差异</h2>
     <ol class="steps">
+      <li>🗓️ <b>天桶按日历对齐</b>：温度与降水的「提前 N 天」都指<b>起报日之后第 N 个自然日</b>（不再用"滚动 24 小时"口径）。
+        起报当天的剩余小时不进天桶、只用于固定时效窗的明细指标。这样两维才真正同窗——此前同一个"提前 1 天"里，
+        有的源 96% 样本来自起报当天、有的源 72% 来自起报次日。</li>
+      <li>🔬 <b>有效样本量</b>：误差强自相关 + 相邻站由同一批天气系统驱动，故 n_eff 同时扣除时间自相关与<b>跨站相关</b>（<code>1+(k−1)ρ̄</code>）；
+        直接按站求和会高估约 1.7 倍。</li>
+      <li>⚖️ <b>总榜的加权</b>：每个"（源 × 提前 N 天）"格子按 <b>√(两维有效样本量的较小者)</b> 加权，样本过薄的格子剔出设计；
+        等权口径的对照名次一并披露（见"这份名次有多结实"）。</li>
       <li>🌧️ <b>逐小时降水口径</b>：观测 rain@t 覆盖 (t−1h, t]。各源入库口径——Open-Meteo/彩云/和风/中科星图/伏羲确定性：源原生序列直接透传（按"前 1 小时累计"同标注配对，彩云/和风的窗口方向已经平移标定核验）；中科天机/伏羲中期：源为 mm/h 降水率，作为前 1 小时累计的近似；风乌：6h 累计均摊为逐小时（总量守恒）；AccuWeather：按推断整体移位 1 小时（假设已在快照与代码中留档并定期标定复核）。</li>
-      <li>🧭 <b>起报锚点差异</b>：Open-Meteo 不回显真实起报轮次，其快照锚点是北京时"当日 00:00"且每天仅封存 1 份快照；其余各源锚定抓取时刻或真实起报轮次、逐时封存。同一「提前 N 天」桶内各源的实际难度与样本新鲜度因此略有差异，跨源解读请留意。</li>
+      <li>🧭 <b>起报锚点差异</b>：各源的"起报时刻"语义不同（见上一节逐源公示）——真实模式轮次、时间轴首点、
+        请求时刻下取整、数据更新时间、未知五种。其中后三类若实质接近抓取时刻，声明时效会系统性地长于实际时效，
+        相应的源在榜上带 <b>⚠️ 口径存疑</b> 标记。</li>
       <li>📅 <b>按天评估的覆盖门槛</b>：日聚合只在观测与预报两侧当日非缺测小时数都达标（≥{{ report.meta.daily_min_hours }}/24）的天上比较——降水全缺测的样本绝不折算成"预报无雨"。</li>
       {% if report.meta.daily_source_fallback %}<li>🗓️ <b>逐日预报补位</b>：不少 API 的逐日预报比逐小时覆盖得更远。某家在某一日的逐小时预报已到时效尽头时，只要它还提供了<b>自己的</b>逐日预报（日最高/最低温、日降水量），该日仍会参与按天评估——逐小时覆盖充足的日子一律继续用逐小时聚合（与历史同一口径）。补位条目在明细表②的「日产品补位」列按"补位数/总数"标出。<u>逐小时指标与排行榜永不掺入日预报反推的样本</u>；日产品的日界窗口与"逐小时求和"相差约 1 小时边界，跨源横比时请以该列为凭。</li>{% endif %}
+      {% if report.meta.get('require_complete_snapshots') %}<li>🧩 <b>残缺快照默认排除</b>：接口只返回部分分片的快照会被标成 <code>complete=false</code> 并<u>不参与评估</u>——
+        残缺样本与完整样本同权进榜会把"这家少抓了一半数据"混进"这家报得准不准"。{% if report.meta.get('excluded_incomplete') %}本窗口已排除
+        {% for m, n in report.meta.excluded_incomplete.items() %}{{ model_labels.get(m, m) }} {{ n }} 份{% if not loop.last %}、{% endif %}{% endfor %}。{% endif %}</li>{% endif %}
       {% if report.coverage.first_obs %}<li>🛰️ <b>实况自 {{ report.coverage.first_obs[:10] }} 起接入</b>：覆盖率与样本量按各站实际有实况的时段计算。</li>{% endif %}
     </ol>
   </section>
@@ -741,6 +901,7 @@ window.addEventListener("DOMContentLoaded", function () {
 <footer>
   生成时间：{{ generated_at }}（北京时）｜ 预报源：Open-Meteo（多模型）· 彩云天气 · 和风天气 · 中科天机 · 伏羲 · 风乌 · 中科星图 · AccuWeather ｜
   实况：环境气象数据服务平台 eia-data.com<br>
+  🔧 维护者请看 <a href="{{ base }}health.html">预报源健康度看板</a>（各源最近成功时刻、残缺率、起报锚点构成）。
   本页由 GitHub Actions 自动生成，每天 3 次更新；仅供学习参考，出行请以官方气象部门预报为准。
 </footer>
 
@@ -767,6 +928,22 @@ const MODEL_COLOR = {{ model_colors_json | safe }};    // 模型 id → 固定�
 const STATION_LABEL = {{ station_labels_json | safe }}; // 站点 id → 中文名
 
 const labelOf   = m => MODEL_LABEL[m] || m;
+/* 属性值转义：争议理由来自快照元数据（外部字符串），拼进 title 前必须转义 */
+const escAttr = s => String(s == null ? "" : s)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+/* 口径存疑标记（对抗式审查 P0-6）：起报锚点≈抓取时刻、残缺分片、城市吸附、
+   整数温度——命中任意一条就在名字后挂一个显式标记。争议理由进 title，读者
+   悬停即可看到"为什么这家的名次要打个问号"。 */
+function disputeBadge(row) {
+  if (!row || !row.disputed) return "";
+  const src = row.issue_source_label ? ("起报锚点：" + row.issue_source_label + "。") : "";
+  const reasons = (row.disputed_reasons || []).join("；");
+  return ' <span class="disp" style="font-size:11px;font-weight:600;color:#b3261e;' +
+    'background:#fdecea;border:1px solid #f3c6c1;border-radius:99px;padding:0 6px;' +
+    'cursor:help;white-space:nowrap" title="' + escAttr(src + reasons) +
+    '">⚠️ 口径存疑</span>';
+}
 const stationOf = s => STATION_LABEL[s] || s;
 /* 手机断点（与 CSS @media 保持一致）：榜单卡片/图表紧凑布局共用这一个判定 */
 const MQ_NARROW = window.matchMedia("(max-width:640px)");
@@ -1440,7 +1617,8 @@ try {
         '<span class="lb-card-rank">' + rankCell + "</span>" +
         '<div class="lb-card-name">' + crown +
           '<span class="dot" style="background:' + colorOf(m) + '"></span>' +
-          '<span class="fam">' + (FAMILY_ICON[m] || "") + "</span><b>" + labelOf(m) + dagger + "</b>" +
+          '<span class="fam">' + (FAMILY_ICON[m] || "") + "</span><b>" + labelOf(m) + dagger +
+          disputeBadge(row) + "</b>" +
           '<span class="id">' + m + "</span></div>" +
         '<div class="lb-card-score"' + bar + ">" +
           ((none || notQ) ? naTip(row) : "<b>" + fmtC(row[key], 1) + '</b><span class="lb-pri">' + mainLabel + "</span>") +
@@ -1506,6 +1684,7 @@ try {
       '<td class="c-rank lb-rank">' + rankCell + "</td>" +
       '<td class="c-name l">' + crown + '<span class="dot" style="background:' + colorOf(m) +
         '"></span><span class="fam">' + (FAMILY_ICON[m] || "") + "</span><b>" + labelOf(m) + dagger +
+        disputeBadge(row) +
         '</b><span class="id">' + m + "</span></td>" +
       scoreCell(row, none, notQ) +
       "<td class=\"num\">" + fmtC(row.temp_score, 1) + "</td>" +

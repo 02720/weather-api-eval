@@ -116,7 +116,7 @@ from typing import Any
 import requests
 
 from .base import ForecastProvider
-from .http import request_with_retries
+from .http import DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, request_with_retries
 from .resample import interpolate_hourly, spread_accumulation, tile_endpoints
 
 logger = logging.getLogger(__name__)
@@ -132,6 +132,8 @@ HEADERS = {
 SOURCE = "ew4all"
 TEM_ELEMENT = "TEM"
 MAX_ISSUE_FALLBACK = 4      # 起报轮次回退探测次数（由新到旧）
+# 负降水的浮点容差（mm/h）：超过即视为非物理值并按缺测处理（P2-8）
+_NEG_PRECIP_TOL = 1e-6
 _RUN_LABEL_LEN = 14         # "YYYYMMDDHH0000"
 # ONETPE（1 小时降水）实测覆盖起报后约 72 小时；偏短即告警（交接点会提前）
 ONE_TPE_EXPECTED_HOURS = 72
@@ -263,15 +265,19 @@ class Ew4allProvider(ForecastProvider):
     分组不被跨模式错位污染——与中科天机同属 base.py 契约的第 2 种返回形态。
     """
 
-    def __init__(self, timeout: int | tuple = (10, 60), retries: int = 3,
+    def __init__(self, timeout: int | tuple = HTTP_DEFAULT_TIMEOUT, retries: int = 3,
                  session: requests.Session | None = None):
         self.timeout = timeout
         self.retries = retries
         self.session = session or requests.Session()
-        # 起报轮次列表与最终锚点是"模式级"属性，跨站点复用（4 站只探测 1 次）；
-        # _probe_cache 留着探测那一站的原始行，供其落盘时直接复用
+        # 起报轮次**候选列表**是模式级事实（一次接口调用即可得到），跨站复用没问题；
+        # 但"哪一轮要素齐全"是**站点级**事实——本源的轮次内部分要素先后出数，
+        # 而各站点的出数进度并不保证同步。旧实现把探测站（列表里第一个站）的判定
+        # 提升为模式级事实供其余 3 站沿用（对抗式审查 P1-6）：若探测站恰好选到一个
+        # 偏旧/偏新的轮次，4 站的快照会一起打上错位的 issue_iso，且**不报错、不告警**。
+        # 现在 _issue_cache / _probe_cache 都按 (模型, 站点) 建键，每站独立复核。
         self._runs_cache: dict[str, list[datetime]] = {}
-        self._issue_cache: dict[str, datetime] = {}
+        self._issue_cache: dict[tuple[str, str], datetime] = {}
         self._probe_cache: dict[tuple[str, str], tuple[list, list]] = {}
 
     # ------------------------------------------------------------------ 对外
@@ -316,7 +322,8 @@ class Ew4allProvider(ForecastProvider):
         "同一批有效时刻改由相邻轮次以更长时效覆盖"，属可接受的已知边界，
         且下一次运行仍可正常捕获该轮次（届时其降水已出数）。
         """
-        cached = self._issue_cache.get(spec.model)
+        cache_key = (spec.model, probe_station.id)
+        cached = self._issue_cache.get(cache_key)
         if cached is not None:
             return cached
         runs = self._runs_cache.get(spec.model)
@@ -349,7 +356,7 @@ class Ew4allProvider(ForecastProvider):
             if run != runs[0]:
                 logger.info("EW4ALL %s 最新轮次 %s 要素不全，回退使用 %s",
                             spec.model, _fmt(runs[0]), _fmt(run))
-            self._issue_cache[spec.model] = run
+            self._issue_cache[cache_key] = run
             # 探测结果顺带留给本站点的落盘复用（省最多 3 次请求，也避免"探测与落盘
             # 之间服务端状态变化"导致的竞态）
             self._probe_cache[(spec.model, probe_station.id)] = (tem, prc, one)
@@ -424,6 +431,18 @@ class Ew4allProvider(ForecastProvider):
             expansion.append(f"precipitation<= {spec.precip_1h_element} passthrough")
         snapshot = {
             "issue_iso": issue_bj.strftime("%Y-%m-%dT%H:00"),
+            # 起报锚点语义：真实的模式轮次（UTC run 换算北京时）——本项目中可复核性
+            # 最强的一类锚点，与"请求时刻下取整"完全不是一回事，必须显式区分
+            "issue_source": "model_run",
+            "issue_raw": run.strftime("%Y%m%d%H"),
+            "resolution_hours": 1,
+            "precip_unit": "mm",
+            # 降水是 {window}h 累计产品（前段为原生 1h，交界点见 precip_1h_until）
+            "precip_accum_window_hours": spec.precip_window_hours,
+            # 1 小时降水缺供时整轮降水退化为摊薄值：成档但精度降级，如实标注
+            "complete": bool(one) or not spec.precip_1h_element,
+            "missing_shards": ([] if (one or not spec.precip_1h_element)
+                               else [str(spec.precip_1h_element)]),
             "station_id": station.id,
             "source": SOURCE,
             "models": [spec.model],
@@ -489,9 +508,17 @@ class Ew4allProvider(ForecastProvider):
             logger.warning(
                 "EW4ALL %s 站点 %s 降水采样有值但平铺后全为缺测（窗口相位可能失配）",
                 spec.model, station.id)
-        if any(v is not None and v < 0 for v in precips):
-            logger.warning("EW4ALL %s 站点 %s 降水出现负值，契约可能已变化",
-                           spec.model, station.id)
+        # 负降水是不可接受的物理值（P2-8）：旧实现只 WARNING 就照常入库，于是
+        # 一个"契约漂移"的迹象会直接变成降水评分里的负样本。超过浮点容差即置
+        # 缺测——既不伪装成 0（那是"预报无雨"，同样错），也不让它污染指标。
+        neg_idx = [i for i, v in enumerate(precips)
+                   if v is not None and v < -_NEG_PRECIP_TOL]
+        if neg_idx:
+            logger.warning("EW4ALL %s 站点 %s 有 %d 个负降水值（契约可能已变化），"
+                           "按缺测处理：位置 %s", spec.model, station.id,
+                           len(neg_idx), neg_idx[:5])
+            for i in neg_idx:
+                precips[i] = None
         # ── 1 小时降水覆盖度（CMA-NDFS 短时效降水的首选产品）──
         if spec.precip_1h_element:
             one_ok = sum(1 for t, v in one if v is not None)

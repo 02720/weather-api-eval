@@ -249,7 +249,10 @@ def test_snapshot_issue_and_hourly_axis():
         .fetch_snapshot(Station, [MODEL_NAME])
     assert snap["models"] == [MODEL_NAME] and snap["source"] == "cma_public"
     assert snap["issue_iso"] == "2026-09-13T08:00"
-    assert snap["issue_source"] == "hour_offset"
+    # 契约枚举（P0-6）：各源统一到五种语义；provider 自有词表留在 detail
+    assert snap["issue_source"] == "model_run"
+    assert snap["issue_source_detail"] == "hour_offset"
+    assert snap["resolution_hours"] and snap["precip_accum_window_hours"]
     # publishTime 只是审计线索，**不是**锚点：它与起报基准的差值实测非常量（+4h / +0h）
     assert snap["publish_minus_issue_hours"] == 4
     # 逐小时轴：首末采样之间逐小时展开（9 个 3 小时采样 → 25 个整点）

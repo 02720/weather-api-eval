@@ -62,7 +62,7 @@ from typing import Any
 import requests
 
 from .base import ForecastProvider
-from .http import request_with_retries
+from .http import DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, request_with_retries
 # 重采样（3h 采样→逐小时插值、6h 累计→逐小时均摊）的实现在 resample.py 中唯一一份，
 # EW4ALL 接入也复用同一套；本模块保留原函数名作为薄封装，既有调用方/测试不受影响。
 from .resample import interpolate_hourly, spread_accumulation
@@ -118,6 +118,22 @@ def _num(v: Any) -> float | None:
     return f if (f == f and f not in (float("inf"), float("-inf"))) else None
 
 
+def _sample_step_hours(rows: list[tuple[datetime, float | None, float | None]]) -> int | None:
+    """响应采样点的原生步长（小时）：相邻时刻间隔的中位数。
+
+    用作快照的 resolution_hours——本源游客态与授权态的步长不同，而"原生 3 小时
+    被线性平铺成逐小时"这件事必须留档，否则它与原生逐小时产品在榜上无从区分。
+    """
+    if len(rows) < 2:
+        return None
+    deltas = sorted(int(round((rows[i + 1][0] - rows[i][0]).total_seconds() / 3600))
+                    for i in range(len(rows) - 1))
+    deltas = [d for d in deltas if d > 0]
+    if not deltas:
+        return None
+    return deltas[len(deltas) // 2]
+
+
 def spread_precip_6h(samples: list[tuple[datetime, float | None]],
                      hours: list[datetime]) -> list[float | None]:
     """6 小时累计降水 → 逐小时 mm/h 速率（非重叠平铺窗口均摊 /6）。
@@ -134,7 +150,7 @@ def spread_precip_6h(samples: list[tuple[datetime, float | None]],
 class FengWuProvider(ForecastProvider):
     """FengWu-GHR-9km 快照器：单模型快照 dict；FENGWU_API_KEY 可选（延长时效）。"""
 
-    def __init__(self, timeout: int | tuple = (10, 60), retries: int = 3,
+    def __init__(self, timeout: int | tuple = HTTP_DEFAULT_TIMEOUT, retries: int = 3,
                  session: requests.Session | None = None, api_key: str | None = None):
         self.api_key = api_key if api_key is not None else os.environ.get(KEY_ENV, "")
         self.timeout = timeout
@@ -240,6 +256,15 @@ class FengWuProvider(ForecastProvider):
             pass
         snapshot = {
             "issue_iso": issue_iso,
+            "issue_source": "axis_start",
+            "issue_raw": issue_iso,
+            # 游客态 3h 步长、授权态 1h：原生分辨率必须留档，否则"3 小时产品被线性
+            # 平铺"与"原生逐小时"在同一张榜上看起来一模一样。步长直接由响应采样点
+            # 的相邻间隔推出（不靠档位假设——档位与实际步长的对应关系可能变化）
+            "resolution_hours": _sample_step_hours(rows),
+            "precip_unit": "mm",
+            # tp6h 是 6 小时累计、除以 6 摊平（总量守恒 ≠ 逐小时形态正确）
+            "precip_accum_window_hours": 6,
             "station_id": station.id,
             "source": SOURCE,
             "models": [MODEL_NAME],

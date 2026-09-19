@@ -161,7 +161,7 @@ from typing import Any
 import requests
 
 from .base import ForecastProvider
-from .http import request_with_retries
+from .http import DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, request_with_retries
 from .resample import interpolate_hourly, spread_accumulation
 from ..timeutil import floor_to_hour
 
@@ -302,6 +302,17 @@ def extract_points(payload: Any) -> tuple[list[tuple[datetime, dict]], dict[str,
     return sorted(points.items()), meta
 
 
+# provider 自有词表 → 契约枚举（见 snapshot_meta.VALID_ISSUE_SOURCES）：
+#   hour_offset  = 由接口声明的时效零点反解 → 真实模式轮次口径
+#   publish_time = 服务端发布时间            → 数据更新时间口径
+#   first_point  = 时间轴首点                → 时间轴首点口径
+_ISSUE_SOURCE_MAP = {
+    "hour_offset": "model_run",
+    "publish_time": "data_updated",
+    "first_point": "axis_start",
+}
+
+
 def derive_issue(points: list[tuple[datetime, dict]], publish_raw: str | None,
                  meta_notes: list[str]) -> tuple[datetime, str]:
     """解析起报锚点：优先用接口自述的 `hour` 反解，退化时回退并留档。
@@ -379,7 +390,7 @@ def _fmt(dt: datetime) -> str:
 class CmaPublicProvider(ForecastProvider):
     """中国气象局公众网逐小时预报快照器：无需凭据，单模型快照 dict。"""
 
-    def __init__(self, timeout: int | tuple = (10, 30), retries: int = 3,
+    def __init__(self, timeout: int | tuple = HTTP_DEFAULT_TIMEOUT, retries: int = 3,
                  session: requests.Session | None = None):
         self.timeout = timeout
         self.retries = retries
@@ -440,15 +451,21 @@ class CmaPublicProvider(ForecastProvider):
             "requested_lon": station.lon,
             "station_code": str(station_code),          # WMO 站号（本源以站号寻址）
             "publish_time": meta["publish_raw"],
-            # 起报锚点的来源（hour_offset / publish_time / first_point）与推导说明，
-            # 供事后审计"这份快照的 lead 是按什么口径算出来的"
-            "issue_source": issue_source,
+            # 起报锚点的来源与推导说明，供事后审计"这份快照的 lead 是按什么口径
+            # 算出来的"。**细节留在 issue_source_detail，契约字段用统一枚举**——
+            # 各源自造词表正是 §6.1 那五种语义混在同一张榜上的根源。
+            "issue_source": _ISSUE_SOURCE_MAP[issue_source],
+            "issue_source_detail": issue_source,
             "issue_notes": notes,
             # publishTime 相对起报基准的小时差——**不是常量**（实测同一产品线的两次
             # 循环分别为 +4h 与 +0h，见契约第 5 条），仅作审计线索，绝不可反过来当锚点
             "publish_minus_issue_hours": (
                 None if meta["publish_raw"] is None else
                 _hours_between(issue, meta["publish_raw"])),
+            "resolution_hours": GRID_STEP_HOURS,
+            "precip_unit": "mm",
+            # 降水是后向 3 小时累计、摊到 (t-3h, t] 的逐小时
+            "precip_accum_window_hours": PRECIP_WINDOW_HOURS,
             "grid_step_hours": GRID_STEP_HOURS,
             "precip_interval_hours": PRECIP_WINDOW_HOURS,
             "expansion": (

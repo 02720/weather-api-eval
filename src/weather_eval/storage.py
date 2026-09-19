@@ -25,11 +25,11 @@ import logging
 import os
 import tempfile
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .timeutil import ym, ymd
+from .timeutil import now_beijing, ym, ymd
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,11 @@ def save_obs(station_id: str, records: list[dict]) -> int:
     """把一批观测记录合并写入该站当月文件，按时间键去重；返回新增/更新的条数。
 
     读-改-写全程持文件锁：两个进程并发保存同站观测时不会互相覆盖丢更新。
+
+    **观测回改写进 revisions 数组而不是只打日志**（P2-2）：第三方观测源会修正
+    早期错报，旧实现静默覆盖旧值，"当时的实况"从此不可复原——而实况是评估里
+    唯一的真值来源，它一旦不可追溯，所有历史结论都失去了可复核性。revisions
+    保留每次改动的时间戳与新旧值，日志照打（可见性不变），但证据不再丢失。
     """
     if not records:
         return 0
@@ -97,6 +102,7 @@ def save_obs(station_id: str, records: list[dict]) -> int:
     for r in records:
         months.setdefault(ym(parse_dt(r["time"])), {})[r["time"]] = r
     updated = 0
+    revised_at = now_beijing().strftime("%Y-%m-%dT%H:%M:%S")
     for month, rec_map in months.items():
         path = _root() / "obs" / station_id / f"{month}.json"
         with _exclusive_lock(path):
@@ -105,16 +111,34 @@ def save_obs(station_id: str, records: list[dict]) -> int:
                 old = existing.get(k)
                 if k not in existing or v != existing[k]:
                     updated += 1
-                # 观测被回改时留痕（P2-4）：存档的可审计性要求"改了什么"可见——
-                # 观测源会修正早期错报，静默覆盖会让"当时的实况"无法复原。
                 if old is not None and old != v:
                     logger.warning(
                         "观测回改 %s %s：temp %s→%s，rain %s→%s",
                         station_id, k, old.get("temp"), v.get("temp"),
                         old.get("rain"), v.get("rain"))
+                    v = _with_revision(v, old, revised_at)
                 existing[k] = v
             _atomic_write_json(path, existing)
     return updated
+
+
+# revisions 数组的长度上限：回改是罕见事件，但畸形/抖动源可能反复改写同一时刻；
+# 截断保留最近若干次，避免单条观测把月文件撑大
+MAX_OBS_REVISIONS = 10
+
+
+def _with_revision(new: dict, old: dict, ts: str) -> dict:
+    """把被改写的旧值挂进新记录的 revisions 数组（不覆盖新值本身）。"""
+    rec = dict(new)
+    history = list(old.get("revisions") or [])
+    history.append({
+        "at": ts,
+        "prev": {k: old.get(k) for k in ("temp", "rain", "time")}
+        if any(k in old for k in ("temp", "rain")) else {k: old.get(k) for k in old
+                                                          if k != "revisions"},
+    })
+    rec["revisions"] = history[-MAX_OBS_REVISIONS:]
+    return rec
 
 
 def load_obs(station_id: str, month: str | None = None) -> dict[str, dict]:
@@ -144,12 +168,24 @@ def save_forecast_snapshot(station_id: str, model: str, snapshot: dict) -> bool:
     检查、都写一遍（TOCTOU）。与观测侧同一把 flock 锁住整个临界区：内容通常
     相同、原子 rename 也不会产生半文件，实际危害有限，但观测侧已建锁机制，
     快照侧补上是零成本的正确性。
+
+    **落盘前统一盖契约元数据**（P1-1 / P0-6）：抓取时刻、内容哈希、起报锚点语义、
+    完整性标记。这是全项目唯一的快照写入口，把"每份存档都要带 fetched_at"这件事
+    从各 provider 的自觉变成写路径的强制——漏盖字段在物理上不可能发生。
     """
+    from .snapshot_meta import stamp_snapshot
+    from .timeutil import now_beijing
     issue_iso = snapshot["issue_iso"]
     path = _root() / "forecasts" / station_id / model / _issue_filename(issue_iso)
     with _exclusive_lock(path):
         if path.exists():
             return False
+        now = now_beijing()
+        stamp_snapshot(
+            snapshot,
+            fetched_bj=now.strftime("%Y-%m-%dT%H:%M:%S"),
+            fetched_utc=now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
         _atomic_write_json(path, snapshot)
     return True
 
@@ -208,11 +244,30 @@ def archive_old_snapshots(older_than_days: int, apply: bool = False) -> list[Pat
             continue
         changed.append(path)
         if apply:
-            gz_path = path.with_name(path.name + ".gz")
-            with open(path, "rb") as src, gzip.open(gz_path, "wb", compresslevel=9) as dst:
-                dst.writelines(src)
-            path.unlink()
+            _atomic_gzip_replace(path)
     return changed
+
+
+def _atomic_gzip_replace(path: Path) -> None:
+    """把 path 原地替换为 path.gz，全程走"临时文件 + os.replace"（P2-1）。
+
+    旧实现直接写目标 .gz 再 unlink 源文件：中断（磁盘满、CI 被杀）会留下半截
+    .gz，而它会被下一次 `git add data` 收进仓库——一份永久损坏的"档案"。
+    先写临时文件再原子改名，则中断只会留下一个临时文件（不入 git、可清理），
+    源 .json 只有在 .gz 完整落盘之后才被删除。
+    """
+    gz_path = path.with_name(path.name + ".gz")
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".gz.tmp")
+    os.close(fd)
+    try:
+        with open(path, "rb") as src, gzip.open(tmp, "wb", compresslevel=9) as dst:
+            dst.writelines(src)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, gz_path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    path.unlink()
 
 
 def _snapshot_files_iter(forecasts_root: Path):
@@ -225,6 +280,31 @@ def _snapshot_files_iter(forecasts_root: Path):
 # ------------------------------------------------------------------ 指标（可选缓存，当前实现每次重算）
 def save_metrics(period: str, name: str, obj: Any) -> None:
     _atomic_write_json(_root() / "metrics" / period / f"{name}.json", obj)
+
+
+# ------------------------------------------------------------------ 完整性清单
+def save_manifest(period: str, obj: Any) -> Path:
+    """写 data/manifest/{period}.json（哈希链清单，§7.1）。
+
+    进 git 的目的是**公示**：归档页与月度清单都带 Merkle 根，任何人克隆仓库后
+    重算一遍就能验证存档未被事后改写。放在 data/ 下随数据一起提交。
+    """
+    path = _root() / "manifest" / f"{period}.json"
+    _atomic_write_json(path, obj)
+    return path
+
+
+def load_manifest(period: str | None = None) -> dict:
+    """读清单；period 缺省时取最新的（文件名排序）。"""
+    base = _root() / "manifest"
+    if not base.exists():
+        return {}
+    if period is not None:
+        return _load_json(base / f"{period}.json") or {}
+    files = sorted(base.glob("*.json"))
+    if not files:
+        return {}
+    return _load_json(files[-1]) or {}
 
 
 def parse_dt(s: str) -> Any:

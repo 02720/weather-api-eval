@@ -128,6 +128,14 @@ class OpenMeteoProvider(ForecastProvider):
         daily_block = _parse_daily(payload, models, allow_bare, station.id)
         snapshot = {
             "issue_iso": issue_iso,
+            # 起报锚点语义（P0-6 / §6.1）：本源把"当日 00:00"当作起报时刻，它是
+            # **时间轴首点**而非真实模式轮次——与真实 init 可差 −8~+12h。契约要求
+            # 显式声明，评估层据此分层，避免与"真实轮次"的源混为一谈。
+            "issue_source": "axis_start",
+            "issue_raw": issue_iso,
+            "resolution_hours": 1,
+            "precip_unit": "mm",
+            "precip_accum_window_hours": 1,
             "station_id": station.id,
             "source": "open-meteo",
             "models": list(data.keys()),

@@ -44,7 +44,7 @@ from typing import Any
 import requests
 
 from .base import ForecastProvider
-from .http import request_with_retries
+from .http import DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, request_with_retries
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +128,7 @@ def parse_weather_info(payload: Any, issue_iso: str) -> dict[str, list]:
 class FuxiC88Provider(ForecastProvider):
     """伏羲中期（FuXi-C88）快照器：单模型、共享时间轴，返回单份快照 dict。"""
 
-    def __init__(self, timeout: int | tuple = (10, 60), retries: int = 3,
+    def __init__(self, timeout: int | tuple = HTTP_DEFAULT_TIMEOUT, retries: int = 3,
                  session: requests.Session | None = None):
         self.timeout = timeout
         self.retries = retries
@@ -167,6 +167,12 @@ class FuxiC88Provider(ForecastProvider):
             )
         snapshot = {
             "issue_iso": issue_iso,
+            "issue_source": "model_run",
+            "issue_raw": issue_iso,
+            "resolution_hours": 6,
+            "precip_unit": "mm",
+            # 伏羲中期为 6 小时累计产品（按 6h 窗口平铺/插值到逐小时）
+            "precip_accum_window_hours": 6,
             "station_id": station.id,
             "source": SOURCE,
             "models": [MODEL_NAME],

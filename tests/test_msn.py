@@ -483,8 +483,14 @@ def test_end_to_end_pairs_with_obs(tmp_path, monkeypatch):
     storage.save_forecast_snapshot("s1", "msn_v1", snap)
 
     end = base + timedelta(hours=3)
+    # 本源只服务了 1 个分片（max_day=10）-> 快照契约标 complete=false。
+    # 默认口径下残缺快照**不进评估**（P0-6 第 4 条：残缺不再伪装成完整外壳），
+    # 故这里显式关掉完整性门槛以验证配对链路本身；"默认排除"由
+    # test_partial_snapshot_excluded_by_default 单独锁定。
+    assert snap["complete"] is False and snap["missing_shards"]
     cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
-           "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 0}
+           "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 0,
+           "require_complete_snapshots": False}
     data = build_report(["s1"], ["msn_v1"], cfg, base, end, "2026-09")
 
     # 15:00(lead=0) 被评估引擎排除 → 16:00/17:00/18:00 三对

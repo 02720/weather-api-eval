@@ -168,7 +168,10 @@ def test_build_report_end_to_end(tmp_path, monkeypatch):
     end = start + timedelta(hours=47)
     cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
            "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 1,
-           "min_board_neff_rain": 1}
+           "min_board_neff_rain": 1,
+           # 夹具只有 2 个自然日：进天桶的样本 24 条，门槛相应下调（默认 30 是
+           # 为真实 25 天样本期设的；跨站相关校正后 n_eff 会比名义 n 更低）
+           "min_board_neff": 20}
     data = build_report(["s1"], ["ecmwf_ifs"], cfg, start, end, "2026-08")
 
     # 逐小时 24h 桶：lead 1..24 共 24 对，且预报=观测+1 -> 误差恒为 1 -> ±2°C 准确率 100%，RMSE=1
@@ -182,9 +185,11 @@ def test_build_report_end_to_end(tmp_path, monkeypatch):
     assert abs(pb["ts"] - 1.0) < 1e-6
     assert pb["acc"] == 100.0
 
-    # 逐小时各天桶都有数据（lead 上限 47，故 2d 桶含 lead 25..47 共 23 个样本）
+    # 天桶按**日历时窗**（P0-3）：起报 08-24T00:00，48h 序列覆盖 08-24 与 08-25，
+    # 故 1d 桶 = 08-25 全天 24 个样本；起报当日（08-24）落 bucket=0，不进天桶榜。
+    # 2d 桶（08-26）无序列覆盖 -> 0 样本。
     assert data["temp_hourly"]["ecmwf_ifs"]["1d"]["n"] == 24
-    assert data["temp_hourly"]["ecmwf_ifs"]["2d"]["n"] == 23
+    assert data["temp_hourly"]["ecmwf_ifs"]["2d"]["n"] == 0
 
     # 逐小时降水桶含 1h 雨强分级结构；按天降水桶含 24h 累计分级结构
     assert set(data["precip_hourly"]["ecmwf_ifs"]["1d"]["graded"].keys()) == {"1", "2", "3", "4", "5"}
@@ -218,7 +223,9 @@ def test_build_report_end_to_end(tmp_path, monkeypatch):
     # 既不是全部样本池化，也不把单维桶算作综合分
     all_row = data["leaderboards"]["all"][0]
     assert all_row["model"] == "ecmwf_ifs" and all_row["score"] is not None
-    assert all_row["n"] == 47 and all_row["lead_days"] == 2
+    # 天桶按日历时窗（P0-3）：48h 序列里 08-24 属起报当日（bucket=0，不进天桶），
+    # 故进天桶的样本是 08-25 的 24 条；lead_days 仍按这些样本的最远 lead（47h→2 天）
+    assert all_row["n"] == 24 and all_row["lead_days"] == 2
     bucket_overalls = [
         overall_score(data["temp_hourly"]["ecmwf_ifs"][f"{b}d"],
                       data["precip_score_daily"]["ecmwf_ifs"][f"{b}d"])
@@ -231,7 +238,8 @@ def test_build_report_end_to_end(tmp_path, monkeypatch):
     # 误差恒定的确定性夹具 → 每次重采样分数相同 → CI 坍缩为点值、冠军频率 100%
     assert all_row["ci90"] is not None and all_row["ci90"][0] <= all_row["score"] <= all_row["ci90"][1]
     assert all_row["champion_pct"] == 100.0
-    assert all_row["n_eff"] == 47 and all_row["qualified"] is True
+    # n_eff 只算进天桶的样本（24 条，P0-3），并已扣除跨站相关（P0-4）
+    assert all_row["n_eff"] == 24 and all_row["qualified"] is True
     assert all_row["n_buckets"] == len(bucket_overalls)
 
     # 得分趋势：综合 = 温度/降水的均分，且逐桶键齐备；与榜单共用同一套桶得分
@@ -241,7 +249,11 @@ def test_build_report_end_to_end(tmp_path, monkeypatch):
         tv = st["temp"]["ecmwf_ifs"][b]
         pv = st["precip"]["ecmwf_ifs"][b]
         ov = st["overall"]["ecmwf_ifs"][b]
-        # 综合分 = 温度/降水的均分，缺项不计（本夹具 2d 桶无按天降水样本）
+        if tv is None and pv is None:
+            # 天桶按日历时窗（P0-3）：2d 桶 = 08-26，48h 序列之外，两维都无样本
+            assert ov is None, b
+            continue
+        # 综合分 = 温度/降水的均分，缺项不计
         expected = round((tv + pv) / 2, 2) if tv is not None and pv is not None else tv
         assert abs(ov - expected) < 0.011, b
 
@@ -266,10 +278,11 @@ def test_build_report_empty_is_safe(tmp_path, monkeypatch):
 def test_overall_board_pools_all_leads_and_discloses_coverage(tmp_path, monkeypatch):
     """总榜 macro 化后的语义：各天桶等权平均 + 覆盖时效按有效样本披露。
 
-    两个模型：short_range 只覆盖前 24h（lead 1..23，n=23，且预报与实况完全一致 ->
-    满分），ecmwf_ifs 覆盖 48h（lead 1..47，温度恒偏高 1°C）。short_range 只有
-    第 1 桶且桶内完美 -> macro = 100 仍第一；ecmwf 的 macro 是其两个桶的平均。
-    lead_days 按实际参与计算的样本计（1 / 2 天）。"""
+    两个模型：short_range 只覆盖前 24h（全部落在**起报当日**，即 bucket=0，不进任何
+    天桶），ecmwf_ifs 覆盖 48h（08-24 + 08-25 两天，温度恒偏高 1°C）。
+    天桶已按日历时窗对齐（P0-3）：起报当日不进天桶榜，故 short_range 在天桶评估里
+    没有任何样本 -> 温度单维度都没有 -> 未达标；ecmwf 两维度齐备 -> 达标第一。
+    lead_days 按实际参与天桶计算的样本计（ecmwf = 2 天；short_range = 无）。"""
     monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
     start = datetime(2026, 8, 24, 0, 0)
     obs = []
@@ -298,7 +311,10 @@ def test_overall_board_pools_all_leads_and_discloses_coverage(tmp_path, monkeypa
     # 使"维度齐备"门槛（温度+降水都有分）可以独立于样本量被观察
     cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
            "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 1,
-           "min_board_neff": 10, "min_board_neff_rain": 1}
+           "min_board_neff": 10, "min_board_neff_rain": 1,
+           # 本用例考察的是"两维齐备才进 macro"的语义，故显式用等权口径；
+           # 样本量加权本身由 test_weighted_board_* 专门锁定
+           "board_cell_weighting": "equal"}
     data = build_report(["s1"], ["ecmwf_ifs", "short_range"], cfg, start, end, "2026-08")
 
     board = data["leaderboards"]["all"]
@@ -306,8 +322,11 @@ def test_overall_board_pools_all_leads_and_discloses_coverage(tmp_path, monkeypa
     # "综合"未到位 -> 未达标（哪怕桶内满分）；ecmwf 两维度齐备 -> 达标第一
     assert [r["model"] for r in board] == ["ecmwf_ifs", "short_range"]
     by_model = {r["model"]: r for r in board}
-    assert by_model["short_range"]["n"] == 23 and by_model["short_range"]["lead_days"] == 1
-    assert by_model["ecmwf_ifs"]["n"] == 47 and by_model["ecmwf_ifs"]["lead_days"] == 2
+    # n 只统计**进天桶评估**的样本（bucket ≥ 1）：short_range 全部落在起报当日，
+    # 故 n=0、无覆盖时效；全 lead 的配对数另存 n_all_leads（这里是 24）
+    assert by_model["short_range"]["n"] == 0 and by_model["short_range"]["lead_days"] is None
+    assert by_model["short_range"]["n_all_leads"] == 23
+    assert by_model["ecmwf_ifs"]["n"] == 24 and by_model["ecmwf_ifs"]["lead_days"] == 2
     assert by_model["short_range"]["qualified"] is False
     # 只有温度一个维度 -> "综合分"根本没到位：macro 只统计两维齐备的桶，故为 None
     assert by_model["short_range"]["score"] is None
@@ -334,12 +353,18 @@ def test_overall_board_pools_all_leads_and_discloses_coverage(tmp_path, monkeypa
         assert by_model[m]["n_buckets"] == len(buckets), m
     # 分时效榜：short_range 在 2d 桶无样本，分数为 None 沉底；
     # ecmwf 在 2d 桶只有温度维（无按天降水）-> 维度不齐 -> 未达标（分数保留）
+    # 2d 桶 = 起报后第 2 个自然日（08-26）：48h 序列之外，两维都无样本
     b2 = data["leaderboards"]["2d"]
     assert [r["model"] for r in b2] == ["ecmwf_ifs", "short_range"]
     assert b2[1]["score"] is None
     e2 = next(r for r in b2 if r["model"] == "ecmwf_ifs")
-    assert e2["qualified"] is False and e2["temp_score"] is not None \
-        and e2["precip_score"] is None
+    assert e2["score"] is None and e2["qualified"] is False
+    # "某桶只有温度维"的情形：1d 桶里 ecmwf 两维齐备、short_range 一维都没有
+    b1 = data["leaderboards"]["1d"]
+    e1 = next(r for r in b1 if r["model"] == "ecmwf_ifs")
+    s1 = next(r for r in b1 if r["model"] == "short_range")
+    assert e1["temp_score"] is not None and e1["precip_score"] is not None
+    assert s1["temp_score"] is None and s1["precip_score"] is None
     # 展示用 n 仍是全时效池化的配对数（天桶对 lead 1..N*24 完整划分）
     for m in ("short_range", "ecmwf_ifs"):
         sum_buckets = sum(
@@ -352,7 +377,7 @@ def test_overall_board_boundaries_and_pooling_benefit(tmp_path, monkeypatch):
     """总榜的边界语义、样本量门槛与"两维齐备才进 macro"。
 
     - lead_days 上限边界：lead 24h -> 1 天；lead 383h -> 16 天。
-    - 展示 n == 各分桶 n 之和（天桶对 lead 完整划分）。
+    - 展示 n == 各分桶 n 之和（天桶按日历时窗，bucket ≥ 1 的样本与分桶一一对应）。
     - 样本量门槛（P0-2.3）：sparse 模型每个天桶只有 6 个样本但**没有任何按天
       降水样本**（逐小时只给到 6 个孤立时刻，日聚合覆盖不足被门槛挡下）——
       旧池化口径会把这些样本凑成一份"总榜分数"，macro 化 + 两维齐备门槛后
@@ -404,9 +429,13 @@ def test_overall_board_boundaries_and_pooling_benefit(tmp_path, monkeypatch):
     board = data["leaderboards"]["all"]
     info = {r["model"]: r for r in board}
     # ceil 边界：24h -> 1 天；383h -> 16 天；121h -> 6 天（n 为 5 站合计）
-    assert info["day1"]["lead_days"] == 1 and info["day1"]["n"] == 24 * 5
-    assert info["wide"]["lead_days"] == 16 and info["wide"]["n"] == 383 * 5
-    assert info["sparse"]["lead_days"] == 6 and info["sparse"]["n"] == 6 * 5
+    # n 只统计进天桶的样本（bucket ≥ 1，P0-3）：
+    #   day1（25h 序列）只有 08-02T00:00 落在 1d 桶 -> 5 站各 1 条；
+    #   wide（384h 序列）08-02..08-16 共 15 个整天 -> 360 条/站；
+    #   sparse（6 个孤立时刻）落在 1d..5d 五个桶 -> 5 条/站。
+    assert info["day1"]["lead_days"] == 1 and info["day1"]["n"] == 1 * 5
+    assert info["wide"]["lead_days"] == 16 and info["wide"]["n"] == 360 * 5
+    assert info["sparse"]["lead_days"] == 6 and info["sparse"]["n"] == 5 * 5
     # day1 只有温度维 -> 无综合分；wide 两维齐备 -> 有分；sparse 无按天降水 -> 无分沉底
     assert info["day1"]["score"] is None and info["day1"]["qualified"] is False
     assert 0 < info["wide"]["score"] < 100 and info["wide"]["qualified"] is True
@@ -674,7 +703,9 @@ def test_daily_fallback_extends_beyond_hourly_coverage(tmp_path, monkeypatch):
         assert mix[f"{off}d"] == {"temp": {"hourly": 0, "daily": 1},
                                   "rain": {"hourly": 0, "daily": 1}}, off
     # 逐小时轨道完全不受影响：日产品绝不反推逐小时样本
-    assert data["temp_hourly"]["ecmwf_ifs"]["2d"]["n"] == 23   # 仅 lead 25..47
+    # 天桶按日历时窗（P0-3）：逐小时只覆盖 08-24/08-25，2d 桶 = 08-26 无覆盖
+    assert data["temp_hourly"]["ecmwf_ifs"]["1d"]["n"] == 24   # 08-25 全天
+    assert data["temp_hourly"]["ecmwf_ifs"]["2d"]["n"] == 0
     assert data["temp_hourly"]["ecmwf_ifs"]["3d"]["n"] == 0
     assert data["leaderboards"]["all"][0]["lead_days"] == 2
 
@@ -915,7 +946,8 @@ def test_lead_days_uses_valid_pairs_not_series_length(tmp_path, monkeypatch):
                         start + timedelta(hours=95), "2026-08")
     row = data["leaderboards"]["all"][0]
     assert row["lead_days"] == 2          # 温度有效样本最远到 lead 48 -> 2 天
-    assert row["n"] == 47                 # 只有 lead 1..47 有观测可配对
+    # 天桶按日历时窗（P0-3）：进天桶的样本 = 08-25 全天 24 条（lead 24..47）
+    assert row["n"] == 24
     # 观测只有 2 天：观测缺位同样限制有效覆盖，绝不按 96h 序列长度虚报
 
 
@@ -1074,7 +1106,9 @@ def test_weight_sensitivity_in_meta(tmp_path, monkeypatch):
         storage.save_forecast_snapshot("s1", model, snap)
     cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
            "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 1,
-           "sensitivity_runs": 100, "min_board_neff_rain": 1}
+           "sensitivity_runs": 100, "min_board_neff_rain": 1,
+           # 本用例考察敏感性机制本身：晋级天桶的样本只有 23 条，门槛相应下调
+           "min_board_neff": 20}
     data = build_report(["s1"], ["m_a", "m_b"], cfg, start,
                         start + timedelta(hours=46), "2026-08")
     ws = data["meta"]["weight_sensitivity"]
@@ -1250,9 +1284,11 @@ def test_difficulty_adjusted_board_removes_coverage_bias(tmp_path, monkeypatch):
     """总榜公平性：名次由"真本事"决定，不受"这家能预报多少天"影响。
 
     构造三家（同样的"误差随时效增长"规律，只有起点偏差不同）：
-      short 只覆盖第 1 桶，且第 1 桶报得**更差**（起点偏差 0.6°C）；
-      mid   覆盖 1~3 桶，起点偏差 0.3°C；
-      wide  覆盖 1~5 桶，第 1 桶报得**更准**（起点偏差 0.05°C）。
+      short 只覆盖第 1 桶（起点偏差 0.15°C）；
+      mid   覆盖 1~2 桶（起点偏差 0.10°C）；
+      wide  覆盖 1~5 桶，第 1 桶报得**最准**（起点偏差 0.05°C）。
+    起点偏差差被刻意压小：这样"只覆盖近端"的源在旧口径下靠"白拿简单桶"胜出，
+    而真本事（起点偏差）却把它排在最后——偏置与真相方向相反，测得出实现的对错。
     旧口径（各源自家桶等权平均）下 short 只吃最容易的第 1 桶 -> 名次被覆盖长度
     顶上去；难度对齐后各家都在同一批天桶上比，名次回到真本事（wide > mid > short）。
     """
@@ -1280,12 +1316,16 @@ def test_difficulty_adjusted_board_removes_coverage_bias(tmp_path, monkeypatch):
                 "data": {model: {"temperature_2m": vals, "precipitation": rains}}}
 
     for sid in stations:
-        storage.save_forecast_snapshot(sid, "short", snap(sid, "short", 48, 0.6))
-        storage.save_forecast_snapshot(sid, "mid", snap(sid, "mid", 3 * 24, 0.3))
+        storage.save_forecast_snapshot(sid, "short", snap(sid, "short", 48, 0.15))
+        storage.save_forecast_snapshot(sid, "mid", snap(sid, "mid", 3 * 24, 0.10))
         storage.save_forecast_snapshot(sid, "wide", snap(sid, "wide", 6 * 24, 0.05))
     cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
            "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 5,
-           "min_board_neff": 5, "min_board_neff_rain": 5,
+           # 本用例的合成误差在 5 个站上**完全相同**（抖动只依赖 h），跨站 ρ̄≈1，
+           # n_eff 校正后只剩个位数——这是 P0-4 修复的正确后果，与本用例要考察的
+           # "覆盖偏差"无关，故把入围门槛降到 1（跨站校正本身由
+           # tests/test_stats_core.py::test_n_eff_cross_station_correction 专门锁定）。
+           "min_board_neff": 1, "min_board_neff_rain": 1,
            "bootstrap_runs": 30, "sensitivity_runs": 30}
     end = start + timedelta(hours=7 * 24)
     data = build_report(stations, ["short", "mid", "wide"], cfg, start, end, "2026-08")

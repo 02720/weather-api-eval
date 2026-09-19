@@ -108,7 +108,7 @@ from urllib.parse import quote
 import requests
 
 from .base import ForecastProvider
-from .http import request_with_retries
+from .http import DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, request_with_retries
 from ..timeutil import BEIJING
 
 logger = logging.getLogger(__name__)
@@ -407,7 +407,7 @@ class AccuWeatherProvider(ForecastProvider):
     """AccuWeather 逐小时预报快照器：需 ACCUWEATHER_API_KEY，单模型快照 dict。"""
 
     def __init__(self, api_key: str | None = None, hours: int = DEFAULT_HOURS,
-                 language: str = "zh-cn", timeout: int | tuple = (10, 60),
+                 language: str = "zh-cn", timeout: int | tuple = HTTP_DEFAULT_TIMEOUT,
                  retries: int = 3, session: requests.Session | None = None,
                  base_url: str = BASE_URL):
         self.key = api_key if api_key is not None else os.environ.get(KEY_ENV)
@@ -477,6 +477,13 @@ class AccuWeatherProvider(ForecastProvider):
         daily_block = self._fetch_daily_block(loc["key"], station.id)
         snapshot = {
             "issue_iso": parsed["time"][0],
+            "issue_source": "axis_start",
+            "issue_raw": parsed["time"][0],
+            "resolution_hours": 1,
+            "precip_unit": "mm",
+            # TotalLiquid 被整体 +1h 移位（docstring 自认证据不足，p≈0.06）——
+            # 把这条假设写进契约，读者才能自己判断它是否可接受
+            "precip_accum_window_hours": 1,
             "station_id": station.id,
             "source": SOURCE,
             "models": [MODEL_NAME],

@@ -33,6 +33,40 @@ logger = logging.getLogger(__name__)
 # 默认分类下的确定性失败集合：4xx 一律不重试（429 限速例外——重试有意义）
 _DEFAULT_FATAL_STATUSES = range(400, 500)
 
+# ---- 统一超时与总预算（对抗式审查 P2-6）----
+# 各源此前分别用 (10,60) / (10,30) / 60 / 30 四套不一样的超时，且**没有任何总预算**：
+# 一个慢源可以用"每次请求都在超时边缘、再退避重试 3 次"的方式吃掉整个作业的时间，
+# 而作业里还有 11 个源排在后面等它。超时统一为一处定义，新增源不再各自发明。
+DEFAULT_TIMEOUT = (10, 60)        # (connect, read) 秒
+# 单源、单次运行的总时间预算（秒）：重试与分片请求共享。耗尽后不再退避重试，
+# 直接以明确错误收尾——把"这个源这轮废了"变成一个可见的失败，而不是一个
+# 看起来正常、实际只抓了一半的慢速成功。
+TOTAL_BUDGET_SECONDS = 900
+
+
+class TimeBudget:
+    """单源单轮的总时间预算（秒）。0/None = 不限（保持旧行为）。"""
+
+    def __init__(self, seconds: float | None = TOTAL_BUDGET_SECONDS):
+        self.total = float(seconds) if seconds else None
+        self._t0 = time.monotonic()
+
+    def spent(self) -> float:
+        return time.monotonic() - self._t0
+
+    def remaining(self) -> float | None:
+        if self.total is None:
+            return None
+        return max(0.0, self.total - self.spent())
+
+    def expired(self) -> bool:
+        r = self.remaining()
+        return r is not None and r <= 0.0
+
+    def describe(self) -> str:
+        r = self.remaining()
+        return "不限" if r is None else f"剩余 {r:.0f}s（总预算 {self.total:.0f}s）"
+
 
 def _dispatch(session: Any, method: str, url: str, *, params: dict | None,
               json_body: dict | None, headers: dict | None, timeout: Any) -> Any:
@@ -58,12 +92,13 @@ def request_with_retries(
     params: dict | None = None,
     json_body: dict | None = None,
     headers: dict | None = None,
-    timeout: int = 30,
+    timeout: Any = DEFAULT_TIMEOUT,
     retries: int = 3,
     source: str = "HTTP",
     redact: Callable[[str], str] | None = None,
     classify: Callable[[Any], tuple[str, Any]] | None = None,
     on_exhausted: Callable[[int | None, Exception | None], Exception] | None = None,
+    budget: "TimeBudget | None" = None,
 ) -> Any:
     """带退避与熔断的请求。返回 classify 判定成功的值（默认分类返回 Response）。
 
@@ -85,8 +120,13 @@ def request_with_retries(
             # 时携的是这条已脱敏的消息
             last_err = RuntimeError(_mask(e))
             logger.warning("%s 请求失败（第%d次）: %s", source, attempt + 1, last_err)
-            if attempt < retries:
+            # 总预算耗尽：不再退避（白等只会拖垮整轮作业，而时间是所有源共享的）
+            if attempt < retries and not (budget is not None and budget.expired()):
                 time.sleep(min(30, 3 * 2 ** attempt))
+            elif budget is not None and budget.expired():
+                logger.error("%s 总时间预算耗尽（%s），放弃本轮重试",
+                             source, budget.describe())
+                break
             continue
         last_status = getattr(resp, "status_code", None)
         if classify is not None:
@@ -105,6 +145,9 @@ def request_with_retries(
         else:
             last_err = RuntimeError(f"HTTP {last_status}")
         logger.warning("%s 请求失败（第%d次）: %s", source, attempt + 1, _mask(last_err))
+        if budget is not None and budget.expired():
+            logger.error("%s 总时间预算耗尽（%s），放弃本轮重试", source, budget.describe())
+            break
         if attempt < retries:
             time.sleep(min(30, 3 * 2 ** attempt))
     if on_exhausted is not None:

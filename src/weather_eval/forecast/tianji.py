@@ -58,7 +58,7 @@ from typing import Any
 import requests
 
 from .base import ForecastProvider
-from .http import request_with_retries
+from .http import DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, request_with_retries
 from ..timeutil import now_beijing
 
 logger = logging.getLogger(__name__)
@@ -154,7 +154,7 @@ class TianjiProvider(ForecastProvider):
 
     def __init__(
         self,
-        timeout: int | tuple = (10, 30),
+        timeout: int | tuple = HTTP_DEFAULT_TIMEOUT,
         retries: int = 3,
         session: requests.Session | None = None,
         now: datetime | None = None,
@@ -164,7 +164,11 @@ class TianjiProvider(ForecastProvider):
         self.session = session or requests.Session()
         self._now = now  # 测试注入；None 则运行时取当前北京时
         self._base_cache: dict[str, str] = {}      # model -> baseTime(YYYYMMDDHH)
-        self._failed_models: set[str] = set()      # 本次运行内已失败的模型（产品级故障，跳过以免每站重复探测）
+        # 本次运行内已失败的 (模型, 站点)：**必须带站点键**（P2-5）。
+        # 单站失败可能是该站的数据问题（缺站点覆盖、临时 5xx），把它记成"模型级
+        # 故障"会让其余站点一起跳过该模型——一次单站抖动被放大成整轮缺失，
+        # 而预报快照错过即无法追补。
+        self._failed_models: set[tuple[str, str]] = set()
 
     # ------------------------------------------------------------------ 对外
     def fetch_snapshot(self, station: Any, models: list[str] | None = None) -> list[dict]:
@@ -176,12 +180,12 @@ class TianjiProvider(ForecastProvider):
         for model in wanted:
             # 单模型失败只跳过该模型：任一产品下线/延迟不应造成整站快照全部丢弃
             # （存档按 站×模型×起报 幂等，后续运行对失败模型自动重试）。
-            if model in self._failed_models:
+            if (model, station.id) in self._failed_models:
                 continue
             try:
                 snapshots.append(self._fetch_one(station, model))
             except Exception as e:  # noqa: BLE001
-                self._failed_models.add(model)
+                self._failed_models.add((model, station.id))
                 errors[model] = e
                 logger.error("中科天机站点 %s 模型 %s 抓取失败: %s", station.id, model, e)
         if not snapshots:
@@ -242,6 +246,12 @@ class TianjiProvider(ForecastProvider):
         issue_iso = f"{base[0:4]}-{base[4:6]}-{base[6:8]}T{base[8:10]}:00"
         snapshot = {
             "issue_iso": issue_iso,
+            "issue_source": "model_run",
+            "issue_raw": issue_iso,
+            "resolution_hours": 1,
+            "precip_unit": "mm",
+            # pratesfc 是"降水率"（mm/h），非累计量——口径靠约定而非断言，如实留档
+            "precip_accum_window_hours": 1,
             "station_id": station.id,
             "source": SOURCE,
             "models": [model],

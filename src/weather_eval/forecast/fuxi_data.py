@@ -53,7 +53,7 @@ from typing import Any
 import requests
 
 from .base import ForecastProvider
-from .http import request_with_retries
+from .http import DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, request_with_retries
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +248,7 @@ def looks_like_running_accumulation(values: list[float | None]) -> bool:
 class FuxiDetProvider(ForecastProvider):
     """伏羲确定性（FuXi-Det）快照器：需 FUXI_DATA_TOKEN，单模型快照 dict。"""
 
-    def __init__(self, timeout: int | tuple = (10, 60), retries: int = 3,
+    def __init__(self, timeout: int | tuple = HTTP_DEFAULT_TIMEOUT, retries: int = 3,
                  session: requests.Session | None = None, token: str | None = None,
                  now: datetime | None = None):
         self.token = token if token is not None else os.environ.get(TOKEN_ENV, "")
@@ -300,6 +300,14 @@ class FuxiDetProvider(ForecastProvider):
             logger.info("伏羲数据 t2m 单位: %r", parsed["t2m_unit"])
         snapshot = {
             "issue_iso": issue_iso,
+            "issue_source": "model_run",
+            "issue_raw": issue_iso,
+            "resolution_hours": 6,
+            "precip_unit": "mm",
+            # tp 的累计类型只做了单调性哨兵（docstring 自认）：若它是"自起报累计"
+            # 而仍按逐时刻值入库，口径就与 1h 产品不同——如实声明为未知窗口，
+            # 评估层据此对非原生 1h 产品单独标注
+            "precip_accum_window_hours": None,
             "station_id": station.id,
             "source": SOURCE,
             "models": [MODEL_NAME],

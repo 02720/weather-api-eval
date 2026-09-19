@@ -381,6 +381,11 @@ class QWeatherProvider(ForecastProvider):
 
         snapshot = {
             "issue_iso": hourly_time[0],
+            "issue_source": "axis_start",
+            "issue_raw": hourly_time[0],
+            "resolution_hours": 1,
+            "precip_unit": "mm",
+            "precip_accum_window_hours": 1,
             "station_id": station.id,
             "source": "qweather",
             "models": [self.name],

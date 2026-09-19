@@ -87,3 +87,15 @@ eval:
   bootstrap_runs: 500                    # 按天分块 bootstrap 重采样次数（总榜 CI / 冠军频率）
   sensitivity_runs: 500                  # 权重敏感性：12 项权重各扰动 ±40% 的次数
   min_board_neff: 30                     # 总榜入围门槛：n_eff 低于此值列"样本积累中"
+  # —— 总榜的双向加法拟合（对抗式审查 P0-1/P1-4 的修正）——
+  board_cell_weighting: neff             # 格子权重口径：neff = √(两维有效样本量的较小者)
+                                         # （默认，让信息多的格子说话）；equal = 等权旧口径
+  min_cell_neff: 15                      # 单个（源, 天桶）格子的最低有效样本量：低于门槛
+                                         # 的格子不进劈分设计（旧实现靠 min_sample=5 放行）
+  board_min_col_frac: 0.5                # 长尾桶相对门槛：家数不足"最大桶家数 × 该比例"
+                                         # 的天桶不进主设计，单独出参考榜（0 = 关闭）
+  board_ridge: 0.0                       # 列效应的收缩强度 λ（0 = 不收缩）
+  board_long_tail_board: true            # 是否为被剔除的长尾桶单独出参考榜
+  require_complete_snapshots: true       # 排除快照契约标了 complete=false 的残缺快照
+                                         # （历史存档无该字段，按完整处理）
+  source_stale_hours: 30                 # 源健康度阈值：超过该时长未成功抓取即告警

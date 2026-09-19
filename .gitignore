@@ -6,3 +6,4 @@ data/metrics/
 data/**/*.lock
 .env
 .env.*
+.Trash-0/

@@ -58,7 +58,7 @@ from typing import Any
 import requests
 
 from .base import ForecastProvider
-from .http import request_with_retries
+from .http import DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, request_with_retries
 from ..timeutil import BEIJING
 
 logger = logging.getLogger(__name__)
@@ -175,7 +175,7 @@ class CaiyunProvider(ForecastProvider):
         self,
         token: str | None = None,
         name: str = DEFAULT_NAME,
-        timeout: int = 60,
+        timeout: int | tuple = HTTP_DEFAULT_TIMEOUT,
         retries: int = 3,
         session: requests.Session | None = None,
     ):
@@ -259,6 +259,14 @@ class CaiyunProvider(ForecastProvider):
         daily_block = parse_daily_block(payload, station.id, model=self.name)
         snapshot = {
             "issue_iso": issue_iso,
+            # 起报锚点语义（P0-6）：彩云的 issue 是**请求时刻下取整**（README 自认
+            # "时间戳锚定在请求时刻"）。这意味着它声明的 lead 实质接近抓取时刻，
+            # 与其他源的"模式轮次"不可直接比较——必须显式声明而不是留白。
+            "issue_source": "request_floor",
+            "issue_raw": issue_iso,
+            "resolution_hours": 1,
+            "precip_unit": "mm",
+            "precip_accum_window_hours": 1,
             "station_id": station.id,
             "source": "caiyun",
             "models": [self.name],

@@ -58,7 +58,7 @@ from typing import Any
 import requests
 
 from .base import ForecastProvider
-from .http import request_with_retries
+from .http import DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, request_with_retries
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +186,7 @@ def parse_area_response(payload: Any) -> dict[str, Any]:
 class GevisProvider(ForecastProvider):
     """中科星图逐小时预报快照器：需 GEVIS_TOKEN，单模型快照 dict。"""
 
-    def __init__(self, timeout: int | tuple = (10, 60), retries: int = 3,
+    def __init__(self, timeout: int | tuple = HTTP_DEFAULT_TIMEOUT, retries: int = 3,
                  session: requests.Session | None = None, token: str | None = None):
         self.token = token if token is not None else os.environ.get(TOKEN_ENV, "")
         if not self.token:
@@ -210,6 +210,12 @@ class GevisProvider(ForecastProvider):
             logger.warning("星图站点 %s 降水序列全部缺测，本快照降水将计为缺测", station.id)
         snapshot = {
             "issue_iso": parsed["issue_iso"],
+            # 起报锚点语义：接口的 result.start 是**产品时间轴首点**，不是模式轮次
+            "issue_source": "axis_start",
+            "issue_raw": parsed["issue_iso"],
+            "resolution_hours": 1,
+            "precip_unit": "mm",
+            "precip_accum_window_hours": 1,
             "station_id": station.id,
             "source": SOURCE,
             "models": [MODEL_NAME],
