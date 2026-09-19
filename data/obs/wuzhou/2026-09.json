@@ -4548,5 +4548,15 @@
     "rain": 0.0,
     "wind_speed": 1.4,
     "wind_dir": 56.0
+  },
+  "2026-09-19T23:00": {
+    "time": "2026-09-19T23:00",
+    "source": "wd",
+    "temp": 28.4,
+    "pressure": 1002.8,
+    "humidity": 83.0,
+    "rain": 0.0,
+    "wind_speed": 1.9,
+    "wind_dir": 51.0
   }
 }
