@@ -1,9 +1,9 @@
 {
-  "n_snapshots": 4139,
-  "merkle_root": "0dbd6a89a8f93b9dfe958812339da55be0df378e45d082fc91fbd1d49d962a01",
+  "n_snapshots": 4247,
+  "merkle_root": "45b00f97493a569076505f10e4abd26ae1785c7d54407be82384cb4820b0facf",
   "fetched_first": "2026-09-19T21:50:42",
-  "fetched_last": "2026-09-19T23:33:36",
+  "fetched_last": "2026-09-20T07:58:33",
   "n_without_fetched_at": 4095,
   "period_label": "2026-09",
-  "generated_at": "2026-09-19 23:00"
+  "generated_at": "2026-09-20 07:00"
 }
