@@ -4736,8 +4736,18 @@
     "pressure": 1007.3,
     "humidity": 91.0,
     "rain": 0.0,
-    "wind_speed": 0.9,
-    "wind_dir": 141.0
+    "wind_speed": 1.6,
+    "wind_dir": 115.0,
+    "revisions": [
+      {
+        "at": "2026-09-21T07:56:44",
+        "prev": {
+          "temp": 27.8,
+          "rain": 0.0,
+          "time": "2026-09-20T08:00"
+        }
+      }
+    ]
   },
   "2026-09-20T23:00": {
     "time": "2026-09-20T23:00",
@@ -4798,5 +4808,85 @@
     "rain": 0.0,
     "wind_speed": 1.1,
     "wind_dir": 87.0
+  },
+  "2026-09-21T07:00": {
+    "time": "2026-09-21T07:00",
+    "source": "wd",
+    "temp": 26.3,
+    "pressure": 1004.0,
+    "humidity": 95.0,
+    "rain": 0.0,
+    "wind_speed": 1.4,
+    "wind_dir": 104.0
+  },
+  "2026-09-21T06:00": {
+    "time": "2026-09-21T06:00",
+    "source": "wd",
+    "temp": 26.4,
+    "pressure": 1003.6,
+    "humidity": 96.0,
+    "rain": 0.0,
+    "wind_speed": 1.9,
+    "wind_dir": 78.0
+  },
+  "2026-09-21T05:00": {
+    "time": "2026-09-21T05:00",
+    "source": "wd",
+    "temp": 27.2,
+    "pressure": 1003.1,
+    "humidity": 92.0,
+    "rain": 0.0,
+    "wind_speed": 0.8,
+    "wind_dir": 172.0
+  },
+  "2026-09-21T04:00": {
+    "time": "2026-09-21T04:00",
+    "source": "wd",
+    "temp": 27.5,
+    "pressure": 1002.9,
+    "humidity": 87.0,
+    "rain": 0.0,
+    "wind_speed": 1.7,
+    "wind_dir": 164.0
+  },
+  "2026-09-21T03:00": {
+    "time": "2026-09-21T03:00",
+    "source": "wd",
+    "temp": 27.2,
+    "pressure": 1003.2,
+    "humidity": 85.0,
+    "rain": 0.0,
+    "wind_speed": 1.1,
+    "wind_dir": 337.0
+  },
+  "2026-09-21T02:00": {
+    "time": "2026-09-21T02:00",
+    "source": "wd",
+    "temp": 27.8,
+    "pressure": 1003.3,
+    "humidity": 86.0,
+    "rain": 0.0,
+    "wind_speed": 1.1,
+    "wind_dir": 32.0
+  },
+  "2026-09-21T01:00": {
+    "time": "2026-09-21T01:00",
+    "source": "wd",
+    "temp": 28.4,
+    "pressure": 1003.5,
+    "humidity": 83.0,
+    "rain": 0.0,
+    "wind_speed": 1.5,
+    "wind_dir": 106.0
+  },
+  "2026-09-21T00:00": {
+    "time": "2026-09-21T00:00",
+    "source": "wd",
+    "temp": 28.7,
+    "pressure": 1003.9,
+    "humidity": 79.0,
+    "rain": 0.0,
+    "wind_speed": 1.1,
+    "wind_dir": 35.0
   }
 }
