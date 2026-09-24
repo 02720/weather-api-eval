@@ -79,7 +79,11 @@ stations:
 
 eval:
   temp_accuracy_limits: [1, 2]          # ±1°C、±2°C 准确率
-  rain_threshold_mm: 0.1                 # 有无降水阈值（国内业务：≥0.1mm 记有降水日）
+  rain_threshold_mm: 0.1                 # 有无降水阈值（国内业务：≥0.1mm 记有降水；明细诊断口径）
+  rain_daily_threshold_mm: 1.0           # 日榜·降水维阈值：24h 累计 ≥1mm 记"有效降水日"
+  rain_hourly_threshold_mm: 1.0          # 小时榜·降水维阈值：该小时 ≥1mm 记"在下雨"
+                                         # （两个榜阈值的标定见 scripts/calibrate_*.py；
+                                         #  0.1mm 口径在逐小时尺度上被毛毛雨偏差主导）
   hourly_lead_days: 16                   # 逐小时评估最大时效（天），lead 1..384h
   daily_max_offset_days: 16              # 按天评估最大日偏移（天），offset 1..16
   daily_min_hours: 20                    # 按天评估日覆盖门槛：观测/预报任一侧当天非缺测
@@ -96,7 +100,10 @@ eval:
   bootstrap_block_days: 0
   bootstrap_runs: 500                    # 按天分块 bootstrap 重采样次数（总榜 CI / 冠军频率）
   sensitivity_runs: 500                  # 权重敏感性：12 项权重各扰动 ±40% 的次数
-  min_board_neff: 30                     # 总榜入围门槛：n_eff 低于此值列"样本积累中"
+  min_board_neff: 30                     # 总榜入围门槛（逐小时温度维）：n_eff 低于此值列"样本积累中"
+  min_board_neff_daily: 20               # 日榜温度维的入围门槛。日最高/最低的 n_eff 数的是
+                                         # "独立自然日"，与逐小时的"独立小时误差"不是同一
+                                         # 单位，必须单独设门槛（否则所有源都被一刀切）
   # —— 总榜的双向加法拟合（对抗式审查 P0-1/P1-4 的修正）——
   board_cell_weighting: neff             # 格子权重口径：neff = √(两维有效样本量的较小者)
                                          # （默认，让信息多的格子说话）；equal = 等权旧口径

@@ -13,10 +13,18 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "stations
 DEFAULT_EVAL = {
     "temp_accuracy_limits": [1, 2],   # ±1°C、±2°C 准确率
     "rain_threshold_mm": 0.1,          # 有无降水阈值（国内业务：≥0.1mm 记为有降水）
-    "rain_daily_threshold_mm": 1.0,    # 降水分（评分轨道）阈值：24h 累计 ≥1mm 记"有效降水日"
+    "rain_daily_threshold_mm": 1.0,    # 降水分（日榜·降水维）阈值：24h 累计 ≥1mm 记"有效降水日"
                                        # （2026-09-06 标定：逐小时 0.1mm 口径全模式 ETS≤0.054
                                        # 无区分度，日累计 1mm 阈值下 ETS 上限恢复到 0.25，
                                        # 扫描见 scripts/calibrate_daily_threshold.py）
+    "rain_hourly_threshold_mm": 1.0,   # 降水分（小时榜·降水维）阈值：该小时 ≥1mm 记"在下雨"
+                                       # （2026-09-24 标定，扫描见 scripts/calibrate_hourly_threshold.py）
+                                       # 逐小时 0.1mm 口径下模型报雨频率是实况的 2.7 倍（毛毛雨
+                                       # 偏差），ETS 中位数 0.078 且分数实际上在给"谁更少毛毛雨"
+                                       # 排序；阈值提到 1mm 后预报/实况基率趋于一致（5.66% vs
+                                       # 4.64%，BIAS 中位数 2.69→1.26），ETS 中位数升到 0.111，
+                                       # 分数才开始测量真技巧。业务上"1 小时下 0.1mm"≈没下，
+                                       # 而 ≥1mm/h 才是读者认定的"在下雨"。
     "hourly_lead_days": 16,            # 逐小时评估最大时效（天），即 lead 1..384h
     "daily_max_offset_days": 16,       # 按天评估最大日偏移（天），即 offset 1..16
     "daily_min_hours": 20,             # 按天评估的日覆盖门槛：观测/预报任一侧当天
@@ -25,6 +33,13 @@ DEFAULT_EVAL = {
     "min_sample": 5,                    # 样本数低于此值视为"样本不足"，不出结论
     "min_board_neff": 30,               # 进入总榜排名的有效样本量门槛（n_eff，考虑误差
                                        # 自相关后）；未达标源列"样本积累中"不参与冠军竞争
+    "min_board_neff_daily": 20,         # 日榜温度维的入围门槛（2026-09 双轨道新增）。
+                                       # 门槛必须跟 n_eff 的**计数单位**走：逐小时温度
+                                       # 的 n_eff 数的是"独立小时误差"，日最高/最低的
+                                       # n_eff 数的是"独立自然日"——同一批存档后者往往
+                                       # 只有前者的几十分之一。套用 30 会把所有源一刀
+                                       # 切掉。20 与 min_board_neff_rain 同尺度（都是
+                                       # 按天计数，≈5 天 × 4 站）。
     # ---- 总榜的双向加法拟合（对抗式审查 P0-1/P1-4）----
     "board_cell_weighting": "neff",     # 格子权重口径："neff" = √(格子有效样本量)（默认，
                                        # 让信息多的格子说话）；"equal" = 等权（旧口径，

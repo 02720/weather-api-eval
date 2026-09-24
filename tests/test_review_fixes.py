@@ -125,7 +125,7 @@ def test_derived_columns_use_the_same_cell_mask(tmp_path, monkeypatch):
     acc2 = {r["model"]: r["acc2"] for r in d2["leaderboards"]["all"]}
     assert acc1 == acc2, (acc1, acc2)
 
-    dw = d1["meta"]["difficulty_window"]
+    dw = d1["meta"]["difficulty_window"]["all"]
     assert dw["cell_valid"], "设计掩膜必须随披露一起落盘，供读者核对"
 
 
@@ -188,7 +188,7 @@ def test_disclosure_block_is_complete(tmp_path, monkeypatch):
         storage.save_forecast_snapshot("s1", m, _snap(start, 96, model=m, temp_bias=bias))
     data = build_report(["s1"], ["a", "b", "c"], CFG, start,
                         start + timedelta(hours=95), "2026-08")
-    dw = data["meta"]["difficulty_window"]
+    dw = data["meta"]["difficulty_window"]["all"]
     for key in ("variance", "rank_stability", "rank_sensitivity", "cell_weights",
                 "profile", "min_cell_neff", "cell_weighting", "gate_relaxed",
                 "dropped_thin_cells"):
@@ -199,7 +199,8 @@ def test_disclosure_block_is_complete(tmp_path, monkeypatch):
     # 技巧剖面三段齐备，且每段都有名次与分数
     prof = dw["profile"]
     assert set(prof) >= {"short", "mid", "long"}
-    assert prof["short"]["buckets"] == [1, 2, 3]
+    assert prof["short"]["buckets"] == ["hourly:1d", "hourly:2d", "hourly:3d",
+                                        "daily:1d", "daily:2d", "daily:3d"]
     assert prof["short"]["scores"]["a"] is not None
     row = next(r for r in data["leaderboards"]["all"] if r["model"] == "a")
     assert row["profile_rank"]["short"] is not None
@@ -231,13 +232,17 @@ def test_long_tail_buckets_are_separated_not_mixed(tmp_path, monkeypatch):
     cfg = dict(CFG, board_min_col_frac=0.5, min_cell_neff=0)
     data = build_report(["s1"], ["a", "b", "c"], cfg, start,
                         start + timedelta(hours=10 * 24 - 1), "2026-08")
-    dw = data["meta"]["difficulty_window"]
+    dw = data["meta"]["difficulty_window"]["all"]
     assert dw["excluded_long_tail_buckets"], dw
     assert not set(dw["excluded_long_tail_buckets"]) & set(dw["buckets"])
     assert dw["long_tail"]["buckets"] == dw["excluded_long_tail_buckets"]
     assert "不参与总榜名次" in dw["long_tail"]["note"]
-    # 总榜的名次只用主流桶（a 的分数不应等于含长尾桶的平均）
-    assert dw["buckets"] == [1, 2, 3]
+    # 总榜的名次只用主流桶（a 的分数不应等于含长尾桶的平均）。
+    # 2026-09 跨分辨率重构后总榜的列是 (天桶 × 分辨率) 的笛卡尔积：三家共同
+    # 覆盖的小时榜与日榜各 3 桶进主设计，更远的长尾桶单独成参考榜。
+    assert dw["buckets"] == ["hourly:1d", "hourly:2d", "hourly:3d",
+                             "daily:1d", "daily:2d", "daily:3d"]
+    assert dw["bucket_indices"] == [1, 2, 3, 1, 2, 3]   # 天桶号按各自分辨率计
 
 
 def test_board_gate_scale_is_consistent(tmp_path, monkeypatch):

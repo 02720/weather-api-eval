@@ -405,6 +405,17 @@ _TEMP_STATS = ("n", "se2", "ae", "se", "h1", "h2", "sx", "sy", "sxy", "sxx", "sy
 # 降水二分类列联计数的列含义
 _RAIN_STATS = ("h", "fa", "mi", "c")
 
+# ------------------------------------------------- 按时间分辨率拆分的证据表（2026-09 重构）
+# 重构前只有两张表：温度走逐小时、降水走日累计，两者 nanmean 成一个"综合分"。
+# 于是"某时刻报得准不准"与"这天的最高/最低/总雨量报得准不准"混在同一个数字里——
+# 一个日内相位偏、但日极值很准的源，和一个恰好相反的源，可能拿到同一个分数。
+# 现在按分辨率拆成两张互不相通的证据表：
+#   hourly —— 逐小时温度 + 逐小时晴雨（该小时够不够得上"在下雨"）
+#   daily  —— 日最高/最低温度 + 日累计降水（这一天的总量与极值）
+# 两条轨道各自闭环成一个"桶综合分"，再由总榜跨分辨率联合。
+TABLE_KEYS = ("temp_hourly", "rain_hourly",
+              "temp_daily_max", "temp_daily_min", "rain_daily")
+
 
 def eval_days(hourly: list[dict], daily: list[dict]) -> list[str]:
     """评估窗口内的自然日全集（逐小时有效时刻所在日 ∪ 按天有效日）。
@@ -415,18 +426,43 @@ def eval_days(hourly: list[dict], daily: list[dict]) -> list[str]:
                   | {r["valid_day"] for r in daily})
 
 
+def _temp_stat_row(o: float, f: float) -> list[float]:
+    """单个温度样本 → 11 项可加统计量（小时量值与日最高/最低共用同一套）。"""
+    e = f - o
+    return [1.0, e * e, abs(e), e,
+            1.0 if abs(e) <= 1 else 0.0,
+            1.0 if abs(e) <= 2 else 0.0,
+            f, o, f * o, f * f, o * o]
+
+
+def _rain_stat_row(o: float, f: float, thr: float) -> list[float]:
+    """单个降水样本 → 4 项二分类列联计数（h / fa / mi / c）。"""
+    ob, fb = o >= thr, f >= thr
+    return [1.0 if (ob and fb) else 0.0, 1.0 if (not ob and fb) else 0.0,
+            1.0 if (ob and not fb) else 0.0, 1.0 if (not ob and not fb) else 0.0]
+
+
 def build_day_stat_tables(
     hourly: list[dict], daily: list[dict], models: list[str],
-    n_buckets: int, rain_thr: float,
-) -> tuple[list[str], np.ndarray, np.ndarray]:
-    """把逐小时/按天记录压缩成（天 × 模型 × 桶 × 站）的充分统计量稠密表。
+    n_buckets_hourly: int, n_buckets_daily: int,
+    rain_thr_daily: float, rain_thr_hourly: float,
+) -> tuple[list[str], dict[str, np.ndarray]]:
+    """把逐小时/按天记录压成（模型 × 桶 × 站 × 天）的可加充分统计量稠密表。
 
-    返回 (days, temp_table, rain_table)：
-      temp_table[model, bucket, station, day, 11]（温度 11 项可加统计量）
-      rain_table[model, bucket, station, day, 4]（日降水二分类计数，阈值 rain_thr）
-    天的全集取两类记录的并集；无数据的天/桶保持全 0，重采样时自然按"无样本"
-    处理。桶对齐：温度用逐小时天桶（lead），降水用按天日偏移（offset）——
-    两者都是"起报后第 N 天"，与排行榜的天桶语义一致。
+    返回 (days, tables)，tables 的形状：
+      temp_hourly    (m, b, s, d, 11)  逐小时温度（小时榜 · 温度维）
+      rain_hourly    (m, b, s, d, 4)   逐小时晴雨，阈值 rain_thr_hourly（小时榜 · 降水维）
+      temp_daily_max (m, b, s, d, 11)  日最高温（日榜 · 温度维之一）
+      temp_daily_min (m, b, s, d, 11)  日最低温（日榜 · 温度维之一）
+      rain_daily     (m, b, s, d, 4)   日累计晴雨，阈值 rain_thr_daily（日榜 · 降水维）
+
+    两条井水不犯河水的证据链是这次重构的核心：同一批存档，按"时刻"答一次
+    （小时榜）、按"自然日"答一次（日榜），谁也不替谁说话。天数取两类记录的
+    并集；无数据的天/桶保持全 0，重采样时自然按"无样本"处理。
+
+    桶对齐：两条轨道的天桶都是"起报日之后的第 N 个自然日"（小时 extends 用
+    bucket、日离用 offset），与排行榜的天桶语义一致——两榜的横轴是同一条刻度，
+    总榜才能把它们当成同一批"难度"来劈。
     """
     days = eval_days(hourly, daily)
     day_idx = {d: i for i, d in enumerate(days)}
@@ -438,50 +474,66 @@ def build_day_stat_tables(
         station_idx.setdefault(r["station"], len(station_idx))
     n_s = max(1, len(station_idx))
     n_m = max(1, len(models))
-    T = np.zeros((n_m, n_buckets, n_s, len(days), len(_TEMP_STATS)), dtype=np.float64)
-    R = np.zeros((n_m, n_buckets, n_s, len(days), len(_RAIN_STATS)), dtype=np.float64)
-
-    rows_t, idx_t = [], []
-    rows_r, idx_r = [], []
+    # 两条轨道的桶数**各用各的**（hourly_lead_days 与 daily_max_offset_days 语义
+    # 不同，配置允许不等——此前共用一个 n_buckets=max(H,D)，H≠D 时列数与劈分
+    # 设计的 H+D 宽度对不上，bootstrap 直接崩）。小时表 H 列、日表 D 列，
+    # track_bucket_scores 拼接后正好是 H+D 列。
+    shape_t_h = (n_m, n_buckets_hourly, n_s, len(days), len(_TEMP_STATS))
+    shape_r_h = (n_m, n_buckets_hourly, n_s, len(days), len(_RAIN_STATS))
+    shape_t_d = (n_m, n_buckets_daily, n_s, len(days), len(_TEMP_STATS))
+    shape_r_d = (n_m, n_buckets_daily, n_s, len(days), len(_RAIN_STATS))
+    tables = {
+        "temp_hourly": np.zeros(shape_t_h, dtype=np.float64),
+        "rain_hourly": np.zeros(shape_r_h, dtype=np.float64),
+        "temp_daily_max": np.zeros(shape_t_d, dtype=np.float64),
+        "temp_daily_min": np.zeros(shape_t_d, dtype=np.float64),
+        "rain_daily": np.zeros(shape_r_d, dtype=np.float64),
+    }
+    # 每条记录 → (目标表名, 索引, 统计量行)：先收集再一次性 scatter-add
+    jobs = {k: ([], []) for k in tables}
     for r in hourly:
         mi = model_idx.get(r["model"])
-        if mi is None or not (1 <= r["bucket"] <= n_buckets):
+        if mi is None or not (1 <= r["bucket"] <= n_buckets_hourly):
             continue
+        key = (mi, r["bucket"] - 1, station_idx[r["station"]],
+               day_idx[r["valid_iso"][:10]])
         o, f = r["temp_obs"], r["temp_fcst"]
         if o is not None and f is not None:
-            e = f - o
-            rows_t.append([1.0, e * e, abs(e), e,
-                           1.0 if abs(o - f) <= 1 else 0.0,
-                           1.0 if abs(o - f) <= 2 else 0.0,
-                           f, o, f * o, f * f, o * o])
-            idx_t.append((mi, r["bucket"] - 1, station_idx[r["station"]],
-                          day_idx[r["valid_iso"][:10]]))
-    if rows_t:
-        rows_t = np.asarray(rows_t)
-        idx_t = np.asarray(idx_t)
-        for k in range(len(_TEMP_STATS)):
-            np.add.at(T[:, :, :, :, k], tuple(idx_t.T), rows_t[:, k])
-
+            rows, idx = jobs["temp_hourly"]
+            rows.append(_temp_stat_row(o, f))
+            idx.append(key)
+        o, f = r["rain_obs"], r["rain_fcst"]
+        if o is not None and f is not None:
+            rows, idx = jobs["rain_hourly"]
+            rows.append(_rain_stat_row(o, f, rain_thr_hourly))
+            idx.append(key)
     for r in daily:
         mi = model_idx.get(r["model"])
-        if mi is None or not (1 <= r["offset"] <= n_buckets):
+        if mi is None or not (1 <= r["offset"] <= n_buckets_daily):
             continue
+        key = (mi, r["offset"] - 1, station_idx[r["station"]],
+               day_idx[r["valid_day"]])
+        for tk, ka, kb in (("temp_daily_max", "temp_max_obs", "temp_max_fcst"),
+                           ("temp_daily_min", "temp_min_obs", "temp_min_fcst")):
+            o, f = r.get(ka), r.get(kb)
+            if o is not None and f is not None:
+                rows, idx = jobs[tk]
+                rows.append(_temp_stat_row(o, f))
+                idx.append(key)
         o, f = r["rain_obs"], r["rain_fcst"]
-        if o is None or f is None:
+        if o is not None and f is not None:
+            rows, idx = jobs["rain_daily"]
+            rows.append(_rain_stat_row(o, f, rain_thr_daily))
+            idx.append(key)
+    for name, (rows, idx) in jobs.items():
+        if not rows:
             continue
-        ob, fb = o >= rain_thr, f >= rain_thr
-        row = [1.0 if (ob and fb) else 0.0, 1.0 if (not ob and fb) else 0.0,
-               1.0 if (ob and not fb) else 0.0, 1.0 if (not ob and not fb) else 0.0]
-        rows_r.append(row)
-        idx_r.append((mi, r["offset"] - 1, station_idx[r["station"]],
-                      day_idx[r["valid_day"]]))
-    if rows_r:
-        rows_r = np.asarray(rows_r)
-        idx_r = np.asarray(idx_r)
-        for k in range(len(_RAIN_STATS)):
-            np.add.at(R[:, :, :, :, k], tuple(idx_r.T), rows_r[:, k])
-
-    return days, T, R
+        rows_a = np.asarray(rows)
+        idx_a = np.asarray(idx)
+        stat_len = rows_a.shape[1]
+        for k in range(stat_len):
+            np.add.at(tables[name][:, :, :, :, k], tuple(idx_a.T), rows_a[:, k])
+    return days, tables
 
 
 def _score_from_parts(values: dict[str, np.ndarray], parts) -> np.ndarray:
@@ -608,68 +660,97 @@ def _rain_scores_from_aggregate(A: np.ndarray, precip_parts) -> np.ndarray:
 
 
 def day_block_bootstrap(
-    hourly: list[dict], daily: list[dict], models: list[str], n_buckets: int,
-    rain_thr: float, temp_parts, precip_parts, min_sample: int,
+    hourly: list[dict], daily: list[dict], models: list[str],
+    n_buckets_hourly: int, n_buckets_daily: int,
+    rain_thr_daily: float, rain_thr_hourly: float, temp_parts, precip_parts,
+    min_sample: int,
     runs: int = 500, seed: int = 20260906,
     eligible: list[bool] | None = None,
-    temp_point_valid: np.ndarray | None = None,
-    rain_point_valid: np.ndarray | None = None,
-    bucket_valid: np.ndarray | None = None,
     block_days: int = 1,
     alpha: float = 0.10,
     top_model: str | None = None,
+    boards: dict[str, dict] | None = None,
+    temp_point_valid: np.ndarray | None = None,
+    rain_point_valid: np.ndarray | None = None,
+    bucket_valid: np.ndarray | None = None,
     adj_row: np.ndarray | None = None,
     adj_col: np.ndarray | None = None,
     adj_w: np.ndarray | None = None,
     adj_ridge: float = 0.0,
 ) -> dict[str, dict[str, Any]]:
-    """按天分块 bootstrap：总榜那个综合分（难度对齐行分）的不确定性。
+    """按天分块 bootstrap：各榜单那个"难度对齐综合分"的不确定性。
 
-    返回 {model: {"ci90": [lo, hi] | None, "champion_pct": float,
-                  "sig_vs_top": bool | None}}。
-    sig_vs_top：与点估计冠军的得分差的 90% 区间是否不含 0（True = 差异显著）。
-    同一次重采样同时驱动温度（逐小时）与降水（按天）两条轨道与所有模型，
-    因此区间/显著性是**配对**的——模型间比较不受抽样噪声交叉污染。
+    返回 {榜单名: {model: {"ci90": [lo, hi] | None, "champion_pct": float,
+                  "sig_vs_top": bool | None}}}；未传 boards 时只有一个键 "all"。
 
-    eligible：入围冠军竞争的模型（样本量门槛 + 维度齐备）。冠军频率、点估计
-    冠军与显著性只在入围者上计算；未入围模型仍给出自己的置信区间供参考。
+    所有榜单共享**同一批重采样**：三张榜（总榜 / 小时榜 / 日榜）若各抽各的，
+    同一季天气在这张榜上被抽重、在那张榜上没被抽重的情形会同时发生，于是
+    "总榜 A 略胜 B"与"小时榜 A 反输 B"这类跨榜差异里混进纯抽样噪声。
+    共享重采样后两家在任意一处的先后都源自同一份天气局面，比较是可配对的。
 
-    temp_point_valid / rain_point_valid：(m, n_buckets) 布尔数组，点估计在该
-    （模型, 桶, 维度）上**是否有结论**。bootstrap 的缺项口径必须与点估计逐格
-    同构，否则 CI 中心会系统性偏离点估计（2026-09-13 对抗式审查 P0-1：bootstrap
-    曾把降水的"命中数 hits"当成样本数判定门槛，66 个（模型,桶）的降水分被误剔，
-    CI 整体上移 2.4~12.9 分，26 个模型中 9 个点估计落在自身 90% CI 之外）。
-    点估计的门槛同时看 n 与 n_eff，而重采样里只能算 n——两条门槛各自都会漏掉
-    对方能抓住的情形，故**两者叠加**：点估计判缺的格子在每次重采样里恒为缺，
-    重采样自身样本量不足的格子在该次重采样里为缺。这样"权重全置 1"的退化
-    bootstrap 必然精确复现点估计桶分（回归测试锁定该不变量）。
+    boards: 榜名 → 该榜的设计参数（未给的子项回退到外层同名全局参数）：
+      columns        该榜取合成表的哪些列（小时榜取前 b 列、日榜取后 b 列、
+                     总榜取全部 2b 列；None = 全部）
+      adj_row/adj_col 该榜自己的双向劈分设计（m,）、（该榜列数,）布尔
+      adj_w          该榜的格子权重（m, 该榜列数）
+      eligible       该榜入围冠军竞争的模型
+      top_model      该榜点估计冠军（显著性/冠军频率的参照必须是戴冠那个源）
+      *_point_valid  该榜列布局下的点估计缺项掩码
 
-    block_days：重采样块长（天）。天气尺度过程典型相关时间 3~5 天，块长 1 天
-    只捕获了日内相关、块间相关被当成独立，CI 系统性偏窄（实测块长 2~5 天的
-    macro 分 bootstrap 标准差比块长 1 天大 40%~90%）。块长 L 时把连续 L 天
-    绑成一个块整体重采样；块数 floor(n_days / L)（不足 L 天的尾部并入最后一块，
-    绝不丢样本）。块数少于 MIN_BOOTSTRAP_BLOCKS 时自动回退到更小的块长——
-    重采样组合退化比块长偏短更糟。
-
-    adj_row / adj_col：难度对齐所用的行列设计（见 two_way_adjust）。每一次重采样
-    都用**同一张设计**把桶分归总成行分——估计量随重采样漂移的话，置信区间就不
-    再属于榜单上那个数字；设计本身的不确定性（哪些格子可用）不进这个区间，
-    与点估计一样按"当下认为可用"的格子处理。
+    每张榜的置信区间都用它**自己那张设计**归总（P0-2：给 A 数字配 B 数字的
+    区间是直接误导），于是 bootstrap 与点估计回答的是同一个估计量。
     """
     if eligible is None:
         eligible = [True] * len(models)
     if not hourly and not daily:
-        return {m: {"ci90": None, "champion_pct": 0.0, "sig_vs_top": None}
-                for m in models}
-    days, T, R = build_day_stat_tables(hourly, daily, models, n_buckets, rain_thr)
+        empty = {m: {"ci90": None, "champion_pct": 0.0, "sig_vs_top": None}
+                 for m in models}
+        if not boards:
+            return {"all": empty}
+        return {name: {m: dict(v) for m, v in empty.items()} for name in boards}
+    days, tables = build_day_stat_tables(hourly, daily, models,
+                                         n_buckets_hourly, n_buckets_daily,
+                                         rain_thr_daily, rain_thr_hourly)
     W = day_block_weights(runs, len(days), block_days, seed=seed)
-    macro = macro_scores_from_weights(
-        W, T, R, temp_parts, precip_parts, min_sample,
-        temp_point_valid=temp_point_valid, rain_point_valid=rain_point_valid,
-        bucket_valid=bucket_valid, adj_row=adj_row, adj_col=adj_col,
-        adj_w=adj_w, adj_ridge=adj_ridge)
-    return _summarize_bootstrap(macro, models, eligible, alpha=alpha,
-                                top_model=top_model)
+    if not boards:
+        macro = macro_scores_from_weights(
+            W, tables, temp_parts, precip_parts, min_sample,
+            temp_point_valid=temp_point_valid, rain_point_valid=rain_point_valid,
+            bucket_valid=bucket_valid, adj_row=adj_row, adj_col=adj_col,
+            adj_w=adj_w, adj_ridge=adj_ridge)
+        return {"all": _summarize_bootstrap(macro, models, eligible, alpha=alpha,
+                                            top_model=top_model)}
+    # 每张榜用自己的设计把**同一批重采样**归总成行分；表只建一次、只聚合一次
+    agg = {k: aggregate_day_stats(W, v) for k, v in tables.items()}
+    out: dict[str, dict[str, Any]] = {}
+    for name, spec in boards.items():
+        cols = spec.get("columns")
+        b_row = spec.get("adj_row", adj_row)
+        b_col = spec.get("adj_col", adj_col)
+        # adj_w 已是**该榜自己那份**（形状与该榜列数一致），不要再按 cols 切一次：
+        # 日榜的 cols 是 16..31，而它自己的权重矩阵本来就只有 16 列
+        b_w = spec.get("adj_w", adj_w)
+        # 缺项掩码：温度/降水的"这格有没有结论"是数据的属性，三榜共享；
+        # bucket_valid 则是"这格进没进点估计的设计"，各榜用自己的 cell_valid
+        # （见 evaluate._resolution_boards）——两者必须逐格对齐，CI 中心才不漂。
+        buckets = track_bucket_scores(
+            agg, temp_parts, precip_parts, min_sample,
+            temp_point_valid=temp_point_valid, rain_point_valid=rain_point_valid,
+            bucket_valid=spec.get("bucket_valid", bucket_valid))
+        if cols is not None:
+            buckets = buckets[:, :, cols]
+        if b_row is None or b_col is None:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                macro = np.nanmean(buckets, axis=-1)
+        else:
+            macro = difficulty_adjusted(buckets, np.asarray(b_row, dtype=bool),
+                                        np.asarray(b_col, dtype=bool),
+                                        weights=b_w, ridge=adj_ridge)
+        out[name] = _summarize_bootstrap(
+            macro, models, spec.get("eligible", eligible), alpha=alpha,
+            top_model=spec.get("top_model", top_model))
+    return out
 
 
 # ------------------------------------------------- 天桶难度的双向加法劈分（P0-4）
@@ -677,7 +758,8 @@ def design_mask(V: np.ndarray,
                 min_col: int = MIN_MODELS_PER_BUCKET,
                 min_row: int = MIN_BUCKETS_PER_MODEL,
                 rounds: int = 6,
-                min_col_frac: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
+                min_col_frac: float = 0.0,
+                segment_sizes: tuple[int, ...] | None = None) -> tuple[np.ndarray, np.ndarray]:
     """按"行/列最少有效数"互剪观测掩膜 (m, b)，直到不再变化。
 
     只有横向可比的格子能留在设计里：一个天桶若只有 1 家覆盖，它的"桶难度"就与
@@ -691,6 +773,13 @@ def design_mask(V: np.ndarray,
     （对抗式审查 P1-4）。0.5 表示"家数不足最热闹那一半的桶不进主设计"。
     0（默认）关闭相对门槛，保持旧行为（既有测试与对照口径依赖它）。
 
+    segment_sizes：**赛段门槛**（为总榜而设）。把列按顺序切成若干段
+    （如 [b, b] = 小时榜段 + 日榜段），行必须在**每个仍有列留存的赛段**里至少
+    有一个格子。这条约束是"综合"二字的最低要求：一家只在小时分辨率上被验证过、
+    日分辨率一个桶都没有，它的"综合分"其实就是它的小时分；让它与两条轨道都被
+    验证过的源同榜竞争，等于让"没被考的科目自动满分"。注意与 min_row 不同：
+    min_row 管"总共要有几个桶"，赛段门槛管"每个分辨率都要有"。
+
     返回 (row_keep (m,), col_keep (b,)) 布尔数组；全空时两个都是全 False。
     """
     V = np.asarray(V, dtype=bool)
@@ -702,6 +791,13 @@ def design_mask(V: np.ndarray,
         if per_col.size:
             eff_min_col = max(eff_min_col,
                               int(np.ceil(min_col_frac * float(per_col.max()))))
+    # 赛段的列下标切片：整段被剔除的赛段（该分辨率本榜无数据）不作要求
+    segs: list[np.ndarray] = []
+    if segment_sizes:
+        off = 0
+        for size in segment_sizes:
+            segs.append(np.arange(off, off + int(size)))
+            off += int(size)
     row = np.ones(V.shape[0], dtype=bool)
     col = np.ones(V.shape[1], dtype=bool)
     for _ in range(rounds):
@@ -709,6 +805,11 @@ def design_mask(V: np.ndarray,
         new_col = cnt_col >= eff_min_col
         cnt_row = (V & new_col[None, :]).sum(axis=1)
         new_row = cnt_row >= min_row
+        for sidxs in segs:
+            keep = new_col[sidxs]
+            if not keep.any():
+                continue        # 该赛段整段被剔除（本榜无此分辨率的数据）→ 不要求
+            new_row = new_row & (V[:, sidxs][:, keep].sum(axis=1) >= 1)
         if np.array_equal(new_col, col) and np.array_equal(new_row, row):
             return new_row, new_col
         row, col = new_row, new_col
@@ -871,7 +972,8 @@ def two_way_adjust(S2: np.ndarray,
                    weights: np.ndarray | None = None,
                    min_col_frac: float = 0.0,
                    ridge: float = 0.0,
-                   min_cell_weight: float = 0.0) -> dict:
+                   min_cell_weight: float = 0.0,
+                   segment_sizes: tuple[int, ...] | None = None) -> dict:
     """把 (m, b) 的分数矩阵劈成"行的技巧"与"列的难度"，返回难度对齐后的行分。
 
     为什么要这一步（第一性原理）：预报难度随时效单调上升，而各家能预报的天数
@@ -890,6 +992,9 @@ def two_way_adjust(S2: np.ndarray,
     min_cell_weight 把权重低于门槛的格子**直接剔出设计**（不靠 min_sample=5 放行）；
     min_col_frac 剔除"家数不足最热闹桶一半"的长尾桶；ridge 对列效应做收缩。
     四者都缺省关闭，等权路径与旧实现逐位相同（回归测试锁定）。
+
+    segment_sizes：列被切成若干"赛段"（如总榜的 [b_hourly, b_daily]）时，要求
+    行在每个非空赛段都有格子——见 design_mask。缺省 None 即不设赛段门槛。
 
     代价要说清楚：这是**加法假设**——若某家在短时效特别强、长时效特别弱（存在
     源 × 时效的交互），"对齐"后的单一数字表达不了这种差异，跨覆盖范围的比较仍
@@ -921,7 +1026,8 @@ def two_way_adjust(S2: np.ndarray,
         dropped_thin = int(thin.sum())
         V0 = V0 & ~thin
     row_keep, col_keep = design_mask(V0, min_col=min_col, min_row=min_row,
-                                     min_col_frac=min_col_frac)
+                                     min_col_frac=min_col_frac,
+                                     segment_sizes=segment_sizes)
     comp_rows, comp_cols = largest_component_mask(row_keep, col_keep, V0)
     n_components = 1
     if not (np.array_equal(comp_rows, row_keep) and np.array_equal(comp_cols, col_keep)):
@@ -998,15 +1104,20 @@ def variance_decomposition(S: np.ndarray, row_keep: np.ndarray,
     if ww.sum() <= 0:
         ww = np.ones_like(vals)
     grand = float(np.sum(ww * vals) / np.sum(ww))
-    # 行/列效应各自按权重中心化：Σwα=Σwβ=0 时平方和分解才成立
+    # 行/列效应按**拟合所用的同一组权重**中心化：加权 ALS 解出的是 Σw·α=0、
+    # Σw·β=0（逐格权重），只有按同一个 w 加权中心化，平方和分解 Σw(S−S̄)² =
+    # SS_row + SS_col + SS_resid 才是恒等式。此前按无权均值中心化（权重全 1 时
+    # 两者恰好重合，测试看不出），权重非均匀时三项之和会偏离 1（实测偏差 1e-4）。
+    row_w = np.where(np.asarray(row_keep, dtype=bool),
+                     w.sum(axis=1) if w is not None else V.sum(axis=1), 0.0)
+    col_w = np.where(np.asarray(col_keep, dtype=bool),
+                     w.sum(axis=0) if w is not None else V.sum(axis=0), 0.0)
     a0 = np.where(np.asarray(row_keep, dtype=bool), alpha_raw[0], 0.0)
     b0 = np.where(np.asarray(col_keep, dtype=bool), beta_raw[0], 0.0)
-    wa = np.where(np.asarray(row_keep, dtype=bool), 1.0, 0.0)
-    wb = np.where(np.asarray(col_keep, dtype=bool), 1.0, 0.0)
     a0 = np.where(np.isfinite(a0), a0, 0.0)
     b0 = np.where(np.isfinite(b0), b0, 0.0)
-    a0 = a0 - (a0.sum() / max(wa.sum(), 1.0))
-    b0 = b0 - (b0.sum() / max(wb.sum(), 1.0))
+    a0 = a0 - (float(np.sum(row_w * a0)) / max(float(np.sum(row_w)), 1e-12))
+    b0 = b0 - (float(np.sum(col_w * b0)) / max(float(np.sum(col_w)), 1e-12))
 
     def _ss(resid_grid: np.ndarray) -> float:
         r = np.where(V, resid_grid, 0.0)
@@ -1250,8 +1361,94 @@ def aggregate_day_stats(W: np.ndarray, X: np.ndarray) -> np.ndarray:
     return out
 
 
+def _nanmean_stack(arrs: list[np.ndarray]) -> np.ndarray:
+    """沿新轴做忽略 NaN 的均值；全缺处为 NaN（不刷 RuntimeWarning）。"""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        return np.nanmean(np.stack(arrs), axis=0)
+
+
+def track_bucket_scores(tables: dict[str, np.ndarray],
+                        temp_parts, precip_parts, min_sample: int,
+                        temp_point_valid: np.ndarray | None = None,
+                        rain_point_valid: np.ndarray | None = None,
+                        bucket_valid: np.ndarray | None = None,
+                        ) -> np.ndarray:
+    """证据表 (run?, m, b, s, k) → 跨分辨率拼接的桶综合分 (run?, m, 2·b)。
+
+    列布局是这次重构的关键约定：**前 b 列是小时榜的天桶、后 b 列是日榜的天桶**
+    （第 k 列与第 b+k 列指同一个"提前第 k 天"，只是时间分辨率不同）。拼成一条
+    横轴后，(天桶 × 分辨率) 就是"难度"的一个自然笛卡尔积，总榜直接把这
+    2b 列塞进同一个加法模型——每小时/每日各自的难度由各自的列效应吸收，
+    行效应则是"跨两种分辨率、所有被验证过的难度"的综合技巧。
+
+    三处缺项口径与点估计逐格对齐：
+    · 样本非零但 < min_sample 的维度在该次重采样里为缺；
+    · 点估计判缺的格子恒为缺（点估计还看 n_eff，重采样只能算 n，两者互补）；
+    · 日榜温度维要求日最高与日最低**两个量都有结论**——日预报承诺的是这两个
+      数，只凭其中一个给分等于把半个证据当整个用（源可以靠容易的那一半刷分）。
+    """
+    t_h = _temp_scores_from_aggregate(tables["temp_hourly"], temp_parts)
+    r_h = _rain_scores_from_aggregate(tables["rain_hourly"], precip_parts)
+    t_max = _temp_scores_from_aggregate(tables["temp_daily_max"], temp_parts)
+    t_min = _temp_scores_from_aggregate(tables["temp_daily_min"], temp_parts)
+    r_d = _rain_scores_from_aggregate(tables["rain_daily"], precip_parts)
+    # 各维的有效成对样本数：沿站维求和后是 (run?, m, b)，与各自的计分函数内部
+    # 用的 N 同口径（_temp_scores_from_aggregate 里 N = n.sum(-1)）。
+    # 日最高/日最低**各自用自己的样本数**判定：两边都薄时"相加凑够样本"会把两个
+    # 都不足门槛的量伪装成一个够样本的维度。
+    n_th = tables["temp_hourly"][..., 0].sum(axis=-1)
+    n_rh = tables["rain_hourly"].sum(axis=(-2, -1))
+    n_tmax = tables["temp_daily_max"][..., 0].sum(axis=-1)
+    n_tmin = tables["temp_daily_min"][..., 0].sum(axis=-1)
+    n_rd = tables["rain_daily"].sum(axis=(-2, -1))
+
+    def _thin(scores, counts):
+        return np.where((counts > 0) & (counts < min_sample), np.nan, scores)
+
+    t_h, r_h = _thin(t_h, n_th), _thin(r_h, n_rh)
+    t_max, t_min = _thin(t_max, n_tmax), _thin(t_min, n_tmin)
+    r_d = _thin(r_d, n_rd)
+    # 日温度维：最高与最低必须两两齐全
+    daily_t = np.where(np.isfinite(t_max) & np.isfinite(t_min),
+                       _nanmean_stack([t_max, t_min]), np.nan)
+
+    has_run = t_h.ndim == 3
+    if not has_run:
+        t_h, r_h, daily_t, r_d = t_h[None], r_h[None], daily_t[None], r_d[None]
+    b = t_h.shape[-1]
+    # 逐 track 施加掩码后再拼接：跨整条 2b 横轴做布尔索引会丢掉"这一半是哪一条
+    # 轨道"的信息（过去把 station-wise 求和忘在同一层，吃亏的就是这类位置耦合）
+    tv_h, rv_h = np.isfinite(t_h), np.isfinite(r_h)
+    tv_d, rv_d = np.isfinite(daily_t), np.isfinite(r_d)
+    if temp_point_valid is not None:
+        pv = np.asarray(temp_point_valid, dtype=bool)
+        tv_h, tv_d = tv_h & pv[:, :b], tv_d & pv[:, b:]
+    if rain_point_valid is not None:
+        pv = np.asarray(rain_point_valid, dtype=bool)
+        rv_h, rv_d = rv_h & pv[:, :b], rv_d & pv[:, b:]
+    if bucket_valid is not None:
+        bv = np.asarray(bucket_valid, dtype=bool)
+        valid_h, valid_d = bv[:, :b], bv[:, b:]
+    else:
+        valid_h, valid_d = tv_h & rv_h, tv_d & rv_d
+    h_scores = np.where(
+        valid_h,
+        _nanmean_stack([np.where(tv_h, t_h, np.nan),
+                        np.where(rv_h, r_h, np.nan)]), np.nan)
+    d_scores = np.where(
+        valid_d,
+        _nanmean_stack([np.where(tv_d, daily_t, np.nan),
+                        np.where(rv_d, r_d, np.nan)]), np.nan)
+    # 必须用 concatenate(axis=-1) 而不是 hstack：hstack 对 ndim≥2 的数组沿
+    # **axis 1** 拼接，而这里的倒数第二维是"模型"，天桶才是最后一维——用 hstack
+    # 会把两条轨道沿着模型维拼起来，形状变成 (run, 2m, b) 还不报错。
+    scores = np.concatenate([h_scores, d_scores], axis=-1)
+    return scores if has_run else scores[0]
+
+
 def macro_scores_from_weights(
-    W: np.ndarray, T: np.ndarray, R: np.ndarray,
+    W: np.ndarray, tables: dict[str, np.ndarray],
     temp_parts, precip_parts, min_sample: int,
     temp_point_valid: np.ndarray | None = None,
     rain_point_valid: np.ndarray | None = None,
@@ -1268,57 +1465,23 @@ def macro_scores_from_weights(
     配 B 数字的置信区间是直接误导读者（P0-2 的教训）。难度对齐让这条不变量更值得
     机器校验——因为此时"归总"不再只是"某几列取个均值"这么直观，肉眼对不上。
 
-    adj_row / adj_col：点估计给的行列设计；缺省时退回按全部可用桶的等权平均
-    （旧 macro 口径，仅供对照/兼容，榜单不用）。
+    tables：build_day_stat_tables 出的五张证据表（未聚合，(m, b, s, d, k)）；
+    本函数按 W 先把天维加权聚合成 (run, m, b, s, k)，再交给 track_bucket_scores。
 
-    bucket_valid：(m, b) 布尔，点估计里该桶**是否进总榜**（温度与降水两维
-    齐备）。缺一维的桶在点估计里被排除（"综合分"承诺两维各半，单维分不是综合
-    分），bootstrap 必须同步排除，否则 CI 中心又偏离点估计。
+    temp_point_valid / rain_point_valid / bucket_valid：(m, 2·b) 布尔，列布局同
+    track_bucket_scores（前 b 列小时榜、后 b 列日榜）。点估计在哪个格子有结论，
+    bootstrap 就在哪个格子有结论——两条门槛必须逐格对齐，CI 中心才不漂。
 
     单独成函数是为了让"退化 bootstrap"可测：W 全置 1 时等价于不做重采样，
     返回的行分必须精确等于点估计的总榜综合分。这条不变量一次性兜住所有
     "bootstrap 与点估计口径漂移"类缺陷（2026-09-13 P0-1 的教训：当时唯一根因
     是降水的样本量字段取错，注释里写了意图却没有机器校验）。
     """
-    # 聚合：At[run, m, b, s, stat] = Σ_d W[run, d]·T[m, b, s, d, stat]
-    # （r/slope 需要站级中间量，聚合保留站维，站内合并放在 _temp_scores_from_aggregate）
-    At = aggregate_day_stats(W, T)      # (run, m, b, s, 11)
-    Ar = aggregate_day_stats(W, R)      # (run, m, b, s, 4)
-
-    temp_scores = _temp_scores_from_aggregate(At, temp_parts)     # (run, m, b)
-    rain_scores = _rain_scores_from_aggregate(Ar, precip_parts)   # (run, m, b)
-    # 样本量门槛在重采样里与点估计**逐维同构**：温度/降水各自的样本数非零但
-    # < min_sample 时该维缺项（NaN），桶综合分 = 仍在场的维度单独承担——
-    # 与点估计 overall_score 的"缺项不计"完全一致，CI 中心才不会系统性偏移。
-    #
-    # 降水的样本数是列联四项之和 h+fa+mi+c（沿站维与列维求和）——**不是** hits。
-    # 曾用 Ar[..., 0].sum(axis=-1)（命中数）判定门槛，等价于"命中数落在 1~4 之间
-    # 就判样本不足"，把真实样本几十上百、只是晴天多的桶误剔成"只剩温度分"，
-    # 温度分（75~92）远高于降水分（7~43），macro 平均后整个 bootstrap 分布上移
-    # 4.35 分（退化检验）/ 5.88 分（400 次重采样）。
-    n_temp_b = At[..., 0].sum(axis=-1)                            # (run, m, b)
-    n_rain_b = Ar.sum(axis=(-2, -1))                              # h+fa+mi+c
-    temp_scores = np.where((n_temp_b > 0) & (n_temp_b < min_sample),
-                           np.nan, temp_scores)
-    rain_scores = np.where((n_rain_b > 0) & (n_rain_b < min_sample),
-                           np.nan, rain_scores)
-    # 点估计判缺的格子在每次重采样里恒为缺（点估计还看 n_eff，重采样只能算 n；
-    # 两条门槛互补，缺一就会让 CI 中心偏离点估计）
-    if temp_point_valid is not None:
-        temp_scores = np.where(np.asarray(temp_point_valid, dtype=bool)[None],
-                               temp_scores, np.nan)
-    if rain_point_valid is not None:
-        rain_scores = np.where(np.asarray(rain_point_valid, dtype=bool)[None],
-                               rain_scores, np.nan)
-    if bucket_valid is not None:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)
-            raw = np.nanmean(np.stack([temp_scores, rain_scores]), axis=0)
-        bucket_scores = np.where(np.asarray(bucket_valid, dtype=bool)[None], raw, np.nan)
-    else:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)
-            bucket_scores = np.nanmean(np.stack([temp_scores, rain_scores]), axis=0)
+    agg = {k: aggregate_day_stats(W, v) for k, v in tables.items()}
+    bucket_scores = track_bucket_scores(
+        agg, temp_parts, precip_parts, min_sample,
+        temp_point_valid=temp_point_valid, rain_point_valid=rain_point_valid,
+        bucket_valid=bucket_valid)
     if adj_row is None or adj_col is None:
         # 未给设计 → 旧 macro 口径（各桶等权平均），不去除天桶难度
         with warnings.catch_warnings():
