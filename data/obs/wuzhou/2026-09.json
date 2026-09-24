@@ -5528,5 +5528,85 @@
     "rain": 0.0,
     "wind_speed": 2.2,
     "wind_dir": 214.0
+  },
+  "2026-09-24T07:00": {
+    "time": "2026-09-24T07:00",
+    "source": "wd",
+    "temp": 25.0,
+    "pressure": 1001.7,
+    "humidity": 96.0,
+    "rain": 0.0,
+    "wind_speed": 1.2,
+    "wind_dir": 41.0
+  },
+  "2026-09-24T06:00": {
+    "time": "2026-09-24T06:00",
+    "source": "wd",
+    "temp": 25.0,
+    "pressure": 1000.9,
+    "humidity": 96.0,
+    "rain": 0.0,
+    "wind_speed": 1.4,
+    "wind_dir": 54.0
+  },
+  "2026-09-24T05:00": {
+    "time": "2026-09-24T05:00",
+    "source": "wd",
+    "temp": 25.2,
+    "pressure": 1000.5,
+    "humidity": 95.0,
+    "rain": 0.0,
+    "wind_speed": 1.4,
+    "wind_dir": 54.0
+  },
+  "2026-09-24T04:00": {
+    "time": "2026-09-24T04:00",
+    "source": "wd",
+    "temp": 25.4,
+    "pressure": 1000.3,
+    "humidity": 94.0,
+    "rain": 0.0,
+    "wind_speed": 1.2,
+    "wind_dir": 81.0
+  },
+  "2026-09-24T03:00": {
+    "time": "2026-09-24T03:00",
+    "source": "wd",
+    "temp": 25.7,
+    "pressure": 1000.1,
+    "humidity": 92.0,
+    "rain": 0.0,
+    "wind_speed": 0.7,
+    "wind_dir": 129.0
+  },
+  "2026-09-24T02:00": {
+    "time": "2026-09-24T02:00",
+    "source": "wd",
+    "temp": 25.8,
+    "pressure": 1000.4,
+    "humidity": 92.0,
+    "rain": 0.0,
+    "wind_speed": 0.7,
+    "wind_dir": 129.0
+  },
+  "2026-09-24T01:00": {
+    "time": "2026-09-24T01:00",
+    "source": "wd",
+    "temp": 26.1,
+    "pressure": 1000.9,
+    "humidity": 91.0,
+    "rain": 0.0,
+    "wind_speed": 1.6,
+    "wind_dir": 62.0
+  },
+  "2026-09-24T00:00": {
+    "time": "2026-09-24T00:00",
+    "source": "wd",
+    "temp": 26.6,
+    "pressure": 1001.3,
+    "humidity": 87.0,
+    "rain": 0.0,
+    "wind_speed": 1.1,
+    "wind_dir": 139.0
   }
 }
