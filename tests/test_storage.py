@@ -202,3 +202,70 @@ def test_real_value_change_still_records_revision(tmp_path, monkeypatch):
     assert rec["temp"] == 25.5 and rec["rain"] == 4.6
     assert rec["revisions"][-1]["prev"]["temp"] == 27.0
     assert rec["revisions"][-1]["prev"]["rain"] == 0.0
+
+
+# ------------------------------------------------------- 日产品评测范围截断
+def _snap_with_long_daily(days: int) -> dict:
+    """构造日产品铺 days 天的快照（模拟 90 天日预报的源，起报 2026-09-01T08:00）。"""
+    from datetime import date as _date, timedelta as _td
+    model = "long_daily"
+    base = _date(2026, 9, 1)
+    return {
+        "issue_iso": "2026-09-01T08:00", "station_id": "s1", "source": "test",
+        "models": [model], "grid_lat": 23.0, "grid_lon": 111.0, "elevation": 50,
+        "hourly_time": ["2026-09-01T08:00"],
+        "data": {model: {"temperature_2m": [20.0], "precipitation": [0.0]}},
+        "daily_time": [(base + _td(days=off)).isoformat() for off in range(days)],
+        "daily": {model: {"temp_max": [22.0] * days, "temp_min": [18.0] * days,
+                          "precipitation": [0.5] * days}},
+    }
+
+
+def test_save_forecast_snapshot_truncates_daily_block_beyond_eval_range(
+        tmp_path, monkeypatch):
+    """入库截断（需求 2）：日偏移 > 16 的日产品不入库；数组与时间轴保持对齐；
+    内容哈希覆盖截断后的实际存档（可复算）。"""
+    from weather_eval.snapshot_meta import snapshot_sha256
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    snap = _snap_with_long_daily(90)
+    assert storage.save_forecast_snapshot("s1", "long_daily", snap) is True
+    stored = storage.list_forecast_snapshots("s1", "long_daily")[0]
+    # 起报日 09-01：保留 offset 0..16 共 17 天（评测用 1..16，起报当日随块保留）
+    assert len(stored["daily_time"]) == 17
+    assert stored["daily_time"][0] == "2026-09-01"
+    assert stored["daily_time"][-1] == "2026-09-17"
+    entry = stored["daily"]["long_daily"]
+    assert all(len(entry[k]) == 17 for k in ("temp_max", "temp_min", "precipitation"))
+    # 哈希在截断之后计算：库内哈希必须能对存档复算（截断前的内容不参与）
+    assert stored["payload_sha256"] == snapshot_sha256(stored)
+
+
+def test_truncate_daily_block_conservative_cases(tmp_path, monkeypatch):
+    """截断的防御性约定：范围内不动、畸形条目保留、无 issue 不截、无日块不崩。"""
+    from weather_eval.snapshot_meta import truncate_daily_block
+    # 1) 全部在范围内：原样返回、对象不被改动
+    snap = _snap_with_long_daily(3)
+    before = {k: (list(v) if isinstance(v, list) else v)
+              for k, v in snap.items() if k in ("daily_time", "daily")}
+    assert truncate_daily_block(snap, 16) is snap
+    assert snap["daily_time"] == before["daily_time"] and snap["daily"] == before["daily"]
+    # 2) 畸形条目（非字符串/坏日期）保留——宁多勿丢；置于边界之外仍不丢
+    snap = _snap_with_long_daily(20)
+    snap["daily_time"][18] = None
+    snap["daily_time"][19] = "not-a-date"
+    truncate_daily_block(snap, 16)
+    # 17 个有效（offset 0..16）+ 2 个畸形保留；offset 17 的正常条目被截
+    assert len(snap["daily_time"]) == 19
+    assert None in snap["daily_time"] and "not-a-date" in snap["daily_time"]
+    assert len(snap["daily"]["long_daily"]["temp_max"]) == 19   # 数组同步保留
+    # 3) issue_iso 缺失/不可解析：不截（退回旧行为）
+    snap = _snap_with_long_daily(90)
+    snap.pop("issue_iso")
+    truncate_daily_block(snap, 16)
+    assert len(snap["daily_time"]) == 90
+    # 4) 无日产品块 / 块结构异常：安全为 no-op
+    for malformed in ({}, {"daily_time": ["2026-09-01"]},
+                      {"daily_time": "oops", "daily": {}},
+                      {"daily_time": ["2026-09-01"], "daily": "oops"}):
+        s = {"issue_iso": "2026-09-01T08:00", **malformed}
+        truncate_daily_block(s, 16)   # 绝不抛异常

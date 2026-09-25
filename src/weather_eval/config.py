@@ -26,7 +26,10 @@ DEFAULT_EVAL = {
                                        # 分数才开始测量真技巧。业务上"1 小时下 0.1mm"≈没下，
                                        # 而 ≥1mm/h 才是读者认定的"在下雨"。
     "hourly_lead_days": 16,            # 逐小时评估最大时效（天），即 lead 1..384h
-    "daily_max_offset_days": 16,       # 按天评估最大日偏移（天），即 offset 1..16
+    "daily_max_offset_days": 16,       # 按天评估最大日偏移（天），即 offset 1..16。
+                                       # 超出该范围的日预报不评测（预报时效太长无
+                                       # 业务意义），且入库时写路径会把日产品的
+                                       # 超范围部分截除（snapshot_meta.truncate_daily_block）
     "daily_min_hours": 20,             # 按天评估的日覆盖门槛：观测/预报任一侧当天
                                        # 非缺测小时数低于此值，该天该要素不入样
                                        # （防"缺测折算 0.0"与"部分日累计偏低"伪装成技巧）

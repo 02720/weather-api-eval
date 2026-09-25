@@ -36,6 +36,9 @@ class ForecastProvider(ABC):
       }}
     }
     三条数组与 daily_time 等长、按索引对齐；缺测一律 null（绝不填 0）。
+    评测范围以 eval.daily_max_offset_days（默认 16 天）为界：日偏移超出该范围的
+    日产品不会被评测，入库时由写路径统一截除（snapshot_meta.truncate_daily_block，
+    节省仓库体积）——provider 无需自行截断，但也不必为"多出来的天"申请评测语义。
     允许**只接温度**的半块：源若无逐日累计降水产品（只有概率/量级码/日内统计量），
     precipitation 给全 null 数组并留档原因——把概率、量级档或"日内均值×24"折算成
     累计 mm 都是凭空造值，绝不允许（星图 pre_day/pre_night 恒 5.0 量级码、彩云

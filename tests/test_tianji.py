@@ -328,6 +328,7 @@ def test_cli_fetch_forecast_saves_list_snapshots(tmp_path, monkeypatch):
     class FakeCfg:
         models = ["tj_t2"]
         stations = [_Station()]
+        eval = {"daily_max_offset_days": 16}   # 抓取路径读评测范围（截断口径与 CLI 配置同源）
 
     class FakeProv:
         def fetch_snapshot(self, station, models):

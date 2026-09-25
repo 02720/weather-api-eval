@@ -45,7 +45,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from .config import load_config
+from .config import DEFAULT_EVAL, load_config
 from .timeutil import now_beijing, ymd, parse_iso, floor_to_hour, ym
 from .storage import (
     PROJECT_ROOT, compact_snapshots, data_footprint, period_summary_path, save_obs,
@@ -254,7 +254,14 @@ def cmd_fetch_forecast(args):
                 # （每份各自 issue_iso 与时间轴），保证时效（lead）分组不被跨模式错位污染。
                 subs = list(snap)
             for sub in subs:
-                save_forecast_snapshot(st.id, sub["models"][0], sub)
+                # 日产品评测范围必须**显式**随调用传入：save 路径虽有缺省回退
+                # （读默认配置），但本 CLI 支持 --config 覆盖——缺省回退只认
+                # 仓库默认配置，会让自定义配置的评测范围与入库截断口径分裂
+                save_forecast_snapshot(
+                    st.id, sub["models"][0], sub,
+                    daily_max_offset_days=int(cfg.eval.get(
+                        "daily_max_offset_days",
+                        DEFAULT_EVAL["daily_max_offset_days"])))
             log.info("站点 %s 起报已存档 %d 份（模型 %s）",
                      st.id, len(subs), [s["models"][0] for s in subs])
         except Exception as e:  # noqa: BLE001

@@ -1427,13 +1427,16 @@ try {
   // 每个榜自己交代自己是什么口径。
   const MENU = report.meta.board_menu || [];
   const MENU_BY_KEY = {};
-  MENU.forEach(x => { MENU_BY_KEY[x.key] = x; });
+  const MENU_IDX = {};
+  MENU.forEach((x, i) => { MENU_BY_KEY[x.key] = x; MENU_IDX[x.key] = i; });
   const isRes = k => (MENU_BY_KEY[k] || {}).group === "resolution";
   const BUCKETS = Object.keys(LEADERBOARDS)
     .filter(k => k !== "all" && k !== "hourly" && k !== "daily")
-    .sort((a, b) => (MENU_BY_KEY[a] && MENU_BY_KEY[b])
-      ? (MENU_BY_KEY[a].day - MENU_BY_KEY[b].day || a.localeCompare(b))
-      : a.localeCompare(b));
+    // 按服务端菜单顺序排（综合天榜 → 小时榜 → 日榜，各族内部按提前天数）：
+    // 此前按 day 排序会把三个族按天交错，同族的天数不再相邻。
+    .sort((a, b) => ((MENU_IDX[a] !== undefined ? MENU_IDX[a] : 1e9)
+                   - (MENU_IDX[b] !== undefined ? MENU_IDX[b] : 1e9))
+                   || a.localeCompare(b));
   const BOARDS = ["all", "hourly", "daily"].filter(k => LEADERBOARDS[k]).concat(BUCKETS);
   const LEAD_DAYS = report.meta.hourly_lead_days || BUCKETS.length;
   // 走势线按轨道分层（score_trend[track].overall）；总榜的走势取两轨都有分的
@@ -1453,7 +1456,7 @@ try {
     });
     return out;
   })();
-  const TREND_OF = board => board === "all" ? TREND_OV
+  const TREND_OF = board => (board === "all" || board.startsWith("all:")) ? TREND_OV
     : (board.startsWith("hourly") ? TREND_H : TREND_D);
   const FAMILY_ICON = {};
   MODEL_FAMILIES.forEach(f => (f.models || []).forEach(m => { FAMILY_ICON[m] = f.icon || ""; }));
@@ -1463,23 +1466,37 @@ try {
   // "24h 累计 ≥1mm 有效降水日"——两个口径的 ETS 不可比，标签必须跟着换。
   const thrH = report.meta.rain_hourly_threshold_mm || 1;
   const thrD = report.meta.rain_daily_threshold_mm || 1;
-  const rainLabel = board => board.startsWith("hourly") ? "时雨" : "日雨";
-  const rainTitle = board => board.startsWith("hourly")
-    ? ("该小时 ≥" + thrH + "mm 记「在下雨」的晴雨评分 0~1（0.1mm 口径被毛毛雨偏差主导，见标定说明）")
-    : ("24h 累计 ≥" + thrD + "mm 的晴雨评分 0~1，越高越好");
+  const isAllFam = b => b === "all" || b.startsWith("all:");
+  const rainLabel = board => board.startsWith("hourly") ? "时雨"
+    : (board.startsWith("all:") ? "两轨" : "日雨");
+  const rainTitle = board => board.startsWith("all:")
+    ? ("该小时 ≥" + thrH + "mm 的时雨与 24h 累计 ≥" + thrD + "mm 的日雨两条晴雨评分"
+       + "各取均值（两个口径不可直接相减，仅作诊断；综合分本身两轨各半）")
+    : board.startsWith("hourly")
+      ? ("该小时 ≥" + thrH + "mm 记「在下雨」的晴雨评分 0~1（0.1mm 口径被毛毛雨偏差主导，见标定说明）")
+      : ("24h 累计 ≥" + thrD + "mm 的晴雨评分 0~1，越高越好");
+  const acc2Title = b => b === "daily"
+    ? "日最高/最低温度 ±2°C 命中率（两量取均值），越高越好"
+    : b.startsWith("all:")
+      ? "两轨 ±2°C 命中率均值（逐小时与日最高/最低各半，缺一即缺），越高越好"
+      : "温度 ±2°C 命中率，越高越好";
+  const rmseTitle = b => b === "daily"
+    ? "日最高/最低温度的均方根误差（两量取均值），越低越好"
+    : b.startsWith("all:")
+      ? "两轨温度均方根误差均值（逐小时与日最高/最低各半，缺一即缺），越低越好"
+      : "温度均方根误差，越低越好";
   const LB_COLS = [
     {key:"score",        label:"综合分",  dir:"desc", dec:1, primary:true},
     {key:"temp_score",   label:"温度分",  dir:"desc", dec:1},
     {key:"precip_score", label:"降水分",  dir:"desc", dec:1},
     {key:"acc2",         label:"±2°C",    dir:"desc", dec:1, unit:"%",
-     title: b => b === "daily" ? "日最高/最低温度 ±2°C 命中率（两量取均值），越高越好"
-                               : "温度 ±2°C 命中率，越高越好"},
+     title: acc2Title},
     {key:"rmse",         label:"RMSE °C", dir:"asc",  dec:2,
-     title: b => b === "daily" ? "日最高/最低温度的均方根误差（两量取均值），越低越好"
-                               : "温度均方根误差，越低越好"},
+     title: rmseTitle},
     {key:"ts",           label:"雨 TS",  dir:"desc", dec:2, title: rainTitle},
     {key:"ets",          label:"雨 ETS", dir:"desc", dec:2,
-     title: b => "对随机蒙对做过校正的" + (board.startsWith("hourly") ? "小时" : "日") + "晴雨技巧 0~1，" + rainTitle(b)},
+     title: b => "对随机蒙对做过校正的" + (b.startsWith("hourly") ? "小时"
+            : b.startsWith("all:") ? "两轨" : "日") + "晴雨技巧 0~1，" + rainTitle(b)},
   ];
   // 总榜把各时效桶得分等权平均，而各源能提供的时效档数不同（商业源常只有 2~3 天）——
   // 补一列"覆盖时效"把可用时效数显式暴露给读者（温度/降水两条轨道分别统计）。
@@ -1567,11 +1584,11 @@ try {
   }
   const SPARK_DOMAIN = {all: makeSparkDomain("all"), hourly: makeSparkDomain("hourly"),
                         daily: makeSparkDomain("daily")};
-  const sparkTrackOf = b => b === "all" ? "all" : (b.startsWith("hourly") ? "hourly" : "daily");
+  const sparkTrackOf = b => isAllFam(b) ? "all" : (b.startsWith("hourly") ? "hourly" : "daily");
   const dayOfBoard = b => {
     const menu = MENU_BY_KEY[b];
     if (menu && menu.day) return menu.day;
-    const mm = /^(?:hourly|daily):(\d+)d$/.exec(b);
+    const mm = /^(?:all|hourly|daily):(\d+)d$/.exec(b);
     return mm ? parseInt(mm[1], 10) : -1;
   };
 
@@ -1646,14 +1663,16 @@ try {
     // tail 顺序须与 lbRowHtml 的尾部单元格一致：走势 / 样本对 / 操作（样本对列此前漏了表头）
     // 走势列的口径随榜不同：总榜的名次是"难度对齐分"，画不出"随天桶衰减"的
     // 曲线——那条线只能画两轨桶分的均值，是诊断视图不是名次依据，必须写明。
-    const SPARK_COL = board === "all"
+    const SPARK_COL = isAllFam(board)
       ? {key:"_spark", label:"两轨均值走势", cls:"",
-         title:"总榜名次用的是难度对齐分（不是这条线）；这里画的是小时榜与日榜桶分的均值，仅作跨源走势示意"}
+         title: board === "all"
+           ? "总榜名次用的是难度对齐分（不是这条线）；这里画的是小时榜与日榜桶分的均值，仅作跨源走势示意"
+           : "综合天榜的名次就是这个两轨均值（小时榜与日榜桶分各半，两轨缺一即缺），当前榜所处位置有圆点标记"}
       : {key:"_spark", label:"得分走势", cls:"",
          title:"该源在" + (board.startsWith("hourly") ? "小时榜" : "日榜") + "各提前天数的综合分曲线；当前榜所处位置有圆点标记"};
     const tail = [SPARK_COL,
                   {key:"_n", label:"样本对", cls:"num",
-       title:"名义样本对，两条轨道单位不同：n = 逐小时温度对（小时榜/总榜）或日最高/最低对（日榜）；n_precip = 逐小时晴雨对（小时榜）或日累计降水对（日榜/总榜）。逐小时误差强自相关，入围与否看有效样本量 n_eff，别把名义 n 当可靠性"},
+       title:"名义样本对，两条轨道单位不同：n = 逐小时温度对（小时榜/总榜/综合天榜）或日最高/最低对（日榜）；n_precip = 逐小时晴雨对（小时榜）或日累计降水对（日榜/总榜/综合天榜）。逐小时误差强自相关，入围与否看有效样本量 n_eff，别把名义 n 当可靠性"},
                   {key:"_act", label:"", cls:"c-act"}];
     // 列的悬浮说明可按当前榜切换（title 为函数时传入 board：小时榜/日榜的
     // 降水口径不同，同一个键的说明不能共用一句话）

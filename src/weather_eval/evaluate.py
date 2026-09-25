@@ -112,7 +112,7 @@
   各子分截断到 [0,100]，缺项按剩余权重归一（不让单一缺项把整行踢出局）。
   不入分的指标及理由见 TEMP/PRECIP_SCORE_PARTS 注释与 README。
 - 综合得分 = mean(温度得分, 降水分)，缺项不计。
-- 排行榜（leaderboards）分**两个维度**：分辨率层 × 时效层，共 2+2·N 张榜。
+- 排行榜（leaderboards）分**两个维度**：分辨率层 × 时效层，共 3+3·N 张榜。
   * 分辨率层三张（"all" / "hourly" / "daily"）：**难度对齐分**——用(天桶×分辨率)做
     列的双向加法模型把难度与技巧劈开后给出的期望分。三张答三个问题：
       "总榜" = 综合起来谁最准（跨分辨率）；
@@ -125,6 +125,10 @@
     同一提前天数内的直接对照。不经过任何难度对齐，是最保守的视角。两族必须分开
     命名：此前的 "1d".."16d" 把两个不同口径的分数（温度走逐小时、降水走日累计）
     混成一个数，却挂在一个连自己的出身都没交代的名字下。
+  * 综合天榜（"all:1d".."all:Nd"，N = min(小时榜天数, 日榜天数)）：同一天桶内
+    小时榜与日榜各半的等权平均、两轨缺一即缺——总榜在单天粒度的对应物，回答
+    "提前第 N 天这天综合谁最准"。同天桶内无覆盖偏差，故无需重跑劈分（名次与
+    "先扣列效应再平均"严格等价，见 _combined_day_boards）。
   所有榜共用同一行结构与打分公式，主报告表格排行榜与冠军横幅共用这份数据。
 """
 from __future__ import annotations
@@ -707,6 +711,16 @@ def _mean_or_none(vals: list[float]) -> float | None:
     return round(sum(vals) / len(vals), 2) if vals else None
 
 
+def _mean2(a: float | None, b: float | None) -> float | None:
+    """两值各半的均值：任一为 None 即 None（缺一即缺，不做"半截均值"）。
+
+    与 _mean_or_none 的区别：后者对"缺项"取剩余均值——那适合"同一维度的
+    缺项按剩余权重归一"，不适合"两个互不等价的口径各占一半"的合成——
+    只剩一个口径时还叫"各半均值"就是把半个证据当整个用（MSN 教训）。
+    """
+    return round((a + b) / 2, 2) if a is not None and b is not None else None
+
+
 def temp_score(t: dict) -> float | None:
     """温度得分(0~100)：7 项指标按 TEMP_SCORE_PARTS 权重加权，缺项按剩余权重归一。"""
     return _weighted_score(TEMP_SCORE_PARTS, t)
@@ -1099,6 +1113,12 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
         src = track_sources[track]
         b_lead = hourly_lead_days if track == "hourly" else daily_max_offset
         leaderboards.update(_track_lead_boards(models, track, src, b_lead))
+
+    # 综合天榜（"all:Nd"）：同一天桶内小时榜与日榜的合成，两轨缺一即缺。
+    # 天数取两轨的较小者——综合分要求两条轨道同天都有格子，单轨延伸出去的
+    # 天数（如日产品到 90 天而逐小时只到 16 天）挤不进综合，多出纯粹是空榜。
+    leaderboards.update(_combined_day_boards(
+        models, track_sources, min(hourly_lead_days, daily_max_offset)))
 
     # 三张对齐榜共享同一次重采样（理由见 stats.day_block_bootstrap）。
     difficulty_window: dict[str, dict] = {}
@@ -1616,6 +1636,62 @@ def _track_lead_boards(models, track: str, src: dict, days: int) -> dict[str, li
     return boards
 
 
+def _combined_day_boards(models, track_sources, days: int) -> dict[str, list[dict]]:
+    """综合天榜（"all:Nd"）：把"提前第 N 天"的小时榜与日榜合成一个该天综合分。
+
+    动机：小时榜与日榜分开后，"提前 5 天这天综合谁最准"要读者自己在两张子榜
+    之间换算。这里按天给出合成口径——总榜（跨分辨率对齐分）在单天粒度上的
+    对应物。
+
+    为什么是"两轨各半的等权平均"而不是总榜那套双向劈分（第一性原理）：总榜的
+    对齐吸收的是"各家覆盖天数不同"的偏差——那只在**跨天桶**比较时才存在；
+    同一天桶之内所有模型面对同一批难度，不存在覆盖偏差。此时合成只剩两条纪律：
+      * **两轨缺一即缺**——与总榜"行须在两条轨道都有格子"同一底线，单轨分
+        不配叫综合分（MSN 凭纯温度分登顶的教训）；
+      * **等权平均**——这正是总榜走势线（页面 TREND_OV）已在用的口径，榜单
+        与走势图永不分叉。名次上它与"先扣列效应再平均"严格等价：同一批列的
+        列效应是全体模型共享的常数，不改变名次，故无需为单天榜重跑劈分。
+    行内诊断列（±2°C/RMSE/TS/ETS）同样两轨各取均值、缺一即缺——与综合分
+    同一条纪律，不给"半截证据"留展示位。完备性判定分层：**综合分**是格子级
+    （两轨两维四方齐备）；**维度分/诊断列**是维度级（该维度两轨齐备即可）——
+    日轨温度缺失只判死温度维与综合分，不该让两轨齐备的降水维陪葬。
+    """
+    boards: dict[str, list[dict]] = {}
+    for b in range(1, days + 1):
+        bk = f"{b}d"
+        rows = []
+        for m in models:
+            t_h = track_sources["hourly"]["temp"][m].get(bk) or {}
+            p_h = track_sources["hourly"]["precip"][m].get(bk) or {}
+            t_d = track_sources["daily"]["temp"][m].get(bk) or {}
+            p_d = track_sources["daily"]["precip"][m].get(bk) or {}
+            # 维度分**按维度**各自合成（温度分要求小时榜温度与日榜温度齐备，
+            # 降水分同理），与 track_cells 的格子级全有全无不同：格子综合分要求
+            # 两维齐备，但"温度维两轨齐备、降水维也两轨齐备"与"格子齐备"是
+            # 四个独立的完备性判定——日轨温度缺失只该判死温度维与综合分，
+            # 不该连两轨都齐备的降水维一起陪葬。
+            ts_h, ps_h = temp_score(t_h), precip_score(p_h)
+            ts_d, ps_d = daily_temp_score(t_d), precip_score(p_d)
+            comp_h = _mean2(ts_h, ps_h)             # 格子综合分：两维齐备（与 track_cells 同式）
+            comp_d = _mean2(ts_d, ps_d)
+            score = _mean2(comp_h, comp_d)          # 两轨格子齐备才有综合分
+            t_s = _mean2(ts_h, ts_d)
+            p_s = _mean2(ps_h, ps_d)
+            v_d = daily_temp_view(t_d)
+            rows.append(_board_row(
+                m,
+                {"acc2": _mean2(t_h.get("acc2"), v_d.get("acc2")),
+                 "rmse": _mean2(t_h.get("rmse"), v_d.get("rmse")),
+                 "n": (t_h.get("n") or 0)},
+                {"ts": _mean2(p_h.get("ts"), p_d.get("ts")),
+                 "ets": _mean2(p_h.get("ets"), p_d.get("ets")),
+                 "n": (p_d.get("n") or 0)},
+                score=score, temp_score=t_s, precip_score=p_s,
+                qualified=(score is not None)))
+        boards[f"all:{bk}"] = _rank_rows(rows)
+    return boards
+
+
 def _metric_matrix(models: list[str], days: int, value_of) -> np.ndarray:
     """(m, b) 指标矩阵：value_of(model, "Nd") → 数值，None 一律记 NaN。
 
@@ -2097,6 +2173,17 @@ def _board_menu(models: list[str], leaderboards: dict[str, list[dict]]) -> list[
         menu.append({"key": key, "label": TRACK_LABELS[key], "group": "resolution",
                      "n_models": n,
                      "desc": _BOARD_DESC.get(key, "")})
+    # 综合天榜（all:1d..all:Nd）：分辨率层之后、两条单轨子榜之前——它是总榜
+    # 在单天粒度的对应物，读者按"天"找综合结论时第一眼就该看到这一族。
+    for k in sorted((k for k in leaderboards if k.startswith("all:")),
+                    key=lambda k: int(k.split(":", 1)[1][:-1])):
+        rows = leaderboards.get(k) or []
+        n = sum(1 for r in rows if r.get("score") is not None)
+        day = k.split(":", 1)[1]
+        menu.append({"key": k, "label": f"综合·提前{day[:-1]}天", "group": "all",
+                     "day": int(day[:-1]), "n_models": n,
+                     "desc": f"只看提前 {day[:-1]} 天：小时榜与日榜的分数各半合成一个"
+                             f"综合分（两轨缺一即缺，单轨无结论不进综合）"})
     for track in TRACKS:
         prefix = f"{track}:"
         keys = sorted((k for k in leaderboards if k.startswith(prefix)),

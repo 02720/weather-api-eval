@@ -369,6 +369,7 @@ def test_cmd_fetch_forecast_open_meteo_excludes_all_standalone_sources(monkeypat
     class Cfg:
         models = ["ecmwf_ifs", "caiyun_v2_6", "qweather_v1"]
         stations = [Station()]
+        eval = {"daily_max_offset_days": 16}
 
     monkeypatch.setattr(m, "load_config", lambda cfg: Cfg())
 
@@ -402,7 +403,7 @@ def test_cmd_fetch_forecast_routes_to_qweather(monkeypatch):
     monkeypatch.setattr(m, "QWeatherProvider", lambda: FakeQW())
     saved = []
     monkeypatch.setattr(m, "save_forecast_snapshot",
-                        lambda sid, mod, sub: saved.append((sid, mod)) or True)
+                        lambda sid, mod, sub, **k: saved.append((sid, mod)) or True)
 
     class Station:
         id = "s1"
@@ -412,6 +413,7 @@ def test_cmd_fetch_forecast_routes_to_qweather(monkeypatch):
     class Cfg:
         models = ["ecmwf_ifs", "qweather_v1"]
         stations = [Station()]
+        eval = {"daily_max_offset_days": 16}   # 抓取路径读评测范围（截断口径与 CLI 配置同源）
 
     monkeypatch.setattr(m, "load_config", lambda cfg: Cfg())
 

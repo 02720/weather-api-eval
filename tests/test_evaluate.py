@@ -3,8 +3,9 @@ import math
 
 from weather_eval import storage
 from weather_eval.evaluate import (
-    build_report, temp_metrics, precip_metrics,
+    build_report, collect, temp_metrics, precip_metrics,
     temp_score, precip_score, overall_score, daily_temp_score, _mean_or_none,
+    _combined_day_boards, track_cells,
 )
 from weather_eval.timeutil import iso
 
@@ -227,15 +228,27 @@ def test_build_report_end_to_end(tmp_path, monkeypatch):
     for key in ("all", "hourly", "daily"):
         assert data["leaderboards"][key], key
     assert {m["key"] for m in data["meta"]["board_menu"]} >= {
-        "all", "hourly", "daily", "hourly:1d", "daily:1d"}
+        "all", "hourly", "daily", "all:1d", "hourly:1d", "daily:1d"}
     assert row["acc2"] == t1["acc2"] and row["ts"] == p1["ts"]
     # 全部时效桶都有榜单行（无数据的桶行内分数为 None、沉底）——按分辨率分开命名，
-    # 故是两条各 16 档 + 分辨率层三张榜
+    # 故是两条各 16 档 + 综合天榜 16 档 + 分辨率层三张榜
     assert set(data["leaderboards"]) == {"all", "hourly", "daily"} | {
-        f"{tr}:{i}d" for tr in ("hourly", "daily") for i in range(1, 17)}
+        f"{tr}:{i}d" for tr in ("hourly", "daily") for i in range(1, 17)} | {
+        f"all:{i}d" for i in range(1, 17)}
     assert all(len(rows) == 1 for rows in data["leaderboards"].values())
     assert data["leaderboards"]["hourly:5d"][0]["score"] is None
     assert data["leaderboards"]["daily:5d"][0]["score"] is None
+    assert data["leaderboards"]["all:5d"][0]["score"] is None
+
+    # 综合天榜（all:Nd）：同一天桶内小时榜与日榜各半的合成，两轨缺一即缺——
+    # 分数与走势线（总榜趋势 = 两轨桶分均值）同口径，榜单与图不得分叉。
+    rowa = next(r for r in data["leaderboards"]["all:1d"] if r["model"] == "ecmwf_ifs")
+    assert rowa["score"] == _mean_or_none([lb1[0]["score"], rowd["score"]])
+    assert rowa["temp_score"] == _mean_or_none([lb1[0]["temp_score"], rowd["temp_score"]])
+    assert rowa["precip_score"] == _mean_or_none([lb1[0]["precip_score"], rowd["precip_score"]])
+    assert rowa["qualified"] is True
+    # 诊断列（±2°C）也是两轨各半：逐小时 100%、日最高/最低两量取均值
+    assert rowa["acc2"] == round((t1["acc2"] + rowd["acc2"]) / 2, 2)
 
     # 总榜（2026-09 跨分辨率重构）：把小时榜与日榜两个分辨率的桶分放进同一个
     # 加法模型，列 = (天桶 × 分辨率)。只有一家源时设计降级为"所有可用格子的均值"，
@@ -308,8 +321,8 @@ def test_build_report_empty_is_safe(tmp_path, monkeypatch):
     # 无数据时不崩溃，指标均为 None/空，得分为 None
     assert data["scorecard"]["ecmwf_ifs"]["temp_24h"]["n"] == 0
     assert data["temp_hourly"]["ecmwf_ifs"]["1d"]["rmse"] is None
-    # 分时效榜按分辨率分开命名；三条轨道与总榜在无数据时都安全
-    for key in ("hourly:1d", "daily:1d", "all", "hourly", "daily"):
+    # 分时效榜按分辨率分开命名；三条轨道、综合天榜与总榜在无数据时都安全
+    for key in ("hourly:1d", "daily:1d", "all:1d", "all", "hourly", "daily"):
         assert data["leaderboards"][key][0]["score"] is None, key
     # 趋势图同样按轨道分层给出
     assert data["score_trend"]["hourly"]["overall"]["ecmwf_ifs"]["1d"] is None
@@ -1495,3 +1508,85 @@ def test_snapshot_quality_and_model_status_disclosed(tmp_path, monkeypatch):
     assert q["snapshots"] == 3 and q["truncated"] == 1 and q["median_len"] == 48
     row = next(r for r in data["leaderboards"]["all"] if r["model"] == "full")
     assert row["n_issues"] == 3      # 起报轮次数（不是覆盖天数）
+
+
+# --------------------------------------------------------------- 综合天榜（all:Nd）
+def test_combined_day_board_merges_tracks_and_gates_on_missing():
+    """综合天榜：两轨各半合成、缺一即缺、None 沉底、诊断列同一条纪律。"""
+    temp_full = {"acc2": 80.0, "rmse": 1.0, "r": 0.9, "acc1": 60.0, "mae": 0.8,
+                 "mbe": 0.1, "slope": 1.0, "n": 10}
+    precip_full = {"ets": 0.3, "ts": 0.4, "pod": 50.0, "far": 20.0,
+                   "bias": 1.1, "n": 8}
+    daily_temp_full = {"max": dict(temp_full), "min": dict(temp_full)}
+    src = {
+        "hourly": {"temp": {"a": {"1d": dict(temp_full)}, "b": {"1d": dict(temp_full)}},
+                   "precip": {"a": {"1d": dict(precip_full)},
+                              "b": {"1d": dict(precip_full)}}},
+        "daily": {"temp": {"a": {"1d": daily_temp_full}, "b": {}},
+                  "precip": {"a": {"1d": dict(precip_full)},
+                             "b": {"1d": dict(precip_full)}}},
+    }
+    boards = _combined_day_boards(["a", "b"], src, 1)
+    assert set(boards) == {"all:1d"}
+    rows = {r["model"]: r for r in boards["all:1d"]}
+    comp_h, ts_h, ps_h = track_cells("hourly", temp_full, precip_full)
+    comp_d, ts_d, ps_d = track_cells("daily", daily_temp_full, precip_full)
+    # a 两轨齐备：综合分 = 两轨格子综合分各半；温度分/降水分各自两轨各半，
+    # 且 mean(温度分, 降水分) == 综合分（分解自洽）
+    assert rows["a"]["score"] == round((comp_h + comp_d) / 2, 2)
+    assert rows["a"]["temp_score"] == round((ts_h + ts_d) / 2, 2)
+    assert rows["a"]["precip_score"] == round((ps_h + ps_d) / 2, 2)
+    assert rows["a"]["score"] == _mean_or_none(
+        [rows["a"]["temp_score"], rows["a"]["precip_score"]])
+    assert rows["a"]["qualified"] is True
+    # 诊断列两轨各半（acc2：逐小时与日最高/最低两量均值一致 → 80）
+    assert rows["a"]["acc2"] == 80.0 and rows["a"]["ts"] == 0.4
+    assert rows["a"]["n"] == 10 and rows["a"]["n_precip"] == 8
+    # b 缺日轨温度：综合分为 None（缺一即缺，绝不用单轨分充数）、温度维两半缺一
+    # 亦为 None；但降水维两轨齐备，其诊断列照常给出——诊断列按"该维度两轨是否
+    # 齐备"独立判定，综合分则要求两轨格子整体齐备，两者不互相迁就
+    assert rows["b"]["score"] is None and rows["b"]["qualified"] is False
+    assert rows["b"]["temp_score"] is None
+    assert rows["b"]["precip_score"] == precip_score(precip_full)
+    assert rows["b"]["acc2"] is None and rows["b"]["ets"] == 0.3
+    # None 沉底：两轨齐备者排在前面
+    assert [r["model"] for r in boards["all:1d"]] == ["a", "b"]
+
+
+def test_collect_daily_offset_capped_at_eval_range(tmp_path, monkeypatch):
+    """评测范围锁定（需求 2）：日产品铺到 90 天也只评 offset 1..16。
+
+    观测刻意覆盖到 offset 17，排除"因无观测被跳过"的混淆——超出 16 天的日子
+    是被 offset 过滤器拒掉的，不是被数据缺失拒掉的。
+    """
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    start = datetime(2026, 9, 1, 0, 0)
+    n_days = 18                      # 观测覆盖 offset 0..17
+    obs = [{"time": iso(start + timedelta(days=d, hours=h)),
+            "temp": 20.0 + (h % 3), "rain": 1.0 if h == 12 else 0.0}
+           for d in range(n_days) for h in range(24)]
+    obs_map = {r["time"]: r for r in obs}
+    model = "geovis_like"
+    # 日产品铺 90 天（offset 0..89），远超评测范围
+    daily_days = 90
+    snap = {
+        "issue_iso": iso(start), "station_id": "s1", "source": "test",
+        "models": [model], "grid_lat": 23.0, "grid_lon": 111.0, "elevation": 50,
+        "hourly_time": [],
+        "data": {model: {"temperature_2m": [], "precipitation": []}},
+        "daily_time": [str((start + timedelta(days=off)).date())
+                       for off in range(daily_days)],
+        "daily": {model: {"temp_max": [22.0] * daily_days,
+                          "temp_min": [18.0] * daily_days,
+                          "precipitation": [1.0] * daily_days}},
+    }
+    hourly, daily = collect(["s1"], [model], start,
+                            start + timedelta(days=n_days - 1, hours=23),
+                            16, 16, 20, True,
+                            obs_maps={"s1": obs_map},
+                            snapshots={("s1", model): [snap]})
+    assert hourly == []
+    offs = {r["offset"] for r in daily}
+    assert offs == set(range(1, 17)), offs     # 1..16，含 16 不含 17
+    # offset 17 的日产品与观测都在，但被评测范围拒之门外
+    assert all(r["temp_src"] == "daily" for r in daily)

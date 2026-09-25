@@ -223,7 +223,23 @@ def _issue_filename(issue_iso: str) -> str:
     return issue_iso.replace(":", "") + ".json"
 
 
-def save_forecast_snapshot(station_id: str, model: str, snapshot: dict) -> bool:
+def _eval_daily_max_offset() -> int:
+    """日产品评测范围（eval.daily_max_offset_days）的读取。
+
+    政策的单一出处是评估配置（stations.yaml 的 eval 段）；惰性导入避免
+    storage→config 的模块级耦合，配置不可得时回退内置默认值——截断是
+    体积优化与政策强制，绝不能因配置缺失让写路径瘫痪。
+    """
+    from .config import DEFAULT_EVAL, load_config
+    try:
+        return int(load_config().eval.get("daily_max_offset_days",
+                                          DEFAULT_EVAL["daily_max_offset_days"]))
+    except Exception:  # noqa: BLE001  配置文件缺失/损坏时回退内置默认
+        return int(DEFAULT_EVAL["daily_max_offset_days"])
+
+
+def save_forecast_snapshot(station_id: str, model: str, snapshot: dict, *,
+                           daily_max_offset_days: int | None = None) -> bool:
     """写入起报快照；若同站同模型同起报时刻已存在则跳过（幂等）。返回是否新建。
 
     exists 检查与写入之间不是原子的——两个进程并发保存同一快照时可能都通过
@@ -234,14 +250,24 @@ def save_forecast_snapshot(station_id: str, model: str, snapshot: dict) -> bool:
     **落盘前统一盖契约元数据**（P1-1 / P0-6）：抓取时刻、内容哈希、起报锚点语义、
     完整性标记。这是全项目唯一的快照写入口，把"每份存档都要带 fetched_at"这件事
     从各 provider 的自觉变成写路径的强制——漏盖字段在物理上不可能发生。
+
+    **落盘前截除评测范围外的日产品**（daily_max_offset_days，默认 16）：逐日预报
+    块只服务按天评估，超出评测范围的日产品（实测某源 90 天）永远不会被评测，
+    却要随每份快照永久占据仓库体积——截断必须在 stamp 之前完成，让内容哈希
+    覆盖截断后的实际存档。评测侧的日偏移过滤（collect）是第二道闸，两者口径
+    同源（同一配置项），详见 snapshot_meta.truncate_daily_block。
     """
-    from .snapshot_meta import stamp_snapshot
+    from .snapshot_meta import stamp_snapshot, truncate_daily_block
     from .timeutil import now_beijing
     issue_iso = snapshot["issue_iso"]
     path = _root() / "forecasts" / station_id / model / _issue_filename(issue_iso)
     with _exclusive_lock(path):
         if path.exists():
             return False
+        truncate_daily_block(
+            snapshot,
+            daily_max_offset_days if daily_max_offset_days is not None
+            else _eval_daily_max_offset())
         now = now_beijing()
         stamp_snapshot(
             snapshot,

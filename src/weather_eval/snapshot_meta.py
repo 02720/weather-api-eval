@@ -28,9 +28,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+from datetime import date
+from typing import Any
 
 # 契约版本：字段语义发生变化时递增（评估层据此判断快照是否具备某项披露）
 META_SCHEMA_VERSION = 2
+
+logger = logging.getLogger(__name__)
 
 # 起报锚点语义枚举（P0-6 / §6.1）。评估层按此分层，并据此判定"嫌疑口径"。
 ISSUE_SOURCE_MODEL_RUN = "model_run"          # 真实模式轮次（UTC run 换算）
@@ -134,6 +139,65 @@ def _count_actual_hours(snapshot: dict) -> int | None:
     """逐小时时间轴上的实际点数（用于披露"这份快照覆盖多少小时"）。"""
     times = snapshot.get("hourly_time")
     return len(times) if isinstance(times, list) else None
+
+
+# ---------------------------------------------------------------- 日产品评测范围
+def _day_offset(day: Any, issue_day: date) -> int | None:
+    """日产品条目相对起报日的自然日偏移；畸形条目返回 None（由调用方保留）。"""
+    if not isinstance(day, str) or len(day) < 10:
+        return None
+    try:
+        return (date.fromisoformat(day[:10]) - issue_day).days
+    except ValueError:
+        return None
+
+
+def truncate_daily_block(snapshot: dict, max_offset_days: int) -> dict:
+    """把快照自带的逐日预报块截到评测范围内（日偏移 ≤ max_offset_days，就地修改）。
+
+    第一性原理：存档是为评测服务的证据流。逐日预报块在本项目里只有一个消费者——
+    按天评估的补位轨道（daily_source_fallback），而按天评估的范围由
+    eval.daily_max_offset_days 划定（默认 16 天）。超出范围的日产品永远不会被
+    评测，却要随每份快照永久占据 git 仓库体积（实测某源日产品 90 天，超范围
+    部分占该块 82%）。在**唯一写入口**截除（与 stamp_snapshot 同一哲学），让
+    "评测范围"这条政策从评估层的过滤升级为写路径的强制——漏截在物理上不可能
+    发生。
+
+    防御性约定（截断是优化，绝不因它丢真数据）：
+      * day 无法解析 / 非字符串 / daily 块结构异常的条目一律**保留**——畸形
+        条目可能是契约漂移的第一手证据，宁多勿丢；
+      * issue_iso 缺失或不可解析时不截（退回旧行为）；
+      * 各模型数组与 daily_time 按索引对齐裁剪，短于时间轴的数组天然安全；
+      * 保留范围是"日偏移 ≤ max_offset_days"（含起报当日的 offset 0 与更早的
+        负偏移条目）——评测只用 1..max，offset ≤ 0 的条目随块保留，供"日产品
+        vs 逐小时聚合"的口径核对，且按块首约定多数源从起报日起排。
+    """
+    times = snapshot.get("daily_time")
+    block = snapshot.get("daily")
+    if not isinstance(times, list) or not isinstance(block, dict):
+        return snapshot
+    try:
+        issue_day = date.fromisoformat(str(snapshot.get("issue_iso"))[:10])
+    except (TypeError, ValueError):
+        return snapshot
+    keep = [i for i, day in enumerate(times)
+            if (off := _day_offset(day, issue_day)) is None or off <= max_offset_days]
+    if len(keep) == len(times):
+        return snapshot
+    snapshot["daily_time"] = [times[i] for i in keep]
+    trimmed: dict = {}
+    for model, entry in block.items():
+        if not isinstance(entry, dict):
+            trimmed[model] = entry          # 畸形结构原样保留（宁多勿丢）
+            continue
+        trimmed[model] = {
+            k: ([v[i] for i in keep if i < len(v)] if isinstance(v, list) else v)
+            for k, v in entry.items()
+        }
+    snapshot["daily"] = trimmed
+    logger.info("日产品 %d 天超出评测范围（日偏移 > %d 天），入库截至 %d 天",
+                len(times) - len(keep), max_offset_days, len(keep))
+    return snapshot
 
 
 def stamp_snapshot(snapshot: dict, fetched_bj: str, fetched_utc: str,
