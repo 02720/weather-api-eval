@@ -167,3 +167,34 @@ def test_inline_json_is_compact():
     assert "<\\/" in out            # </ 转义仍在
     import json as _json
     assert _json.loads(out.replace("<\\/", "</")) == {"a": [1, 2], "b": "中文</script>"}
+
+
+def test_spark_svg_median_line_has_no_dangling_global(tmp_path, monkeypatch):
+    """双轨道重构回归：行内走势线的中位参考线必须由调用方按轨道传入。
+
+    fc7c402 把全局 sparkDomain 拆成 SPARK_DOMAIN{all,hourly,daily}，但 sparkSVG
+    内部仍读旧全局 sparkDomain.med —— 榜单渲染到第一行就抛 ReferenceError，
+    被外层 try/catch 吞掉，结果表头在、表体空（排行榜整体显示不出来）。"""
+    import re
+    _populate(tmp_path, monkeypatch)
+    start = datetime(2026, 8, 1, 0, 0)
+    end = datetime(2026, 8, 30, 23, 0)
+    cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
+           "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 5}
+    data = build_report(["s1"], ["ecmwf_ifs"], cfg, start, end, "2026-08")
+    html = render_report_html(data, title="走势线中位线回归")
+
+    # sparkSVG 形参收 med，且中位线取的是形参而非任何全局
+    m = re.search(r"function sparkSVG\([^)]*\)", html)
+    assert m and "med" in m.group(0), "sparkSVG 必须接收 med 形参"
+    body = html[html.index(m.group(0)):]
+    body = body[:body.index("\n  }")] if "\n  }" in body else body[:2000]
+    assert "sparkDomain.med" not in body
+
+    # 全页凡使用 sparkDomain 之处必须自带声明（防同类"拆了声明忘了改引用"）
+    assert ("const sparkDomain" in html) == ("sparkDomain" in html and
+                                             "sparkDomain.med" in html)
+    assert "sparkDomain.med" not in html or "const sparkDomain" in html
+
+    # 两处调用（表格行 + 移动端卡片）都要把轨道域的 med 传进去
+    assert html.count("sd.med)") >= 2

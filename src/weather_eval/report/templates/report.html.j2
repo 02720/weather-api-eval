@@ -1575,7 +1575,7 @@ try {
     return mm ? parseInt(mm[1], 10) : -1;
   };
 
-  function sparkSVG(vals, lo, hi, color, markIdx) {
+  function sparkSVG(vals, lo, hi, color, markIdx, med) {
     const W = 110, H = 32, P = 3, span = Math.max(1, vals.length - 1);
     const px = i => P + i * (W - 2 * P) / span;
     const py = v => H - P - (v - lo) / (hi - lo || 1) * (H - 2 * P);
@@ -1593,7 +1593,7 @@ try {
       dot = '<circle cx="' + px(markIdx).toFixed(1) + '" cy="' + py(vals[markIdx]).toFixed(1) +
             '" r="3" fill="' + color + '" stroke="#fff" stroke-width="1.2"/>';
     return '<svg viewBox="0 0 ' + W + " " + H + '" preserveAspectRatio="none" aria-hidden="true">' +
-      '<path d="' + path(sparkDomain.med) + '" fill="none" stroke="#cbd5e1" stroke-width="1" ' +
+      '<path d="' + path(med) + '" fill="none" stroke="#cbd5e1" stroke-width="1" ' +
       'stroke-dasharray="3 2" vector-effect="non-scaling-stroke"/>' +
       '<path d="' + path(vals) + '" fill="none" stroke="' + color + '" stroke-width="1.8" ' +
       'stroke-linejoin="round" vector-effect="non-scaling-stroke"/>' + dot + "</svg>";
@@ -1728,7 +1728,7 @@ try {
                      (rank === 3 && !none && !notQ) ? "🥉" : (rank || "·");
     const sd = SPARK_DOMAIN[sparkTrackOf(board)];
     const spark = sd
-      ? sparkSVG(sd.byModel[m] || [], sd.lo, sd.hi, colorOf(m), markIdx)
+      ? sparkSVG(sd.byModel[m] || [], sd.lo, sd.hi, colorOf(m), markIdx, sd.med)
       : "";
     const crown = (rank === 1 && !none && !notQ) ? "👑 " : "";
     const dagger = (board === "all" && !none && !notQ && row.sig_vs_top === false)
@@ -1781,7 +1781,7 @@ try {
                      (rank === 3 && !none && !notQ) ? "🥉" : (rank || "·");
     const sd = SPARK_DOMAIN[sparkTrackOf(board)];
     const spark = sd
-      ? sparkSVG(sd.byModel[m] || [], sd.lo, sd.hi, colorOf(m), markIdx)
+      ? sparkSVG(sd.byModel[m] || [], sd.lo, sd.hi, colorOf(m), markIdx, sd.med)
       : "";
     const crown = (rank === 1 && !none && !notQ) ? "👑 " : "";
     const dagger = (board === "all" && !none && !notQ && row.sig_vs_top === false)
