@@ -52,16 +52,42 @@ def test_render_monthly_html_nonempty(tmp_path, monkeypatch):
     # 全时效总榜同样无条件计算（主报告冠军横幅默认读总榜）
     assert data["leaderboards"]["all"] and data["leaderboards"]["all"][0]["score"] is not None
     assert isinstance(data["heatmap"], list) and len(data["heatmap"]) > 0
-    # 得分趋势（排行榜的"趋势版"）与全指标图表容器
+    # 得分趋势（§02 衰减曲线的数据源）与全指标图表容器
     assert data["score_trend"]["hourly"]["overall"]["ecmwf_ifs"]["1d"] is not None
     assert data["score_trend"]["daily"]["overall"]["ecmwf_ifs"]["1d"] is not None
-    assert 'id="chartScoreTrend"' in html
-    assert 'id="chartTempMetrics"' in html and 'id="chartHeat"' in html
-    # 表格式排行榜（桶选择器/表头/表体/搜索/评分构成）与全指标明细表容器
-    assert 'id="detailTableHourly"' in html and 'id="detailTableDaily"' in html
-    assert 'id="lbBody"' in html and 'id="lbHead"' in html
-    assert 'id="lbBuckets"' in html and 'id="lbSearch"' in html
-    assert "lb-weights" in html and "±2°C 准确率" in html  # 评分构成表（服务端渲染）
+    # 2026-09 重构后的页面结构：五张图 + 服务端渲染的榜单表格
+    for el_id in ("chartDecay", "chartWx", "chartHeat", "chartTs", "chartStation"):
+        assert f'id="{el_id}"' in html, f"缺图表容器 {el_id}"
+    assert 'id="lbBody"' in html and 'id="lbTable"' in html
+    # 榜单行必须在服务端渲染出来（无 JS 可读是硬约束），且含温度计与走势线
+    assert html.count('<tr class="') >= 1 and "thermo" in html and "<svg" in html
+    # 评分构成表（服务端渲染）与"±2°C 准确率"白话标签
+    assert "综合分怎么算" in html and "±2°C 准确率" in html
+    # 内联数据必须是裁剪视图（_slim_report），不再内联全量评估输出
+    assert '"board"' in html and '"scorecard"' not in html
+
+
+def test_inline_json_is_slim(tmp_path, monkeypatch):
+    """2026-09 体积守卫：内联 JSON ∝ 页面画的东西，而不是 ∝ 评估算过的东西。
+
+    旧版把完整评估输出（≈1.8MB）原样内联；重构后只内联图表用字段。
+    本测试用"多源大窗口"的真实形状数据锁住上限——任何把全量数据重新塞回
+    页面的改动都会在这里变红。"""
+    from weather_eval.report.render import _slim_report
+
+    _populate(tmp_path, monkeypatch)
+    start = datetime(2026, 8, 1, 0, 0)
+    end = datetime(2026, 8, 30, 23, 0)
+    cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
+           "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 5}
+    data = build_report(["s1"], ["ecmwf_ifs"], cfg, start, end, "2026-08")
+    slim = _slim_report(data)
+    import json as _json
+    size = len(_json.dumps(slim, ensure_ascii=False))
+    assert size < 60_000, f"内联视图 {size:,} 字节，超出预算（检查 _slim_report 是否泄漏了全量字段）"
+    # 页面产物整体也设上限（真实数据 ≈330KB；放宽到 600KB 覆盖模板自身变化）
+    html = render_report_html(data)
+    assert len(html.encode()) < 600_000
 
 
 def test_write_live_report_overwrites_index(tmp_path, monkeypatch):
@@ -169,12 +195,15 @@ def test_inline_json_is_compact():
     assert _json.loads(out.replace("<\\/", "</")) == {"a": [1, 2], "b": "中文</script>"}
 
 
-def test_spark_svg_median_line_has_no_dangling_global(tmp_path, monkeypatch):
-    """双轨道重构回归：行内走势线的中位参考线必须由调用方按轨道传入。
+def test_sparkline_svg_server_rendered(tmp_path, monkeypatch):
+    """走势线服务端渲染回归（2026-09 重构后的守卫）。
 
-    fc7c402 把全局 sparkDomain 拆成 SPARK_DOMAIN{all,hourly,daily}，但 sparkSVG
-    内部仍读旧全局 sparkDomain.med —— 榜单渲染到第一行就抛 ReferenceError，
-    被外层 try/catch 吞掉，结果表头在、表体空（排行榜整体显示不出来）。"""
+    历史：走势线曾由前端 JS 渲染，中位参考线依赖按轨道注入的全局变量——
+    fc7c402 把全局 sparkDomain 拆成 SPARK_DOMAIN{all,hourly,daily} 后，sparkSVG
+    内部仍读旧全局，榜单渲染到第一行就抛 ReferenceError，被外层 try/catch 吞掉，
+    表头在、表体空。重构后走势线在 Python 侧生成（_sparkline_svg 接收 med 形参、
+    不读任何全局），这条 bug 类别被整类消灭——本测试锁住"服务端出图"这一性质，
+    防止走势线又被改回前端渲染。"""
     import re
     _populate(tmp_path, monkeypatch)
     start = datetime(2026, 8, 1, 0, 0)
@@ -182,19 +211,20 @@ def test_spark_svg_median_line_has_no_dangling_global(tmp_path, monkeypatch):
     cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
            "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 5}
     data = build_report(["s1"], ["ecmwf_ifs"], cfg, start, end, "2026-08")
-    html = render_report_html(data, title="走势线中位线回归")
+    html = render_report_html(data, title="走势线服务端渲染回归")
 
-    # sparkSVG 形参收 med，且中位线取的是形参而非任何全局
-    m = re.search(r"function sparkSVG\([^)]*\)", html)
-    assert m and "med" in m.group(0), "sparkSVG 必须接收 med 形参"
-    body = html[html.index(m.group(0)):]
-    body = body[:body.index("\n  }")] if "\n  }" in body else body[:2000]
-    assert "sparkDomain.med" not in body
+    # 榜单行内直接嵌服务端生成的 SVG（无 JS 参与），且带中位虚线参考线
+    assert '<td class="l c-spark"><svg' in html
+    assert 'stroke-dasharray="3 3"' in html
+    # 渲染函数签名保持"中位线由调用方按轨道传入"的形状（防同类回归的语义锚点）
+    m = re.search(r"def _sparkline_svg\([^)]*\)", html) or \
+        re.search(r"def _sparkline_svg\([^)]*\)",
+                  open(render_mod_path(), encoding="utf-8").read())
+    assert m and "med" in m.group(0)
+    # 前端不再有任何 spark 渲染函数
+    assert "sparkSVG" not in html
 
-    # 全页凡使用 sparkDomain 之处必须自带声明（防同类"拆了声明忘了改引用"）
-    assert ("const sparkDomain" in html) == ("sparkDomain" in html and
-                                             "sparkDomain.med" in html)
-    assert "sparkDomain.med" not in html or "const sparkDomain" in html
 
-    # 两处调用（表格行 + 移动端卡片）都要把轨道域的 med 传进去
-    assert html.count("sd.med)") >= 2
+def render_mod_path():
+    from weather_eval.report import render
+    return render.__file__
