@@ -10,10 +10,18 @@
 #     python -m pip install -r requirements.txt -r requirements-dev.txt
 #
 # 下面 pandas/scipy 是 cyeva 的真实运行依赖（因其用 --no-deps 安装，需在此显式列出）。
+#
+# 上界约束（审查 P2-11）：此前只写 >=，于是任一依赖发布新的**主版本**都会在下一次
+# 干净安装时静默换掉实现，而指标数值的可复现性恰恰依赖这些库的浮点与实现细节
+# （README 宣称"固定种子可复现"）。这里给每个未钉死的依赖补上主版本上界：
+# 允许补丁/次版本演进，挡住破坏性主版本。
+#
+# 这仍不是真正的 lock（不锁定传递依赖的精确版本）。要做完整锁定请用
+# pip-compile / uv 生成带哈希的 lock 文件，并每年复核一次。
 pint==0.24.4
 numpy==2.1.2
-pandas>=2.2.3
-scipy>=1.14.1
+pandas>=2.2.3,<3
+scipy>=1.14.1,<2
 requests>=2.31,<3
 beautifulsoup4>=4.12,<5
 jinja2>=3.1,<4

@@ -24,6 +24,50 @@ from .snapshot_meta import ISSUE_SOURCE_LABELS, snapshot_complete
 from .timeutil import now_beijing, parse_iso
 
 
+# ----------------------------------------------------------- 真值传输完整性
+def truth_transport(stations: list) -> dict:
+    """审计"真值来源"的传输层保护，返回可直接进看板的摘要（审查 P1-6）。
+
+    为什么这件事值得单独列出来：观测是本项目**唯一的真值来源**。预报侧的哈希链
+    保证了"封存之后没被改"，但保证不了"当初封进去的是真话"——若真值走明文
+    HTTP，路径上的任何中间人（公共 Wi-Fi、被劫持的 DNS、企业代理、运营商缓存）
+    都能改写实况，而下游所有指标、所有难度对齐、所有置信区间都会毫无察觉地
+    围着一份假真值运转。对一个把"可信度"当卖点的项目，这是护城河上唯一一扇
+    没关的门，且**没有任何下游环节能发现它**。
+
+    因此这里不做"修好它"（主源站点不支持 TLS 时无处可修），而是做**让它可见**：
+    逐站逐源列出传输方案，明文的一律打标记，看板上永远留着这一行。
+    """
+    from urllib.parse import urlparse
+
+    rows = []
+    for s in stations or []:
+        url = getattr(s, "obs_url", "") or ""
+        if not url:
+            continue
+        parts = urlparse(url)
+        rows.append({
+            "station": getattr(s, "id", "?"),
+            "name": getattr(s, "name", "?"),
+            "host": parts.hostname or "",
+            "scheme": (parts.scheme or "").lower(),
+            "encrypted": (parts.scheme or "").lower() == "https",
+        })
+    plaintext = [r for r in rows if not r["encrypted"]]
+    return {
+        "rows": rows,
+        "n_plaintext": len(plaintext),
+        "n_total": len(rows),
+        "all_encrypted": not plaintext,
+        "plaintext_hosts": sorted({r["host"] for r in plaintext}),
+        # 给模板用的一句话结论
+        "verdict": ("全部真值源走加密传输（HTTPS）" if not plaintext else
+                    f"{len(plaintext)}/{len(rows)} 个真值源走明文 HTTP："
+                    f"{'、'.join(sorted({r['host'] for r in plaintext}))}"
+                    f" —— 传输过程无完整性保护"),
+    }
+
+
 def of(snapshots: dict, station_ids: list[str], models: list[str]) -> dict:
     """汇总每个源的接入健康度。
 
@@ -151,6 +195,26 @@ def render_health_html(health: dict, meta: dict, stale_hours: int) -> str:
              if stale else
              f'<p class="fine">✅ 所有已接入的源都在 {stale_hours} 小时内成功抓取过。</p>')
 
+    # 真值传输完整性（审查 P1-6）：明文 HTTP 的主源必须在看板上永远留一行。
+    tt = meta.get("truth_transport") or {}
+    if not tt:
+        transport = ""
+    elif tt.get("all_encrypted"):
+        transport = f'<p class="fine">🔒 {escape(tt.get("verdict", ""))}</p>'
+    else:
+        detail = "；".join(
+            f'{escape(r["name"])}（{escape(r["host"])}）'
+            for r in tt.get("rows", []) if not r["encrypted"])
+        transport = (
+            f'<p class="alert">🔓 <b>真值传输无完整性保护</b>：'
+            f'{escape(tt.get("verdict", ""))}。<br>'
+            f'涉及：{detail}。<br>'
+            f'含义：观测是本项目唯一的真值来源，明文传输下路径上的中间人'
+            f'（公共 Wi-Fi、被劫持 DNS、企业代理）可以改写"实况"，而哈希链只能'
+            f'证明"封存之后没改"，证明不了"当初封进去的是真话"。'
+            f'已实测确认该主源站点不提供 HTTPS（443 端口未开放），故此处按'
+            f'<b>已知敞口如实披露</b>，不做"已修复"的虚假保证。</p>')
+
     return f"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -191,6 +255,7 @@ footer{{margin-top:28px;color:var(--muted);font-size:12px}}
 评估窗口 {escape(str(meta.get('start', '')))} ~ {escape(str(meta.get('end', '')))} ·
 判定阈值 {stale_hours} 小时（定时任务每 7 小时一轮，超过 4 轮失败即视为陈旧）</p>
 {alert}
+{transport}
 <table>
 <thead><tr>
 <th>预报源</th><th>状态</th><th>快照数</th><th>覆盖站点</th><th>残缺</th>

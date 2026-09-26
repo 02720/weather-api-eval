@@ -114,15 +114,57 @@ def merkle_root(hashes: list[str]) -> str | None:
     return level[0]
 
 
+def check_snapshot_integrity(snapshot: dict) -> tuple[str, bool]:
+    """重算快照内容哈希，并与快照内嵌的 ``payload_sha256`` 比对。
+
+    返回 ``(重算哈希, 是否与内嵌值一致)``。无内嵌值（2026-09 之前的历史存档）
+    视为"无从比对"，不算不一致。
+
+    第一性原理：**哈希是用来抓篡改的，不是用来被信任的。** 若 Merkle 根直接取
+    快照自带的那串哈希，那么篡改者只要顺手改掉内容、保留（或一并改掉）这串
+    自证字段，验证器就会为被篡改的文件背书——"验证"退化成"复读"。内嵌哈希的
+    唯一合法用途是**被比对的对象**，而不是**被采信的来源**：内容哈希必须由
+    当前代码对当前字节重算，内嵌值只作为"当初盖章时算出的那个值"参与比对。
+
+    于是攻击面从"改内容"升级为"改内容 + 改自证字段"，而后者一旦发生，
+    比对就会失配并被计入 mismatch——这正是我们要捕获的信号。
+    """
+    real = snapshot_sha256(snapshot)
+    stored = snapshot.get("payload_sha256")
+    if not isinstance(stored, str) or not stored:
+        return real, True          # 历史存档：无内嵌值可比对，不判不一致
+    return real, real == stored.strip().lower()
+
+
 def integrity_summary(snapshots: list[dict]) -> dict:
-    """一组快照的完整性摘要：条数、Merkle 根、覆盖时间范围。"""
+    """一组快照的完整性摘要：条数、Merkle 根、覆盖时间范围、内嵌哈希失配数。
+
+    Merkle 根一律基于**重算**的内容哈希（见 :func:`check_snapshot_integrity`），
+    绝不采信快照自带的 ``payload_sha256``——否则对带内嵌哈希的新快照（2026-09-19
+    契约上线后的全部快照与 bundle 内快照）事后改内容不会被发现，而"越新的数据
+    越不可检"恰好与哈希链的设计意图相反。
+
+    内嵌哈希仍然有用：它是"当初盖章时"算出的值，与重算值失配即说明这份快照
+    在封存之后被动过（或契约/序列化口径变了）。结果计入 ``n_hash_mismatch``，
+    由 ``verify`` 兜底：非零即退出码 1。
+    """
     hashes = []
     stamps = []
+    n_mismatch = 0
+    mismatches: list[dict] = []
     for s in snapshots:
-        h = s.get("payload_sha256")
-        if not h:
-            h = snapshot_sha256(s)
-        hashes.append(h)
+        real, ok = check_snapshot_integrity(s)
+        if not ok:
+            n_mismatch += 1
+            if len(mismatches) < 20:      # 只留前若干条供人工定位，避免摘要爆炸
+                mismatches.append({
+                    "station": s.get("station_id"),
+                    "source": s.get("source"),
+                    "issue_iso": s.get("issue_iso"),
+                    "stored": (s.get("payload_sha256") or "")[:16],
+                    "recomputed": real[:16],
+                })
+        hashes.append(real)
         t = s.get("fetched_at_bj")
         if t:
             stamps.append(str(t))
@@ -132,6 +174,13 @@ def integrity_summary(snapshots: list[dict]) -> dict:
         "fetched_first": min(stamps) if stamps else None,
         "fetched_last": max(stamps) if stamps else None,
         "n_without_fetched_at": len(snapshots) - len(stamps),
+        # 内嵌哈希与重算哈希的失配数：> 0 即"有快照在封存后被改过"
+        "n_hash_mismatch": n_mismatch,
+        "hash_mismatches": mismatches,
+        # 有多少份快照真正参与了"可比对"的校验（历史存档无内嵌值，只贡献根）
+        "n_with_embedded_hash": sum(
+            1 for s in snapshots
+            if isinstance(s.get("payload_sha256"), str) and s.get("payload_sha256")),
     }
 
 

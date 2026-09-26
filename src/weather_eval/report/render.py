@@ -384,9 +384,14 @@ def render_report_html(report_data: dict, title: str | None = None,
         spark_med)
         for r in lb_all_rows}
     hero_curve = _hero_curve_svg(report_data)
+    # 诊断层（审查 P1-3）：跨源相关 / 留一源 / 口径走廊 / 指纹漂移 / 封存滞后。
+    # 这些数字回答的是"这个第几名值多少信任"，与"谁第几名"属于两类问题，
+    # 因此单开一个折叠区，绝不塞进榜单里干扰名次阅读。
+    diag = (report_data.get("meta") or {}).get("diagnostics") or {}
 
     return tpl.render(
         report=report_data,
+        diag=diag,
         slim_json=slim_json,
         spark_med=spark_med,
         spark_svg=spark_svg,

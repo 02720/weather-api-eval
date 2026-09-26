@@ -39,6 +39,7 @@ import argparse
 import calendar
 import json
 import logging
+import os
 import re
 import sys
 from datetime import timedelta
@@ -310,6 +311,8 @@ def write_health_report(cfg, stale_hours: int = 30):
         "generated_at": now.strftime("%Y-%m-%d %H:%M"),
         "start": f"{ym(now)}-01 00:00",
         "end": floor_to_hour(now).strftime("%Y-%m-%d %H:%M"),
+        # 真值传输方案审计（审查 P1-6）：明文主源在看板上留痕，绝不静默
+        "truth_transport": _health.truth_transport(cfg.stations),
     }
     write_health_page(_health.render_health_html(h, meta, stale_hours))
     return len(_health.stale_sources(h))
@@ -350,6 +353,23 @@ def cmd_verify(args):
     if stored.get("merkle_root") is None:
         log.warning("清单中没有 Merkle 根（可能来自更早的版本），跳过校验")
         return 0
+    # 第一道闸：逐份快照重算内容哈希，比对封存时盖下的内嵌哈希。
+    # 这一道必须在比对 Merkle 根之前——根只证明"这批文件整体没变"，而清单是
+    # 跟着报告一起重新生成的；若有人改了快照又重跑了 report，根会跟着一起变，
+    # 与清单"自洽"却与事实不符。只有"重算 vs 内嵌"这条比对不依赖任何外部
+    # 产物，是唯一能抓出事后篡改的信号。
+    if live.get("n_hash_mismatch"):
+        log.error(
+            "内容哈希失配：%d 份快照的实测内容与封存时盖下的 payload_sha256 不一致。\n"
+            "  含义：这些快照在封存之后被修改过（误操作编辑、git 冲突残留、\n"
+            "        工具链自动格式化，或刻意篡改）。哈希链的根也一并作废。\n"
+            "  明细（至多 20 条）：", live["n_hash_mismatch"])
+        for m in live.get("hash_mismatches") or []:
+            log.error("    %s/%s issue=%s 内嵌 %s… 实测 %s…",
+                      m.get("station"), m.get("source"), m.get("issue_iso"),
+                      m.get("stored"), m.get("recomputed"))
+        return 1
+
     if live["merkle_root"] != stored.get("merkle_root"):
         log.error(
             "哈希链校验失败：存档内容与清单不一致。\n"
@@ -361,6 +381,9 @@ def cmd_verify(args):
     log.info("哈希链校验通过：%d 份快照，Merkle 根 %s（抓取时刻 %s ~ %s）",
              live["n_snapshots"], live["merkle_root"],
              live["fetched_first"], live["fetched_last"])
+    if live.get("n_with_embedded_hash"):
+        log.info("  其中 %d 份带内嵌哈希，已逐份重算比对（%d 份失配）",
+                 live["n_with_embedded_hash"], live.get("n_hash_mismatch") or 0)
     return 0
 
 
@@ -538,7 +561,12 @@ def cmd_footprint(args):
     from .storage import _root  # 数据根可能被 WEATHER_EVAL_DATA_ROOT 覆盖
     fp = data_footprint()
     root = _root()
-    git_dir = PROJECT_ROOT / ".git"
+    # .git 目录允许由环境变量指定（审查 P2-9）：本命令的默认路径是仓库根下的
+    # .git，而 sdist/源码 tarball 里根本没有它，于是"阈值压到 0 必定超限"这条
+    # 断言在非 checkout 环境下会静默不成立。给出注入点与 WEATHER_EVAL_DATA_ROOT
+    # 同款，测试即可用替身目录隔离，不必依赖开发者机器上恰好有 .git。
+    git_dir = Path(os.environ.get("WEATHER_EVAL_GIT_DIR")
+                   or (PROJECT_ROOT / ".git"))
     git_bytes = 0
     if git_dir.is_dir():
         for p in git_dir.rglob("*"):

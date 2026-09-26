@@ -276,7 +276,7 @@ def save_forecast_snapshot(station_id: str, model: str, snapshot: dict, *,
             snapshot,
             daily_max_offset_days if daily_max_offset_days is not None
             else _eval_daily_max_offset())
-        now = now_beijing()
+        now = _stamp_now()
         stamp_snapshot(
             snapshot,
             fetched_bj=now.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -284,6 +284,30 @@ def save_forecast_snapshot(station_id: str, model: str, snapshot: dict, *,
         )
         _atomic_write_json(path, snapshot)
     return True
+
+
+def _stamp_now():
+    """快照盖章用的"当前时刻"，可由环境变量固定（测试注入点）。
+
+    真实运行时就是 :func:`now_beijing`。测试里的合成快照描述的是**过去**的
+    预报（issue 在 2026-07/08），而盖章时刻是跑测试的那一刻——若直接用 now，
+    "有效时刻 ≥ 抓取时刻"这条封存门槛（审查 P1-4）会把全部合成样本判成
+    "实况之后才抓回来"而排除掉，于是测试测不到它们本来要测的东西。
+    固定成一个早于所有合成数据的时刻即可让夹具回归真实语义（真实抓取中，
+    抓取时刻必然早于被预报的时刻）。
+
+    与 WEATHER_EVAL_DATA_ROOT 同款：生产代码读环境变量不是为了让生产可配置，
+    而是为了让**测试不必依赖机器状态**。
+    """
+    import os
+    from .timeutil import parse_iso
+    fixed = os.environ.get("WEATHER_EVAL_FETCHED_AT")
+    if fixed:
+        got = parse_iso(fixed)
+        if got is not None:
+            return got
+    from .timeutil import now_beijing
+    return now_beijing()
 
 
 def list_forecast_snapshots(station_id: str, model: str) -> list[dict]:

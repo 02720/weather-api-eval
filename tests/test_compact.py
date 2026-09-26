@@ -251,9 +251,31 @@ def test_cli_footprint_ok_for_small_repo(env):
     assert main(["footprint", "--warn-mb", "10000", "--fail-mb", "20000"]) in (None, 0)
 
 
-def test_cli_footprint_fails_over_threshold(env):
+def test_cli_footprint_fails_over_threshold(env, monkeypatch, tmp_path):
     _seed(["2026-07-01T0000"])
-    # 阈值压到 0 → 必定超限（仓库必然非空）；看门狗应以非零码退出，让 CI 变红开 Issue
+    # 审查 P2-9：原实现写死 PROJECT_ROOT/.git，阈值压到 0 时"仓库必然非空"这条
+    # 前提只在真实 checkout 下成立——源码 tarball / sdist 用户没有 .git，
+    # git_bytes=0 使 0>0 为假，测试直接红。这里用注入点给它一个**替身** .git，
+    # 让断言只依赖被测逻辑、不依赖开发者机器上恰好有 .git。
+    fake_git = tmp_path / "fake_git"
+    fake_git.mkdir()
+    (fake_git / "objects").mkdir()
+    (fake_git / "objects" / "pack.bin").write_bytes(b"x" * 4096)
+    monkeypatch.setenv("WEATHER_EVAL_GIT_DIR", str(fake_git))
+    # 阈值压到 0 → 替身 .git 非空即超限；看门狗应以非零码退出，让 CI 变红开 Issue
     with pytest.raises(SystemExit) as ei:
         main(["footprint", "--warn-mb", "0", "--fail-mb", "0"])
     assert ei.value.code != 0
+
+
+def test_cli_footprint_git_dir_is_injectable(env, monkeypatch, tmp_path):
+    """补 P2-9 的另一半：注入的 .git 不存在/为空时不得误判超限。
+
+    上一条证明"有 .git 必红"，这一条证明"没有 .git 不红"——两条合起来才钉住
+    "看门狗读的是注入路径、而不是恰好存在的真实 .git"。
+    """
+    _seed(["2026-07-01T0000"])
+    empty_git = tmp_path / "empty_git"
+    empty_git.mkdir()
+    monkeypatch.setenv("WEATHER_EVAL_GIT_DIR", str(empty_git))
+    assert main(["footprint", "--warn-mb", "0", "--fail-mb", "0"]) in (None, 0)

@@ -627,9 +627,125 @@
         <h3>存档完整性（可自行核验）</h3>
         <p class="why">本轮 {{ integ.get('n_snapshots') }} 份存档内容的哈希被聚合成一个 Merkle 根：
           <code style="word-break:break-all">{{ integ.merkle_root }}</code>。
-          任何人克隆仓库后运行 <code>python -m weather_eval verify</code> 即可重算比对——
-          任何对存档的事后改写都会让校验失败。</p>
+          任何人克隆仓库后运行 <code>python -m weather_eval verify</code> 即可重算比对。
+          <b>能力的边界要一并说清</b>：校验会比对"重算的内容哈希"与"封存时盖下的
+          内嵌哈希"（{% if integ.get('n_with_embedded_hash') %}{{ integ.get('n_with_embedded_hash') }} 份带内嵌哈希{% else %}本窗口无{% endif %}），
+          因此误操作编辑、git 冲突残留、工具链自动格式化都能被抓到；
+          但"改内容 + 正确重算哈希 + 重跑报告刷新清单"这条完整攻击链<b>抓不到</b>——
+          堵住它需要仓库之外的不可变锚点（根另行留档或签名），本项目目前没有做。</p>
         {% endif %}
+
+        <details class="fold" style="margin-top:14px"><summary>🔬 这份名次有多结实？——诊断层的硬数字</summary>
+          <div class="fold-body">
+          {% if not diag.get('available') %}
+            <p class="why">诊断层本轮不可用（{{ diag.get('reason', '未提供原因') }}）。</p>
+          {% else %}
+            {% set sc = diag.get('source_correlation') or {} %}
+            {% if sc.get('available') %}
+            <h3>同榜的 {{ sc.get('n_models') }} 家，其实是几份独立证据？</h3>
+            <p class="why">各家预报的是<b>同一批天气系统</b>，它们的误差天然高度相关。
+              实测两两相关均值 ρ̄ = <b>{{ sc.get('mean_rho') }}</b>，
+              按 k_eff = m/(1+(m−1)ρ̄) 折算后的<b>有效独立信源数约 {{ sc.get('k_eff') }} 家</b>
+              ——榜单上看上去是 {{ sc.get('n_models') }} 份证据，折算后只相当于约
+              {{ sc.get('k_eff') }} 份。这直接决定"第一名领先第二名"这句话的含金量。
+              {% if report.meta.get('holm') and report.meta.holm.get('k_eff') %}
+              显著性检验（† 标记）当前用的是<b>{{ 'k_eff 折算口径' if report.meta.holm.mode == 'k_eff' else '保守口径 m' }}</b>
+              （m = {{ report.meta.holm.m }}，k_eff = {{ report.meta.holm.k_eff }}）：
+              保守口径宁可多说"说不清"，因为往 k_eff 方向放松会<b>增加</b>被判"与冠军有显著差异"的家数。
+              {% endif %}</p>
+            {% endif %}
+
+            {% set br = diag.get('bridge') or {} %}
+            {% if br.get('available') %}
+            <h3>留一源：这张榜是不是被一两家撑着？</h3>
+            <p class="why">逐个剔除入设计的源重算总榜，看名次怎么动。
+              本轮参与桥接的源 {{ br.get('n_bridge') }}/{{ br.get('n_models') }} 家{% if br.get('bridge_sources') %}，
+              影响最大的几家：{% for m in br.get('bridge_sources')[:5] %}{{ model_labels.get(m, m) }}{% if not loop.last %}、{% endif %}{% endfor %}{% endif %}。</p>
+            {% endif %}
+
+            {% set co = diag.get('corridor') or {} %}
+            {% if co.get('available') and co.get('corridors') %}
+            <h3>口径走廊：换一套入围门槛，名次还站得住吗？</h3>
+            <p class="why">敏感性分析此前只扰动权重；这里扰动的是<b>哪些样本算数</b>
+              （n_eff 入围门槛、格子权重门槛等）。</p>
+            <table class="plain">
+              <thead><tr><th>被扰动的口径</th><th>取值</th><th>与原本的名次相关</th><th>前十换了几家</th><th>冠军是否易主</th></tr></thead>
+              <tbody>
+              {% for c in co.get('corridors')[:8] %}
+                <tr><td>{{ c.get('param') }}</td><td>{{ c.get('value') }}</td>
+                    <td class="num">{{ c.get('spearman') }}</td>
+                    <td class="num">{{ c.get('top10_changed') }}</td>
+                    <td>{{ '是' if c.get('champion_changed') else '否' }}</td></tr>
+              {% endfor %}
+              </tbody>
+            </table>
+            {% endif %}
+
+            {% set fp = diag.get('fingerprint') or {} %}
+            {% if fp.get('models') %}
+            <h3>指纹漂移：有没有源"接口没坏、口径偷偷变了"？</h3>
+            <p class="why">本项目最危险的失效形态是 HTTP 200 + 语义已变：降水从累计变瞬时、
+              时间从 UTC 变北京时、返回点数被静默截断。逐轮比对快照契约字段即可发现。
+              {% set drifting = [] %}
+              {% for m, v in fp.get('models').items() %}{% if v.get('drift') %}{% set _ = drifting.append(m) %}{% endif %}{% endfor %}
+              {% if drifting %}本轮检出漂移：<b>{% for m in drifting %}{{ model_labels.get(m, m) }}{% if not loop.last %}、{% endif %}{% endfor %}</b>。
+              {% else %}本轮<b>未检出契约字段漂移</b>（覆盖 {{ fp.get('models')|length }} 个源）。{% endif %}</p>
+            {% endif %}
+
+            {% set si = diag.get('slope_influence') or {} %}
+            {% if si.get('available') %}
+            <h3>评分斜率的实测影响力：名义权重 ≠ 实际说了多少话</h3>
+            <p class="why">名义权重是写在评分卡里的 25% / 15% / …，但真正推动名次的是
+              <b>斜率 × 数据分布</b>：某项指标在实际数据上跨得多大，才决定它能把分拉开多少。
+              下表用本轮真实分桶指标估算每项指标 ±1 个标准差能推动多少加权子分——
+              这就是它<b>实际</b>的影响力占比。</p>
+            <table class="plain">
+              <thead><tr><th>维度</th><th>指标</th><th>换算式</th><th>名义权重</th><th>实测分布(均值±SD)</th><th>实际影响力</th><th>名义 vs 实际</th></tr></thead>
+              <tbody>
+              {% for r in si.get('temp', []) %}
+                <tr><td>温度</td><td>{{ r.get('key') }}</td><td class="l">{{ r.get('formula') }}</td>
+                    <td class="num">{{ r.get('nominal_weight') }}</td>
+                    <td class="num">{{ r.get('metric_mean') }} ± {{ r.get('metric_sd') }}</td>
+                    <td class="num">{{ r.get('effective_share') }}</td>
+                    <td class="num">×{{ (r.get('effective_share') / r.get('nominal_weight'))|round(2) if r.get('nominal_weight') else '—' }}</td></tr>
+              {% endfor %}
+              {% for r in si.get('precip', []) %}
+                <tr><td>降水</td><td>{{ r.get('key') }}</td><td class="l">{{ r.get('formula') }}</td>
+                    <td class="num">{{ r.get('nominal_weight') }}</td>
+                    <td class="num">{{ r.get('metric_mean') }} ± {{ r.get('metric_sd') }}</td>
+                    <td class="num">{{ r.get('effective_share') }}</td>
+                    <td class="num">×{{ (r.get('effective_share') / r.get('nominal_weight'))|round(2) if r.get('nominal_weight') else '—' }}</td></tr>
+              {% endfor %}
+              </tbody>
+            </table>
+            <p class="why">斜率本身<b>尚未纳入敏感性走廊</b>（那需要把评分部件参数化，改动面较大）——
+              这张表是"这个旋钮有多重"的实测证据，不是"换了斜率名次会怎样"的模拟。
+              权重敏感性只扰动权重，扰不到斜率，这一点在 README 的已知缺口里已记明。</p>
+            {% endif %}
+
+            {% set sl = report.meta.get('seal_lag') or {} %}
+            {% if sl.get('available') %}
+            <h3>封存滞后：有没有"实况之后才抓回来"的预报？</h3>
+            <p class="why">地基原则是"预报必须在实况之前封存"。本轮检出
+              <b>{{ sl.get('n_unfrozen') }}</b> 条有效时刻早于抓取时刻的样本{% if report.meta.get('require_frozen_samples') %}，
+              已全部排除出榜{% else %}，<b>未排除</b>（require_frozen_samples 已关闭）{% endif %}。
+              这些值可能不是预报而是修订值/实况值——对纯数值模式产品风险低，
+              对网页接口源则正是本项目要防的"事后取数"。</p>
+            <table class="plain">
+              <thead><tr><th>源</th><th>违反条数</th><th>滞后中位数</th><th>最大滞后</th></tr></thead>
+              <tbody>
+              {% for m, v in (sl.get('by_model') or {}).items() %}
+                <tr><td>{{ model_labels.get(m, m) }}</td><td class="num">{{ v.get('n_unfrozen') }}</td>
+                    <td class="num">{{ v.get('lag_median_h') }} h</td><td class="num">{{ v.get('lag_max_h') }} h</td></tr>
+              {% endfor %}
+              </tbody>
+            </table>
+            {% else %}
+            <p class="why"><b>封存时点</b>：本轮未检出"有效时刻早于抓取时刻"的样本。</p>
+            {% endif %}
+          {% endif %}
+          </div>
+        </details>
         <p class="why">面向开发者的源健康度看板：<a href="{{ base }}health.html">reports/health.html</a>；
           本页背后全部计算结果（分时效全指标、原始榜单）以 JSON 形式随仓库公开于 <code>data/</code>。</p>
       </div>

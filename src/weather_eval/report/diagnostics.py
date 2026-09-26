@@ -625,6 +625,70 @@ def corridor_sensitivity(report: dict, board_key: str = "all",
     }
 
 
+def score_slope_influence(report: dict) -> dict[str, Any]:
+    """评分斜率的**实测影响力**（审查 P2-7）。
+
+    名义权重是写在 `TEMP_SCORE_PARTS` / `PRECIP_SCORE_PARTS` 里的那 25%/15%/…
+    但真正决定名次的是"**斜率 × 数据分布**"：acc2 的真实分布跨 32 个百分点，
+    RMSE 只跨 1.1°C，于是同为 25% 名义权重，前者对综合分的实际推动力是后者的
+    数倍。这个旋钮此前从未进过任何敏感性分析（权重敏感性只扰动权重，扰不到斜率）。
+
+    这里的做法不是"重跑一遍榜"（那需要把评分部件参数化，改动面大且容易跑偏口径），
+    而是**实测每项指标在当前数据上的 ±1 标准差能推动子分多少**——数字直接来自
+    本轮真实分桶指标，读者一眼能看出"名义权重"与"实际影响力"差多少。
+
+    结论若显示某项的名义权重与实际影响力严重不符，那是**口径本身**该被讨论的
+    事，而不该由读者从榜单数字里反推。
+    """
+    from ..evaluate import TEMP_SCORE_PARTS, PRECIP_SCORE_PARTS
+
+    def _parts(parts: tuple, cells: dict) -> list[dict]:
+        """cells: {model: {bucket: 指标 dict}} → 逐项估算 ±1SD 的子分推动力。"""
+        out = []
+        for key, w, label, formula, fn in parts:
+            vals = [v for per in cells.values() for d in per.values()
+                    for v in [d.get(key)] if isinstance(v, (int, float))
+                    and np.isfinite(v)]
+            if len(vals) < 8:
+                continue
+            arr = np.asarray(vals, dtype=float)
+            mu, sd = float(arr.mean()), float(arr.std())
+            if sd <= 0:
+                continue
+            try:
+                lo, hi = fn(mu - sd), fn(mu + sd)
+            except Exception:                       # 斜率函数在边界上可能溢出
+                continue
+            swing = abs(float(hi) - float(lo)) / 2.0     # ±1SD 推动的子分点数
+            out.append({"key": key, "nominal_weight": round(float(w), 3),
+                        "metric_mean": round(mu, 3), "metric_sd": round(sd, 3),
+                        "swing": round(swing, 2),
+                        "weighted_swing": round(swing * float(w), 3),
+                        "label": label, "formula": formula})
+        total = sum(r["weighted_swing"] for r in out) or 1.0
+        for r in out:
+            r["effective_share"] = round(r["weighted_swing"] / total, 3)
+        return sorted(out, key=lambda r: -r["effective_share"])
+
+    temp_cells = report.get("temp_hourly") or {}
+    precip_cells = report.get("precip_hourly_score") or report.get("precip_hourly") or {}
+    t = _parts(TEMP_SCORE_PARTS, temp_cells)
+    p = _parts(PRECIP_SCORE_PARTS, precip_cells)
+    if not t and not p:
+        return {"available": False, "reason": "报告里没有逐桶指标，无法估算"}
+    # 名义 vs 有效的最大偏离（审查真正关心的那一个数字）
+    gaps = [{"key": r["key"], "nominal": r["nominal_weight"],
+             "effective": r["effective_share"],
+             "ratio": (round(r["effective_share"] / r["nominal_weight"], 2)
+                       if r["nominal_weight"] else None)}
+            for r in (t + p)]
+    worst = max(gaps, key=lambda g: (g["ratio"] or 0)) if gaps else None
+    return {"available": True, "temp": t, "precip": p,
+            "nominal_vs_effective": gaps,
+            "most_influential": worst,
+            "note": "effective_share = 该指标 ±1SD 能推动的加权子分 ÷ 全部指标之和"}
+
+
 def _row_neff(lbs: dict, model: str, buckets: list[str],
               board_rows: dict | None = None) -> float | None:
     """某源在总榜上的 n_eff——**必须取总榜行自己的 n_eff**，不能拿逐桶的 n。
@@ -702,4 +766,5 @@ def compute_all(report: dict, data_root: Path, months: list[str] | None = None,
 
     out["bridge"] = bridge_and_jackknife(report)
     out["corridor"] = corridor_sensitivity(report)
+    out["slope_influence"] = score_slope_influence(report)
     return out

