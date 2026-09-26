@@ -1,11 +1,17 @@
-"""评估层对抗式审查修复的回归（P0-2/P0-3/P0-6/P1-3/P1-4）。
+"""对抗式审查修复的回归。
 
-这些缺陷的共同点是：**榜单照样出、数字照样有**，只是含义变了。所以每条都
-写成"换个数据集、结论必须相应改变/不改变"的形式，实现回退就立刻变红。
+第一轮（P0-2/P0-3/P0-6/P1-3/P1-4）：这些缺陷的共同点是**榜单照样出、数字照样有**，
+只是含义变了。所以每条都写成"换个数据集、结论必须相应改变/不改变"的形式，实现回退
+就立刻变红。
+
+第二轮：跨源相关与站对相关（P0-1/P1-4）的统计性质，以及 reports/ 体积看门狗（P0-3）
+——后者是"此前无人测量"的那块盲区，测试锁住的是分层口径而不是某个具体字节数。
 """
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import numpy as np
+import pytest
 
 from weather_eval import storage
 from weather_eval.evaluate import build_report
@@ -258,3 +264,92 @@ def test_board_gate_scale_is_consistent(tmp_path, monkeypatch):
     assert not (w >= min_w)[0, 1]            # 第二格确实低于门槛
     w2, min_w2 = _board_cell_weights(neff_t, neff_r, "equal", min_cell_neff=25)
     assert w2 is None and min_w2 == 0.0
+
+
+# ================= 第二轮：跨源相关与站对相关（P0-1 / P1-4） =================
+def test_duplicate_source_does_not_double_independent_count():
+    """把一个源复制成两份完全相同的数据，k_eff 不应近似翻倍。
+
+    这是"重叠家数虚高"这个缺陷的最小可复现：按源数 m 直读时，27 家复制成
+    28 家会让"独立信源数"从 27 变 28；做了跨源相关校正后，新增的那一份与
+    原份 ρ=1，k_eff 应当几乎不动。
+    """
+    from weather_eval import stats as st
+
+    rng = np.random.default_rng(20260925)
+    base = rng.normal(size=400)
+    series = {}
+    for i in range(6):
+        noise = rng.normal(scale=0.6, size=400)
+        series[f"m{i}"] = {j: float(base[j] * 0.8 + noise[j]) for j in range(400)}
+    before = st.source_corr_cluster(series)["k_eff"]
+
+    series["m0_copy"] = dict(series["m0"])          # 完全同源的一份
+    after = st.source_corr_cluster(series)["k_eff"]
+
+    assert after < before * 1.25, \
+        f"复制一份同源数据后 k_eff 从 {before} 涨到 {after}——跨源相关没有生效"
+
+
+def test_effective_independent_count_math():
+    from weather_eval import stats as st
+
+    assert st.effective_independent_count(10, 0.0) == pytest.approx(10.0)
+    # ρ=1 会被 SOURCE_RHO_CLAMP 截断到 0.95（防止退化序列把 k_eff 压到 0），
+    # 所以这里是 10/(1+9×0.95) 而不是 1.0——截断行为本身也是要被测试钉住的
+    assert st.effective_independent_count(10, 1.0) == pytest.approx(
+        10 / (1 + 9 * st.SOURCE_RHO_CLAMP))
+    # 负相关没有物理意义，夹紧到 m
+    assert st.effective_independent_count(10, -0.5) == pytest.approx(10.0)
+    assert st.effective_independent_count(1, 0.5) == pytest.approx(1.0)
+
+
+def test_station_rho_matrix_reports_pairs():
+    """站对相关必须按站对披露，而不是一个平均值（审查 P1-4）。"""
+    from weather_eval import stats as st
+
+    rng = np.random.default_rng(7)
+    common = rng.normal(size=300)
+    series = {
+        "a": {j: float(common[j] + rng.normal(scale=.2)) for j in range(300)},
+        "b": {j: float(common[j] + rng.normal(scale=.2)) for j in range(300)},
+        "c": {j: float(rng.normal()) for j in range(300)},
+    }
+    out = st.station_rho_matrix(series, min_overlap=30)
+    assert out["n_stations"] == 3
+    assert len(out["pairs"]) == 3
+    by = {(p["a"], p["b"]): p["rho"] for p in out["pairs"]}
+    assert by[("a", "b")] > 0.9, "同驱动的站对应当高度相关"
+    assert by[("a", "c")] < 0.3, "独立站对不应相关"
+
+
+# ================= 第二轮：reports/ 体积看门狗（P0-3） =================
+REPORTS = Path(__file__).resolve().parents[1] / "reports"
+
+
+def test_reports_footprint_covers_reports_dir():
+    """footprint 必须能看到 reports/ —— 此前它是看门狗唯一的盲区。"""
+    fp = storage.reports_footprint(REPORTS)
+    assert fp["total_bytes"] > 0
+    assert fp["main_bytes"] > 0 or fp["monthly_bytes"] > 0
+    assert "warn_bytes" in fp and "fail_bytes" in fp
+    # 分层必须分开计：主报告每天重写，归档只增不改，两层混在一起就分不清谁在涨
+    assert "monthly_bytes" in fp and "assets_bytes" in fp and "vendor_bytes" in fp
+
+
+def test_reports_footprint_single_file_threshold():
+    """单个 HTML 超软阈值必须被点名——这是"报告又胖了"当轮可见的机制。"""
+    fp = storage.reports_footprint(REPORTS)
+    for item in fp["over_single_threshold"]:
+        assert item["bytes"] > storage.REPORT_SINGLE_WARN_BYTES
+        assert item["file"].endswith(".html")
+
+
+def test_reports_footprint_ignores_hidden_dirs(tmp_path):
+    """隐藏目录（.baseline 之类）是本地留档，不进仓库也不部署，不得计入总量。"""
+    (tmp_path / "index.html").write_text("x" * 100, encoding="utf-8")
+    hidden = tmp_path / ".baseline"
+    hidden.mkdir()
+    (hidden / "big.html").write_text("y" * 5000, encoding="utf-8")
+    fp = storage.reports_footprint(tmp_path)
+    assert fp["total_bytes"] == 100

@@ -1579,3 +1579,220 @@ def weight_champion_distribution(
     order = np.argsort(-counts)
     return [{"index": int(i), "pct": round(100.0 * float(counts[i]) / total, 1)}
             for i in order if counts[i] > 0]
+
+
+# ================================================================== 跨源相关（对抗式审查 P0-1）
+# 这一层回答的是一个此前两层校正都没回答的问题：n_eff 校正了"同一条信息在时间里
+# 被数了几次"（effective_n）与"在空间上被数了几次"（cross_station_rho），但没有
+# 校正"在**信源**上被数了几次"。26 家同榜里 11 家共享 Open-Meteo 的同一条时间轴
+# 与同一个起报锚点，5 个天机变体出自同一家产品——它们的误差序列面对的是同一批
+# 天气与同一个锚点误差，相关度远高于跨机构的两家。把它们当成 26 份独立证据，
+# "与冠军区间重叠的家数"就是虚高的。
+
+# 两两相关估计所需的最小公共样本：相关系数的标准误约 1/sqrt(n−3)，n=30 时约
+# ±0.19——比我们要区分的"同源 ρ≈0.8 vs 跨源 ρ≈0.3"小一个量级，够用。
+SOURCE_CORR_MIN_OVERLAP = 30
+# ρ̄ 的上限截断：与 RHO_CLAMP 同尺度，防止退化序列把 k_eff 压到 0
+SOURCE_RHO_CLAMP = 0.95
+
+
+def effective_independent_count(m: int, rho: float | None) -> float:
+    """m 个两两相关为 ρ̄ 的信源，等价于多少个独立信源。
+
+    k_eff = m / (1 + (m−1)·ρ̄)
+
+    这是"等相关（equicorrelation）"结构的标准结果：m 个等相关的观测，其均值
+    的方差等于 k_eff 个独立观测均值的方差。ρ̄=0 → k_eff=m；ρ̄=1 → k_eff=1
+    （m 份完全相同的证据只值一份）。ρ̄<0 时 k_eff>m，但负相关的信源在气象
+    预报里没有物理意义（同一批天气只会让误差同向），因此夹紧到 m。
+
+    m<2 或 ρ̄ 估不出来时返回 m（不校正，宁可保守也不过校正）。
+    """
+    if m < 2 or rho is None or not np.isfinite(rho):
+        return float(m)
+    rho = min(max(float(rho), 0.0), SOURCE_RHO_CLAMP)
+    return float(m) / (1.0 + (m - 1) * rho)
+
+
+def pairwise_corr_matrix(series: dict[str, dict[Any, float]],
+                         min_overlap: int = SOURCE_CORR_MIN_OVERLAP,
+                         ) -> tuple[list[str], list[list[float | None]], int]:
+    """按**公共键**对齐的稀疏序列 → 两两相关矩阵。
+
+    series: {name: {key: value}}，key 是"同一个物理样本"的标识（如
+    (站点, 有效时刻, 提前天数)）。只在两序列都有的键上估计——缺测小时自然
+    跳过，不做任何插补（插补会凭空制造相关）。
+
+    返回 (names, matrix, n_common_max)：matrix[i][j] 为 Pearson ρ，样本不足
+    或退化时为 None；对角线恒为 1.0。
+    """
+    names = list(series)
+    n = len(names)
+    matrix: list[list[float | None]] = [[None] * n for _ in range(n)]
+    max_common = 0
+    for i in range(n):
+        matrix[i][i] = 1.0
+    for i in range(n):
+        for j in range(i + 1, n):
+            a_map, b_map = series[names[i]], series[names[j]]
+            common = a_map.keys() & b_map.keys()
+            if len(common) < min_overlap:
+                continue
+            max_common = max(max_common, len(common))
+            keys = sorted(common)
+            a = np.array([a_map[k] for k in keys], dtype=float)
+            b = np.array([b_map[k] for k in keys], dtype=float)
+            r = pearson_r(a, b)
+            matrix[i][j] = r
+            matrix[j][i] = r
+    return names, matrix, max_common
+
+
+def _connected_clusters(names: list[str], matrix: list[list[float | None]],
+                        threshold: float) -> list[list[str]]:
+    """把 ρ ≥ threshold 的信源并成一类（并查集）。
+
+    用途不是"替读者剔除同源模型"（那是替读者做取舍），而是回答一个可核对的
+    问题：这 26 家里，真正相互独立的"信源族"有几个。
+    """
+    parent = list(range(len(names)))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            r = matrix[i][j]
+            if r is not None and r >= threshold:
+                ri, rj = find(i), find(j)
+                if ri != rj:
+                    parent[ri] = rj
+    groups: dict[int, list[str]] = {}
+    for i, nm in enumerate(names):
+        groups.setdefault(find(i), []).append(nm)
+    return sorted(groups.values(), key=lambda g: (-len(g), g[0]))
+
+
+def source_corr_cluster(series_by_model: dict[str, dict[Any, float]],
+                        families: dict[str, str] | None = None,
+                        min_overlap: int = SOURCE_CORR_MIN_OVERLAP,
+                        cluster_threshold: float = 0.7,
+                        ) -> dict[str, Any]:
+    """跨源相关的完整诊断：ρ̄、相关族、有效独立信源数 k_eff。
+
+    返回值直接进入 meta.source_correlation，报告页用它做两件事：
+      1. Holm–Bonferroni 的**有效检验数**用 k_eff 替代 m（现有的 m 偏大 →
+         校正偏保守 → 更多"说不清"）；
+      2. "与冠军置信区间重叠的家数"并列披露两行：N 家重叠 / 其中独立信源约
+         k 家——后者才是那个数字的真实含金量。
+
+    families: {model: 族名}，给出时额外报告"族内平均 ρ vs 跨族平均 ρ"——
+    这两个数的差距就是"同源冗余"的直接证据。
+    """
+    names, matrix, max_common = pairwise_corr_matrix(series_by_model, min_overlap)
+    m = len(names)
+    flat = [matrix[i][j] for i in range(m) for j in range(i + 1, m)
+            if matrix[i][j] is not None]
+    if not flat:
+        return {"available": False, "reason": "公共样本不足，无法估计跨源相关",
+                "n_models": m, "mean_rho": None, "k_eff": float(m),
+                "matrix": [], "names": names, "clusters": []}
+
+    mean_rho = float(np.mean(flat))
+    in_family: list[float] = []
+    cross_family: list[float] = []
+    if families:
+        for i in range(m):
+            for j in range(i + 1, m):
+                r = matrix[i][j]
+                if r is None:
+                    continue
+                fi = families.get(names[i])
+                fj = families.get(names[j])
+                if fi is None or fj is None:
+                    continue
+                (in_family if fi == fj else cross_family).append(r)
+
+    clusters = _connected_clusters(names, matrix, cluster_threshold)
+    k_eff = effective_independent_count(m, mean_rho)
+    # 族口径的独立信源数：把每个相关族当成一条证据，这是比 k_eff 更保守的一档
+    k_families = float(len(clusters))
+
+    out = {
+        "available": True,
+        "n_models": m,
+        "n_pairs": len(flat),
+        "max_common_samples": max_common,
+        "mean_rho": round(mean_rho, 4),
+        "median_rho": round(float(np.median(flat)), 4),
+        "max_rho": round(float(np.max(flat)), 4),
+        "min_rho": round(float(np.min(flat)), 4),
+        "k_eff": round(k_eff, 2),
+        "k_families": k_families,
+        "cluster_threshold": cluster_threshold,
+        "clusters": clusters,
+        "names": names,
+        "matrix": [[None if v is None else round(v, 3) for v in row] for row in matrix],
+    }
+    if families and in_family and cross_family:
+        out["in_family_rho"] = round(float(np.mean(in_family)), 4)
+        out["cross_family_rho"] = round(float(np.mean(cross_family)), 4)
+        out["in_family_pairs"] = len(in_family)
+        out["cross_family_pairs"] = len(cross_family)
+    return out
+
+
+def overlap_independent_count(overlap_models: list[str],
+                              matrix: list[list[float | None]],
+                              names: list[str],
+                              ) -> float:
+    """与冠军区间重叠的 N 家里，真正独立的信源有几家。
+
+    对这 N 家的**子矩阵**单独算 ρ̄ 再套 k_eff = N/(1+(N−1)ρ̄)——不能用全榜
+    ρ̄ 代替：与冠军重叠的那几家往往恰是同源扎堆的一批（这正是"重叠家数虚高"
+    的来源），它们的内部相关高于全榜平均。
+    """
+    idx = [names.index(x) for x in overlap_models if x in names]
+    n = len(idx)
+    if n < 2:
+        return float(n)
+    flat = [matrix[idx[i]][idx[j]] for i in range(n) for j in range(i + 1, n)
+            if matrix[idx[i]][idx[j]] is not None]
+    if not flat:
+        return float(n)
+    return round(effective_independent_count(n, float(np.mean(flat))), 2)
+
+
+# ================================================================== 站对相关矩阵（P1-4）
+def station_rho_matrix(series_by_station: dict[str, dict[Any, float]],
+                       min_overlap: int = CROSS_STATION_MIN_OVERLAP,
+                       ) -> dict[str, Any]:
+    """按站对（而非一个平均值）披露跨站相关 ρ̄。
+
+    现状用一个标量 ρ̄ = 全部站对的平均做 n_eff 校正，等于假设"梧州—平南"与
+    "梧州—万宁"的相关相同。但 4 站里 3 站在广西且彼此相邻（梧州—平南约
+    100 km），万宁在海南——集群内相关必然高于跨海相关。用一个平均值会同时
+    高估跨海那几对、低估集群内那几对。
+    """
+    names, matrix, max_common = pairwise_corr_matrix(series_by_station, min_overlap)
+    k = len(names)
+    pairs = []
+    flat = []
+    for i in range(k):
+        for j in range(i + 1, k):
+            r = matrix[i][j]
+            pairs.append({"a": names[i], "b": names[j], "rho": None if r is None else round(r, 3)})
+            if r is not None:
+                flat.append(r)
+    mean_rho = float(np.mean(flat)) if flat else None
+    return {
+        "stations": names,
+        "pairs": pairs,
+        "mean_rho": None if mean_rho is None else round(mean_rho, 4),
+        "k_eff": round(effective_independent_count(k, mean_rho), 2),
+        "n_stations": k,
+        "max_common_samples": max_common,
+    }

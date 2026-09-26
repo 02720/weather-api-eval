@@ -8,3 +8,7 @@ data/**/*.lock
 .env
 .env.*
 .Trash-0/
+
+# 本地工作台：离线走廊（scripts/sensitivity_corridors.py）等中间产物与报告留档
+.work/
+reports/.baseline/

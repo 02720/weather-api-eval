@@ -126,6 +126,14 @@ def _atomic_write_json(path: Path, obj: Any) -> None:
             json.dump(obj, f, ensure_ascii=False, indent=2)
         os.chmod(tmp, 0o644)   # mkstemp 默认 0600，恢复常规读权限（部署/他人可读）
         os.replace(tmp, path)
+    except BaseException:
+        # os.fdopen 抛错时它还没接管 fd，描述符会就此泄漏——每天三次的长跑
+        # 进程里，这种"一次泄漏一个 fd"最终会撞到 ulimit（审查 P2-2）。
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
@@ -193,12 +201,12 @@ def _with_revision(new: dict, old: dict, ts: str) -> dict:
     """把被改写的旧值挂进新记录的 revisions 数组（不覆盖新值本身）。"""
     rec = dict(new)
     history = list(old.get("revisions") or [])
-    history.append({
-        "at": ts,
-        "prev": {k: old.get(k) for k in ("temp", "rain", "time")}
-        if any(k in old for k in ("temp", "rain")) else {k: old.get(k) for k in old
-                                                          if k != "revisions"},
-    })
+    # 只记**确实存在**的键：old 仅有 rain 时写 "temp": None 是含糊的——
+    # 读者分不清"当时温度就是 None"与"当时没有温度这个字段"（审查 P2-1）。
+    present = [k for k in ("temp", "rain", "time") if k in old]
+    if not present:
+        present = [k for k in old if k != "revisions"]
+    history.append({"at": ts, "prev": {k: old.get(k) for k in present}})
     rec["revisions"] = history[-MAX_OBS_REVISIONS:]
     return rec
 
@@ -632,6 +640,76 @@ def data_footprint() -> dict:
         out[f"{key}_bytes"] += size
     return out
 
+
+# 报告侧体积阈值（对抗式审查 P0-3）：reports/ 此前是看门狗的唯一盲区——
+# 它有 8 个看门狗盯着 data/，却不看那个每轮全量重写、且是冷层 bundle 三倍大的产物。
+REPORT_WARN_BYTES = 5 * 1024 * 1024        # reports/ 整体软阈值
+REPORT_FAIL_BYTES = 20 * 1024 * 1024       # reports/ 整体硬阈值
+REPORT_SINGLE_WARN_BYTES = int(1.2 * 1024 * 1024)   # 单个 HTML 软阈值
+
+
+def reports_footprint(root: Path | None = None) -> dict:
+    """reports/ 的体量画像：主报告 / 月度归档 / 数据 / 静态资源 / vendor 分层。
+
+    为什么必须补这一块（第一性原理）：data/ 被治理到"逐文件 gzip 吃不到跨快照
+    冗余 → 改月度 bundle 拿 21× 压缩"的精细度，而 reports/index.html 是一个
+    每轮全量重写、体积 1.9 MB、且**完全不在看门狗视野里**的产物。问题不在于
+    "体积一定失控"（.git 对相似 blob 有 delta 压缩，不能把 1.9 MB 直接当成每轮
+    1.9 MB 的历史增量），而在于**这块从未被测量**。
+
+    分层是刻意的：主报告每天重写 3 次（增量风险最大），月度归档只增不改
+    （随月份线性增长），vendor 基本不变（增长即为异常）。三层混成一个总数，
+    就分不清"报告又胖了"和"归档在自然增长"。
+    """
+    base = Path(root) if root is not None else Path(__file__).resolve().parents[2] / "reports"
+    keys = ("main", "monthly", "data", "assets", "vendor", "other")
+    out = {f"{k}_files": 0 for k in keys}
+    out.update({f"{k}_bytes": 0 for k in keys})
+    out.update({"total_files": 0, "total_bytes": 0, "largest": [],
+                "over_single_threshold": []})
+    if not base.exists():
+        return out
+    largest: list[tuple[int, str]] = []
+    for p in base.rglob("*"):
+        if not p.is_file() or p.suffix == ".lock":
+            continue
+        # 隐藏目录（.baseline 等）是本地留档，不进 git、也不部署到 Pages，
+        # 计入会把"主报告又胖了"这个判据稀释掉
+        if any(part.startswith(".") for part in p.relative_to(base).parts[:-1]):
+            continue
+        try:
+            size = p.stat().st_size
+        except OSError:
+            continue
+        rel = p.relative_to(base)
+        top = rel.parts[0] if rel.parts else ""
+        if rel.parts[0] == "monthly" or (len(rel.parts) > 1 and rel.parts[0] == "monthly"):
+            key = "monthly"
+        elif top == "data" or (len(rel.parts) > 1 and rel.parts[0] == "data"):
+            key = "data"
+        elif top == "assets":
+            key = "assets"
+        elif top == "vendor":
+            key = "vendor"
+        elif p.suffix == ".html":
+            key = "main"
+        else:
+            key = "other"
+        out[f"{key}_files"] += 1
+        out[f"{key}_bytes"] += size
+        out["total_files"] += 1
+        out["total_bytes"] += size
+        largest.append((size, str(rel)))
+        if p.suffix == ".html" and size > REPORT_SINGLE_WARN_BYTES:
+            out["over_single_threshold"].append({"file": str(rel), "bytes": size})
+    largest.sort(reverse=True)
+    out["largest"] = [{"file": f, "bytes": s} for s, f in largest[:6]]
+    out["warn_bytes"] = REPORT_WARN_BYTES
+    out["fail_bytes"] = REPORT_FAIL_BYTES
+    out["single_warn_bytes"] = REPORT_SINGLE_WARN_BYTES
+    out["over_warn"] = out["total_bytes"] > REPORT_WARN_BYTES
+    out["over_fail"] = out["total_bytes"] > REPORT_FAIL_BYTES
+    return out
 
 
 # ------------------------------------------------------------------ 指标（可选缓存，当前实现每次重算）

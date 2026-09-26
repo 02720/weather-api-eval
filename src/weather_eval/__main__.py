@@ -48,7 +48,8 @@ from typing import Any
 from .config import DEFAULT_EVAL, load_config
 from .timeutil import now_beijing, ymd, parse_iso, floor_to_hour, ym
 from .storage import (
-    PROJECT_ROOT, compact_snapshots, data_footprint, period_summary_path, save_obs,
+    PROJECT_ROOT, compact_snapshots, data_footprint, period_summary_path, reports_footprint,
+    save_obs,
     save_forecast_snapshot,
 )
 from .obs import EiaDataObsSource, ObsChain
@@ -558,9 +559,33 @@ def cmd_footprint(args):
              (fp["manifest_bytes"] + fp["other_bytes"]) / 1e6,
              fp["manifest_files"] + fp["other_files"])
     log.info(".git/      ：%.1f MB（历史不可逆：删掉的文件仍留在历史里）", git_bytes / 1e6)
+    # reports/ 此前完全不在看门狗视野里（对抗式审查 P0-3）：它是"每轮全量重写、
+    # 且体积是冷层 bundle 三倍"的产物，却无人测量。补上之后，".git 涨了"这类
+    # 归因才不会一律落到 data/ 头上。
+    rf = reports_footprint(PROJECT_ROOT / "reports")
+    log.info("reports/   ：%.1f MB / %d 个文件", rf["total_bytes"] / 1e6, rf["total_files"])
+    log.info("  ├ 主报告（每轮重写）  ：%.1f MB", rf["main_bytes"] / 1e6)
+    log.info("  ├ 月度归档（只增不改）：%.1f MB / %d 个文件",
+             rf["monthly_bytes"] / 1e6, rf["monthly_files"])
+    log.info("  ├ 外置数据 JSON（data/） ：%.1f MB", rf["data_bytes"] / 1e6)
+    log.info("  └ 静态资源（assets/vendor）：%.1f MB",
+             (rf["assets_bytes"] + rf["vendor_bytes"]) / 1e6)
+    for item in rf["over_single_threshold"]:
+        log.warning("单文件超软阈值：%s %.2f MB", item["file"], item["bytes"] / 1e6)
     log.info("数据根     ：%s", root)
+    log.info("可回收量估计：.git %.1f MB − data/ %.1f MB − reports/ %.1f MB ≈ %.1f MB"
+             " 历史可回收量（粗估，需用 git count-objects -vH 定量）",
+             git_bytes / 1e6, fp["total_bytes"] / 1e6, rf["total_bytes"] / 1e6,
+             max(0.0, (git_bytes - fp["total_bytes"] - rf["total_bytes"]) / 1e6))
 
     rc = 0
+    if rf["over_fail"]:
+        log.error("reports/ %.1f MB 已超过硬阈值 %.0f MB",
+                  rf["total_bytes"] / 1e6, rf["fail_bytes"] / 1e6)
+        rc = 1
+    elif rf["over_warn"]:
+        log.warning("reports/ %.1f MB 已超过提醒阈值 %.0f MB",
+                    rf["total_bytes"] / 1e6, rf["warn_bytes"] / 1e6)
     if git_bytes > args.fail_mb * 1e6:
         log.error("仓库体积 %.0f MB 已超过硬阈值 %d MB：请执行 compact "
                   "并考虑 README「历史体积的人工回收」一节", git_bytes / 1e6, args.fail_mb)
