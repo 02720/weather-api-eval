@@ -40,33 +40,39 @@ env = Environment(loader=FileSystemLoader(str(TPL_DIR)), autoescape=True)
 
 # 模型的中文显示名：原始 id（如 ecmwf_ifs）对读者不友好，
 # 页面上的排行榜、图表图例统一用这里的名字；未收录的模型回退为原始 id。
+# 命名规范（2026-09-27）：
+#   * Open-Meteo 模型一律用 Open-Meteo 官方选择器里的名称（与 api.open-meteo.com
+#     的模型 id 一一核对过，如 ecmwf_ifs → "ECMWF IFS HRES 9km"）；
+#   * 中科天机 = 平台名 + 官方产品名（公里级融合 / T2-Early / T2 / T1-AI / T1H-AI）；
+#   * 平台型源不重复用途后缀（中科星图、AccuWeather 不带"逐小时"）；
+#   * MSN天气 / CMA-NDFS 用简短官方名，不挂渠道备注。
 MODEL_LABELS = {
-    "ecmwf_ifs": "欧洲 ECMWF",
-    "ncep_gfs_global": "美国 GFS",
-    "dwd_icon_global": "德国 ICON",
-    "best_match": "OM 最优匹配",
-    "cma_grapes_global": "中国 GRAPES",
-    "cmc_gem_gdps": "加拿大 GEM",
-    "jma_gsm": "日本 GSM",
-    "ukmo_global_deterministic_10km": "英国 UKMO",
+    "ecmwf_ifs": "ECMWF IFS HRES 9km",
+    "ncep_gfs_global": "NCEP GFS Global 0.11°/0.25°",
+    "dwd_icon_global": "DWD ICON Global",
+    "best_match": "Best match",
+    "cma_grapes_global": "CMA GRAPES Global",
+    "cmc_gem_gdps": "GEM Global",
+    "jma_gsm": "JMA GSM",
+    "ukmo_global_deterministic_10km": "UK Met Office Global 10km",
     "ecmwf_ifs025": "ECMWF IFS 0.25°",
-    "ecmwf_aifs025_single": "ECMWF AIFS(AI)",
-    "ncep_aigfs025": "NCEP AI-GFS",
-    "ncep_hgefs025_ensemble_mean": "NCEP HGEFS 集合",
+    "ecmwf_aifs025_single": "ECMWF AIFS 0.25° Single",
+    "ncep_aigfs025": "NCEP AIGFS 0.25°",
+    "ncep_hgefs025_ensemble_mean": "NCEP HGEFS 0.25° Ensemble Mean",
     "caiyun_v2_6": "彩云天气",
     "qweather_v1": "和风天气",
-    "tj_km_fusion": "天机·公里级融合",
-    "tj_t2_early": "天机2/DA (T2-Early)",
-    "tj_t2": "天机2/ND (T2)",
-    "tj_t1": "天机1 (T1)",
-    "tj_t1h_ai": "T1H-AI (T1-AI)",
+    "tj_km_fusion": "中科天机 公里级融合",
+    "tj_t2_early": "中科天机 T2-Early",
+    "tj_t2": "中科天机 T2",
+    "tj_t1": "中科天机 T1-AI",
+    "tj_t1h_ai": "中科天机 T1H-AI",
     "fuxi_c88": "伏羲中期 (FuXi-C88)",
     "fuxi_det": "伏羲确定性 (FuXi-Det)",
     "fengwu_ghr_9km": "风乌 GHR-9km",
-    "geovis_v1": "中科星图逐小时",
-    "accuweather_v1": "AccuWeather 逐小时",
-    "msn_v1": "MSN 天气（中国天气网）",
-    "cma_ndfs": "CMA-NDFS 智能网格",
+    "geovis_v1": "中科星图",
+    "accuweather_v1": "AccuWeather",
+    "msn_v1": "MSN天气",
+    "cma_ndfs": "CMA-NDFS",
     "fengqing_ai": "风清AI模式",
     "cma_public_v1": "中国气象局公众网",
 }
@@ -182,19 +188,75 @@ def _slim_report(report_data: dict) -> dict:
                                 "rmse", "mae")}
                    for b, d in buckets.items()}
 
-    # 热力图：行 = 模型（按总榜名次），列 = 日期；双矩阵（准确率 + 样本数）
+    # 日口径（§03 的"日口径"页签）：日最高/最低各一份温度指标矩阵 + 24h 累计
+    # 降水的指标矩阵。字段集与逐小时侧一致，页面复用同一套指标下拉；日温度的
+    # max/min 是日预报的两个独立交付量，分开成两张矩阵（最高/最低切换）而不
+    # 合并——混成一条序列会让两端相互遮盖（与 daily_temp_score 同一原则）。
+    _TD_FIELDS = ("acc1", "acc2", "rmse", "mae", "mbe", "r")
+    _RD_FIELDS = ("acc", "pod", "far", "ts", "ets", "bias")
+    tdmax, tdmin, rdaily = {}, {}, {}
+    for m, buckets in (report_data.get("temp_daily") or {}).items():
+        tdmax[m] = {b: {k: _r(v, 2) for k, v in ((d.get("max") or {}).items())
+                        if k in _TD_FIELDS}
+                    for b, d in buckets.items()}
+        tdmin[m] = {b: {k: _r(v, 2) for k, v in ((d.get("min") or {}).items())
+                        if k in _TD_FIELDS}
+                    for b, d in buckets.items()}
+    for m, buckets in (report_data.get("precip_daily") or {}).items():
+        rdaily[m] = {b: {k: _r(v, 2) for k, v in d.items() if k in _RD_FIELDS}
+                     for b, d in buckets.items()}
+
+    # 热力图：行 = 模型（按总榜名次），列 = 日期；矩阵 = 各要素指标。
+    # 温度：±2°C/±1°C 准确率、RMSE、MAE、|MBE|；降水（该天逐小时 ≥1mm 晴雨）：
+    # TS/ETS/晴雨准确率/POD/FAR——与 §03 指标下拉同一集合；样本数两轨各一份。
     heat_rows = report_data.get("heatmap") or []
     order = [r["m"] for r in board] or [r["model"] for r in heat_rows]
     dates = sorted({r["date"] for r in heat_rows})
-    heat = {"dates": [d[5:] for d in dates],
-            "models": [r for r in order if any(x["model"] == r for x in heat_rows)],
-            "acc": [], "n": []}
     heat_idx = {(r["model"], r["date"]): r for r in heat_rows}
-    for m in heat["models"]:
-        heat["acc"].append([_r(heat_idx[(m, d)]["acc2"]) if (m, d) in heat_idx else None
-                            for d in dates])
-        heat["n"].append([heat_idx[(m, d)]["n"] if (m, d) in heat_idx else None
-                          for d in dates])
+    heat_models = [r for r in order if any(x["model"] == r for x in heat_rows)]
+    heat_mats: dict[str, list] = {k: [] for k in ("acc", "acc1", "rmse", "mae",
+                                                  "mbe", "ts", "ets", "accr",
+                                                  "pod", "far", "n", "nr")}
+    for m in heat_models:
+        row_at = lambda key, nd=3: [
+            _r(heat_idx[(m, d)][key], nd) if (m, d) in heat_idx else None for d in dates]
+        heat_mats["acc"].append(row_at("acc2", 1))
+        heat_mats["acc1"].append(row_at("acc1", 1))
+        heat_mats["rmse"].append(row_at("rmse", 2))
+        heat_mats["mae"].append(row_at("mae", 2))
+        heat_mats["mbe"].append(row_at("mbe", 2))
+        heat_mats["ts"].append(row_at("ts", 2))
+        heat_mats["ets"].append(row_at("ets", 2))
+        heat_mats["accr"].append(row_at("acc", 1))
+        heat_mats["pod"].append(row_at("pod", 1))
+        heat_mats["far"].append(row_at("far", 1))
+        heat_mats["n"].append([heat_idx[(m, d)]["n"] if (m, d) in heat_idx else None
+                               for d in dates])
+        heat_mats["nr"].append([heat_idx[(m, d)].get("n_rain") if (m, d) in heat_idx else None
+                                for d in dates])
+    heat = {"dates": [d[5:] for d in dates], "models": heat_models, **heat_mats}
+
+    # 分时效榜（"hourly:Nd" / "daily:Nd" / "all:Nd"，服务端已按综合分排好序）：
+    # 行压缩成 [总榜名次索引, 综合分, 温度分, 降水分, ±2°C, 雨 TS] —— 键名只出现
+    # 一次、模型只传索引；置信区间/覆盖时效只在总榜有意义（分榜不做 bootstrap）。
+    # 无任何得分的榜不进内联（空榜没有读者）。
+    rank_idx = {r["m"]: i for i, r in enumerate(board)}
+    lb: dict[str, dict] = {}
+    for key, rows in lbs.items():
+        if ":" not in key:
+            continue
+        track, _, day = key.partition(":")
+        day_n = day[:-1] if day.endswith("d") else ""
+        if track not in ("hourly", "daily", "all") or not day_n.isdigit():
+            continue
+        if not any(r.get("score") is not None for r in rows):
+            continue
+        lb.setdefault(track, {})[day_n] = [
+            [rank_idx[r["model"]], _r(r.get("score")), _r(r.get("temp_score")),
+             _r(r.get("precip_score")), _r(r.get("acc2"), 1),
+             None if r.get("ts") is None else round(r["ts"], 2)]
+            for r in rows if r["model"] in rank_idx
+        ]
 
     # 实况对比：每站最近 72 小时，全部压成数值数组（键名只出现一次）
     WIN = 72
@@ -213,15 +275,18 @@ def _slim_report(report_data: dict) -> dict:
                           "r": [_r(x.get("rain"), 2) for x in obs]},
                   "src": src}
 
-    # 分站对比：每站每源只留主要指标
+    # 分站对比：每站每源带上全部已评测指标（温度 6 项 + 降水 6 项，与 §03 的
+    # 指标下拉同一集合；降水为逐小时 0.1mm 诊断口径，与 §03 同源）
     stations = {}
     for st, per_model in (report_data.get("per_station") or {}).items():
         stations[st] = {}
         for m, dims in per_model.items():
             t, p = dims.get("temp") or {}, dims.get("precip") or {}
             stations[st][m] = {
-                "t": {k: _r(t.get(k), 2) for k in ("acc2", "rmse", "mbe")},
-                "r": {k: _r(p.get(k), 2) for k in ("ts", "ets")},
+                "t": {k: _r(t.get(k), 2)
+                      for k in ("acc1", "acc2", "rmse", "mae", "mbe", "r")},
+                "r": {k: _r(p.get(k), 2)
+                      for k in ("acc", "pod", "far", "ts", "ets", "bias")},
             }
 
     slim_meta = {
@@ -233,8 +298,9 @@ def _slim_report(report_data: dict) -> dict:
         "rain_daily_threshold_mm": meta.get("rain_daily_threshold_mm"),
         "min_sample": meta.get("min_sample"),
     }
-    return {"meta": slim_meta, "board": board, "trend": trend,
-            "temp": temp, "rain": rain, "heat": heat, "ts": ts,
+    return {"meta": slim_meta, "board": board, "lb": lb, "trend": trend,
+            "temp": temp, "rain": rain, "tdmax": tdmax, "tdmin": tdmin,
+            "rdaily": rdaily, "heat": heat, "ts": ts,
             "stations": stations, "coverage": {
                 k: report_data.get("coverage", {}).get(k)
                 for k in ("coverage_pct", "first_obs", "last_obs")}}
@@ -400,6 +466,7 @@ def render_report_html(report_data: dict, title: str | None = None,
         model_colors=MODEL_COLORS,
         model_labels_json=labels_json,
         model_colors_json=colors_json,
+        model_families_json=_js_json(MODEL_FAMILIES),
         score_temp_parts=_score_parts_rows(TEMP_SCORE_PARTS),
         score_precip_parts=_score_parts_rows(PRECIP_SCORE_PARTS),
         station_labels=station_labels or {},

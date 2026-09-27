@@ -295,9 +295,9 @@ def test_build_report_end_to_end(tmp_path, monkeypatch):
               "n_eff_temp_daily", "n_eff_rain_daily"):
         assert all_row[k] is not None, k
 
-    # 得分趋势：按分辨率分层，综合 = 温度/降水的均分；与榜单共用同一套桶得分
+    # 得分趋势：按分辨率分层 + 两轨各半合成的综合口径；与榜单共用同一套桶得分
     st = data["score_trend"]
-    assert set(st.keys()) == {"hourly", "daily"}
+    assert set(st.keys()) == {"hourly", "daily", "all"}
     for b in ("1d", "2d"):
         tv = st["hourly"]["temp"]["ecmwf_ifs"][b]
         pv = st["hourly"]["precip"]["ecmwf_ifs"][b]
@@ -324,9 +324,10 @@ def test_build_report_empty_is_safe(tmp_path, monkeypatch):
     # 分时效榜按分辨率分开命名；三条轨道、综合天榜与总榜在无数据时都安全
     for key in ("hourly:1d", "daily:1d", "all:1d", "all", "hourly", "daily"):
         assert data["leaderboards"][key][0]["score"] is None, key
-    # 趋势图同样按轨道分层给出
+    # 趋势图同样按轨道分层给出；综合口径两轨缺一即缺，无数据时安全
     assert data["score_trend"]["hourly"]["overall"]["ecmwf_ifs"]["1d"] is None
     assert data["score_trend"]["daily"]["overall"]["ecmwf_ifs"]["1d"] is None
+    assert data["score_trend"]["all"]["overall"]["ecmwf_ifs"]["1d"] is None
     # 总榜在无数据时同样安全：分数与覆盖时效均为 None
     assert data["leaderboards"]["all"][0]["score"] is None
     assert data["leaderboards"]["all"][0]["lead_days"] is None

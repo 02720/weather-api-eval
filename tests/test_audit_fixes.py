@@ -228,6 +228,37 @@ def test_score_trend_overall_uses_mean2():
         track_cells("hourly", track_sources["hourly"]["temp"]["m"]["1d"], {})[0]
 
 
+def test_score_trend_all_matches_combined_day_board():
+    """综合口径（"all"）趋势与综合天榜逐格同值（榜单与趋势图永不分叉）。
+
+    "all" 轨与 _combined_day_boards 完全同式：同一提前天数上小时榜分数与日榜
+    分数各半合成，两轨缺一即缺——任一侧出现"半截综合分"都是口径分叉。"""
+    from weather_eval.evaluate import _combined_day_boards, _score_trend
+
+    t = {"acc2": 80.0, "acc1": 60.0, "rmse": 1.8, "mae": 1.2, "mbe": 0.1,
+         "r": 0.9, "slope": 0.98, "n": 500}
+    p = {"ets": 0.3, "ts": 0.35, "pod": 55.0, "far": 40.0, "bias": 1.2, "n": 60}
+    models = ["m"]
+    track_sources = {
+        "hourly": {"temp": {"m": {"1d": t, "2d": t}},
+                   "precip": {"m": {"1d": p, "2d": p}}},
+        "daily": {"temp": {"m": {"1d": {"max": t, "min": t}, "2d": {"max": t, "min": t}}},
+                  "precip": {"m": {"1d": p, "2d": p}}},
+    }
+    trend = _score_trend(models, track_sources, 2, 2)
+    boards = _combined_day_boards(models, track_sources, 2)
+    for b in ("1d", "2d"):
+        row = boards[f"all:{b}"][0]
+        assert trend["all"]["overall"]["m"][b] == row["score"]
+        assert trend["all"]["temp"]["m"][b] == row["temp_score"]
+        assert trend["all"]["precip"]["m"][b] == row["precip_score"]
+    # 单轨缺降水 → 综合分与该维同样缺（缺一即缺，与榜单同纪律）
+    track_sources["hourly"]["precip"] = {"m": {}}
+    trend2 = _score_trend(models, track_sources, 2, 2)
+    assert trend2["all"]["overall"]["m"]["1d"] is None
+    assert trend2["all"]["temp"]["m"]["1d"] is not None   # 维度分按维度各自合成
+
+
 # ------------------------------------------------------------- P1-4 封存时点
 def test_unfrozen_samples_are_counted_and_excludable():
     """封存门槛的统计口径：无论排不排除，"有多少/滞后多久"都必须如实记录。"""

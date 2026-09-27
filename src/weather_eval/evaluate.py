@@ -1146,8 +1146,8 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     timeseries = _build_timeseries(station_ids, models, ts_start, end_dt,
                                    obs_maps=obs_maps, snapshots=snapshots)
 
-    # ---- 热力图：各日 × 各模型 温度 ±2°C 准确率 ----
-    heatmap = _build_heatmap(models, hourly, limits, min_sample)
+    # ---- 热力图：各日 × 各模型 温度（±2°C/RMSE）与逐小时晴雨（≥1mm TS/ETS） ----
+    heatmap = _build_heatmap(models, hourly, limits, min_sample, thr_hourly)
 
     # ---- 覆盖率 ----
     coverage = _coverage(station_ids, start_dt, end_dt, obs_maps=obs_maps)
@@ -1238,7 +1238,8 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
             adj_ridge=ridge, macro_weight_range=macro_w),
     }
 
-    # ---- 得分随时效衰减：两条轨道各一份（总榜 = 两榜的平均，页面合成） ----
+    # ---- 得分随时效衰减：小时/日两轨各一份 + 两轨各半合成的综合口径 ----
+    # （"all" 与综合天榜同式，页面 §02 三选一；榜单与趋势图永不分叉）
     score_trend = _score_trend(models, track_sources,
                                hourly_lead_days, daily_max_offset)
 
@@ -1679,20 +1680,52 @@ def _build_timeseries(station_ids, models, ts_start, end_dt, *,
     return out
 
 
-def _build_heatmap(models, hourly, limits, min_sample) -> list[dict]:
-    """返回 rows: 每天一行；每模型温度 ±2°C 准确率。用于 ECharts heatmap。"""
-    by_day_model: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(lambda: ([], [])))
+def _build_heatmap(models, hourly, limits, min_sample, thr_hourly) -> list[dict]:
+    """返回 rows: 每天一行；每模型温度（±1/±2°C、RMSE/MAE/|MBE|）与逐小时晴雨
+    （≥thr_hourly 的 TS/ETS/晴雨准确率/POD/FAR）。用于 ECharts 热力图的温度/降水
+    两要素视图——指标下拉与 §03 的两族指标同集合（|MBE| 取绝对值：热力图只表达
+    "偏差幅度"，正负号去 §03/§06 看；BIAS 需要以 =1 为参考的双向刻度，不进热力图）。
+
+    降水分级与小时榜同口径（rain_hourly_threshold_mm，1mm/h）：0.1mm 口径被
+    毛毛雨偏差主导，画在"哪天翻车"的热力图上整片发红，读者读不出天气突变。
+    降水样本不足 min_sample 的格子置 None（空白 = 数据不足，与温度格一致）。
+    指标经 _fin 落值：NaN（如干日的 POD 0/0）与 None 一样按缺测显示 —，
+    绝不让 NaN 混进页面内联数据。"""
+    by_day_model: dict[str, dict[str, tuple]] = defaultdict(
+        lambda: defaultdict(lambda: ([], [], [], [])))
     for r in hourly:
-        by_day_model[r["valid_iso"][:10]][r["model"]][0].append(r["temp_obs"])
-        by_day_model[r["valid_iso"][:10]][r["model"]][1].append(r["temp_fcst"])
+        cell = by_day_model[r["valid_iso"][:10]][r["model"]]
+        cell[0].append(r["temp_obs"])
+        cell[1].append(r["temp_fcst"])
+        cell[2].append(r["rain_obs"])
+        cell[3].append(r["rain_fcst"])
     days = sorted(by_day_model.keys())
     cells = []
     for d in days:
         for m in models:
-            o, f = by_day_model[d][m]
-            mm = temp_curve_metrics(o, f, min_sample)
-            acc = mm.get("acc2")
-            cells.append({"date": d, "model": m, "acc2": acc, "n": mm.get("n", 0)})
+            to, tf, ro, rf = by_day_model[d][m]
+            tc = temp_core_numpy(np.asarray(to, dtype=float),
+                                 np.asarray(tf, dtype=float))
+            t_ok = tc["n"] >= min_sample
+            mbe = _fin(tc["mbe"], 3)
+            cell = {"date": d, "model": m,
+                    "acc2": _fin(tc["acc2"], 3) if t_ok else None,
+                    "acc1": _fin(tc["acc1"], 3) if t_ok else None,
+                    "rmse": _fin(tc["rmse"], 3) if t_ok else None,
+                    "mae": _fin(tc["mae"], 3) if t_ok else None,
+                    "mbe": (abs(mbe) if mbe is not None else None) if t_ok else None,
+                    "n": tc["n"],
+                    "ts": None, "ets": None, "acc": None,
+                    "pod": None, "far": None, "n_rain": 0}
+            n_rain = _valid_n(np.asarray(ro, dtype=float), np.asarray(rf, dtype=float))
+            cell["n_rain"] = n_rain
+            if n_rain >= min_sample and n_rain > 0:
+                h, fa, mi, c = binary_counts(
+                    np.asarray(ro, dtype=float), np.asarray(rf, dtype=float), thr_hourly)
+                bm = binary_metrics_from_counts(h, fa, mi, c)
+                for k in ("ts", "ets", "acc", "pod", "far"):
+                    cell[k] = _fin(bm.get(k), 3)
+            cells.append(cell)
     return cells
 
 
@@ -2015,9 +2048,8 @@ def _segment_board(S: np.ndarray, W: np.ndarray | None, cols: list[int],
                    min_cell_neff: float, min_col_frac: float = 0.0) -> dict[int, float]:
     """在给定列子集上单独跑一次双向劈分，返回 {模型下标: 难度对齐行分}。
 
-    用于"技巧剖面"（短/中/长时效各一段，P0-2 建议 2）：加法模型把源×时效交互塞进
-    残差，一个数字表达不了"短时效强、长时效弱"；分段各自对齐后，读者看到的是一张
-    剖面而不是一个被平均掉的数。
+    用于长尾参考榜（board_long_tail_board）：被主设计剔除的天桶单独对齐，
+    供追踪趋势，不参与正式名次。
     """
     if not cols:
         return {}
@@ -2299,40 +2331,6 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
         d = designs[name]
         rows = rows_by_board[name]
         win = _board_window(models, name, d, specs[name], H, long_tail_board)
-        # 技巧剖面（P0-2）：短 1-3d / 中 4-7d / 长 8d+ 各段独立对齐。加法模型把
-        # 源 × 时效的交互塞进残差，一个数字表达不了"短时效强、长时效弱"；分段
-        # 各自对齐后读者看到的是一张剖面而不是一个被平均掉的数。
-        # 总榜的列是两条轨道拼起来的，故每段取**两轨同一段时效**的列。
-        profile: dict[str, dict] = {}
-        for seg, (lo, hi) in (("short", (1, 3)), ("mid", (4, 7)), ("long", (8, 10**6))):
-            if name in TRACKS:
-                cols = [c for c in range(d["spec"]["days"]) if lo <= c + 1 <= hi]
-            else:
-                cols = [c for c in range(d["spec"]["days"])
-                        if (c < H and lo <= c + 1 <= hi)
-                        or (c >= H and lo <= c - H + 1 <= hi)]
-            if not cols:
-                continue
-            seg_scores = _segment_board(d["spec"]["mat"]["composite"], d["W_cell"],
-                                        cols, 0.0)
-            profile[seg] = {
-                "buckets": [_col_label(c, name, H) for c in cols],
-                "scores": {m: (_fin(seg_scores[i], 2)
-                               if (i in seg_scores and seg_scores[i] is not None
-                                   and np.isfinite(seg_scores[i])) else None)
-                           for i, m in enumerate(models)},
-            }
-        if profile:
-            win["profile"] = profile
-            ranks = {}
-            for seg, blk in profile.items():
-                order = sorted((i for i in range(len(models))
-                                if blk["scores"].get(models[i]) is not None),
-                               key=lambda i: -blk["scores"][models[i]])
-                ranks[seg] = {i: r + 1 for r, i in enumerate(order)}
-            for i, r in enumerate(rows):
-                r["profile_rank"] = {seg: ranks.get(seg, {}).get(i)
-                                     for seg in ("short", "mid", "long")}
         # 跨轨分歧（源 × 分辨率的交互）：单一数字表达不了，只能逐行披露
         if name == "all":
             h_row = {r["model"]: r.get("score") for r in rows_by_board["hourly"]}
@@ -2667,11 +2665,16 @@ def _snapshot_quality(models: list[str], snapshots: dict) -> dict[str, dict]:
 
 def _score_trend(models, track_sources, hourly_lead_days,
                  daily_max_offset) -> dict:
-    """两条轨道各自的"得分随时效衰减"：{track: {overall/temp/precip: {m: {bk: 分}}}}。
+    """各口径的"得分随时效衰减"：{track: {overall/temp/precip: {m: {bk: 分}}}}。
 
+    track = hourly / daily（两条分辨率轨道各一份）+ all（小时与日综合）。
     与各自的榜单共用同一套桶得分——榜单与趋势图永不分叉。两条轨道分开出：
     此前趋势图上的那条"综合分"同时含着逐小时温度和日累计降水，读者无法分辨
     衰减来自哪条分辨率；现在小时榜与日榜各有一条自己的曲线。
+
+    "all"（综合口径）与综合天榜（_combined_day_boards）完全同式：同一提前天数上
+    小时榜分数与日榜分数各半合成（两轨缺一即缺）；天数取两轨的较小者，单轨
+    延伸出去的天数挤不进综合——与综合天榜同一条纪律。
     """
     trend: dict = {}
     for track in TRACKS:
@@ -2697,4 +2700,23 @@ def _score_trend(models, track_sources, hourly_lead_days,
                 # 整个用"。docstring 承诺"榜单与趋势图永不分叉"，靠的就是这一行。
                 block["overall"][m][bk] = _mean2(ts, ps)
         trend[track] = block
+
+    # 综合口径（"all"）：与 _combined_day_boards 逐桶同式——维度分按维度合成
+    # （温度分要求两轨温度齐备，降水分同理），格子综合分要求两轨两维四方齐备。
+    days = min(hourly_lead_days, daily_max_offset)
+    h_src, d_src = track_sources["hourly"], track_sources["daily"]
+    block: dict[str, dict] = {"overall": {}, "temp": {}, "precip": {}}
+    for m in models:
+        for key in block:
+            block[key][m] = {}
+        for b in range(1, days + 1):
+            bk = f"{b}d"
+            ts_h = temp_score(h_src["temp"][m].get(bk) or {})
+            ps_h = precip_score(h_src["precip"][m].get(bk) or {})
+            ts_d = daily_temp_score(d_src["temp"][m].get(bk) or {})
+            ps_d = precip_score(d_src["precip"][m].get(bk) or {})
+            block["temp"][m][bk] = _mean2(ts_h, ts_d)
+            block["precip"][m][bk] = _mean2(ps_h, ps_d)
+            block["overall"][m][bk] = _mean2(_mean2(ts_h, ps_h), _mean2(ts_d, ps_d))
+    trend["all"] = block
     return trend

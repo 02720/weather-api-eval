@@ -183,10 +183,11 @@ def test_disputed_only_with_positive_evidence(tmp_path, monkeypatch):
     assert row["disputed"] is True and row["issue_source"] == "request_floor"
 
 
-# ------------------------------------ P0-2 / P1-4 技巧剖面与长尾参考榜
+# ------------------------------------ P1-4 披露块与长尾参考榜
 def test_disclosure_block_is_complete(tmp_path, monkeypatch):
-    """报告必须自带"这份名次有多结实"的全部数字（P0-2/P1-4 的核心诉求）：
-    交互方差占比、跨桶名次一致性、加权敏感度、格子样本量、长尾档清单。"""
+    """报告必须自带"这份名次有多结实"的全部数字（P1-4 的核心诉求）：
+    交互方差占比、跨桶名次一致性、加权敏感度、格子样本量、长尾档清单。
+    技巧剖面（短/中/长分段排名）已按 2026-09-27 的需求下线，不再产出。"""
     monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
     start = datetime(2026, 8, 20, 0, 0)
     storage.save_obs("s1", _obs(start, 96))
@@ -196,20 +197,15 @@ def test_disclosure_block_is_complete(tmp_path, monkeypatch):
                         start + timedelta(hours=95), "2026-08")
     dw = data["meta"]["difficulty_window"]["all"]
     for key in ("variance", "rank_stability", "rank_sensitivity", "cell_weights",
-                "profile", "min_cell_neff", "cell_weighting", "gate_relaxed",
+                "min_cell_neff", "cell_weighting", "gate_relaxed",
                 "dropped_thin_cells"):
         assert key in dw, key
     vd = dw["variance"]
     assert vd["residual_share"] is not None
     assert abs(vd["row_share"] + vd["col_share"] + vd["residual_share"] - 1.0) < 1e-6
-    # 技巧剖面三段齐备，且每段都有名次与分数
-    prof = dw["profile"]
-    assert set(prof) >= {"short", "mid", "long"}
-    assert prof["short"]["buckets"] == ["hourly:1d", "hourly:2d", "hourly:3d",
-                                        "daily:1d", "daily:2d", "daily:3d"]
-    assert prof["short"]["scores"]["a"] is not None
-    row = next(r for r in data["leaderboards"]["all"] if r["model"] == "a")
-    assert row["profile_rank"]["short"] is not None
+    # 技巧剖面（短/中/长分段排名）已按需求下线：不再产出 profile/profile_rank
+    assert "profile" not in dw
+    assert all("profile_rank" not in r for r in data["leaderboards"]["all"])
     # 加权 vs 等权的对照分数一并披露
     assert dw["rank_sensitivity"]["spearman"] is not None
     assert set(dw["equal_weight_scores"]) == {"a", "b", "c"}

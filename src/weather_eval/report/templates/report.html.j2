@@ -7,14 +7,18 @@
     图）→ 深挖（折叠的方法论与词典）→ 归档（页脚）。
 
   与旧版（2026-08）的取舍：
-  - 排行榜只在服务端渲染一张"总榜"（难度对齐综合分）。33 张分时效榜、搜索、
-    双视图等控件全部移除——分时效的直接对照由 §02 衰减曲线承担，"同难度比"的
-    原理收进折叠区；排名对应的原始数据在 data/metrics/ 里随仓库公开。
+  - 排行榜默认只在服务端渲染一张"总榜"（难度对齐综合分）。33 张分时效榜不再
+    每张各渲染一张表，而是以「榜单切换下拉 + 预排序行数组」回归：默认视图仍是
+    服务端渲染（无 JS 可读的硬约束不破），切到某个「提前 N 天」后由前端把
+    服务端排好序的行填进同一张表（前端只搬运、不重算名次）。分时效的直接
+    对照也可在 §02 衰减曲线上读。
   - 榜单表格、得分走势线（SVG）、Hero 实况曲线都在 Python 侧生成：无 JS 也能
     读到完整榜单，"前端异常 → 榜单静默消失"这类事故失去载体。
-  - 内联 JSON 只含图表用字段（render._slim_report），页面从 1.9MB 降到数百 KB。
-  - 选源器/分屏/聚焦状态机移除：图表用 ECharts 原生图例承担"选看哪些源"，
-    默认只点亮总榜前三名，其余点击即显。
+  - 内联 JSON 只含图表用字段（render._slim_report），页面从 1.9MB 降到数百 KB；
+    新增的内联数据同样只画不打：分时效榜行数组、热力图降水矩阵、分站全指标。
+  - 旧版选源器/分屏/聚焦状态机不再整台搬回：图表仍用 ECharts 原生图例承担
+    "显隐"，但 28 个源挤在滚动图例里点选太费劲，故配一个**按源家族分组**的
+    选源面板（复选框 + 前三名/全部/清空），与图例双向同步。
 
   文案遵循"小白能看懂"标准：每图一行"怎么看"，深入解释全部收进折叠区。
 ============================================================================ #}
@@ -207,6 +211,29 @@
   .seg button.on { background:var(--ink); color:#fff; }
   .metric-note { font-size:12px; color:var(--muted); }
 
+  /* ================= 选源面板（按源家族分组的复选框） ================= */
+  .picker { position:relative; }
+  .picker-btn { border:1px solid var(--line); border-radius:9px; background:#fff;
+                color:var(--slate); font-size:12.5px; padding:6px 12px; cursor:pointer; }
+  .picker-btn b { font-variant-numeric:tabular-nums; }
+  .picker-btn:hover { border-color:var(--blue); color:var(--blue-deep); }
+  .picker-panel { position:absolute; z-index:30; top:calc(100% + 6px); left:0;
+                  width:300px; max-height:340px; overflow:auto; background:#fff;
+                  border:1px solid var(--line); border-radius:12px;
+                  box-shadow:0 10px 30px rgba(12,35,64,.16); padding:10px 12px; }
+  .picker-quick { display:flex; gap:6px; margin-bottom:8px; }
+  .picker-quick button { flex:1; border:1px solid var(--line); border-radius:8px;
+                         background:#f6f8fb; color:var(--slate); font-size:12px;
+                         padding:4px 0; cursor:pointer; }
+  .picker-quick button:hover { border-color:var(--blue); color:var(--blue-deep); }
+  .picker-fam { font-size:11px; color:var(--muted); letter-spacing:1px;
+                margin:9px 0 3px; font-weight:600; }
+  .picker-item { display:flex; align-items:center; gap:7px; font-size:12.5px;
+                 padding:2.5px 2px; border-radius:6px; cursor:pointer; }
+  .picker-item:hover { background:var(--blue-soft); }
+  .picker-item input { margin:0; accent-color:var(--blue); }
+  .picker-item .dot { margin:0; }
+
   /* ================= 词典 ================= */
   .glossary { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr));
               gap:2px 30px; margin:0; }
@@ -354,7 +381,13 @@
     <h2>预报源总榜</h2>
     <p class="desc">「综合分」由温度 7 项 + 降水 5 项指标加权而成，并且先把每一档提前量的
       难度统一扣掉再比——能报 3 天的和能报 15 天的同榜也公平。点任意列名可重新排序；
-      「得分走势」是综合分随提前天数（1~16 天，小时口径）的衰减，<b>谁在右边还站得高，谁的长期预报就更可靠</b>。</p>
+      「得分走势」是综合分随提前天数（1~16 天，小时口径）的衰减，<b>谁在右边还站得高，谁的长期预报就更可靠</b>。
+      想看某个具体提前量的排名，用下面的<b>榜单下拉</b>切到「提前 N 天」分榜——同一档内直接对照、不经难度对齐。</p>
+    <div class="controls">
+      <label for="lbBoard">榜单</label>
+      <select id="lbBoard" aria-label="选择榜单"></select>
+      <span class="metric-note" id="lbNote"></span>
+    </div>
     <div class="lb-scroll">
       <table class="lb-table" id="lbTable">
         <thead><tr>
@@ -364,7 +397,7 @@
           <th data-key="temp" data-type="num">温度分</th>
           <th data-key="precip" data-type="num">降水分</th>
           <th data-key="acc2" data-type="num">±2°C 准确率</th>
-          <th data-key="ts" data-type="num">日雨 TS</th>
+          <th data-key="ts" data-type="num" id="lbTsHead">日雨 TS</th>
           <th data-key="lead" data-type="num">覆盖时效</th>
           <th>90% 置信区间</th>
           <th class="l">得分走势</th>
@@ -373,6 +406,7 @@
         {% for r in lb_all %}
         {% set c = model_colors.get(r.model, '#64748b') %}
         <tr class="{% if r.get('is_top') %}is-top {% endif %}{% if not r.get('qualified') %}is-weak{% endif %}"
+            data-m="{{ r.model }}"
             data-rk="{{ loop.index }}"
             data-score="{{ r.get('score') if r.get('score') is not none else '' }}"
             data-temp="{{ r.get('temp_score') if r.get('temp_score') is not none else '' }}"
@@ -477,24 +511,6 @@
           {{ '%.0f%%'|format(dw['variance']['col_share'] * 100) }} · 交互与噪声
           {{ '%.0f%%'|format(dw['variance']['residual_share'] * 100) }}——残差占比越高，"一个数字排座次"抹掉的真实差异越多；
           {% endif %}④ 有效样本量已扣除时间自相关与跨站相关（相邻站由同一批天气系统驱动，直接相加会高估约 1.7 倍）。</p>
-        {% set prof = dw.get('profile') or {} %}
-        {% if prof.get('short') and prof.get('short', {}).get('scores') %}
-        <h3>技巧剖面：短 / 中 / 长时效各段单独排名</h3>
-        <p class="why">总榜把所有提前量压成一个数，代价是抹掉"短时效强、长时效弱"这类差异。
-          三段各自独立做难度对齐后名次可以很不一样——名次差得多，说明能力随时效明显偏斜。</p>
-        <table class="plain">
-          <thead><tr><th class="l">预报源</th>
-            <th>短时效（第 {{ prof['short']['buckets']|join('、') }} 天）</th>
-            <th>中时效</th><th>长时效</th><th>总榜</th></tr></thead>
-          <tbody>{% for r in lb_all %}{% if r.get('profile_rank') %}
-            <tr><td class="l">{{ model_labels.get(r.model, r.model) }}{% if r.get('is_top') %} 🏆{% endif %}</td>
-              {% for seg in ['short', 'mid', 'long'] %}
-              <td>{{ ('第 %d 名'|format((r.get('profile_rank') or {}).get(seg))) if (r.get('profile_rank') or {}).get(seg) else '—' }}</td>
-              {% endfor %}
-              <td>{{ ('第 %d 名'|format(loop.index)) if r.get('qualified') else '—' }}</td></tr>
-          {% endif %}{% endfor %}</tbody>
-        </table>
-        {% endif %}
       </div>
     </details>
 
@@ -523,18 +539,22 @@
     <p class="eyebrow">§02 · 理解</p>
     <h2>得分随时效衰减：谁"掉秤"掉得慢？</h2>
     <p class="desc">把每一档提前量的得分连成曲线。灰色地带是全体源的波动范围（虚线 = 中位），
-      彩色粗线是总榜前三名；<b>小时口径</b>答"某日几点准不准"，<b>日口径</b>答"这一天的极值/总量准不准"，
-      两条曲线口径不同、不能互相比斜率。点图例可显示任意源。</p>
+      默认画总榜前三名；<b>选源面板</b>按源家族分组勾选，或直接点图例增删。
+      <b>小时口径</b>答"某日几点准不准"，<b>日口径</b>答"这一天的极值/总量准不准"，
+      两条曲线口径不同、不能互相比斜率；<b>综合口径</b>是同一提前天数上两种口径
+      分数各半的合成（两轨缺一即缺），与榜单下拉里的「综合 · 提前 N 天」同口径。</p>
     <div class="controls">
       <div class="seg" id="segTrack">
         <button class="on" data-v="hourly">⏱️ 小时口径</button>
         <button data-v="daily">📅 日口径</button>
+        <button data-v="all">🧩 综合口径</button>
       </div>
       <div class="seg" id="segDim">
         <button class="on" data-v="overall">综合</button>
         <button data-v="temp">温度</button>
         <button data-v="precip">降水</button>
       </div>
+      <div class="picker" id="decayPicker"></div>
     </div>
     <div id="chartDecay" class="chart"></div>
     <p class="hint">💡 <b>怎么看：</b>线向右下掉是自然规律（越远越难报）；谁在右边还站得高，
@@ -545,20 +565,32 @@
   <section class="card" id="wx">
     <p class="eyebrow">§03 · 理解</p>
     <h2>温度与降水，分别准在哪？</h2>
-    <p class="desc">逐小时口径、按提前天数（1~16 天）展开的单项指标。默认看总榜前三名，
-      点图例可加看任意源；温度与降水两页签可切换，指标下拉可换视角。</p>
+    <p class="desc">按提前天数（1~16 天）展开的单项指标。<b>逐小时口径</b>看"这一小时的
+      温度/雨报得如何"，<b>日口径</b>看"这一天的日最高/最低温与 24h 累计雨报得如何"。
+      默认看总榜前三名，<b>选源面板</b>按源家族分组勾选，或直接点图例增删；
+      温度与降水两页签可切换，指标下拉可换视角。</p>
     <div class="controls">
+      <div class="seg" id="segWxTrack">
+        <button class="on" data-v="hourly">⏱️ 逐小时</button>
+        <button data-v="daily">📅 日口径</button>
+      </div>
       <div class="seg" id="segWx">
         <button class="on" data-v="temp">🌡️ 温度</button>
         <button data-v="rain">🌧️ 降水</button>
       </div>
+      <div class="seg" id="segWxHalf" hidden>
+        <button class="on" data-v="max">日最高</button>
+        <button data-v="min">日最低</button>
+      </div>
       <label for="wxMetric">指标</label>
       <select id="wxMetric" aria-label="选择指标"></select>
+      <div class="picker" id="wxPicker"></div>
       <span class="metric-note" id="wxNote"></span>
     </div>
     <div id="chartWx" class="chart"></div>
     <p class="hint">💡 <b>怎么看：</b>准确率/相关系数<b>越高越好</b>，RMSE/MAE/空报率<b>越低越好</b>；
       MBE 越接近 0 越好（正 = 习惯性报偏高，负 = 报偏低）；BIAS 越接近 1 越好。
+      日口径的降水为北京时自然日 24h 累计 ≥{{ report.meta.rain_daily_threshold_mm }}mm 的晴雨；
       降水比温度难报得多，TS 到 0.3~0.5 已属正常水平。</p>
   </section>
 
@@ -566,18 +598,29 @@
   <section class="card" id="heat">
     <p class="eyebrow">§04 · 理解</p>
     <h2>每一天的对账结果</h2>
-    <p class="desc">每个格子 = 某天 × 某家预报源的温度准确率（±2°C），行按总榜名次排列。
-      <b>绿</b> = 准，<b>红</b> = 翻车，空白 = 数据不足。</p>
+    <p class="desc">每个格子 = 某天 × 某家预报源的当日表现，行按总榜名次排列。
+      <b>绿</b> = 准，<b>红</b> = 翻车，空白 = 数据不足。温度与降水两要素可切换，
+      指标下拉含两族全部指标（温度：±1/±2°C、RMSE、MAE、|MBE|；
+      降水为该天逐小时 ≥1mm 时雨的晴雨评分：TS/ETS/晴雨准确率/POD/FAR）。</p>
+    <div class="controls">
+      <div class="seg" id="segHeat">
+        <button class="on" data-v="temp">🌡️ 温度</button>
+        <button data-v="rain">🌧️ 降水</button>
+      </div>
+      <label for="heatMetric">指标</label>
+      <select id="heatMetric" aria-label="选择指标"></select>
+    </div>
     <div id="chartHeat" class="chart"></div>
-    <p class="hint">💡 <b>怎么看：</b>整列发红往往是天气突变（大家都难），<b>整行偏红才是这家整体拉胯</b>。</p>
+    <p class="hint">💡 <b>怎么看：</b>整列发红往往是天气突变（大家都难），<b>整行偏红才是这家整体拉胯</b>；
+      降水的 TS 天然比温度准确率低一截（雨是否下在那一刻本来就难报），请按行内相对高低读。</p>
   </section>
 
   <!-- ==================== §05 预报 vs 实况 ==================== -->
   <section class="card" id="vs">
     <p class="eyebrow">§05 · 亲眼看看</p>
     <h2>最近 72 小时：预报 vs 实况</h2>
-    <p class="desc">黑线 = 气象站实测气温，彩线 = 所选预报源，灰蓝柱 = 站点实测降水（右轴）。
-      彩线越贴近黑线越准。</p>
+    <p class="desc">黑线 = 气象站实测气温，彩线 = 所选预报源；灰蓝宽柱 = 站点实测降水，
+      实心窄柱 = <b>该源同时刻的预报降水</b>（右轴）——两根柱子对得越齐，降雨时段报得越准。</p>
     <div class="controls">
       <label for="tsStation">站点</label><select id="tsStation" aria-label="选择站点"></select>
       <label for="tsModel">预报源</label><select id="tsModel" aria-label="选择预报源"></select>
@@ -590,7 +633,8 @@
     <p class="eyebrow">§06 · 亲眼看看</p>
     <h2>同一个预报，在不同站点的表现</h2>
     <p class="desc">选一家预报源，看它在各观测站的表现差异（地形、气候不同会有差异）；
-      虚线 = 全体源在该站的中位水平。</p>
+      指标下拉含温度、降水两族的全部已评测指标，虚线 = 全体源在该站的中位水平。
+      坐标轴按指标类型取刻度：百分比 0~100、评分 0~1、误差从 0 起、MBE 正负对称、BIAS 标出「=1 正好」。</p>
     <div class="controls">
       <label for="stModel">预报源</label><select id="stModel" aria-label="选择预报源"></select>
       <label for="stMetric">指标</label><select id="stMetric" aria-label="选择指标"></select>
@@ -808,6 +852,7 @@
 const report = {{ slim_json | safe }};
 const MODEL_LABEL = {{ model_labels_json | safe }};
 const MODEL_COLOR = {{ model_colors_json | safe }};
+const MODEL_FAMILIES = {{ model_families_json | safe }};
 const STATION_LABEL = {{ station_labels_json | safe }};
 
 const labelOf = m => MODEL_LABEL[m] || m;
@@ -833,8 +878,9 @@ function chart(elId) {
     el.innerHTML = '<div class="chart-fallback">图表库未能加载——上方榜单与结论不受影响。</div>';
     return null;
   }
-  const c = echarts.init(el);
-  charts.push(c);
+  // 复用已有实例：§04 会按行数动态改容器高度，重复 init 会丢失实例并泄漏
+  const c = echarts.getInstanceByDom(el) || echarts.init(el);
+  if (!charts.includes(c)) charts.push(c);
   return c;
 }
 window.addEventListener("resize", () => charts.forEach(c => c.resize()));
@@ -877,29 +923,105 @@ function bandSeries(stats) {
      tooltip: {show: false}},
   ];
 }
-/* 全体模型线：前三名加粗并带线尾名签，其余细线默认隐藏（图例点击显示） */
-function modelSeries(getVal, n, {unit = "", digits = 1} = {}) {
-  const selected = {};
+/* 全体模型线：见 modelSeries（选源面板版本，定义在 legendOpt 之后） */
+function legendOpt() {
+  return {type: "scroll", top: 0, left: 4, right: 4, itemWidth: 14, itemHeight: 8,
+          textStyle: {color: "#68778f", fontSize: 11}, pageIconSize: 10,
+          animationDurationUpdate: 300};
+}
+
+/* ---------------- 选源面板：按源家族分组的复选框，与图例双向同步 ----------------
+ * 28 个源挤在滚动图例里逐个点选太费劲——这是"选源不太好选"的根源。面板把源按
+ * 家族（Open-Meteo / 商业 API / 天机 / AI 大模型 / CMA）分组，配三个快捷键；
+ * 选中集合是图表的唯一事实来源，图例点击的增删会同步回面板复选框。 */
+const BY_LABEL = {};
+RANKED.forEach(m => { BY_LABEL[labelOf(m)] = m; });
+function makePicker(hostId, onChange) {
+  const host = document.getElementById(hostId);
+  if (!host) return null;
+  const fams = MODEL_FAMILIES.filter(f => (f.models || []).some(m => RANKED.includes(m)));
+  const orphans = RANKED.filter(m => !fams.some(f => f.models.includes(m)));
+  host.innerHTML =
+    `<button type="button" class="picker-btn" aria-haspopup="true" aria-expanded="false">` +
+    `选源 <b></b> ▾</button>` +
+    `<div class="picker-panel" hidden>` +
+    `<div class="picker-quick"><button type="button" data-q="top">前三名</button>` +
+    `<button type="button" data-q="all">全部</button>` +
+    `<button type="button" data-q="none">清空</button></div>` +
+    fams.map(f => `<div class="picker-fam">${f.icon || ""} ${escHtml(f.name || "")}</div>` +
+      f.models.filter(m => RANKED.includes(m)).map(m =>
+        `<label class="picker-item"><input type="checkbox" value="${escHtml(m)}">` +
+        `<i class="dot" style="background:${colorOf(m)}"></i>${escHtml(labelOf(m))}</label>`).join("")
+    ).join("") +
+    (orphans.length ? `<div class="picker-fam">其他</div>` + orphans.map(m =>
+      `<label class="picker-item"><input type="checkbox" value="${escHtml(m)}">` +
+      `<i class="dot" style="background:${colorOf(m)}"></i>${escHtml(labelOf(m))}</label>`).join("")
+      : "") + `</div>`;
+  const btn = host.querySelector(".picker-btn");
+  const panel = host.querySelector(".picker-panel");
+  let sel = new Set(TOP3);
+  function sync() {
+    btn.querySelector("b").textContent = `${sel.size}/${RANKED.length}`;
+    panel.querySelectorAll("input[type=checkbox]").forEach(b => {
+      b.checked = sel.has(b.value);
+    });
+  }
+  function apply() { sync(); onChange(sel); }
+  btn.addEventListener("click", () => {
+    panel.hidden = !panel.hidden;
+    btn.setAttribute("aria-expanded", String(!panel.hidden));
+  });
+  panel.addEventListener("change", e => {
+    if (e.target.tagName !== "INPUT") return;
+    if (e.target.checked) sel.add(e.target.value); else sel.delete(e.target.value);
+    apply();
+  });
+  panel.addEventListener("click", e => {
+    const q = e.target.closest("[data-q]");
+    if (!q) return;
+    sel = q.dataset.q === "all" ? new Set(RANKED)
+        : q.dataset.q === "top" ? new Set(TOP3) : new Set();
+    apply();
+  });
+  document.addEventListener("click", e => {
+    if (!host.contains(e.target)) panel.hidden = true;
+  });
+  sync();
+  return {
+    get: () => sel,
+    // 图例点击 → 面板同步（图例事件只改显隐，不触发 onChange 重绘）
+    syncFromLegend: map => {
+      sel = new Set(RANKED.filter(m => map[labelOf(m)] !== false));
+      sync();
+    },
+  };
+}
+/* 选中集合 → ECharts legend.selected 映射 */
+function legendSelected(sel) {
+  const out = {};
+  RANKED.forEach(m => { out[labelOf(m)] = sel.has(m); });
+  return out;
+}
+
+/* 全体模型线：选中者加粗（选源面板/图例控制显隐），选得少时带线尾名签 */
+function modelSeries(getVal, n, {unit = "", digits = 1, sel = null} = {}) {
+  const chosen = sel || new Set(TOP3);
+  const withTag = chosen.size > 0 && chosen.size <= 8;
   const series = RANKED.map(m => {
-    selected[labelOf(m)] = TOP3.includes(m);
+    const on = chosen.has(m);
     return {
       name: labelOf(m), type: "line", data: Array.from({length: n},
         (_, i) => getVal(m, i)),
-      symbol: "none", lineStyle: {width: TOP3.includes(m) ? 2.6 : 1,
-        color: colorOf(m), opacity: TOP3.includes(m) ? 1 : .8},
+      symbol: "none", lineStyle: {width: on ? 2.6 : 1,
+        color: colorOf(m), opacity: on ? 1 : .8},
       itemStyle: {color: colorOf(m)},
-      endLabel: TOP3.includes(m) ? {show: true, formatter: labelOf(m),
+      endLabel: on && withTag ? {show: true, formatter: labelOf(m),
         color: colorOf(m), fontSize: 11, fontWeight: 600, distance: 6} : undefined,
       emphasis: {focus: "series"},
       tooltip: {valueFormatter: v => v == null ? "—" : fmt(v, digits) + unit},
     };
   });
-  return {series, selected};
-}
-function legendOpt() {
-  return {type: "scroll", top: 0, left: 4, right: 4, itemWidth: 14, itemHeight: 8,
-          textStyle: {color: "#68778f", fontSize: 11}, pageIconSize: 10,
-          animationDurationUpdate: 300};
+  return {series, selected: legendSelected(chosen)};
 }
 const X_DAYS = Object.assign({}, AXIS, {type: "category",
   data: BUCKETS.map(b => b.replace("d", "")),
@@ -907,7 +1029,7 @@ const X_DAYS = Object.assign({}, AXIS, {type: "category",
   nameGap: 6});
 
 /* ---------------- §02 衰减曲线 ---------------- */
-let decayTrack = "hourly", decayDim = "overall";
+let decayTrack = "hourly", decayDim = "overall", decayPicker = null;
 function renderDecay() {
   const c = chart("chartDecay");
   if (!c) return;
@@ -915,7 +1037,7 @@ function renderDecay() {
   const dim = track[decayDim] || {};
   const getVal = (m, i) => ((dim[m] || {})[BUCKETS[i]]);
   const stats = fieldStats(getVal, DAYS);
-  const ms = modelSeries(getVal, DAYS, {digits: 1});
+  const ms = modelSeries(getVal, DAYS, {digits: 1, sel: decayPicker && decayPicker.get()});
   c.setOption({
     textStyle: {fontFamily: getComputedStyle(document.body).fontFamily},
     grid: {left: 8, right: 96, top: 40, bottom: 8, containLabel: true},
@@ -923,6 +1045,8 @@ function renderDecay() {
     tooltip: TIP, xAxis: X_DAYS, yAxis: YAXIS,
     series: [...bandSeries(stats), ...ms.series],
   }, {notMerge: true});
+  c.off("legendselectchanged");
+  c.on("legendselectchanged", e => decayPicker && decayPicker.syncFromLegend(e.selected));
 }
 function bindSeg(id, cb) {
   const seg = document.getElementById(id);
@@ -945,8 +1069,17 @@ const RAIN_METRICS = [
   ["ts", "TS 评分", "", 2, "high"], ["ets", "ETS 评分", "", 2, "high"],
   ["pod", "命中率 POD", "%", 1, "high"], ["far", "空报率 FAR", "%", 1, "low"],
   ["bias", "频率偏差 BIAS", "", 2, "one"], ["acc", "晴雨准确率", "%", 1, "high"]];
-let wxTab = "temp", wxMetric = "acc2";
+let wxTrack = "hourly", wxHalf = "max", wxTab = "temp", wxMetric = "acc2", wxPicker = null;
 function wxMetrics() { return wxTab === "temp" ? TEMP_METRICS : RAIN_METRICS; }
+/* 数据源随口径走：逐小时 = 全量逐小时样本按天分桶；日口径 = 日最高/最低温
+ * （两个独立交付量，分开切不合并）与 24h 累计 ≥1mm 晴雨，与日榜同源。 */
+function wxSource() {
+  if (wxTrack === "daily") {
+    return wxTab === "temp" ? (wxHalf === "max" ? (R.tdmax || {}) : (R.tdmin || {}))
+                            : (R.rdaily || {});
+  }
+  return wxTab === "temp" ? (R.temp || {}) : (R.rain || {});
+}
 function renderWx() {
   const c = chart("chartWx");
   if (!c) return;
@@ -959,10 +1092,12 @@ function renderWx() {
   if (note) note.textContent =
     dir === "high" ? "越高越好" : dir === "low" ? "越低越好"
     : dir === "zero" ? "越接近 0 越好" : "越接近 1 越好";
-  const src = wxTab === "temp" ? (R.temp || {}) : (R.rain || {});
+  const halfSeg = document.getElementById("segWxHalf");
+  if (halfSeg) halfSeg.hidden = !(wxTrack === "daily" && wxTab === "temp");
+  const src = wxSource();
   const getVal = (m, i) => ((src[m] || {})[BUCKETS[i]] || {})[key];
   const stats = fieldStats(getVal, DAYS);
-  const ms = modelSeries(getVal, DAYS, {unit, digits});
+  const ms = modelSeries(getVal, DAYS, {unit, digits, sel: wxPicker && wxPicker.get()});
   c.setOption({
     textStyle: {fontFamily: getComputedStyle(document.body).fontFamily},
     grid: {left: 8, right: 96, top: 40, bottom: 8, containLabel: true},
@@ -970,40 +1105,88 @@ function renderWx() {
     tooltip: TIP, xAxis: X_DAYS, yAxis: YAXIS,
     series: [...bandSeries(stats), ...ms.series],
   }, {notMerge: true});
+  c.off("legendselectchanged");
+  c.on("legendselectchanged", e => wxPicker && wxPicker.syncFromLegend(e.selected));
 }
 
 /* ---------------- §04 热力图 ---------------- */
+/* 指标键 = R.heat 里的矩阵名（温度 ±2°C 矩阵叫 acc，降水晴雨准确率叫 accr）。
+ * 与 §03 的两族指标同集合，唯二差别：|MBE| 取绝对值（热力图只表达偏差幅度，
+ * 正负号去 §03 看）；BIAS 需以 =1 为参考的双向刻度，不进单色热力图。 */
+const HEAT_METRICS = {
+  temp: [["acc", "±2°C 准确率", "%", 1, "high"],
+         ["acc1", "±1°C 准确率", "%", 1, "high"],
+         ["rmse", "RMSE 误差", "°C", 2, "low"],
+         ["mae", "MAE 误差", "°C", 2, "low"],
+         ["mbe", "|MBE| 偏差", "°C", 2, "low"]],
+  rain: [["ts", "时雨 TS", "", 2, "high"],
+         ["ets", "时雨 ETS", "", 2, "high"],
+         ["accr", "晴雨准确率", "%", 1, "high"],
+         ["pod", "命中率 POD", "%", 1, "high"],
+         ["far", "空报率 FAR", "%", 1, "low", "空报多", "空报少"]],
+};
+let heatTab = "temp", heatMetric = "acc";
+function heatMetrics() { return HEAT_METRICS[heatTab]; }
 function renderHeat() {
   const c = chart("chartHeat");
   if (!c) return;
   const heat = R.heat || {};
   const models = heat.models || [], dates = heat.dates || [];
   if (!models.length || !dates.length) return;
+  // 容器高度按行数走：固定 380px 装不下 28 行，类目轴标签会被 auto-interval
+  // 整行吞掉（"左边源名显示不全"的根源）——行距给足 + interval:0 双保险。
+  const el = document.getElementById("chartHeat");
+  el.style.height = Math.max(380, models.length * 24 + 110) + "px";
+  c.resize();
+  const selMt = document.getElementById("heatMetric");
+  if (!heatMetrics().some(m => m[0] === heatMetric)) heatMetric = heatMetrics()[0][0];
+  selMt.innerHTML = heatMetrics().map(m =>
+    `<option value="${m[0]}"${m[0] === heatMetric ? " selected" : ""}>${m[1]}</option>`).join("");
+  const [key, label, unit, digits, dir] = heatMetrics().find(m => m[0] === heatMetric);
+  const nMat = heatTab === "temp" ? (heat.n || []) : (heat.nr || []);
   const cells = [];
-  models.forEach((m, y) => (heat.acc[y] || []).forEach((v, x) => {
+  models.forEach((m, y) => ((heat[key] || [])[y] || []).forEach((v, x) => {
     if (v !== null && v !== undefined) cells.push([x, models.length - 1 - y, v]);
   }));
-  const samples = cells.map(c2 => c2[2]).sort((a, b) => a - b);
-  const lo = Math.max(0, Math.floor((samples[Math.floor(samples.length * .06)] || 40) / 5) * 5);
+  const vals = cells.map(c2 => c2[2]).sort((a, b) => a - b);
+  const showEmpty = !cells.length;
+  // 色带范围：百分比指标从样本分布的低分位起步（全 0~100 会把差异压平），
+  // 误差类从 0 到观测最大值（越高越红），评分类固定 0~1；低向指标可自带
+  // 色带两端文字（如 FAR 的"空报多/空报少"），缺省沿用误差类措辞。
+  const [,, , , , loText, hiText] = heatMetrics().find(m => m[0] === heatMetric);
+  let vMin, vMax = 100, vText = ["准", "翻车"], inRange = ["#c0492f", "#e0b64f", "#3f9d6a"];
+  if (dir === "low") {           // RMSE：低 = 好，色带反向
+    vMin = 0;
+    vMax = Math.max(1, Math.ceil((vals[vals.length - 1] || 2) * 10) / 10);
+    vText = [loText || "误差大", hiText || "误差小"];
+    inRange = ["#3f9d6a", "#e0b64f", "#c0492f"];
+  } else if (unit === "%") {
+    vMin = Math.max(0, Math.floor((vals[Math.floor(vals.length * .06)] || 40) / 5) * 5);
+  } else {                       // TS/ETS：0~1
+    vMin = 0; vMax = 1;
+    vText = ["报得准", "全落空"];
+  }
   c.setOption({
     textStyle: {fontFamily: getComputedStyle(document.body).fontFamily},
     grid: {left: 8, right: 16, top: 8, bottom: 52, containLabel: true},
+    title: showEmpty ? {text: "该指标本窗口样本不足，暂无格子", left: "center",
+      top: "middle", textStyle: {color: "#68778f", fontSize: 13, fontWeight: 400}} : undefined,
     tooltip: Object.assign({}, TIP, {trigger: "item",
       formatter: p => {
         const m = models[models.length - 1 - p.value[1]];
-        const n = (heat.n[models.length - 1 - p.value[1]] || [])[p.value[0]];
-        return `${escHtml(labelOf(m))} · ${dates[p.value[0]]}<br>±2°C 准确率 <b>${p.value[2]}%</b>` +
+        const n = (nMat[models.length - 1 - p.value[1]] || [])[p.value[0]];
+        return `${escHtml(labelOf(m))} · ${dates[p.value[0]]}<br>${label} <b>${p.value[2]}${unit}</b>` +
                (n ? ` · 样本 ${n}` : "");
       }}),
     xAxis: Object.assign({}, AXIS, {type: "category", data: dates,
       axisLabel: {color: "#68778f", fontSize: 10, interval: 2}}),
     yAxis: Object.assign({}, AXIS, {type: "category",
       data: models.slice().reverse().map(labelOf),
-      axisLabel: {color: "#35455e", fontSize: 11}}),
-    visualMap: {min: lo, max: 100, calculable: true, orient: "horizontal",
-      left: "center", bottom: 0, itemHeight: 90, text: ["准", "翻车"],
+      axisLabel: {color: "#35455e", fontSize: 11, interval: 0}}),
+    visualMap: {min: vMin, max: vMax, calculable: true, orient: "horizontal",
+      left: "center", bottom: 0, itemHeight: 90, text: vText,
       textStyle: {color: "#68778f", fontSize: 11},
-      inRange: {color: ["#c0492f", "#e0b64f", "#3f9d6a"]}},
+      inRange: {color: inRange}},
     series: [{type: "heatmap", data: cells,
       itemStyle: {borderColor: "#fff", borderWidth: 1},
       emphasis: {itemStyle: {shadowBlur: 4, shadowColor: "rgba(0,0,0,.3)"}}}],
@@ -1012,6 +1195,13 @@ function renderHeat() {
 
 /* ---------------- §05 预报 vs 实况 ---------------- */
 let tsStation = null, tsModel = null;
+/* #RRGGBB → rgba()：预报降水柱用源色半透明，与实况降水的灰蓝宽柱同刻叠画 */
+function withAlpha(hex, a) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || ""));
+  if (!m) return `rgba(100,116,139,${a})`;
+  const n = parseInt(m[1], 16);
+  return `rgba(${n >> 16 & 255},${n >> 8 & 255},${n & 255},${a})`;
+}
 function renderTs() {
   const c = chart("chartTs");
   if (!c) return;
@@ -1033,7 +1223,7 @@ function renderTs() {
     grid: {left: 8, right: 8, top: 36, bottom: 8, containLabel: true},
     legend: {top: 0, left: 4, itemWidth: 14, itemHeight: 8,
       textStyle: {color: "#68778f", fontSize: 11},
-      data: ["实况气温", labelOf(tsModel), "实况降水"]},
+      data: ["实况气温", labelOf(tsModel), "实况降水", labelOf(tsModel) + " 降水"]},
     tooltip: Object.assign({}, TIP, {axisPointer: {type: "cross",
       crossStyle: {color: "#999"}}}),
     xAxis: Object.assign({}, AXIS, {type: "category", data: t,
@@ -1045,13 +1235,20 @@ function renderTs() {
       Object.assign({}, YAXIS, {name: "mm", splitLine: {show: false},
         nameTextStyle: {color: "#68778f", fontSize: 11}})],
     series: [
+      // 降水两根柱同刻叠画：宽而淡的是实况，窄而实的是预报——柱子对得越齐，
+      // 降雨时段报得越准（降水的对错不看绝对量级，看时段与有无）
       {name: "实况降水", type: "bar", yAxisIndex: 1, data: d.obs.r,
-       itemStyle: {color: "rgba(96,148,196,.35)"}, barWidth: "38%",
+       barWidth: "46%", barGap: "-100%", z: 1,
+       itemStyle: {color: "rgba(96,148,196,.32)"},
        tooltip: {valueFormatter: v => fmt(v, 1) + " mm"}},
-      {name: "实况气温", type: "line", data: d.obs.t, symbol: "none",
+      {name: labelOf(tsModel) + " 降水", type: "bar", yAxisIndex: 1, data: src.r,
+       barWidth: "20%", z: 2,
+       itemStyle: {color: withAlpha(colorOf(tsModel), .9), borderRadius: [2, 2, 0, 0]},
+       tooltip: {valueFormatter: v => fmt(v, 1) + " mm"}},
+      {name: "实况气温", type: "line", data: d.obs.t, symbol: "none", z: 3,
        lineStyle: {color: "#0c2340", width: 2},
        tooltip: {valueFormatter: v => fmt(v, 1) + " °C"}},
-      {name: labelOf(tsModel), type: "line", data: src.t, symbol: "none",
+      {name: labelOf(tsModel), type: "line", data: src.t, symbol: "none", z: 3,
        lineStyle: {color: colorOf(tsModel), width: 2},
        itemStyle: {color: colorOf(tsModel)},
        tooltip: {valueFormatter: v => fmt(v, 1) + " °C"}},
@@ -1060,11 +1257,39 @@ function renderTs() {
 }
 
 /* ---------------- §06 分站对比 ---------------- */
+/* 温度/降水两族全部已评测指标（与 §03 的指标下拉同一集合）。每个指标声明
+ * kind —— 纵轴刻度由它决定，不再一刀切"向上取整到 10"：
+ *   pct   有界百分数 0~100（诚实刻度，柱顶带数值读差异）
+ *   score 有界评分 0~1
+ *   abs0  误差类，从 0 到 nice 上取整的数据最大值
+ *   zero  可正可负（MBE），正负对称，0 参考线
+ *   corr  相关系数，下界含 0（可能为负）、上界 1
+ *   one   频率偏差（BIAS），标出 "=1 频率正好" 参考线
+ */
 const ST_METRICS = [
-  ["t", "acc2", "±2°C 准确率（%）", "%", 1, "high"],
-  ["t", "rmse", "温度 RMSE（°C）", "°C", 2, "low"],
-  ["r", "ts", "日雨 TS", "", 2, "high"],
-  ["r", "ets", "日雨 ETS", "", 2, "high"]];
+  ["t", "acc2", "±2°C 准确率", "%", 1, "pct"],
+  ["t", "acc1", "±1°C 准确率", "%", 1, "pct"],
+  ["t", "rmse", "温度 RMSE", "°C", 2, "abs0"],
+  ["t", "mae", "温度 MAE", "°C", 2, "abs0"],
+  ["t", "mbe", "偏差 MBE", "°C", 2, "zero"],
+  ["t", "r", "相关系数 r", "", 2, "corr"],
+  ["r", "ts", "时雨 TS", "", 2, "score"],
+  ["r", "ets", "时雨 ETS", "", 2, "score"],
+  ["r", "acc", "晴雨准确率", "%", 1, "pct"],
+  ["r", "pod", "命中率 POD", "%", 1, "pct"],
+  ["r", "far", "空报率 FAR", "%", 1, "pct"],
+  ["r", "bias", "频率偏差 BIAS", "", 2, "one"],
+];
+const ST_GROUPS = [["t", "温度"], ["r", "降水（逐小时 ≥0.1mm 口径）"]];
+/* nice 上取整：把自适应轴的最大值收整到 1/1.5/2/2.5/…×10^k，刻度不再怪异 */
+function niceMax(v) {
+  if (!isFinite(v) || v <= 0) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  for (const m of [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) {
+    if (m * p >= v) return m * p;
+  }
+  return 10 * p;
+}
 let stModel = null, stMetric = 0;
 function renderStation() {
   const c = chart("chartStation");
@@ -1076,14 +1301,16 @@ function renderStation() {
   const selMd = document.getElementById("stModel");
   selMd.innerHTML = RANKED.map(m =>
     `<option value="${m}"${m === stModel ? " selected" : ""}>${escHtml(labelOf(m))}</option>`).join("");
+  if (!ST_METRICS[stMetric]) stMetric = 0;
   const selMt = document.getElementById("stMetric");
-  if (!selMt.options.length) {
-    selMt.innerHTML = ST_METRICS.map((mt, i) =>
-      `<option value="${i}"${i === stMetric ? " selected" : ""}>${mt[2]}</option>`).join("");
-  } else {
-    selMt.value = String(stMetric);
-  }
-  const [dim, key, , unit, digits] = ST_METRICS[stMetric];
+  selMt.innerHTML = ST_GROUPS.map(([g, gLabel]) => {
+    const opts = ST_METRICS.map((mt, i) => [mt, i]).filter(([mt]) => mt[0] === g);
+    if (!opts.length) return "";
+    return `<optgroup label="${gLabel}">` + opts.map(([mt, i]) =>
+      `<option value="${i}"${i === stMetric ? " selected" : ""}>${mt[2]}</option>`).join("") +
+      "</optgroup>";
+  }).join("");
+  const [dim, key, , unit, digits, kind] = ST_METRICS[stMetric];
   const vals = keys.map(s => {
     const mm = sts[s][stModel] || {};
     return ((mm[dim] || {})[key]);
@@ -1098,28 +1325,141 @@ function renderStation() {
     all.sort((a, b) => a - b);
     return all[Math.floor(all.length / 2)];
   })();
+  // 纵轴刻度按指标类型定（见 ST_METRICS 的 kind 注释）。
+  // 轴上界把中位参考线一并包进视野——否则参考线悬在轴外画不出来。
+  const vv = vals.filter(v => v !== null && v !== undefined).map(Number);
+  const vvAll = med !== null ? vv.concat([med]) : vv;
+  let ymin = 0, ymax = 1, refLine = null;
+  if (!vvAll.length) {
+    ymin = 0; ymax = kind === "pct" ? 100 : 1;
+  } else if (kind === "pct") {          // 从 0 起（不截断），顶部 nice 取整并封顶 100
+    ymin = 0; ymax = Math.min(100, niceMax(Math.max(...vvAll) * 1.12));
+  } else if (kind === "score") {        // 同上，封顶 1
+    ymin = 0; ymax = Math.min(1, niceMax(Math.max(...vvAll) * 1.12));
+  } else if (kind === "abs0") { ymin = 0; ymax = niceMax(Math.max(...vvAll) * 1.12); }
+  else if (kind === "zero") {
+    const m = niceMax(Math.max(...vvAll.map(x => Math.abs(x))) * 1.15);
+    ymin = -m; ymax = m; refLine = {y: 0, label: "0 = 无系统偏差"};
+  } else if (kind === "corr") { ymin = Math.min(0, ...vvAll); ymax = 1; }
+  else if (kind === "one") {
+    ymin = 0; ymax = niceMax(Math.max(...vvAll, 1.25) * 1.1);
+    refLine = {y: 1, label: "=1 频率正好"};
+  }
+  const marks = [];
+  if (refLine) marks.push({yAxis: refLine.y, lineStyle: {type: "dashed", color: "#b7791f"},
+    label: {formatter: refLine.label, color: "#b7791f", fontSize: 10.5,
+      position: "insideEndTop", distance: 4}});
+  if (med !== null) marks.push({yAxis: med, lineStyle: {type: "dashed", color: "#94a3b8"},
+    label: {formatter: "中位 " + fmt(med, digits), color: "#68778f",
+      fontSize: 11, position: "end", distance: 5}});
   c.setOption({
     textStyle: {fontFamily: getComputedStyle(document.body).fontFamily},
     grid: {left: 8, right: 64, top: 36, bottom: 8, containLabel: true},
     tooltip: Object.assign({}, TIP, {trigger: "item"}),
     xAxis: Object.assign({}, AXIS, {type: "category",
       data: keys.map(stationOf), axisLabel: {color: "#35455e", fontSize: 12}}),
-    yAxis: Object.assign({}, YAXIS,
-      {max: v => Math.ceil((v.max * 1.15) / 10) * 10 || 10}),
+    yAxis: Object.assign({}, YAXIS, {name: unit,
+      nameTextStyle: {color: "#68778f", fontSize: 11},
+      min: ymin, max: ymax}),
     series: [{name: labelOf(stModel) + " " + key, type: "bar",
       data: vals, barWidth: "44%",
       itemStyle: {color: colorOf(stModel), borderRadius: [6, 6, 0, 0]},
       label: {show: true, position: "top", color: "#35455e", fontSize: 11,
         formatter: p => p.value == null ? "—" : fmt(p.value, digits)},
       tooltip: {valueFormatter: v => v == null ? "—" : fmt(v, digits) + unit},
-      markLine: med === null ? undefined : {
-        silent: true, symbol: "none",
-        lineStyle: {type: "dashed", color: "#94a3b8"},
-        label: {formatter: "中位 " + fmt(med, digits), color: "#68778f",
-          fontSize: 11, position: "end", distance: 5},
-        data: [{yAxis: med}]},
+      markLine: marks.length ? {
+        silent: true, symbol: "none", data: marks} : undefined,
     }],
   }, {notMerge: true});
+}
+
+/* ---------------- 榜单切换（总榜 ⇄ 分时效榜，渐进增强） ----------------
+ * 总榜是服务端渲染的（无 JS 可读是硬约束）；切到「提前 N 天」分榜后，把服务端
+ * 已按综合分排好序的行数组（R.lb[track][day]）填进同一张表——前端只搬运，
+ * 不重算名次与分数，榜单与趋势图同源的性质不破。 */
+let lbMode = "all";
+const LB_BODY_SERVER = () => document.getElementById("lbBody").innerHTML;
+let lbBodyServer = null;      // 首次切换前快照，切回总榜时原样恢复
+const SPARK_SVG = {};         // 服务端走势线：从总榜行里收集，分榜行复用
+const LB_TS_HEAD = {all: "日雨 TS", hourly: "时雨 TS", daily: "日雨 TS"};
+function lbDesc(mode) {
+  if (mode === "all") {
+    return "难度对齐总榜：先把每一档提前量的难度统一扣掉再比（原理见下方折叠区）；" +
+      "置信区间与覆盖时效只有总榜有。";
+  }
+  const [track, day] = mode.split(":");
+  if (track === "all") {
+    return `综合 · 提前 ${day} 天：小时口径与日口径的分数各半合成（两轨缺一即缺）；` +
+      "同一天桶内各家面对同一批天气，直接对照、无覆盖偏差。";
+  }
+  if (track === "hourly") {
+    return `小时口径 · 提前 ${day} 天：逐小时温度 + 该小时 ≥1mm 晴雨；` +
+      "同一档内的直接对照，不经难度对齐。";
+  }
+  return `日口径 · 提前 ${day} 天：日最高/最低温度 + 24h 累计 ≥1mm 晴雨；` +
+    "同一档内的直接对照，不经难度对齐。";
+}
+function leadRow(m, rk, s, t, p, a2, ts) {
+  const weak = (s === null || s === undefined);
+  const c = colorOf(m);
+  const v = Math.max(0, Math.min(100, Number(s) || 0));
+  const cls = (rk === 1 && !weak ? "is-top " : "") + (weak ? "is-weak" : "");
+  return `<tr class="${cls}" data-m="${escHtml(m)}" data-rk="${rk}"` +
+    ` data-score="${s ?? ""}" data-temp="${t ?? ""}" data-precip="${p ?? ""}"` +
+    ` data-acc2="${a2 ?? ""}" data-ts="${ts ?? ""}" data-lead="">` +
+    `<td class="c-rk num">${rk}</td>` +
+    `<td class="l c-name"><i class="dot" style="background:${c}"></i>` +
+    `<b>${escHtml(labelOf(m))}</b>${weak ? '<span class="mid">· 样本积累中</span>' : ""}` +
+    `<span class="mid">${escHtml(m)}</span></td>` +
+    `<td class="c-score"><div class="cell">` +
+    `<div class="thermo sm"><span class="tube"><b style="--v:${v}%"></b></span></div>` +
+    `<b class="score-num">${weak ? "—" : fmt(s)}</b></div></td>` +
+    `<td>${fmt(t)}</td><td>${fmt(p)}</td>` +
+    `<td>${a2 == null ? "—" : fmt(a2) + "%"}</td>` +
+    `<td>${fmt(ts, 2)}</td><td>—</td><td class="ci-cell">—</td>` +
+    `<td class="l c-spark">${SPARK_SVG[m] || ""}</td></tr>`;
+}
+function renderBoard() {
+  const tbody = document.getElementById("lbBody");
+  if (!tbody) return;
+  if (lbMode === "all") {
+    if (lbBodyServer !== null) tbody.innerHTML = lbBodyServer;
+  } else {
+    const [track, day] = lbMode.split(":");
+    const rows = ((R.lb || {})[track] || {})[day] || [];
+    tbody.innerHTML = rows.map((r, i) =>
+      leadRow(RANKED[r[0]] || "", i + 1, r[1], r[2], r[3], r[4], r[5])).join("");
+  }
+  const tsHead = document.getElementById("lbTsHead");
+  if (tsHead) {
+    tsHead.textContent = lbMode === "all" ? "日雨 TS"
+      : lbMode.startsWith("all:") ? "两轨 TS"
+      : (LB_TS_HEAD[lbMode.split(":")[0]] || "日雨 TS");
+  }
+  const note = document.getElementById("lbNote");
+  if (note) note.textContent = lbDesc(lbMode);
+}
+function bindBoardSwitch() {
+  const sel = document.getElementById("lbBoard");
+  if (!sel) return;
+  // 走势线 SVG 与服务端总榜行先存快照（DOM 一旦被替换就取不到了）
+  lbBodyServer = LB_BODY_SERVER();
+  document.querySelectorAll("#lbBody tr[data-m]").forEach(tr => {
+    const svg = tr.querySelector(".c-spark svg");
+    if (svg) SPARK_SVG[tr.dataset.m] = svg.outerHTML;
+  });
+  const tracks = [["all", "综合"], ["hourly", "小时口径"], ["daily", "日口径"]];
+  sel.innerHTML = `<option value="all">总榜 · 难度对齐综合分</option>` +
+    tracks.map(([tk, name]) => {
+      const days = Object.keys((R.lb || {})[tk] || {}).sort((a, b) => a - b);
+      if (!days.length) return "";
+      return `<optgroup label="${name} · 按提前天数">` + days.map(d =>
+        `<option value="${tk}:${d}">提前 ${d} 天</option>`).join("") + "</optgroup>";
+    }).join("");
+  sel.addEventListener("change", e => {
+    lbMode = e.target.value;
+    renderBoard();
+  });
 }
 
 /* ---------------- 榜单排序（渐进增强） ---------------- */
@@ -1150,16 +1490,29 @@ function bindSort() {
 /* ---------------- 启动 ---------------- */
 document.addEventListener("DOMContentLoaded", () => {
   bindSort();
+  // 选源面板先建（默认选中 = 总榜前三），再首渲染图表
+  decayPicker = makePicker("decayPicker", () => renderDecay());
+  wxPicker = makePicker("wxPicker", () => renderWx());
+  bindBoardSwitch();
   renderDecay(); renderWx(); renderHeat(); renderTs(); renderStation();
   bindSeg("segTrack", v => { decayTrack = v; renderDecay(); });
   bindSeg("segDim", v => { decayDim = v; renderDecay(); });
+  bindSeg("segWxTrack", v => { wxTrack = v; renderWx(); });
+  bindSeg("segWxHalf", v => { wxHalf = v; renderWx(); });
   bindSeg("segWx", v => {
     wxTab = v;
     wxMetric = (v === "temp" ? TEMP_METRICS : RAIN_METRICS)[0][0];
     renderWx();
   });
+  bindSeg("segHeat", v => {
+    heatTab = v;
+    heatMetric = HEAT_METRICS[v][0][0];
+    renderHeat();
+  });
   const wxSel = document.getElementById("wxMetric");
   if (wxSel) wxSel.addEventListener("change", e => { wxMetric = e.target.value; renderWx(); });
+  const heatSel = document.getElementById("heatMetric");
+  if (heatSel) heatSel.addEventListener("change", e => { heatMetric = e.target.value; renderHeat(); });
   const tsSt = document.getElementById("tsStation");
   if (tsSt) tsSt.addEventListener("change", e => { tsStation = e.target.value; renderTs(); });
   const tsMd = document.getElementById("tsModel");
