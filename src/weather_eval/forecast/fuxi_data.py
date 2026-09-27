@@ -53,14 +53,16 @@ from typing import Any
 import requests
 
 from .base import ForecastProvider
-from .http import DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, request_with_retries
+from .http import ( DEFAULT_UA,
+DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, TimeBudget,
+                   request_with_retries)
 
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://fuxi-ai.cn/gw/fuxi-data/api/v1"
 AVAIL_URL = f"{BASE_URL}/initTime/isAvail"
 QUERY_URL = f"{BASE_URL}/queryWeatherInfo"
-HEADERS = {"User-Agent": "weather-api-eval/0.1 (+https://github.com/)"}
+HEADERS = {"User-Agent": DEFAULT_UA}
 
 SOURCE = "fuxi-data"
 MODEL_NAME = "fuxi_det"
@@ -260,6 +262,7 @@ class FuxiDetProvider(ForecastProvider):
         self.timeout = timeout
         self.retries = retries
         self.session = session or requests.Session()
+        self._budget = TimeBudget()  # 单源单轮总预算（第四轮 P1-7）
         self._now = now
         # isAvail 结果按日期缓存（产品级属性，跨站点复用）；None 表示该日无数据
         self._avail_cache: dict[str, list[str] | None] = {}
@@ -302,7 +305,9 @@ class FuxiDetProvider(ForecastProvider):
             "issue_iso": issue_iso,
             "issue_source": "model_run",
             "issue_raw": issue_iso,
-            "resolution_hours": 6,
+            # 第四轮 P1-1：入库序列是逐小时（见测试夹具 T01..T24），6 是猜测
+            # 不是事实——猜测不得伪装成声明
+            "resolution_hours": 1,
             "precip_unit": "mm",
             # tp 的累计类型只做了单调性哨兵（docstring 自认）：若它是"自起报累计"
             # 而仍按逐时刻值入库，口径就与 1h 产品不同——如实声明为未知窗口，
@@ -372,5 +377,5 @@ class FuxiDetProvider(ForecastProvider):
             self.session, url, method=method, json_body=json_body,
             headers=headers, timeout=self.timeout, retries=self.retries,
             source="伏羲数据", classify=_classify,
-        )
+                budget=self._budget)
 

@@ -149,8 +149,14 @@ def evaluate_staleness(health: dict, stale_hours: int = 30) -> dict:
 
 
 def stale_sources(health: dict) -> list[str]:
-    """陈旧源名单（供 CLI 决定退出码与 CI 决定是否开 Issue）。"""
-    return sorted(m for m, h in health.items() if h.get("stale"))
+    """陈旧/失联源名单（供 CLI 决定退出码与 CI 决定是否开 Issue）。
+
+    第四轮 P2-6：曾有数据但最近抓取时刻解析不出（unavailable）的源，
+    旧实现只画黄色徽章、不进告警名单——命令照常退出 0，"静默死亡"的
+    另一副面孔。现在与陈旧同等对待：页面在提示的，机器必须同时报警。
+    """
+    return sorted(m for m, h in health.items()
+                  if h.get("stale") or h.get("unavailable"))
 
 
 def render_health_html(health: dict, meta: dict, stale_hours: int) -> str:

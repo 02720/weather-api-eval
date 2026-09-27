@@ -79,14 +79,65 @@ def test_two_way_fit_weights_change_the_answer():
 
 
 def test_min_cell_weight_drops_thin_cells():
-    """低于权重门槛的格子不进设计，且被如实计数（P0-1 建议 2）。"""
+    """低于权重门槛的格子不进设计，且被如实计数（P0-1 建议 2）。
+
+    第四轮 P1-1：旧实现只在 design_mask 之前剔薄格，_fit_parts 又按 isfinite
+    把它请回来、按原权重参与 WLS——本测试曾"空转通过"（设计整体塌缩走早退
+    分支），对真正的拟合路径零验收。现在断言三件事：计数、掩膜、且**分数
+    确实因剔除而变**（薄格若还在拟合里，权重 0.5 的极端值会把行分拉偏）。
+    """
     S = np.array([[70.0, 70.0, 70.0],
                   [60.0, 60.0, 60.0],
                   [10.0, np.nan, np.nan]])
     W = np.array([[10.0, 10.0, 10.0], [10.0, 10.0, 10.0], [0.5, np.nan, np.nan]])
-    out = stats.two_way_adjust(S, weights=W, min_cell_weight=1.0)
+    # min_col=2 / min_row=1：让设计在"剔一格"后仍然立得住（缺省门槛下小例子
+    # 整体塌缩走早退分支——旧测试正是这样空转通过的）
+    out = stats.two_way_adjust(S, min_col=2, min_row=1, weights=W, min_cell_weight=1.0)
     assert out["dropped_thin_cells"] == 1
     assert not out["cell_valid"][2, 0]
+    # 设计未塌缩：行 0/1 仍三格齐整可比
+    assert bool(out["row_keep"][0]) and bool(out["row_keep"][1])
+    assert bool(out["cell_valid"][0, 0])
+    # 与"薄格仍在拟合"（min_cell_weight=0）的分数不同——否则剔除是假动作
+    out_keep = stats.two_way_adjust(S, min_col=2, min_row=1, weights=W, min_cell_weight=0.0)
+    assert not np.allclose(
+        np.nan_to_num(out["scores"], nan=-999),
+        np.nan_to_num(out_keep["scores"], nan=-999))
+    # 薄格剔除后，行 2 的分数必须为 NaN（它在设计里不再有任何格子）
+    assert np.isnan(out["scores"][2])
+
+
+def test_bootstrap_fallback_reference_is_highest_mean():
+    """未传 top_model 时，显著性参照必须是分布均值最高的入围者（第四轮 P1-2）。
+
+    旧实现把参照系落在"第一个入围者"上：冠军频率明明说 best 100% 夺冠，
+    † 却挂在别的家头上。
+    """
+    macro = np.column_stack([np.full(50, 10.0), np.full(50, 60.0),
+                             np.full(50, 40.0), np.full(50, 5.0)])
+    out = stats._summarize_bootstrap(macro, ["worst", "best", "mid", "low"],
+                                     [True] * 4, top_model=None)
+    assert out["best"]["champion_pct"] == 100.0
+    assert out["best"]["p_vs_top"] == 0.0          # best 自己是参照系
+    assert out["worst"]["p_vs_top"] is not None    # 其余家都与他比较
+
+
+def test_ridge_shrinks_columns_not_rows():
+    """ridge 只收缩列（难度），绝不收缩行（技巧）——第四轮 P1-4。
+
+    行收缩会把"覆盖越短排名越低"的偏置从难度对齐要消掉的方向请回来。
+    """
+    rng = np.random.default_rng(11)
+    S = 60 + rng.normal(0, 2, size=(4, 6)) + rng.normal(0, 2, size=(4, 1))
+    W = np.full((4, 6), 20.0)
+    base = stats.two_way_adjust(S, min_col=2, min_row=1, weights=W)
+    ridge = stats.two_way_adjust(S, min_col=2, min_row=1, weights=W, ridge=50.0)
+    # 行效应在收缩下基本不动（列被拉向 0，行吸收的是列让出来的份额）
+    assert np.allclose(np.nan_to_num(base["row_effects"], nan=0),
+                       np.nan_to_num(ridge["row_effects"], nan=0), atol=1.0)
+    # 列确实被收缩
+    assert (np.nanmax(np.abs(np.nan_to_num(ridge["col_effects"])))
+            <= np.nanmax(np.abs(np.nan_to_num(base["col_effects"]))) + 1e-9)
 
 
 def test_difficulty_adjusted_respects_explicit_valid_mask():

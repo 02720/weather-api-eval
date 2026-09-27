@@ -69,7 +69,7 @@ from typing import Any
 import requests
 
 from .base import ForecastProvider
-from .http import request_with_retries
+from .http import DEFAULT_UA, TimeBudget, request_with_retries
 from ..timeutil import BEIJING
 
 logger = logging.getLogger(__name__)
@@ -84,7 +84,7 @@ DEFAULT_HOURS = 240          # 新版接口支持上限（1..240）
 _V7_TIERS = (24, 72, 168)    # 旧版逐小时接口的三档时效
 # 旧版逐日接口的档位（从大到小用于订阅回退；docstring"逐日预报块"一节）
 _V7_DAILY_TIERS = (30, 15, 10, 7, 3)
-HEADERS = {"User-Agent": "weather-api-eval/0.1 (+https://github.com/)"}
+HEADERS = {"User-Agent": DEFAULT_UA}
 
 
 
@@ -296,6 +296,7 @@ class QWeatherProvider(ForecastProvider):
         # Key 只经请求头传递，绝不进入 URL/query（避免随日志/代理泄露）。
         self._headers = {**HEADERS, "X-QW-Api-Key": self.key}
         self.session = session or requests.Session()
+        self._budget = TimeBudget()  # 单源单轮总预算（第四轮 P1-7）
 
     # ------------------------------------------------------------------ 对外
     def fetch_snapshot(self, station: Any, models: list[str] | None = None) -> dict:
@@ -381,7 +382,9 @@ class QWeatherProvider(ForecastProvider):
 
         snapshot = {
             "issue_iso": hourly_time[0],
-            "issue_source": "axis_start",
+            # 第四轮 P1-5：逐小时时间轴首点 = 当前小时 ≈ 抓取时刻（docstring
+            # 自述"即起报轮次的当前小时"）——与彩云/MSN 同族，不是模式轮次
+            "issue_source": "request_floor",
             "issue_raw": hourly_time[0],
             "resolution_hours": 1,
             "precip_unit": "mm",
@@ -474,4 +477,4 @@ class QWeatherProvider(ForecastProvider):
             self.session, url, params=params, headers=self._headers,
             timeout=self.timeout, retries=self.retries, source="和风",
             redact=lambda s: _redact(s, self.key), classify=_classify,
-        )
+                budget=self._budget)

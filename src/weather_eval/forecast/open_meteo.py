@@ -48,12 +48,14 @@ from typing import Any
 import requests
 
 from .base import ForecastProvider
-from .http import request_with_retries
+from .http import DEFAULT_UA, TimeBudget, request_with_retries
 
 logger = logging.getLogger(__name__)
 
+# 请求的预报天数（1..16 天日偏移评估范围的上游来源，第四轮 P2-8 守卫也用它）
+FORECAST_DAYS = 16
 ENDPOINT = "https://api.open-meteo.com/v1/forecast"
-HEADERS = {"User-Agent": "weather-api-eval/0.1 (+https://github.com/)"}
+HEADERS = {"User-Agent": DEFAULT_UA}
 
 
 def _model_key(units: dict, base: str, model: str, allow_bare: bool = True) -> str | None:
@@ -77,6 +79,7 @@ class OpenMeteoProvider(ForecastProvider):
         self.timeout = timeout
         self.retries = retries
         self.session = session or requests.Session()
+        self._budget = TimeBudget()  # 单源单轮总预算（第四轮 P1-7）
 
     def fetch_snapshot(self, station: Any, models: list[str]) -> dict:
         params = {
@@ -87,7 +90,7 @@ class OpenMeteoProvider(ForecastProvider):
             # 的按天评估补位，语义见模块 docstring"逐日预报块"一节
             "daily": "temperature_2m_max,temperature_2m_min,precipitation_sum",
             "models": ",".join(models),
-            "forecast_days": 16,
+            "forecast_days": FORECAST_DAYS,
             "timezone": "Asia/Shanghai",
             "temperature_unit": "celsius",
             "precipitation_unit": "mm",
@@ -97,7 +100,7 @@ class OpenMeteoProvider(ForecastProvider):
         resp = request_with_retries(
             self.session, ENDPOINT, params=params, headers=HEADERS, timeout=self.timeout,
             retries=self.retries, source=f"Open-Meteo 站点 {station.id}",
-        )
+                budget=self._budget)
         payload = resp.json()
 
         hourly = payload.get("hourly", {})
@@ -150,6 +153,15 @@ class OpenMeteoProvider(ForecastProvider):
         if daily_block:
             snapshot["daily_time"] = daily_block["time"]
             snapshot["daily"] = daily_block["data"]
+        # 第四轮 P2-8：其余 10 家都有点数下限守卫，本源只在 info 里打点数——
+        # 而幂等键是"当日 00:00"，当天被静默截断后**没有补抓的机会**。
+        # 逐小时序列远短于期望（forecast_days×24）时响亮告警
+        n_expect = FORECAST_DAYS * 24
+        if len(times) < 0.9 * n_expect:
+            logger.warning(
+                "Open-Meteo 站点 %s 逐小时序列仅 %d 点（期望约 %d），"
+                "疑似被服务端截断；截断快照将被当日幂等键锁死，请核查",
+                station.id, len(times), n_expect)
         logger.info("站点 %s 已抓取起报 %s，模型 %s，时间点数 %d，日产品 %d 天",
                     station.id, issue_iso, list(data.keys()), len(times),
                     len(daily_block.get("time", ())) if daily_block else 0)
@@ -202,4 +214,17 @@ def _parse_daily(payload: dict, models: list[str], allow_bare: bool,
         logger.warning("Open-Meteo 站点 %s 的 daily 组未解析出任何模型，"
                        "本次快照不带逐日预报块", station_id)
         return None
-    return {"time": [str(t)[:10] for t in dtimes], "data": data}
+    # 第四轮 P2-7：日轴必须升序、去重、合法 ISO 日期（base 契约）。畸形值
+    # （None→"None"）此前会变成垃圾日键、重复日后者在评估侧静默覆盖前者
+    from datetime import date as _date
+    seen: set[str] = set()
+    axis: list[str] = []
+    for t in dtimes:
+        try:
+            key = _date.fromisoformat(str(t)[:10]).isoformat()
+        except (ValueError, TypeError):
+            continue
+        if key not in seen:
+            seen.add(key)
+            axis.append(key)
+    return {"time": axis, "data": data}

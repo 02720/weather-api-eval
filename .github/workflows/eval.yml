@@ -25,6 +25,9 @@ concurrency:
 jobs:
   eval:
     runs-on: ubuntu-latest
+    # 最坏路径（10 个可选源各耗尽 900s 预算 + 报告 + 治理 + 部署）远超调度间隔 7h
+    # 是不可接受的：把单轮钉死在 2 小时内，超时即红（第四轮 P2-3）。
+    timeout-minutes: 120
     # 仓库采用 src 布局，且未做 pip 打包；运行 python -m weather_eval 需把 src 加入导入路径
     # （与 pyproject.toml 中 pytest 的 pythonpath=["src"] 保持一致）。
     env:
@@ -46,6 +49,15 @@ jobs:
         run: |
           python -m pip install -r requirements.txt -r requirements-dev.txt
           python -m pip install --no-deps cyeva==0.2.3
+
+      - name: 单元测试（守卫）
+        # 第四轮 P1-1：此前装了 pytest 却从不运行——"新源漏登三张登记表 CI 直接红"
+        # 这类机器契约实际全靠本地自觉。守卫（登记表/体积/服务端渲染）必须在
+        # 任何抓取之前先行把关：测试失败则本轮不产出新数据。
+        timeout-minutes: 15
+        env:
+          TZ: Asia/Shanghai
+        run: python -m pytest -q
 
       - name: 抓取彩云预报（可选，需配置 CAIYUN_TOKEN Secret）
         # 可选增强源：失败仅标注该步，不得阻断后续观测抓取、报告与提交。
@@ -228,6 +240,15 @@ jobs:
           TZ: Asia/Shanghai
         run: python -m weather_eval compact --apply
 
+      - name: 源健康度检查（静默死亡告警）
+        # P1-8：连续多轮抓不到数据的源会让这一步以非零退出；下一步据此自动开 Issue。
+        if: always()
+        id: health
+        continue-on-error: true
+        env:
+          TZ: Asia/Shanghai
+        run: python -m weather_eval health --stale-hours 30
+
       - name: 变基远端最新提交（避免 push 被拒）
         # 旧实现的 `|| true` 让 rebase 失败（冲突、autostash 弹出失败）静默通过，
         # 随后 git-auto-commit-action 照常提交——可能把当轮数据提交到一棵**陈旧的、
@@ -236,7 +257,9 @@ jobs:
         # 变基前，当轮产物一个不丢），再以非零退出让作业如实变红。
         id: rebase
         if: always()
-        continue-on-error: true
+        # 不设 continue-on-error（第四轮 P2-2）：旧值让步骤结论变 success、
+        # 作业不变红——"以非零退出让作业如实变红"的注释落了空。开 Issue 的
+        # 下游步骤用的是 steps.rebase.outcome（不受本值影响）。
         run: |
           set +e
           git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
@@ -291,7 +314,7 @@ jobs:
         run: |
           TITLE="仓库体积告警：.git 超过硬阈值"
           EXISTING=$(gh issue list --state open --search "${TITLE} in:title" \
-                     --json number --jq 'length' 2>/dev/null || echo 0)
+                     --json number --jq 'length' 2>/dev/null || echo QUERY_FAILED)
           if [ "${EXISTING}" != "0" ]; then
             echo "已有未关闭的同名 Issue，跳过创建"
             exit 0
@@ -309,15 +332,6 @@ jobs:
           本轮运行：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             --assignee "${{ github.repository_owner }}" || echo "开 Issue 失败（权限或 gh 版本），不影响数据提交"
 
-      - name: 源健康度检查（静默死亡告警）
-        # P1-8：连续多轮抓不到数据的源会让这一步以非零退出；下一步据此自动开 Issue。
-        if: always()
-        id: health
-        continue-on-error: true
-        env:
-          TZ: Asia/Shanghai
-        run: python -m weather_eval health --stale-hours 30
-
       - name: 源陈旧时自动开 Issue 并 @ 维护者
         # 只在"曾经有数据、现在超过 30 小时没成功"时触发（从未接入的可选源不算故障）。
         # 先去重：同一标题的未关闭 Issue 已存在时不重复开，避免每天刷一条。
@@ -328,7 +342,7 @@ jobs:
         run: |
           TITLE="预报源陈旧告警：有源超过 30 小时未成功抓取"
           EXISTING=$(gh issue list --state open --search "${TITLE} in:title" \
-                     --json number --jq 'length' 2>/dev/null || echo 0)
+                     --json number --jq 'length' 2>/dev/null || echo QUERY_FAILED)
           if [ "${EXISTING}" != "0" ]; then
             echo "已有未关闭的同名 Issue，跳过创建"
             exit 0
@@ -351,7 +365,7 @@ jobs:
         run: |
           TITLE="CI 变基失败：本地与远端分叉，本轮数据可能未入库"
           EXISTING=$(gh issue list --state open --search "${TITLE} in:title" \
-                     --json number --jq 'length' 2>/dev/null || echo 0)
+                     --json number --jq 'length' 2>/dev/null || echo QUERY_FAILED)
           if [ "${EXISTING}" != "0" ]; then
             echo "已有未关闭的同名 Issue，跳过创建"
             exit 0

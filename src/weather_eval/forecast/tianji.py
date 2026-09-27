@@ -58,13 +58,15 @@ from typing import Any
 import requests
 
 from .base import ForecastProvider
-from .http import DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, request_with_retries
+from .http import ( DEFAULT_UA,
+DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, TimeBudget,
+                   request_with_retries)
 from ..timeutil import now_beijing
 
 logger = logging.getLogger(__name__)
 
 ENDPOINT = "https://www.tjweather.com/meteorological/spas/single-point/query"
-HEADERS = {"User-Agent": "weather-api-eval/0.1 (+https://github.com/)"}
+HEADERS = {"User-Agent": DEFAULT_UA}
 REGION = "global"
 
 # 起报轮次（北京时）与回退探测参数
@@ -162,6 +164,7 @@ class TianjiProvider(ForecastProvider):
         self.timeout = timeout
         self.retries = retries
         self.session = session or requests.Session()
+        self._budget = TimeBudget()  # 单源单轮总预算（第四轮 P1-7）
         self._now = now  # 测试注入；None 则运行时取当前北京时
         self._base_cache: dict[str, str] = {}      # model -> baseTime(YYYYMMDDHH)
         # 本次运行内已失败的 (模型, 站点)：**必须带站点键**（P2-5）。
@@ -352,4 +355,4 @@ class TianjiProvider(ForecastProvider):
             self.session, ENDPOINT, params=params, headers=HEADERS,
             timeout=self.timeout, retries=self.retries, source="中科天机",
             classify=_classify,
-        )
+                budget=self._budget)

@@ -124,6 +124,8 @@ def _atomic_write_json(path: Path, obj: Any) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(obj, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())   # 断电/panic 后"名字对、内容全零"比半截更毒
         os.chmod(tmp, 0o644)   # mkstemp 默认 0600，恢复常规读权限（部署/他人可读）
         os.replace(tmp, path)
     except BaseException:
@@ -159,13 +161,26 @@ def save_obs(station_id: str, records: list[dict]) -> int:
         return 0
     months: dict[str, dict] = {}
     for r in records:
-        months.setdefault(ym(parse_dt(r["time"])), {})[r["time"]] = r
+        try:
+            months.setdefault(ym(parse_dt(r["time"])), {})[r["time"]] = r
+        except (ValueError, TypeError, KeyError) as e:
+            # 单条时间不可解析只丢该条（第四轮 P2-8）：让它冒泡会拖垮整批
+            # 好数据的写盘，与"单条不拖垮整站"的编排纪律相悖
+            logger.warning("观测记录时间不可解析，已跳过: %s (%s)", r.get("time"), e)
     updated = 0
     revised_at = now_beijing().strftime("%Y-%m-%dT%H:%M:%S")
     for month, rec_map in months.items():
         path = _root() / "obs" / station_id / f"{month}.json"
         with _exclusive_lock(path):
-            existing: dict = _load_json(path) or {}
+            # "文件不存在"与"存在但读不出来"必须分开（第四轮 P1-1）：
+            # 半截 JSON 被 _load_json 折算成空 dict 后，下面这次合并写入会把
+            # 整月观测静默覆盖掉——观测是唯一真值来源，宁可让该站计为失败，
+            # 也绝不拿本轮的几十条去覆盖一个月的档案。
+            existing = _load_json(path) if path.exists() else {}
+            if existing is None:
+                raise RuntimeError(
+                    f"观测档案损坏，拒绝覆写（请人工处理后再试）: {path}")
+            existing = existing or {}
             for k, v in rec_map.items():
                 old = existing.get(k)
                 changed = old is None or not _same_obs(old, v)
@@ -207,7 +222,11 @@ def _with_revision(new: dict, old: dict, ts: str) -> dict:
     if not present:
         present = [k for k in old if k != "revisions"]
     history.append({"at": ts, "prev": {k: old.get(k) for k in present}})
-    rec["revisions"] = history[-MAX_OBS_REVISIONS:]
+    # 截断保首保尾（第四轮 P3-13）：只留尾部会把"第一次回改"——信息量最大的
+    # 那条（原始值从此不可复原的拐点）——静默挤掉
+    if len(history) > MAX_OBS_REVISIONS:
+        history = [history[0]] + history[-(MAX_OBS_REVISIONS - 1):]
+    rec["revisions"] = history
     return rec
 
 
@@ -564,6 +583,11 @@ def _write_month_bundle(model_dir: Path, month: str, paths: list[Path], *,
         if not isinstance(snap, dict):
             raise RuntimeError(f"源快照不可读，拒绝冻结（{p.name}）")
         snaps[snap.get("issue_iso") or p.stem] = snap
+    if len(snaps) != len(paths):
+        # 同一起报出现两份文件名不同的快照：字典合并会静默丢一份还删光源文件
+        # （第四轮 P2-9）。幂等键冲突说明写入侧出了问题，响亮失败。
+        raise RuntimeError(
+            f"bundle 键冲突：{len(paths) - len(snaps)} 份快照的 issue_iso 重复，拒绝冻结")
     bytes_before = sum(p.stat().st_size for p in paths)
     container = {
         BUNDLE_MARK: BUNDLE_SCHEMA_VERSION,
@@ -747,13 +771,27 @@ def period_summary_path(period: str) -> Path:
 
 
 def has_period_summary(period: str) -> bool:
-    """该月是否已有固化的结论摘要。
+    """该月是否已有**可读且完整**的结论摘要。
 
     这是"先固化、后删除"的机械化落点：`compact` 出仓一个月的 bundle 之前会查这里。
     原始快照被删掉之后，长期趋势只能靠这份摘要复核；摘要不在就不许删——宁可让
     体积治理卡住并告警，也不能把"体积变小"换成"结论不可复核"。
+    第四轮 P1-2：只查 is_file() 会把 0 字节/半截的摘要当成已固化（摘要曾是
+    非原子写的裸 open），出仓闸门于是形同虚设——现在必须解析成功且含该月的
+    非空总榜。
     """
-    return period_summary_path(period).is_file()
+    path = period_summary_path(period)
+    if not path.is_file():
+        return False
+    data = _load_json(path)
+    if not isinstance(data, dict) or data.get("period") != period:
+        logger.error("结论摘要存在但不可读或期号不符，视为未固化: %s", path)
+        return False
+    leaderboards = data.get("leaderboards")
+    if not isinstance(leaderboards, dict) or not leaderboards:
+        logger.error("结论摘要缺少总榜数据，视为未固化: %s", path)
+        return False
+    return True
 
 
 # ------------------------------------------------------------------ 完整性清单

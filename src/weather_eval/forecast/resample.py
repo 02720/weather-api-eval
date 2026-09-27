@@ -22,6 +22,7 @@
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 
 
@@ -33,15 +34,23 @@ def interpolate_hourly(samples: list[tuple[datetime, float | None]]) \
     """
     if len(samples) < 2:
         return list(samples)
+    samples = sorted(samples, key=lambda tv: tv[0])
     out: list[tuple[datetime, float | None]] = []
     for (t0, v0), (t1, v1) in zip(samples, samples[1:]):
         out.append((t0, v0))
         if v0 is None or v1 is None:
             continue
-        span = int((t1 - t0).total_seconds() // 3600)
-        for k in range(1, span):
-            frac = k / span
-            out.append((t0 + timedelta(hours=k), v0 + (v1 - v0) * frac))
+        # frac 用**真实间隔**（含分钟余数，第四轮 P2-7）：分母取整会让非整点
+        # 采样的插值整体偏斜（00:00→02:30 的中点曾算在 12.5 而非 10.0，误差 25%）
+        span_h = (t1 - t0).total_seconds() / 3600.0
+        if span_h <= 0:
+            continue
+        for k in range(1, int(span_h // 1) + 1):
+            hh = t0 + timedelta(hours=k)
+            if hh >= t1:
+                break
+            frac = (hh - t0).total_seconds() / (t1 - t0).total_seconds()
+            out.append((hh, v0 + (v1 - v0) * frac))
     out.append(samples[-1])
     # 按小时取整并去重（采样可能落在非整点，先地板到整点）
     seen: dict[datetime, float | None] = {}
@@ -70,7 +79,23 @@ def tile_endpoints(samples: list[tuple[datetime, float | None]],
         return []
     span = timedelta(hours=window_hours)
     t0 = times[0]
-    return [t for t in times if (t - t0) % span == timedelta(0)]
+    tile = [t for t in times if (t - t0) % span == timedelta(0)]
+    # 第四轮 P2-8：间距非恒为窗口长的两种形态都必须可见——
+    #   · 栅格与窗口不可整除（如 3h 栅格 × 2h 窗口）：只有部分窗口有端点，
+    #     未覆盖小时的累计量**无人认领**，任意跨度求和 < 源总量（守恒承诺被破）；
+    #   · 整除但缺一个端点：缺口小时按缺测处理（语义正确），但"静默少几个小时"
+    #     会被误读成模式少报。
+    # 旧实现把哨兵留给个别调用方（仅 ew4all 有），fengwu / cma_public 裸奔。
+    # 现在统一在本函数告警；缺口小时仍按 None 语义输出，绝不造数。
+    if len(tile) >= 2:
+        gaps = {(tile[i + 1] - tile[i]).total_seconds() for i in range(len(tile) - 1)}
+        if gaps != {span.total_seconds()}:
+            logging.getLogger(__name__).warning(
+                "平铺端点间距非均匀（窗口 %dh，实测间距 %s）——累计量守恒在缺口处"
+                "不成立，缺口小时将为缺测；请核对采样栅格与 window_hours 是否可整除",
+                window_hours,
+                ",".join(str(int(g / 3600)) + "h" for g in sorted(gaps)))
+    return tile
 
 
 def spread_accumulation(samples: list[tuple[datetime, float | None]],

@@ -36,7 +36,8 @@ from ..timeutil import now_beijing
 logger = logging.getLogger(__name__)
 
 TPL_DIR = Path(__file__).resolve().parent / "templates"
-env = Environment(loader=FileSystemLoader(str(TPL_DIR)), autoescape=True)
+env = Environment(loader=FileSystemLoader(str(TPL_DIR)), autoescape=True,
+                   trim_blocks=True, lstrip_blocks=True)
 
 # 模型的中文显示名：原始 id（如 ecmwf_ifs）对读者不友好，
 # 页面上的排行榜、图表图例统一用这里的名字；未收录的模型回退为原始 id。
@@ -218,8 +219,10 @@ def _slim_report(report_data: dict) -> dict:
                                                   "mbe", "ts", "ets", "accr",
                                                   "pod", "far", "n", "nr")}
     for m in heat_models:
+        # .get 防御（第四轮 P2-10）：直接下标遇任一缺字段即 KeyError → 整份
+        # 报告构建失败 → index.html 本轮不更新（Pages 部署旧报告）
         row_at = lambda key, nd=3: [
-            _r(heat_idx[(m, d)][key], nd) if (m, d) in heat_idx else None for d in dates]
+            _r(heat_idx[(m, d)].get(key), nd) if (m, d) in heat_idx else None for d in dates]
         heat_mats["acc"].append(row_at("acc2", 1))
         heat_mats["acc1"].append(row_at("acc1", 1))
         heat_mats["rmse"].append(row_at("rmse", 2))
@@ -230,7 +233,7 @@ def _slim_report(report_data: dict) -> dict:
         heat_mats["accr"].append(row_at("acc", 1))
         heat_mats["pod"].append(row_at("pod", 1))
         heat_mats["far"].append(row_at("far", 1))
-        heat_mats["n"].append([heat_idx[(m, d)]["n"] if (m, d) in heat_idx else None
+        heat_mats["n"].append([heat_idx[(m, d)].get("n") if (m, d) in heat_idx else None
                                for d in dates])
         heat_mats["nr"].append([heat_idx[(m, d)].get("n_rain") if (m, d) in heat_idx else None
                                 for d in dates])
@@ -395,8 +398,11 @@ def _js_json(obj) -> str:
     separators 显式去掉默认的 ", "/": " 空格——内联 JSON 达 MB 级，紧凑分隔符
     白省 10~15% 页面体积（P3-4）。对所有内联进 <script> 的 JSON 统一走这里
     （与 storage 的原子写一样，是"写进仓库的每一份产物都要过"的基础防护）。"""
-    return json.dumps(obj, ensure_ascii=False, separators=(",", ":")) \
-        .replace("</", "<\\/")
+    # allow_nan=False（第四轮 P2-6）：裸 NaN 不是合法 JSON（RFC 8259），
+    # JS 侧会显示成字面量 "NaN" 而不是 "—"。非有限值让它在**生成期**炸出来
+    # （上游的 _fin/_r 才是清洗点），绝不带病上线。
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":"),
+                      allow_nan=False).replace("</", "<\\/")
 
 
 def _atomic_write_text(path: Path, text: str) -> None:

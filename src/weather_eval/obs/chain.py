@@ -68,7 +68,9 @@ class SourceAttempt:
     attempted: bool = False
     ok: bool = False
     n_records: int = 0        # 该源本轮返回的记录数
+    n_hours: int = 0          # 去重后的**小时数**（行数会被重复行撑大，第四轮 P1-2）
     n_used: int = 0           # 最终进入合并结果的条数（受优先级约束）
+    n_conflict: int = 0       # 与高优先级源同刻不同值的条数（真值交叉校验信号）
     latest: str | None = None  # 该源最新观测时刻
     age_hours: float | None = None
     degraded_reason: str | None = None
@@ -77,7 +79,8 @@ class SourceAttempt:
     def as_dict(self) -> dict:
         return {
             "name": self.name, "attempted": self.attempted, "ok": self.ok,
-            "n_records": self.n_records, "n_used": self.n_used,
+            "n_records": self.n_records, "n_hours": self.n_hours,
+            "n_used": self.n_used, "n_conflict": self.n_conflict,
             "latest": self.latest, "age_hours": self.age_hours,
             "degraded_reason": self.degraded_reason, "error": self.error,
         }
@@ -142,15 +145,26 @@ def _usability(recs: list[dict], *, stale_hours: float, min_hours: int) -> tuple
     if not recs:
         return False, "无任何记录", None, None
     try:
-        latest_dt = max(parse_iso(r["time"]) for r in recs if r.get("time"))
+        dts = [parse_iso(r["time"]) for r in recs if r.get("time")]
     except (ValueError, KeyError, TypeError):
         return False, "记录时间不可解析", None, None
+    latest_dt, earliest_dt = max(dts), min(dts)
     latest = latest_dt.strftime("%Y-%m-%dT%H:%M")
     age = (now_beijing() - latest_dt).total_seconds() / 3600
+    # 下界（第四轮 P1-1）：观测时刻落在"未来"同样是口径漂移（UTC/北京时错标、
+    # 时钟异常）——只卡上界时，整体前移 8h 的源会被判"最新且健康"，错位真值
+    # 以 degraded=False 入库，下游全部指标围着它转而日志一行没有
+    if age < -stale_hours:
+        return False, f"观测时刻落在未来 {-age:.1f}h（时钟/时区口径可疑）", latest, age
     if age > stale_hours:
         return False, f"最新观测滞后 {age:.1f}h（阈值 {stale_hours:g}h）", latest, age
-    if len(recs) < min_hours:
-        return False, f"仅 {len(recs)} 小时（门槛 {min_hours}h）", latest, age
+    # 覆盖 = 去重小时数 **且** 时间跨度（第四轮 P1-2）：行数会被"同一小时的
+    # 重复行"撑大——主源塌缩到 1 个小时时曾被判健康、真值 100% 由备用源顶上
+    n_hours = len({r["time"] for r in recs if r.get("time")})
+    span_h = (latest_dt - earliest_dt).total_seconds() / 3600
+    if n_hours < min_hours or span_h < max(min_hours - 1, 1):
+        return False, (f"仅 {n_hours} 个去重小时（跨度 {span_h:.0f}h，"
+                       f"门槛 {min_hours}h）"), latest, age
     return True, None, latest, age
 
 
@@ -194,8 +208,22 @@ class ObsChain:
                 logger.warning("观测源 %s 在站点 %s 失败: %s", name, station.id, e)
                 continue
 
-            recs = [r for r in recs if r.get("time") and _payload_useful(r)]
+            # 时间不可解析的记录在此丢弃（第四轮 P2-12）：放它进 merged 会让
+            # save_obs 的 ym(parse_dt(...)) 抛错、把该站整轮好数据一起带走
+            clean: list[dict] = []
+            for r in recs:
+                if not r.get("time") or not _payload_useful(r):
+                    continue
+                try:
+                    parse_iso(r["time"])
+                except (ValueError, TypeError):
+                    logger.warning("观测源 %s 在站点 %s 有时间不可解析的记录，已丢弃: %r",
+                                   name, station.id, r.get("time"))
+                    continue
+                clean.append(r)
+            recs = clean
             attempt.n_records = len(recs)
+            attempt.n_hours = len({r["time"] for r in recs})
             ok, reason, latest, age = _usability(
                 recs, stale_hours=self.stale_hours, min_hours=self.min_hours)
             attempt.ok = ok
@@ -206,16 +234,31 @@ class ObsChain:
                 logger.warning("观测源 %s 在站点 %s 降级：%s（其记录仍参与合并）",
                                name, station.id, reason)
 
-            # 合并：高优先级源已经覆盖的小时不被覆盖（优先级在编排层解决）
+            # 合并：高优先级源已经覆盖的小时不被覆盖（优先级在编排层解决）。
+            # 冲突必须显式留痕（第四轮 P1-3）：两源是同一批 CMA 观测的两个出口、
+            # 已证逐点相等——任何同刻不同值都是时间/口径/解析出错的响亮警报，
+            # 静默 continue 等于把全系统唯一近乎免费的交叉校验信号扔进垃圾桶。
             n_used = 0
             for r in recs:
                 t = r["time"]
                 if t in owner:
+                    prev = merged[t]
+                    if prev.get("temp") != r.get("temp") \
+                            or prev.get("rain") != r.get("rain"):
+                        attempt.n_conflict += 1
+                        logger.warning(
+                            "观测冲突 %s %s %s：%s 给出 temp=%s rain=%s，"
+                            "采用 %s 的 temp=%s rain=%s",
+                            station.id, t, name, name, r.get("temp"), r.get("rain"),
+                            owner[t], prev.get("temp"), prev.get("rain"))
                     continue
                 merged[t] = r
                 owner[t] = name
                 n_used += 1
             attempt.n_used = n_used
+            if attempt.n_conflict:
+                logger.error("观测源 %s 在站点 %s 有 %d 个同刻冲突值（详见上方 WARNING）",
+                             name, station.id, attempt.n_conflict)
             if n_used:
                 served.append(name)
                 if i > 0:

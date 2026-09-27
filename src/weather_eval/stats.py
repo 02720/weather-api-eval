@@ -106,6 +106,11 @@ def cross_station_rho(series_by_station: dict[str, list[float]],
     ids = list(series_by_station)
     if len(ids) < 2:
         return None
+    # 空序列站先剔除（第四轮 P2-12）：一个空站会把 cut=min(lens) 压到 0，
+    # 整条跨站校正被静默跳过，n_eff 虚高近 2 倍——两条路径行为从此一致。
+    ids = [sid for sid in ids if len(series_by_station[sid]) > 0]
+    if len(ids) < 2:
+        return None
     if times_by_station is not None:
         maps: list[dict[str, float]] = []
         for sid in ids:
@@ -115,6 +120,7 @@ def cross_station_rho(series_by_station: dict[str, list[float]],
                 return None
             maps.append(dict(zip(times, vals)))
         rs: list[float] = []
+        ns: list[int] = []
         for i in range(len(maps)):
             for j in range(i + 1, len(maps)):
                 common = maps[i].keys() & maps[j].keys()
@@ -126,25 +132,29 @@ def cross_station_rho(series_by_station: dict[str, list[float]],
                 r = pearson_r(a, b)
                 if r is not None:
                     rs.append(r)
-        if not rs:
+                    ns.append(len(common))
+    else:
+        # 按位置对齐、截断到最短序列
+        cut = min(len(series_by_station[sid]) for sid in ids)
+        if cut < min_overlap:
             return None
-        return float(np.mean(rs))
-
-    lens = [len(series_by_station[sid]) for sid in ids]
-    cut = min(lens)
-    if cut < min_overlap:
-        return None
-    rs = []
-    for i in range(len(ids)):
-        for j in range(i + 1, len(ids)):
-            a = np.asarray(series_by_station[ids[i]][:cut], dtype=float)
-            b = np.asarray(series_by_station[ids[j]][:cut], dtype=float)
-            r = pearson_r(a, b)
-            if r is not None:
-                rs.append(r)
+        rs = []
+        ns = []
+        for i in range(len(ids)):
+            for j in range(i + 1, len(ids)):
+                a = np.asarray(series_by_station[ids[i]][:cut], dtype=float)
+                b = np.asarray(series_by_station[ids[j]][:cut], dtype=float)
+                r = pearson_r(a, b)
+                if r is not None:
+                    rs.append(r)
+                    ns.append(cut)
     if not rs:
         return None
-    return float(np.mean(rs))
+    # Fisher-z 合并（第四轮 P2-1）：相关系数是有界量，直接算术平均违反本模块
+    # 自己在 fisher_z_combine 里写明的原则——实测同组数据两种口径差 0.08，
+    # 传导到 n_eff 差约 11%。
+    rho = fisher_z_combine(rs, ns)
+    return None if rho is None else float(rho)
 
 
 def n_eff_from_station_series(series_by_station: dict[str, list[float]],
@@ -547,9 +557,11 @@ def _score_from_parts(values: dict[str, np.ndarray], parts) -> np.ndarray:
         if v is None:
             continue
         with np.errstate(invalid="ignore"):
-            sub = fn(v)
-        sub = np.clip(sub, 0.0, 100.0)
-        valid = np.isfinite(sub)
+            raw = fn(v)
+            # 有效性必须在 clip 之前按原始值判定（第四轮 P2-10）：inf 经 clip
+            # 会变成 100 并被计为有效证据，NaN 的处置同理要在变换前想清楚
+            valid = np.isfinite(raw)
+        sub = np.clip(raw, 0.0, 100.0)
         sub = np.where(valid, sub, 0.0)
         num = w * sub if num is None else num + w * sub
         den = w * valid if den is None else den + w * valid
@@ -851,8 +863,15 @@ def largest_component_mask(row_keep: np.ndarray, col_keep: np.ndarray,
     counts: dict[int, int] = {}
     for lab in labels:
         counts[int(lab)] = counts.get(int(lab), 0) + 1
-    # 以涉及的（行+列）节点数最多的分量为最大分量
-    best = max(counts, key=lambda k: counts[k])
+    # 以涉及的（行+列）节点数最多的分量为最大分量；节点数打平时按（行数, 列数,
+    # 根标签）确定性地择优（第四轮 P2-6：旧实现依赖 dict 插入序 = 扫描序，
+    # 两个同尺寸分量留哪个取决于输入排布，会静默丢掉半个榜）
+    def _rank(lab: int) -> tuple:
+        rows = int((labels[:n_row] == lab).sum())
+        cols = int((labels[n_row:] == lab).sum())
+        return (rows + cols, rows, cols, -lab)
+
+    best = max(counts, key=_rank)
     return labels[:n_row] == best, labels[n_row:] == best
 
 
@@ -873,7 +892,10 @@ def two_way_fit(S: np.ndarray, valid: np.ndarray,
 
     ridge（P1-4）：列效应的经验贝叶斯式收缩——分母加上 λ 后，家数少的桶的列效应
     被拉向 0（"这一档难度未知，先按平均难度算"），而不是靠 7 个薄格子给出一个
-    会污染全榜的极端值。0（默认）= 不收缩。
+    会污染全榜的极端值。0（默认）= 不收缩。**λ 只加在列上**（第四轮 P1-4）：
+    行（技巧）效应一旦同样收缩，覆盖短的源会被等量拉向均值——"覆盖越短排名越低"
+    的偏置正好从难度对齐要消掉的方向又被请回来，且 μ 随 λ 漂移、破坏
+    variance_decomposition 的份额口径。
 
     等权且不收缩时，本函数与旧实现逐位相同（既有回归测试锁定）。
     """
@@ -890,9 +912,9 @@ def two_way_fit(S: np.ndarray, valid: np.ndarray,
     alpha = np.zeros(X.shape[:2])
     beta = np.zeros((X.shape[0], X.shape[2]))
     for _ in range(max_iter):
-        # 行效应：以权重求和后按权重和（+λ）归一
+        # 行效应：以权重求和后按权重和归一（不加 λ——收缩只属于列，见 docstring）
         num_a = np.where(V, W * (X - beta[:, None, :]), 0.0).sum(axis=2)
-        den_a = cnt_b + lam
+        den_a = cnt_b
         new_alpha = np.where(den_a > 0, num_a / np.where(den_a > 0, den_a, 1.0), 0.0)
         num_b = np.where(V, W * (X - new_alpha[:, :, None]), 0.0).sum(axis=1)
         den_b = cnt_m + lam
@@ -920,7 +942,10 @@ def _fit_parts(S3: np.ndarray, row_keep: np.ndarray, col_keep: np.ndarray,
     """
     S3 = np.asarray(S3, dtype=float)
     if valid is not None:
-        V = np.asarray(valid, dtype=bool) & row_keep[None, :, None] & col_keep[None, None, :]
+        # 与 isfinite 求交是护栏（第四轮 P2-4）：调用方传来的掩膜若覆盖到 NaN 格，
+        # NaN 会进加权求和铺满整行——"显式掩膜"从此必须自证有限。
+        V = (np.asarray(valid, dtype=bool) & np.isfinite(S3)
+             & row_keep[None, :, None] & col_keep[None, None, :])
     else:
         V = np.isfinite(S3) & row_keep[None, :, None] & col_keep[None, None, :]
     if not V.any():
@@ -1038,6 +1063,14 @@ def two_way_adjust(S2: np.ndarray,
         row_keep, col_keep = comp_rows, comp_cols
         n_components = 2
     V = V0 & row_keep[:, None] & col_keep[None, :]
+    # 实际生效的列家数门槛（含 min_col_frac 的相对门槛）：design_mask 内部算过一遍，
+    # 这里按同口径复算用于披露——对外报告"至少 3 家同台"而实际生效 14 家，
+    # 等于让读者从错误的门槛外推主设计的覆盖范围（第四轮 P2-4）。
+    eff_min_col = int(min_col)
+    per_col = V0.sum(axis=0)
+    if min_col_frac and min_col_frac > 0 and per_col.size:
+        eff_min_col = max(eff_min_col,
+                          int(np.ceil(min_col_frac * float(per_col.max()))))
     if not V.any():
         return {"scores": np.full(S2.shape[0], np.nan),
                 "row_effects": np.full(S2.shape[0], np.nan),
@@ -1045,10 +1078,15 @@ def two_way_adjust(S2: np.ndarray,
                 "mu": None, "row_keep": row_keep, "col_keep": col_keep,
                 "n_components": n_components, "cell_valid": V,
                 "dropped_thin_cells": dropped_thin,
-                "effective_min_col": int(min_col)}
-    W3 = W0[None, ...] if W0 is not None else None
+                "effective_min_col": eff_min_col}
+    if W0 is not None:
+        # 被门槛剔掉的格子权重必须同时清零（第四轮 P1-1）：只传 valid 不清权重，
+        # _fit_parts 的 WLS 仍会按原权重把它们请回来，"直接剔出设计"就是假披露。
+        W3 = np.where(V0, W0, 0.0)[None, ...]
+    else:
+        W3 = None
     parts = _fit_parts(S2[None, ...], row_keep, col_keep, max_iter, tol,
-                       weights=W3, ridge=ridge)
+                       weights=W3, ridge=ridge, valid=V0[None, ...])
     mu, alpha, beta, V3 = parts
     scores = np.where(row_keep, mu[0] + alpha[0], np.nan)
     return {"scores": scores, "row_effects": np.where(row_keep, alpha[0], np.nan),
@@ -1057,7 +1095,7 @@ def two_way_adjust(S2: np.ndarray,
             "row_keep": row_keep, "col_keep": col_keep,
             "n_components": n_components, "cell_valid": V3[0],
             "dropped_thin_cells": dropped_thin,
-            "effective_min_col": int(min_col)}
+            "effective_min_col": eff_min_col}
 
 
 # ------------------------------------------------ 加法假设的量化与名次稳定性
@@ -1173,12 +1211,19 @@ def _rankdata(x: np.ndarray) -> np.ndarray:
 
 
 def bucket_rank_stability(S: np.ndarray, row_keep: np.ndarray,
-                          col_keep: np.ndarray, min_common: int = 5) -> dict:
+                          col_keep: np.ndarray, min_common: int = 5,
+                          segment_sizes: tuple[int, ...] | None = None) -> dict:
     """跨天桶的名次一致性（Spearman）：总榜的单一数字是否配得上"名次"这个词。
 
-    逐桶把难度扣掉（score_b(m) = S[m,b] − β_b），再算两两桶的 Spearman。实测
-    桶1 vs 桶7 只有 0.19——意味着"短时效第 3 名"与"长时效第 3 名"往往不是同一家。
-    这个数字此前一个都没有，读者无从知道总榜的适用边界（P0-2）。
+    逐桶两两对照（score_b(m) 取该桶内的原始分；扣 β_b 与否对 Spearman 无影响——
+    秩对逐列平移不变，这里保留原样只是为了与"扣掉难度后的水平"在直觉上对齐）。
+    两两桶的 Spearman 实测桶1 vs 桶7 只有 0.19——意味着"短时效第 3 名"与
+    "长时效第 3 名"往往不是同一家。这个数字此前一个都没有，读者无从知道
+    总榜的适用边界（P0-2）。
+
+    segment_sizes：总榜的列布局是 [小时 1..b | 日 1..b]，"相邻桶"的平均
+    （adjacent_mean）若不限赛段，会把"小时第 16 天 → 日第 1 天"当成相邻时效
+    （第四轮 P2-3）——传入 [b, b] 后相邻判定只在同一分辨率段内成立。
     """
     S = np.asarray(S, dtype=float)
     row_keep = np.asarray(row_keep, dtype=bool)
@@ -1204,7 +1249,18 @@ def bucket_rank_stability(S: np.ndarray, row_keep: np.ndarray,
     if not pairs:
         return {"pairs": [], "min_pair": None, "adjacent_mean": None}
     rhos = [p["rho"] for p in pairs]
-    adjacent = [p["rho"] for p in pairs if p["b"] - p["a"] == 1]
+    # 相邻时效的平均：只在同一赛段（分辨率）内判定相邻（第四轮 P2-3）
+    seg_of: dict[int, int] = {}
+    if segment_sizes:
+        off = 0
+        for s_i, size in enumerate(segment_sizes):
+            for c in range(off, off + int(size)):
+                seg_of[c] = s_i
+            off += int(size)
+    adjacent = [p["rho"] for p in pairs
+                if p["b"] - p["a"] == 1
+                and (not segment_sizes
+                     or seg_of.get(p["a"] - 1) == seg_of.get(p["b"] - 1))]
     return {
         "pairs": pairs,
         "min_pair": {"a": min(pairs, key=lambda p: p["rho"])["a"],
@@ -1269,11 +1325,14 @@ def holm_bonferroni(pvals: list[float], alpha: float = 0.10,
     eff = float(m) if m_eff is None else float(m_eff)
     # 夹到 [1, m]：≥1 保证分母不为零；≤m 保证不比标准 Holm 更严
     eff = min(max(eff, 1.0), float(m))
-    order = sorted(range(m), key=lambda i: (pvals[i] is None, pvals[i]))
+    # 非有限 p 与 None 同桶（第四轮 P2-8）：NaN 在排序比较器里不是全序
+    # （nan<x 恒 False），会让极小有效 p 被排到 NaN 之后而漏判
+    ps = [p if (p is not None and np.isfinite(p)) else None for p in pvals]
+    order = sorted(range(m), key=lambda i: (ps[i] is None, ps[i] or 1.0))
     out = [False] * m
     still = True
     for k, i in enumerate(order):
-        p = pvals[i]
+        p = ps[i]
         if p is None:
             still = False
         elif still and p <= alpha / max(eff - k, 1.0):
@@ -1300,10 +1359,22 @@ def _summarize_bootstrap(macro: np.ndarray, models: list[str],
     """
     out: dict[str, dict[str, Any]] = {}
     point_top = None
+    fallback_candidates: list[tuple[float, int]] = []
     if top_model is not None and top_model in models:
         ti = models.index(top_model)
         if eligible[ti]:
-            point_top = (ti, float(np.nanmean(macro[:, ti])))
+            mean = float(np.nanmean(macro[:, ti]))
+            if np.isfinite(mean):
+                point_top = (ti, mean)
+    for mi, m in enumerate(models):
+        scores = macro[:, mi]
+        finite = scores[np.isfinite(scores)]
+        ci = None
+        if finite.size >= max(5, macro.shape[0] // 10):
+            lo, hi = np.percentile(finite, [5, 95])
+            ci = [round(float(lo), 2), round(float(hi), 2)]
+        out[m] = {"ci90": ci, "champion_pct": 0.0, "sig_vs_top": None,
+                  "sig_vs_top_raw": None, "p_vs_top": None}
     for mi, m in enumerate(models):
         scores = macro[:, mi]
         finite = scores[np.isfinite(scores)]
@@ -1315,11 +1386,14 @@ def _summarize_bootstrap(macro: np.ndarray, models: list[str],
                   "sig_vs_top_raw": None, "p_vs_top": None}
         if not eligible[mi] or ci is None:
             continue
-        if point_top is not None:
-            continue
-        mean_score = float(np.nanmean(scores))
-        if point_top is None or point_top[1] < mean_score:
-            point_top = (mi, mean_score)
+        fallback_candidates.append((float(np.nanmean(scores)), mi))
+    # 缺省参照系：入围者中**分布均值最高**的那个（docstring 承诺的退路）。
+    # 旧实现写成"第一个入围者设完就不再比较"，参照系于是落在输入顺序上——
+    # 冠军频率说 A 家 100% 夺冠，† 却挂在 B 家头上（第四轮 P1-2）。
+    if point_top is None and fallback_candidates:
+        top_mean, ti = max(fallback_candidates, key=lambda t: t[0])
+        if np.isfinite(top_mean):
+            point_top = (ti, top_mean)
     # 冠军频率（逐 run 的 nan-aware 最大；某 run 全模型无分时该 run 不计冠军）。
     # 只有入围者可成为冠军（未入围者不应凭高温度分在频率表上占位）
     elig_arr = np.array(eligible, dtype=bool)
@@ -1338,6 +1412,7 @@ def _summarize_bootstrap(macro: np.ndarray, models: list[str],
     if point_top is not None:
         top_i = point_top[0]
         idxs: list[int] = []
+        out["__family__"] = None
         pvals: list[float | None] = []
         for mi, m in enumerate(models):
             if mi == top_i:
@@ -1354,9 +1429,18 @@ def _summarize_bootstrap(macro: np.ndarray, models: list[str],
             if d.size < max(5, macro.shape[0] // 10):
                 pvals.append(None)
                 continue
-            # 双侧 p：分布落在 0 另一侧的比例 ×2（配对重采样：同一 run 比同一 run）
-            pvals.append(min(1.0, 2.0 * min(float((d <= 0).mean()),
-                                            float((d >= 0).mean()))))
+            # 双侧 p：分布落在 0 另一侧的比例 ×2（配对重采样：同一 run 比同一 run）。
+            # 计数 +1 再除（Phipson–Smyth，第四轮 P1-3）：bootstrap 的 p 只能取
+            # 离散格点，0/500 次分离的真实 p 是"≤2/(R+1)"而不是 0——报出 p=0.0
+            # 不是合法 p 值，且 0.0 与 2/(R+1)=0.004 之间隔一个 run 的随机性，
+            # 恰好横跨 Holm 在 26 家同榜下的首道阈值（0.1/26≈0.00385）。
+            n = d.size
+            pvals.append(min(1.0, 2.0 * min((int((d <= 0).sum()) + 1) / (n + 1),
+                                            (int((d >= 0).sum()) + 1) / (n + 1))))
+        # 实际进入校正族的比较数（= 与冠军比较的入围者数）。Holm 的 m 在
+        # 旧披露里写成"全模型数"，比真值大——校正强度与披露数字对不上
+        # （第四轮 P3-b）。挂在 __family__ 键（合法模型名不含双下划线）。
+        out["__family__"] = len(pvals)
         for mi, p, sig in zip(idxs, pvals,
                               holm_bonferroni(pvals, alpha=alpha, m_eff=m_eff)):
             if p is None:
@@ -1371,10 +1455,12 @@ def aggregate_day_stats(W: np.ndarray, X: np.ndarray) -> np.ndarray:
     """(runs, n_days) 权重 × (m, b, s, d, k) 充分统计量表 → (runs, m, b, s, k)。
 
     温度/降水两条轨道共用；k 维是各自的可加统计量（温度 11 项 / 降水 4 项）。
+    optimize=True 让 einsum 走 BLAS 路径（第四轮 P3-1：生产规模实测 2.45s → 0.18s，
+    allclose 逐位一致）。
     """
     out = np.empty(W.shape[:1] + X.shape[:3] + (X.shape[-1],))
     for k in range(X.shape[-1]):
-        out[..., k] = np.einsum("rd,mbsd->rmbs", W, X[:, :, :, :, k])
+        out[..., k] = np.einsum("rd,mbsd->rmbs", W, X[:, :, :, :, k], optimize=True)
     return out
 
 

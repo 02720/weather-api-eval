@@ -75,9 +75,19 @@ def test_hash_ignores_self_reference_and_is_order_independent():
     assert snapshot_sha256(a) == snapshot_sha256(b)
     a2 = stamp_snapshot(a, "2026-09-01T06:00:00", "2026-08-31T22:00:00Z")
     h = a2["payload_sha256"]
-    # 再盖一次（抓取时刻不同）内容哈希不变：自引用字段必须被排除，否则不可复算
+    # 第四轮 P1-3：封存时刻**必须**参与哈希——它是"先封存后对账"唯一的机器证人，
+    # 改掉它而 verify 仍然全绿等于在护城河上留了个不设门的位置。写入口对已存在
+    # 的快照幂等跳过、从不二次盖章，因此"重复盖章哈希不变"没有生产消费者。
     a3 = stamp_snapshot(dict(b), "2027-01-01T00:00:00", "2027-01-01T00:00:00Z")
-    assert a3["payload_sha256"] == h
+    assert a3["payload_sha256"] != h
+
+
+def test_hash_catches_fetched_at_tampering():
+    """封存时刻被改 → 内容哈希必须失配（第四轮 P1-3 的机器证人）。"""
+    a = stamp_snapshot(_snap(), "2026-09-01T06:00:00", "2026-08-31T22:00:00Z")
+    tampered = dict(a)
+    tampered["fetched_at_bj"] = "2026-09-01T23:00"   # 把封存时刻往后改 → 门槛判定翻转
+    assert a["payload_sha256"] != snapshot_sha256(tampered)
 
 
 def test_content_change_breaks_hash():

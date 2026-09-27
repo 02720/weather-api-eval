@@ -111,13 +111,15 @@ from urllib.parse import quote
 import requests
 
 from .base import ForecastProvider
-from .http import DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, request_with_retries
+from .http import ( DEFAULT_UA,
+DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, TimeBudget,
+                   request_with_retries)
 from ..timeutil import BEIJING, floor_to_hour, parse_iso
 
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://www.msn.cn/zh-cn/weather/forecast"
-HEADERS = {"User-Agent": "weather-api-eval/0.1 (+https://github.com/)"}
+HEADERS = {"User-Agent": DEFAULT_UA}
 SOURCE = "msn"
 MODEL_NAME = "msn_v1"
 
@@ -326,6 +328,7 @@ class MsnProvider(ForecastProvider):
         self.timeout = timeout
         self.retries = retries
         self.session = session or requests.Session()
+        self._budget = TimeBudget()  # 单源单轮总预算（第四轮 P1-7）
         # day>10 服务端静默回退为滚动窗口（docstring 第 4 条），上界不可越过
         self.max_day = max(1, min(int(max_day), MAX_DAY))
 
@@ -561,4 +564,4 @@ class MsnProvider(ForecastProvider):
         return request_with_retries(
             self.session, url, headers=HEADERS, timeout=self.timeout,
             retries=self.retries, source="MSN", classify=_classify,
-        )
+                budget=self._budget)

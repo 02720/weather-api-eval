@@ -161,7 +161,9 @@ from typing import Any
 import requests
 
 from .base import ForecastProvider
-from .http import DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, request_with_retries
+from .http import ( DEFAULT_UA,
+DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, TimeBudget,
+                   request_with_retries)
 from .resample import interpolate_hourly, spread_accumulation
 from ..timeutil import floor_to_hour
 
@@ -169,7 +171,7 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://weather.cma.cn/api/hourly"
 # 仓库统一 UA：实测不在该站的反爬名单内（名单拒绝 python-requests / curl，见 docstring 第 1 条）
-HEADERS = {"User-Agent": "weather-api-eval/0.1 (+https://github.com/)"}
+HEADERS = {"User-Agent": DEFAULT_UA}
 SOURCE = "cma_public"
 MODEL_NAME = "cma_public_v1"
 
@@ -374,9 +376,13 @@ def derive_issue(points: list[tuple[datetime, dict]], publish_raw: str | None,
             meta_notes.append(
                 f"publishTime={_fmt(published)} 晚于序列首点，不能作锚点")
 
+    # 第四轮 P2-6：走到这里说明 ranked[0] 已因"晚于序列首点"被判不可用
+    # （hour 语义变号的失效形态），再退回去会让整份快照 lead 全负——
+    # 评估侧静默丢弃全部样本，报告照常生成、该源样本数为 0。退回首点并留痕。
     if ranked:
-        meta_notes.append(f"退回 hour 反解的多数基准 {_fmt(ranked[0][0])}")
-        return ranked[0][0], "hour_offset"
+        meta_notes.append(
+            f"hour 反解的多数基准 {_fmt(ranked[0][0])} 晚于序列首点，不可用；退回首点")
+        return first_valid, "first_point"
 
     meta_notes.append("缺 hour 与可用 publishTime，起报锚点退化为序列首点")
     return first_valid, "first_point"
@@ -395,6 +401,7 @@ class CmaPublicProvider(ForecastProvider):
         self.timeout = timeout
         self.retries = retries
         self.session = session or requests.Session()
+        self._budget = TimeBudget()  # 单源单轮总预算（第四轮 P1-7）
 
     # ------------------------------------------------------------------ 对外
     def fetch_snapshot(self, station: Any, models: list[str] | None = None) -> dict:
@@ -517,7 +524,8 @@ class CmaPublicProvider(ForecastProvider):
 
         return request_with_retries(
             self.session, url, headers=HEADERS, timeout=self.timeout,
-            retries=self.retries, source="CMA公众网", classify=_classify)
+            retries=self.retries, source="CMA公众网", classify=_classify,
+                budget=self._budget)
 
     @staticmethod
     def _warn_health(station: Any, axis, temps, precips, temp_samples,

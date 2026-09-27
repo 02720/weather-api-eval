@@ -193,7 +193,9 @@ def test_expiry_requires_frozen_summary(env):
     # 固化结论之后 → 允许出仓
     p = storage.period_summary_path("2024-01")
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text('{"period": "2024-01"}', encoding="utf-8")
+    # 第四轮 P1-2 后摘要必须是"可读且完整"才算固化（0 字节/半截不再放行）
+    p.write_text('{"period": "2024-01", "leaderboards": {"all": []}}',
+                 encoding="utf-8")
     rep = storage.compact_snapshots(grace_days=2, retain_months=13, apply=True, now=now)
     assert rep["expired"] and not rep["expiry_blocked"]
     assert not bundle.exists()

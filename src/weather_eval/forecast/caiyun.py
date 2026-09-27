@@ -58,13 +58,15 @@ from typing import Any
 import requests
 
 from .base import ForecastProvider
-from .http import DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, request_with_retries
+from .http import ( DEFAULT_UA,
+DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, TimeBudget,
+                   request_with_retries)
 from ..timeutil import BEIJING
 
 logger = logging.getLogger(__name__)
 
 ENDPOINT = "https://api.caiyunapp.com/v2.6/{token}/{lonlat}/weather.json"
-HEADERS = {"User-Agent": "weather-api-eval/0.1 (+https://github.com/)"}
+HEADERS = {"User-Agent": DEFAULT_UA}
 DEFAULT_NAME = "caiyun_v2_6"
 TOKEN_ENV = "CAIYUN_TOKEN"
 # 请求大值由服务端截断为实际上限（约 48），不影响解析。
@@ -117,14 +119,21 @@ def _daily_date(s: Any) -> str | None:
 
 
 def _num(v: Any) -> float | None:
-    """逐日数值归一：null/非法一律 None，绝不伪装成 0（与逐小时路径同口径）。"""
+    """数值归一：null/非法一律 None，绝不伪装成 0。
+
+    第四轮 P1-6：逐小时路径曾是全仓唯一不做数值归一的入口（商业 API 且已发生过
+    一次版本变更）——一条字符串/哨兵值会原样落进存档，并在评估侧炸掉整份报告。
+    |f|≥9999 视为非物理哨兵（如 999.9 的占位家族），按缺测处理。
+    """
     if v is None or isinstance(v, bool):
         return None
     try:
         f = float(v)
     except (TypeError, ValueError):
         return None
-    return None if f != f else f
+    if f != f or abs(f) >= 9999.0:
+        return None
+    return f
 
 
 def parse_daily_block(payload: Any, station_id: str,
@@ -189,6 +198,7 @@ class CaiyunProvider(ForecastProvider):
         self.timeout = timeout
         self.retries = retries
         self.session = session or requests.Session()
+        self._budget = TimeBudget()  # 单源单轮总预算（第四轮 P1-7）
 
     def fetch_snapshot(self, station: Any, models: list[str] | None = None) -> dict:
         lonlat = f"{station.lon},{station.lat}"
@@ -233,8 +243,8 @@ class CaiyunProvider(ForecastProvider):
             except (KeyError, ValueError):
                 continue
             hourly_time.append(dt.strftime("%Y-%m-%dT%H:%M"))
-            temps.append(t.get("value"))
-            precips.append(p_by_dt.get(dt))
+            temps.append(_num(t.get("value")))
+            precips.append(_num(p_by_dt.get(dt)))
 
         if not hourly_time:
             raise RuntimeError(f"彩云站点 {station.id} 未解析出有效逐小时时间点")
@@ -298,5 +308,5 @@ class CaiyunProvider(ForecastProvider):
         resp = request_with_retries(
             self.session, url, params=params, headers=HEADERS, timeout=self.timeout,
             retries=self.retries, source="彩云", redact=lambda s: _redact(s, self.token),
-        )
+                budget=self._budget)
         return resp.json()

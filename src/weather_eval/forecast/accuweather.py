@@ -108,7 +108,9 @@ from urllib.parse import quote
 import requests
 
 from .base import ForecastProvider
-from .http import DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, request_with_retries
+from .http import ( DEFAULT_UA,
+DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, TimeBudget,
+                   request_with_retries)
 from ..timeutil import BEIJING
 
 logger = logging.getLogger(__name__)
@@ -136,7 +138,7 @@ TIERS = (360, 240, 120, 72, 24, 12, 1)
 DEFAULT_HOURS = 240  # 真实 Key 实测订阅最高开放档（2026-08-29）
 # 逐日预报官方档位（docstring 第 9 条）：15day 需订阅开放，403/400 逐级回退
 DAILY_TIERS = (15, 10, 5, 1)
-HEADERS = {"User-Agent": "weather-api-eval/0.1 (+https://github.com/)"}
+HEADERS = {"User-Agent": DEFAULT_UA}
 
 # 单位自适应：AccuWeather 数值对象自带 Unit。温度目标 ℃、降水目标 mm；
 # 键为响应 Unit 的小写形态，值为 (乘数, 加数) 线性换算。
@@ -352,6 +354,7 @@ def _parse_daily_payload(payload: Any, station_id: str) -> dict | None:
     temp_unit_counts: dict[str, int] = {}
     liquid_unit_counts: dict[str, int] = {}
     halfday_liquid_missing = 0
+    both_liquid_missing = 0
     usable_days = 0
     for ent in forecasts:
         if not isinstance(ent, dict):
@@ -381,6 +384,11 @@ def _parse_daily_payload(payload: Any, station_id: str) -> dict | None:
                 liquid_unit_counts[key] = liquid_unit_counts.get(key, 0) + 1
         if (day_liquid is None) != (night_liquid is None):
             halfday_liquid_missing += 1
+        elif day_liquid is None and night_liquid is None:
+            # 第四轮 P2-1：两个半日都缺（details=true 未生效的典型形态）曾完全
+            # 静默——整块 precipitation 变全 None 而快照看不出任何异常。
+            # 逐小时路径有 total_liquid_keys==0 守卫，逐日必须有同款
+            both_liquid_missing += 1
         rain = (day_liquid + night_liquid
                 if day_liquid is not None and night_liquid is not None else None)
         rows[day] = (tmax, tmin, rain)
@@ -389,6 +397,11 @@ def _parse_daily_payload(payload: Any, station_id: str) -> dict | None:
         return None
     _warn_units(temp_unit_counts, _TEMP_TO_C, "c", "逐日气温", station_id)
     _warn_units(liquid_unit_counts, _LIQUID_TO_MM, "mm", "逐日降水", station_id)
+    if both_liquid_missing:
+        logger.warning(
+            "AccuWeather 站点 %s 有 %d/%d 个逐日 Day/Night 的 TotalLiquid 全部缺失"
+            "（details 参数可能未生效），该日降水按缺测计",
+            station_id, both_liquid_missing, usable_days)
     if halfday_liquid_missing:
         logger.warning(
             "AccuWeather 站点 %s 有 %d/%d 个逐日仅含一个半日的 TotalLiquid"
@@ -440,6 +453,7 @@ class AccuWeatherProvider(ForecastProvider):
         self.timeout = timeout
         self.retries = retries
         self.session = session or requests.Session()
+        self._budget = TimeBudget()  # 单源单轮总预算（第四轮 P1-7）
         # Enterprise 双环境（docstring 第 0 条）：默认生产入口，可切开发环境
         self.base_url = base_url.rstrip("/")
         if not self.base_url:
@@ -477,7 +491,9 @@ class AccuWeatherProvider(ForecastProvider):
         daily_block = self._fetch_daily_block(loc["key"], station.id)
         snapshot = {
             "issue_iso": parsed["time"][0],
-            "issue_source": "axis_start",
+            # 第四轮 P1-5：1hour 端点的时间轴首点 = 当前小时 ≈ 抓取时刻，
+            # 与彩云/MSN 同一物理语义——标 axis_start 会漏打 ⚠️ 口径存疑
+            "issue_source": "request_floor",
             "issue_raw": parsed["time"][0],
             "resolution_hours": 1,
             "precip_unit": "mm",
@@ -694,7 +710,7 @@ class AccuWeatherProvider(ForecastProvider):
             timeout=self.timeout, retries=self.retries, source="AccuWeather",
             redact=lambda s: _masked(s, self.key), classify=_classify,
             on_exhausted=_exhausted,
-        )
+                budget=self._budget)
 
 
 # URL 参数形态的 apikey 值（大小写不敏感）：_masked 的通用脱敏兜底

@@ -58,7 +58,9 @@ from typing import Any
 import requests
 
 from .base import ForecastProvider
-from .http import DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, request_with_retries
+from .http import ( DEFAULT_UA,
+DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, TimeBudget,
+                   request_with_retries)
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +68,7 @@ AREA_URL = ("https://tiles.geovisearth.com/meteorology/v1/weather/cn/"
             "forecast/hour/area")
 DAY_URL = ("https://tiles.geovisearth.com/meteorology/v1/weather/cn/"
            "forecast/day/area")
-HEADERS = {"User-Agent": "weather-api-eval/0.1 (+https://github.com/)"}
+HEADERS = {"User-Agent": DEFAULT_UA}
 
 SOURCE = "geovis"
 MODEL_NAME = "geovis_v1"
@@ -197,6 +199,7 @@ class GevisProvider(ForecastProvider):
         self.timeout = timeout
         self.retries = retries
         self.session = session or requests.Session()
+        self._budget = TimeBudget()  # 单源单轮总预算（第四轮 P1-7）
         self._tier_cache: str | None = None  # 可用档位（账号级属性，跨站点复用）
         self._day_tier_cache: str | None = None  # 逐日产品可用档位（账号级，同上）
 
@@ -210,8 +213,9 @@ class GevisProvider(ForecastProvider):
             logger.warning("星图站点 %s 降水序列全部缺测，本快照降水将计为缺测", station.id)
         snapshot = {
             "issue_iso": parsed["issue_iso"],
-            # 起报锚点语义：接口的 result.start 是**产品时间轴首点**，不是模式轮次
-            "issue_source": "axis_start",
+            # 第四轮 P1-5：result.start 是查询时刻（docstring：数据从查询时刻
+            # 起逐小时）——物理上 ≈ 抓取时刻，必须与彩云/MSN 同打嫌疑标记
+            "issue_source": "request_floor",
             "issue_raw": parsed["issue_iso"],
             "resolution_hours": 1,
             "precip_unit": "mm",
@@ -298,7 +302,7 @@ class GevisProvider(ForecastProvider):
             self.session, DAY_URL + suffix, params=params, headers=HEADERS,
             timeout=self.timeout, retries=self.retries, source="星图逐日",
             redact=lambda s: s.replace(self.token, "***"), classify=_classify,
-        )
+                budget=self._budget)
     def _query_any_tier(self, station: Any) -> tuple[dict, str]:
         """按档位梯子查询并解析，返回 (parse_area_response 结果, 档位名)。
 
@@ -365,7 +369,7 @@ class GevisProvider(ForecastProvider):
             self.session, AREA_URL + suffix, params=params, headers=HEADERS,
             timeout=self.timeout, retries=self.retries, source="星图",
             redact=_masked, classify=_classify,
-        )
+                budget=self._budget)
 
 
 class _Rejected(Exception):

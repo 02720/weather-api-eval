@@ -116,7 +116,9 @@ from typing import Any
 import requests
 
 from .base import ForecastProvider
-from .http import DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, request_with_retries
+from .http import ( DEFAULT_UA,
+DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, TimeBudget,
+                   request_with_retries)
 from .resample import interpolate_hourly, spread_accumulation, tile_endpoints
 
 logger = logging.getLogger(__name__)
@@ -125,7 +127,7 @@ BASE_URL = "http://ew4all.wmc-bj.net/EW4ALL"
 MODEL_TIME_LIST_URL = BASE_URL + "/api/modelTimeList"
 FIND_BY_POINT_URL = BASE_URL + "/api/raster/findByPoint"
 HEADERS = {
-    "User-Agent": "weather-api-eval/0.1 (+https://github.com/)",
+    "User-Agent": DEFAULT_UA,
     "Content-Type": "application/json",
 }
 
@@ -155,15 +157,22 @@ class ModelSpec:
     # 逐小时轴的预期点数（截断告警阈值）：= 温度末时次 − 首时次 + 1
     # （GDFS5KM: +1h → +240h 共 240 点；NMCFENGQING: +6h → +360h 共 355 点）
     expected_points: int
+    # 温度要素的**原生**时间步（第四轮 P1-2）：入库序列虽经插值铺成逐小时，
+    # "3 小时产品被平铺成逐小时"不能与原生逐小时混为一谈——这个字段就是
+    # 报告页分辨两者的机器依据，写 1 等于把精度上限藏起来。放在字段表末尾
+    # 以保持既有位置参数调用兼容。
+    native_step_hours: int
 
 
 # 模型集合与提供方同处登记（与 __main__.py 的 SOURCE_SPECS 呼应）。
 MODEL_SPECS: dict[str, ModelSpec] = {
     # CMA-NDFS：温度逐小时（0–72h）后转逐 3 小时；降水 = ONETPE（1h，约 0–72h）
     # 直接透传 + HOURTPE（3 小时累计）平铺均摊补齐其余时效
-    "cma_ndfs": ModelSpec("cma_ndfs", "GDFS5KM", "HOURTPE", 3, "ONETPE", 240),
+    "cma_ndfs": ModelSpec("cma_ndfs", "GDFS5KM", "HOURTPE", 3, "ONETPE", 240,
+                          native_step_hours=3),
     # 风清AI模式：温度/降水均逐 6 小时；无 1 小时降水产品，全程 SIXTPE/6
-    "fengqing_ai": ModelSpec("fengqing_ai", "NMCFENGQING", "SIXTPE", 6, None, 355),
+    "fengqing_ai": ModelSpec("fengqing_ai", "NMCFENGQING", "SIXTPE", 6, None, 355,
+                             native_step_hours=6),
 }
 
 
@@ -270,6 +279,7 @@ class Ew4allProvider(ForecastProvider):
         self.timeout = timeout
         self.retries = retries
         self.session = session or requests.Session()
+        self._budget = TimeBudget()  # 单源单轮总预算（第四轮 P1-7）
         # 起报轮次**候选列表**是模式级事实（一次接口调用即可得到），跨站复用没问题；
         # 但"哪一轮要素齐全"是**站点级**事实——本源的轮次内部分要素先后出数，
         # 而各站点的出数进度并不保证同步。旧实现把探测站（列表里第一个站）的判定
@@ -435,12 +445,14 @@ class Ew4allProvider(ForecastProvider):
             # 最强的一类锚点，与"请求时刻下取整"完全不是一回事，必须显式区分
             "issue_source": "model_run",
             "issue_raw": run.strftime("%Y%m%d%H"),
-            "resolution_hours": 1,
+            "resolution_hours": spec.native_step_hours,
             "precip_unit": "mm",
             # 降水是 {window}h 累计产品（前段为原生 1h，交界点见 precip_1h_until）
             "precip_accum_window_hours": spec.precip_window_hours,
             # 1 小时降水缺供时整轮降水退化为摊薄值：成档但精度降级，如实标注
-            "complete": bool(one) or not spec.precip_1h_element,
+            # 第四轮 P2-3：完整性看**有效值**不看行数——契约漂移返回行数正常、
+            # 值全 null 的序列时，按行数判 complete 会让残缺快照以完整身份进榜
+            "complete": _has_values(one) or not spec.precip_1h_element,
             "missing_shards": ([] if (one or not spec.precip_1h_element)
                                else [str(spec.precip_1h_element)]),
             "station_id": station.id,
@@ -577,7 +589,7 @@ class Ew4allProvider(ForecastProvider):
             params=params, json_body=json_body, headers=HEADERS,
             timeout=self.timeout, retries=self.retries,
             source="EW4ALL", classify=_classify,
-        )
+                budget=self._budget)
 
 
 def _check_payload(payload: Any, context: str) -> list:

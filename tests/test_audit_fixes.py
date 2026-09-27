@@ -326,6 +326,59 @@ def test_collect_excludes_samples_fetched_after_valid_time(tmp_path, monkeypatch
         assert parse_iso(r["valid_iso"]) >= parse_iso("2026-08-01T03:00:00")
 
 
+def test_collect_daily_track_respects_seal_gate(tmp_path, monkeypatch):
+    """按天轨道与逐小时轨道必须同受封存门槛约束（第四轮 P1-1）。
+
+    旧实现里逐小时剔掉的"实况之后才抓回来"的小时，在按天聚合里一条不少地
+    折进了日最高/最低/累计——两条轨道不是同一批样本，且披露对按天侧失明。
+    """
+    from datetime import datetime, timedelta
+
+    from weather_eval import storage
+    from weather_eval.evaluate import collect
+
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+
+    issue = datetime(2026, 8, 1, 0, 0)
+    # 起报次日的 24 个小时：00~03 时（4 个小时）是"实况之后才抓回来"的，
+    # 故意给 99°C——若按天轨道不看封存门槛，日最高就会被 99 抬走；
+    # 其余 20 小时已封存，恰好够 daily_min_hours 的覆盖门槛
+    times, temps = [], []
+    fetched = datetime(2026, 8, 2, 4, 0)
+    for i in range(24):
+        vt = issue + timedelta(days=1, hours=i)
+        times.append(vt.strftime("%Y-%m-%dT%H:%M"))
+        temps.append(99.0 if vt < fetched else 20.0 + (i % 5))
+    snap = {
+        "issue_iso": "2026-08-01T00:00",
+        "station_id": "s1", "source": "src", "models": ["m"],
+        "hourly_time": times,
+        "data": {"m": {"temperature_2m": temps, "precipitation": [0.0] * 24}},
+        "daily_time": [], "daily": {},
+        "fetched_at_bj": "2026-08-02T04:00:00",
+    }
+    storage.save_forecast_snapshot("s1", "m", snap)
+    obs = {t: {"temp": 25.0, "rain": 0.0} for t in times}
+    start, end = datetime(2026, 8, 1), datetime(2026, 8, 3)
+
+    stats = {}
+    _hourly, daily = collect(["s1"], ["m"], start, end, 1, 16,
+                             obs_maps={"s1": obs}, require_frozen=True,
+                             stats=stats)
+    day_rows = [r for r in daily if r["valid_day"] == "2026-08-02"]
+    assert day_rows, "次日应仍有一条按天样本（20 小时已封存，覆盖达标）"
+    r = day_rows[0]
+    assert r["temp_max_fcst"] is not None and r["temp_max_fcst"] < 30, (
+        "未封存小时的 99°C 折进了日最高——按天轨道没有受封存门槛约束")
+    assert stats.get("n_daily_unfrozen_hours", 0) == 4
+
+    # 对照：require_frozen=False（口径对照模式）下，99°C 按旧口径留在聚合里
+    _h2, daily_loose = collect(["s1"], ["m"], start, end, 1, 16,
+                               obs_maps={"s1": obs}, require_frozen=False)
+    loose = [x for x in daily_loose if x["valid_day"] == "2026-08-02"][0]
+    assert loose["temp_max_fcst"] == 99.0
+
+
 def test_collect_keeps_snapshots_without_fetched_at(tmp_path, monkeypatch):
     """无 fetched_at 的历史存档无从判定 → 按已封存处理，绝不凭空抹掉样本。"""
     from datetime import datetime, timedelta

@@ -49,6 +49,7 @@ from typing import Any
 from .config import DEFAULT_EVAL, load_config
 from .timeutil import now_beijing, ymd, parse_iso, floor_to_hour, ym
 from .storage import (
+    _atomic_write_json,
     PROJECT_ROOT, compact_snapshots, data_footprint, period_summary_path, reports_footprint,
     save_obs,
     save_forecast_snapshot,
@@ -176,6 +177,7 @@ def cmd_fetch_obs(args):
     stale_hours = float(cfg.eval.get("obs_stale_hours", 3.0))
     min_hours = int(cfg.eval.get("obs_min_hours", 6))
     failures = 0
+    chain_reports: dict[str, dict] = {}
     for st in cfg.stations:
         try:
             sources = _build_obs_sources(cfg, source, st)
@@ -188,10 +190,39 @@ def cmd_fetch_obs(args):
             if report.degraded:
                 log.warning("站点 %s 本轮观测已降级（%d 条由备用源补位）——"
                             "请核对首选源是否改版或停摆", st.id, report.n_filled)
+            chain_reports[st.id] = report.as_dict()
         except Exception as e:  # noqa: BLE001
             failures += 1
             log.error("站点 %s 抓取失败: %s", st.id, e)
+    # ChainReport 落盘（第四轮 P1-5）：此前 as_dict 全仓零调用，降级信息只活在
+    # 当轮日志里——"备用源已经独自支撑多久"在进程重启后无从追查，那正是这个
+    # 机制立项要防的"静默死亡"的另一种写法。逐轮追加，健康核查有据可依。
+    if chain_reports:
+        _save_obs_chain_report(chain_reports)
     return failures
+
+
+def _save_obs_chain_report(reports: dict[str, dict]) -> None:
+    """把本轮各站的编排留痕追加到 data/health/obs_chain/{date}.json。"""
+    from .storage import _atomic_write_json, _root
+    from .timeutil import now_beijing
+    date = now_beijing().strftime("%Y-%m-%d")
+    path = _root() / "health" / "obs_chain" / f"{date}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "at": now_beijing().strftime("%Y-%m-%dT%H:%M:%S"),
+        "stations": reports,
+    }
+    history: list = []
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, list):
+                history = loaded
+        except (json.JSONDecodeError, OSError) as e:
+            log.warning("观测编排留痕文件不可读，重新开始记录: %s (%s)", path, e)
+    history.append(entry)
+    _atomic_write_json(path, history[-96:])   # 每天 ≤3 轮 × 4 站，96 条封顶防膨胀
 
 
 def _build_provider(source: str, cfg):
@@ -412,6 +443,14 @@ def cmd_monthly(args):
     if not _MONTH_RE.match(month):
         raise SystemExit(f"无效月份: {month!r}（应为 YYYY-MM，如 2026-07）")
     start, end = _month_window(month)
+    # 冻结档案已存在且未 --force → 整体短路（第四轮 P1-2/P2-13）：旧实现只护住
+    # HTML，summary.json 仍被无条件覆写、主报告再白跑 80 秒；归档已出仓的月份
+    # 重跑还会用一份空/降级报告静默替换已固化的结论
+    from .report.render import _reports_root
+    if (_reports_root() / "monthly" / f"{month}.html").exists() and not args.force:
+        log.info("月度归档 %s 已存在（冻结档案不再变动），整体跳过；确需重建请用 --force",
+                 month)
+        return 0
     data = build_report(cfg.station_ids, cfg.models, cfg.eval, start, end,
                         period_label=month, is_monthly=True)
     out = write_monthly_report(data, station_labels={s.id: s.name for s in cfg.stations},
@@ -473,8 +512,9 @@ def _write_period_summary(period: str, data: dict) -> Path:
     }
     path = period_summary_path(period)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(summary, f, ensure_ascii=False, indent=1, sort_keys=False)
+    # 原子写（第四轮 P1-2）：摘要是出仓闸门的凭据，半截/0 字节的摘要曾让
+    # has_period_summary 判"已固化"（配合裸 open 的截断写，中断即伪造凭据）
+    _atomic_write_json(path, summary)
     size = path.stat().st_size
     log.info("月度结论已固化：%s（%.0f KB，含总榜与分时效榜）", path, size / 1024)
     return path
@@ -539,11 +579,36 @@ def cmd_compact(args):
     elif not args.apply and n_new:
         log.info("dry-run 结束：预计释放 %.1f MB（加 --apply 执行）", saved / 1e6)
 
+    # 出仓/冻结改变了工作区的快照集合，哈希链清单必须跟着刷新（第四轮 P1-4）：
+    # 否则从第 14 个月起 verify 每轮必红——那不是"证据被篡改"的红，是政策冲突
+    # 的红，而红即失效（真正的问题信号会被淹没）。
+    if args.apply and (n_new or rep["expired"]):
+        _refresh_manifest(cfg)
+    if rep["expiry_blocked"]:
+        # 体积治理停滞是 CI 必须看见的信号（第四轮 P2-4）：旧实现只打日志、
+        # 退出码仍为 0，"先固化后删除"的闸门卡住时没人知道
+        return 1
     if rep["errors"]:
         for e in rep["errors"][:10]:
             log.error("治理错误：%s", e)
         return len(rep["errors"])
     return 0
+
+
+def _refresh_manifest(cfg):
+    """按当前工作区快照重算并落盘哈希链清单（compact 出仓后调用）。"""
+    from .snapshot_meta import integrity_summary
+    from .storage import save_manifest, ym
+    _obs, snapshots = _preload_snapshots(cfg)
+    all_snaps = [s for lst in snapshots.values() for s in lst]
+    now = floor_to_hour(now_beijing())
+    month = ym(now)
+    save_manifest(month, {
+        **integrity_summary(all_snaps),
+        "period_label": month,
+        "generated_at": now.strftime("%Y-%m-%d %H:%M"),
+    })
+    log.info("哈希链清单已按出仓后的工作区刷新：%s", month)
 
 
 def cmd_footprint(args):

@@ -43,9 +43,15 @@ def test_corrupt_json_skipped_not_fatal(tmp_path, monkeypatch):
     bad.write_text('{"2026-07-01T10:00": {"time": ', encoding="utf-8")
     loaded = storage.load_obs("s1")
     assert set(loaded) == {"2026-08-26T20:00"}
-    # 坏文件被跳过后仍可正常合并写入该月
-    storage.save_obs("s1", [{"time": "2026-07-01T10:00", "temp": 25.0, "rain": 0.0}])
-    assert storage.load_obs("s1", "2026-07")["2026-07-01T10:00"]["temp"] == 25.0
+    # 第四轮 P1-1：坏文件读取侧照旧宽容（跳过），但**写入侧必须拒绝覆写**——
+    # 旧行为是拿本轮的 1 条记录把整月档案静默覆盖掉
+    import pytest as _pytest
+    with _pytest.raises(RuntimeError, match="观测档案损坏"):
+        storage.save_obs("s1", [{"time": "2026-07-01T10:00", "temp": 25.0, "rain": 0.0}])
+    # 原始坏文件保持原样（等人工处理），其余月份不受影响
+    assert b'{"2026-07-01T10:00": {"time": ' in bad.read_bytes()
+    storage.save_obs("s1", [{"time": "2026-08-27T10:00", "temp": 26.0, "rain": 0.0}])
+    assert storage.load_obs("s1", "2026-08")["2026-08-27T10:00"]["temp"] == 26.0
 
     # 预报快照同理
     good_snap_dir = tmp_path / "forecasts" / "s1" / "ecmwf_ifs"

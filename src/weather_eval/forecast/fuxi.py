@@ -44,13 +44,15 @@ from typing import Any
 import requests
 
 from .base import ForecastProvider
-from .http import DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, request_with_retries
+from .http import ( DEFAULT_UA,
+DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, TimeBudget,
+                   request_with_retries)
 
 logger = logging.getLogger(__name__)
 
 TILE_URL = "https://fuxi-ai.cn/gw/weather/api/v1/weather/queryWeatherTile"
 INFO_URL = "https://fuxi-ai.cn/gw/weather/api/v1/weather/queryWeatherInfo"
-HEADERS = {"User-Agent": "weather-api-eval/0.1 (+https://github.com/)"}
+HEADERS = {"User-Agent": DEFAULT_UA}
 
 SOURCE = "fuxi"
 MODEL_NAME = "fuxi_c88"
@@ -133,6 +135,7 @@ class FuxiC88Provider(ForecastProvider):
         self.timeout = timeout
         self.retries = retries
         self.session = session or requests.Session()
+        self._budget = TimeBudget()  # 单源单轮总预算（第四轮 P1-7）
         self._tile_cache: str | None = None  # tile 锚点为产品级属性，跨站点复用
 
     def fetch_snapshot(self, station: Any, models: list[str] | None = None) -> dict:
@@ -169,10 +172,14 @@ class FuxiC88Provider(ForecastProvider):
             "issue_iso": issue_iso,
             "issue_source": "model_run",
             "issue_raw": issue_iso,
-            "resolution_hours": 6,
+            # 第四轮 P1-1：可视化产品线只有**逐小时**序列（step 1..360，图例
+            # unit="mm/h" 的降水速率），原样透传、无任何平铺/插值——"6 小时
+            # 累计"是把一个速率产品说成了累计产品，恰好是这两个字段要防的反面。
+            # 1h 是入库**约定**不是产品声明：tp 是速率，作为"前 1h 累计"的
+            # 近似已在 docstring 披露。
+            "resolution_hours": 1,
             "precip_unit": "mm",
-            # 伏羲中期为 6 小时累计产品（按 6h 窗口平铺/插值到逐小时）
-            "precip_accum_window_hours": 6,
+            "precip_accum_window_hours": 1,
             "station_id": station.id,
             "source": SOURCE,
             "models": [MODEL_NAME],
@@ -213,4 +220,4 @@ class FuxiC88Provider(ForecastProvider):
             self.session, url, method=method, json_body=json_body,
             headers=HEADERS, timeout=self.timeout, retries=self.retries,
             source="伏羲", classify=_classify,
-        )
+                budget=self._budget)

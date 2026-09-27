@@ -136,7 +136,7 @@ from __future__ import annotations
 import logging
 import math
 from collections import defaultdict
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -248,9 +248,18 @@ def daily_block_of(snap: dict, model: str) -> dict[str, dict]:
         return {}
     out: dict[str, dict] = {}
     for i, day in enumerate(times):
+        # 日界必须是北京时自然日（README §5 边界 3）——此前任何 ≥10 字符的串
+        # 都被 [:10] 静默当成自然日，某源若照抄"白天/夜间"或带时刻的日键，
+        # 指标会被无声污染且日志无痕（第四轮 P2-9）。非 ISO 日期一律丢弃。
         if not isinstance(day, str) or len(day) < 10:
             continue
-        out[day[:10]] = {
+        try:
+            day_key = date.fromisoformat(day[:10]).isoformat()
+        except ValueError:
+            continue
+        if day_key != day[:10]:
+            continue
+        out[day_key] = {
             k: _at(entry, k, i)
             for k in ("temp_max", "temp_min", "precipitation")
         }
@@ -295,15 +304,101 @@ def _summarize_seal_lag(stats: dict | None) -> dict:
             "by_model": by_model}
 
 
+def _snapshot_struct_valid(snap: dict) -> bool:
+    """快照结构的最小校验（第四轮 P2-10）：collect 的循环对其直接下标，
+    一份"JSON 合法但结构不符"的存档（缺键 / 数组里混字符串）会掀掉整份报告。
+    数值类型本身交给下游的缺测口径——这里只挡结构性畸形。"""
+    if not isinstance(snap, dict):
+        return False
+    issue = snap.get("issue_iso")
+    if not isinstance(issue, str) or not issue:
+        return False
+    try:
+        parse_iso(issue)
+    except (ValueError, TypeError):
+        return False
+    times = snap.get("hourly_time")
+    if not isinstance(times, list):
+        return False
+    data = snap.get("data")
+    if not isinstance(data, dict) or not data:
+        return False
+    for series in data.values():
+        if not isinstance(series, dict):
+            return False
+        for key in ("temperature_2m", "precipitation"):
+            arr = series.get(key)
+            if arr is not None and not isinstance(arr, list):
+                return False
+    return True
+
+
+def _sanitize_hourly_arrays(snap: dict) -> dict:
+    """把逐小时数组统一规整为 有限浮点 | None（第四轮 P1-6 纵深防御）。
+
+    逐小时数组此前**没有**任何归一口径（_finite_or_none 只用于日产品块）：
+    一个商业 API 快照里的一条脏值（字符串/哨兵/NaN）会在 temp_metrics 的
+    np.asarray(..., dtype=float) 处炸掉整份报告——所有源、所有站、所有指标。
+    每份快照只在加载时清洗一次（值合法时零拷贝原样返回，热路径无损）。
+    """
+    data = snap.get("data")
+    if not isinstance(data, dict):
+        return snap
+    dirty = False
+    for series in data.values():
+        if not isinstance(series, dict):
+            continue
+        for key in ("temperature_2m", "precipitation"):
+            arr = series.get(key)
+            if not isinstance(arr, list):
+                continue
+            for v in arr:
+                if v is None or isinstance(v, bool):
+                    continue
+                if isinstance(v, float) and math.isfinite(v):
+                    continue
+                if isinstance(v, int) and math.isfinite(v):
+                    continue
+                dirty = True
+                break
+            if dirty:
+                break
+        if dirty:
+            break
+    if not dirty:
+        return snap
+    out = dict(snap)
+    out["data"] = {m: dict(s) for m, s in data.items()}
+    for m, series in out["data"].items():
+        for key in ("temperature_2m", "precipitation"):
+            arr = series.get(key)
+            if isinstance(arr, list):
+                series[key] = [_finite_or_none(v) for v in arr]
+    logging.getLogger(__name__).warning(
+        "快照逐小时数组含非法值（非数值/inf/NaN），已按缺测清洗: issue=%s",
+        snap.get("issue_iso"))
+    return out
+
+
 def _snaps_for(sid: str, model: str, snapshots: dict | None,
-               require_complete: bool = True) -> list[dict]:
-    """取该 (站, 源) 的快照列表，并按完整性门槛过滤。"""
+               require_complete: bool = True,
+               stats: dict | None = None) -> list[dict]:
+    """取该 (站, 源) 的快照列表，并按完整性、结构与数值口径门槛过滤。"""
     snaps = (snapshots[(sid, model)] if snapshots is not None
              and (sid, model) in snapshots
              else list_forecast_snapshots(sid, model))
+    ok = []
+    for s in snaps:
+        if _snapshot_struct_valid(s):
+            ok.append(_sanitize_hourly_arrays(s))
+        elif stats is not None:
+            stats["n_malformed_snaps"] = stats.get("n_malformed_snaps", 0) + 1
+            logging.getLogger(__name__).warning(
+                "快照结构畸形，已跳过（不入任何指标）: station=%s model=%s",
+                sid, model)
     if not require_complete:
-        return snaps
-    return [s for s in snaps if snapshot_complete(s)]
+        return ok
+    return [s for s in ok if snapshot_complete(s)]
 
 
 def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
@@ -352,7 +447,7 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
             else load_obs(sid)
         # 逐小时配对
         for model in models:
-            for snap in _snaps_for(sid, model, snapshots, require_complete):
+            for snap in _snaps_for(sid, model, snapshots, require_complete, stats):
                 issue = parse_iso(snap["issue_iso"])
                 times = snap["hourly_time"]
                 # 封存判定的基准时刻（每份快照只解析一次，不放在内层循环里）
@@ -431,33 +526,62 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
         obs_daily[sid] = od
 
         for model in models:
-            for snap in _snaps_for(sid, model, snapshots, require_complete):
+            for snap in _snaps_for(sid, model, snapshots, require_complete, stats):
                 issue = parse_iso(snap["issue_iso"])
                 issue_day = issue.strftime("%Y-%m-%d")
                 times = snap["hourly_time"]
                 # 与逐小时循环对称：对 snap["data"] 逐模型展开、按模型重置聚合桶，
                 # 不依赖"每份存档只含一个模型"的上游不变量（新源直存/合并存档不混算）
+                # 封存门槛（第四轮 P1-1）：逐小时轨道剔掉的"实况已过去才抓回来"
+                # 的小时，此前的按天轨道一条不少地折进了日最高/最低/累计——两条
+                # 轨道于是不是同一批样本，且 seal_lag 披露对按天侧完全失明。现在
+                # 与逐小时循环同门槛：统计双桶（fd=全部小时，fd_frozen=仅封存小时），
+                # require_frozen 时用 fd_frozen 判覆盖与取值。
+                fetched_d = parse_iso(snap.get("fetched_at_bj")) \
+                    if snap.get("fetched_at_bj") else None
                 for m in snap["data"]:
                     arr_t = snap["data"][m]["temperature_2m"]
                     arr_p = snap["data"][m]["precipitation"]
                     fd: dict[str, dict] = {}
+                    fd_frozen: dict[str, dict] = {}
+
+                    def _day_bucket(store, day_key):
+                        return store.setdefault(day_key, {"max_temp": -math.inf, "min_temp": math.inf,
+                                                          "sum_rain": 0.0, "n_temp": 0, "n_rain": 0})
+
                     for i, tstr in enumerate(times):
                         vt = parse_iso(tstr)
                         if vt < start_dt or vt > end_dt:
                             continue
                         day = tstr[:10]
-                        d = fd.setdefault(day, {"max_temp": -math.inf, "min_temp": math.inf,
-                                                "sum_rain": 0.0, "n_temp": 0, "n_rain": 0})
+                        d = _day_bucket(fd, day)
+                        unfrozen = fetched_d is not None and vt < fetched_d
+                        if unfrozen and stats is not None:
+                            # 按天侧单独计数（第四轮 P1-1）：与逐小时轨道的
+                            # seal_lag 样本单位不同（天-小时 vs 小时记录），
+                            # 混进同一个计数器会两头虚增
+                            by_m = stats.setdefault("daily_unfrozen_hours_by_model", {})
+                            by_m[m] = by_m.get(m, 0) + 1
+                            stats["n_daily_unfrozen_hours"] = stats.get("n_daily_unfrozen_hours", 0) + 1
+                        df = None if unfrozen and require_frozen else _day_bucket(fd_frozen, day)
                         if i < len(arr_t) and arr_t[i] is not None:
                             d["max_temp"] = max(d["max_temp"], arr_t[i])
                             d["min_temp"] = min(d["min_temp"], arr_t[i])
                             d["n_temp"] += 1
+                            if df is not None:
+                                df["max_temp"] = max(df["max_temp"], arr_t[i])
+                                df["min_temp"] = min(df["min_temp"], arr_t[i])
+                                df["n_temp"] += 1
                         if i < len(arr_p) and arr_p[i] is not None:
                             d["sum_rain"] += arr_p[i]
                             d["n_rain"] += 1
+                            if df is not None:
+                                df["sum_rain"] += arr_p[i]
+                                df["n_rain"] += 1
                     # 源自带的逐日预报块（可缺省）：与逐小时聚合按自然日合并成双轨
                     dblock = daily_block_of(snap, m) if daily_source_fallback else {}
-                    for day in sorted(set(fd) | set(dblock)):
+                    fd_use = fd_frozen if require_frozen else fd
+                    for day in sorted(set(fd_use) | set(dblock)):
                         if day not in obs_daily[sid]:
                             continue
                         # 日块按自然日判窗口（逐小时侧已按整点过滤过，两者语义一致）
@@ -476,7 +600,7 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                         o_rain = (oday["sum_rain"]
                                   if oday["n_rain"] >= max(daily_min_hours, 1) else None)
                         # ---- 预报侧双轨：逐小时聚合优先，覆盖不足才用源自带日产品 ----
-                        d = fd.get(day)
+                        d = fd_use.get(day)
                         h_temp_ok = bool(d and d["n_temp"] >= daily_min_hours
                                          and d["max_temp"] > -math.inf
                                          and d["min_temp"] < math.inf)
@@ -750,7 +874,11 @@ PRECIP_SCORE_PARTS = (
 )
 
 
-def _clamp100(v: float) -> float:
+def _clamp100(v: float) -> float | None:
+    # 非有限值显式拒收（第四轮 P2-5）：Python 的 min/max 遇 NaN 会返回边界值
+    # （min(100.0, nan)==100.0），NaN/inf 曾被映射成满分并照常计入权重分母
+    if v is None or not math.isfinite(v):
+        return None
     return max(0.0, min(100.0, v))
 
 
@@ -761,7 +889,10 @@ def _weighted_score(parts, metrics: dict) -> float | None:
         v = metrics.get(key)
         if v is None:
             continue
-        num += w * _clamp100(fn(v))
+        c = _clamp100(fn(v))
+        if c is None:          # 换算后非有限 = 缺项，按剩余权重归一
+            continue
+        num += w * c
         den += w
     return round(num / den, 2) if den else None
 
@@ -806,11 +937,16 @@ def daily_temp_score(md: dict) -> float | None:
 
 
 def daily_temp_view(md: dict) -> dict:
-    """日温度维的显示视图（±2°C / RMSE 取两量的均值，样本数取同源的一侧）。"""
+    """日温度维的显示视图（±2°C / RMSE 取两量的均值，样本数取同源的一侧）。
+
+    指标列与 daily_temp_score 同纪律（第四轮 P2-7）：max/min **缺一即缺**——
+    旧实现用"缺项取剩余"，一行可以 temp_score=None（判死）而同一行 acc2 有值，
+    给"半截证据"留了展示位。
+    """
     mx = (md or {}).get("max") or {}
     mn = (md or {}).get("min") or {}
-    return {"acc2": _mean_or_none([mx.get("acc2"), mn.get("acc2")]),
-            "rmse": _mean_or_none([mx.get("rmse"), mn.get("rmse")]),
+    return {"acc2": _mean2(mx.get("acc2"), mn.get("acc2")),
+            "rmse": _mean2(mx.get("rmse"), mn.get("rmse")),
             "n": mx.get("n") or mn.get("n") or 0}
 
 
@@ -1274,7 +1410,10 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
             # Holm 校正口径（审查 P1-3）：用了哪套有效检验数、k_eff 是多少。
             # k_eff 无论采用与否都披露——"27 家其实只相当于约 1.6 家独立信源"
             # 是读者理解这张榜的含金量时必须知道的事实。
-            "holm": holm_disclosure,
+            # 实际进入 Holm 校正族的比较数（逐榜）；meta.holm.m 的 len(models)
+            # 只是上界，两处并排披露才能对账（第四轮 P3-b）
+            "holm": {**holm_disclosure,
+                     "family_actual": resolution_out.get("holm_family") or {}},
             # 天桶难度的劈分设计与各桶难度值：各榜公平性的可核对凭据。
             # 三张榜各一份：总榜的列是 (天桶 × 分辨率) 的笛卡尔积，列标签形如
             # "hourly:3d" / "daily:3d"；小时榜与日榜是各自的 1..N 天桶。
@@ -1303,6 +1442,12 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
             # "封存滞后"从此是榜上可见的一列：哪家是在实况之后才把值抓回来的、
             # 滞后多久、因此被排除了多少条样本——不再只存在于日志里。
             "seal_lag": _summarize_seal_lag(collect_stats),
+            # 按天轨道的未封存小时（第四轮 P1-1）：修复前这些小时被无声折进
+            # 日最高/最低/累计，披露对按天侧完全失明
+            "n_malformed_snaps": collect_stats.get("n_malformed_snaps", 0),
+            "seal_lag_daily_unfrozen_hours": (
+                dict(sorted(collect_stats["daily_unfrozen_hours_by_model"].items()))
+                if collect_stats.get("daily_unfrozen_hours_by_model") else {}),
             "require_frozen_samples": require_frozen,
             # ---- 起报锚点语义（P0-6）：每源 declaration + 争议理由 ----
             "issue_anchors": model_issue,
@@ -1511,12 +1656,25 @@ def _issue_anchor_meta(models: list[str], snapshots: dict,
                     except (TypeError, ValueError):
                         pass
         if not sources:
+            # legacy 分支（第四轮 P2-6）：锚点语义未声明≠无争议。量化温度、
+            # 城市吸附、残缺快照这三类正面证据不依赖 issue_source，旧实现
+            # 在这里全部丢弃——一个带 quantized_temp 的老存档源会被标成
+            # "口径无争议"。
+            legacy_reasons: list[str] = []
+            if partial:
+                legacy_reasons.append(f"{partial} 份快照残缺（分片未取全）")
+            if adsorption_km:
+                avg = sum(adsorption_km) / len(adsorption_km)
+                legacy_reasons.append(f"最近城市吸附（平均 {avg:.1f} km，代表城市而非站点）")
+            if quantized:
+                legacy_reasons.append("温度被量化到整数摄氏度（自带 ±0.5°C 量化误差）")
             out[m] = {"issue_source": "unknown",
                       "issue_source_label": ISSUE_SOURCE_LABELS["unknown"],
                       "issue_source_undeclared": total_seen,
                       "issue_source_note": ("历史存档早于元数据契约，起报锚点语义未声明"
                                             if declared == 0 else None),
-                      "disputed": False, "disputed_reasons": []}
+                      "disputed": bool(legacy_reasons),
+                      "disputed_reasons": legacy_reasons}
             continue
         # 主导语义 = 出现最多的那一种（多语义混合时如实列出）
         dom = max(sources, key=lambda k: sources[k])
@@ -2314,8 +2472,11 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
         # 配置为 k_eff 时按跨源相关折算，两套口径都进 meta.holm 披露
         m_eff=m_eff,
         temp_point_valid=tv_all, rain_point_valid=rv_all)
+    holm_family_actual: dict[str, int | None] = {}
     for name in _BOARD_ORDER:
         got = boot.get(name, {})
+        if isinstance(got, dict):
+            holm_family_actual[name] = got.get("__family__")
         for r in rows_by_board[name]:
             b = got.get(r["model"], {})
             r["ci90"] = b.get("ci90") if r.get("score") is not None else None
@@ -2350,7 +2511,8 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
                 "绝对值大 = '单一总榜数字' 对这家Household代表不了一致性。")
         windows[name] = win
         weights_out[name] = d["W_cell"]
-    return {"boards": rows_by_board, "windows": windows, "weights": weights_out}
+    return {"boards": rows_by_board, "windows": windows, "weights": weights_out,
+            "holm_family": holm_family_actual}
 
 
 def _board_menu(models: list[str], leaderboards: dict[str, list[dict]]) -> list[dict]:
@@ -2426,7 +2588,10 @@ def _build_board_rows(models, name, design, *, by_model,
         return _stats.difficulty_adjusted(
             matrix[None, ...], row_keep, col_keep,
             weights=(W_cell[None, ...] if W_cell is not None else None),
-            ridge=0.0, valid=cell_valid[None, ...])[0]
+            # ridge 与本榜的实际设计一致（第四轮 P2-11）：派生列若用无收缩拟合
+            # 而综合分用收缩拟合，同一行的两列数字就来自两个不同的估计量
+            ridge=float(design["gate_params"]["ridge"]),
+            valid=cell_valid[None, ...])[0]
 
     aligned = {k: _aligned(mat[k]) for k in ("temp_score", "precip_score",
                                              "acc2", "rmse", "ts", "ets")}
@@ -2486,8 +2651,15 @@ def _build_board_rows(models, name, design, *, by_model,
             # 全 lead 的配对数（含起报当日）：明细口径核对用，不参与名次
             n_all_leads=n_all_leads,
             n_buckets=int(np.isfinite(mat["composite"][i]).sum()),
-            lead_days=_valid_lead_days(scored, "temp_obs", "temp_fcst"),
-            rain_days=_valid_rain_days(daily_by_model[m]),
+            # 覆盖时效按**本榜口径**取数（第四轮 P3-b）：小时榜数逐小时轨道、
+            # 日榜数按天轨道；旧实现三张榜都用逐小时温度 + 按天降水，
+            # metrics JSON 里日榜行的"覆盖时效"其实是逐小时的
+            lead_days=(_valid_rain_days(daily_by_model[m])
+                       if name == "daily" else
+                       _valid_lead_days(scored, "temp_obs", "temp_fcst")),
+            rain_days=(_valid_lead_days(scored, "rain_obs", "rain_fcst")
+                       if name == "hourly" else
+                       _valid_rain_days(daily_by_model[m])),
             n_days=len(days_temp | days_rain),
             # 降水维单独的验证日数（前端"验证日数"列的括号注）：日累计降水的
             # 样本日与逐小时温度的样本日可能不同（补位/覆盖差异），分开披露
@@ -2524,7 +2696,10 @@ def _board_window(models, name, design, spec, H, long_tail_board) -> dict:
     dropped = [c for c in range(days) if not col_keep[c]
                and bool(np.isfinite(S[:, c]).any())]
     vdec = _stats.variance_decomposition(S, row_keep, col_keep, W_cell)
-    stability = _stats.bucket_rank_stability(S, row_keep, col_keep)
+    # 总榜的列是 [小时 1..H | 日 1..H]："相邻桶"的平均必须限在同一分辨率段内
+    seg = (H, days - H) if name == "all" and days > H else None
+    stability = _stats.bucket_rank_stability(S, row_keep, col_keep,
+                                             segment_sizes=seg)
     cell_valid = np.asarray(adj["cell_valid"], dtype=bool)
     win_valid = W_cell[cell_valid] if W_cell is not None else None
 

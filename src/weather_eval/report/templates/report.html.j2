@@ -345,7 +345,7 @@
           <span><span class="lab">温度分</span><b>{{ num(champ.temp_score) }}</b></span>
           <span><span class="lab">降水分</span><b>{{ num(champ.precip_score) }}</b></span>
           <span><span class="lab">±2°C 准确率</span><b>{{ pct(champ.acc2) }}</b></span>
-          <span><span class="lab">日雨 TS</span><b>{{ num(champ.ts, 2) }}</b></span>
+          <span><span class="lab" title="小时晴雨与日累计晴雨两轨拼接后、经难度对齐的行效应">晴雨 TS（两轨对齐）</span><b>{{ num(champ.ts, 2) }}</b></span>
           {% if champ.lead_days %}<span><span class="lab">覆盖预报至</span><b>提前 {{ champ.lead_days }} 天</b></span>{% endif %}
         </div>
         <div class="champ-honest">
@@ -393,11 +393,11 @@
         <thead><tr>
           <th class="c-rk">#</th>
           <th class="l c-name">预报源</th>
-          <th data-key="score" data-type="num">综合分<span class="ind">▼</span></th>
+          <th data-key="score" data-type="num" data-dir="desc">综合分<span class="ind">▼</span></th>
           <th data-key="temp" data-type="num">温度分</th>
           <th data-key="precip" data-type="num">降水分</th>
           <th data-key="acc2" data-type="num">±2°C 准确率</th>
-          <th data-key="ts" data-type="num" id="lbTsHead">日雨 TS</th>
+          <th data-key="ts" data-type="num" id="lbTsHead">晴雨 TS（两轨对齐）</th>
           <th data-key="lead" data-type="num">覆盖时效</th>
           <th>90% 置信区间</th>
           <th class="l">得分走势</th>
@@ -703,8 +703,14 @@
             {% if br.get('available') %}
             <h3>留一源：这张榜是不是被一两家撑着？</h3>
             <p class="why">逐个剔除入设计的源重算总榜，看名次怎么动。
-              本轮参与桥接的源 {{ br.get('n_bridge') }}/{{ br.get('n_models') }} 家{% if br.get('bridge_sources') %}，
-              影响最大的几家：{% for m in br.get('bridge_sources')[:5] %}{{ model_labels.get(m, m) }}{% if not loop.last %}、{% endif %}{% endfor %}{% endif %}。</p>
+              本轮参与桥接的源 {{ br.get('n_bridge') }}/{{ br.get('n_models') }} 家。
+              {% set jw = (br.get('jackknife') or {}).get('worst') or None %}
+              {% if jw and jw.get('model') %}
+              对名次影响最大的一家：{{ model_labels.get(jw.get('model'), jw.get('model')) }}
+              （剔掉后与冠军的名次相关性 {{ jw.get('spearman') }}、前十换 {{ jw.get('top10_changed', 0) }} 家）。
+              {% elif br.get('n_bridge') == br.get('n_models') %}
+              全部源都跨越两条轨道，榜不由任何少数桥梁源单独撑起。
+              {% endif %}</p>
             {% endif %}
 
             {% set co = diag.get('corridor') or {} %}
@@ -712,6 +718,18 @@
             <h3>口径走廊：换一套入围门槛，名次还站得住吗？</h3>
             <p class="why">敏感性分析此前只扰动权重；这里扰动的是<b>哪些样本算数</b>
               （n_eff 入围门槛、格子权重门槛等）。</p>
+            {% set fid = br.get('fidelity') or {} %}
+            {% if fid and fid.get('spearman') is not none %}
+            {% if fid.get('spearman') < 0.9 %}
+            <p class="warn-badge">⚠️ 重建与正式总榜的保真度仅 {{ fid.get('spearman') }}（&lt;0.9），
+              下面这张走廊表的结论不可引用。</p>
+            {% else %}
+            <p class="fine">走廊基线 = 等权重建设计，与正式总榜名次相关性
+              {{ fid.get('spearman') }}{% if fid.get('champion_same') %}
+              ，冠军一致{% else %}；基线冠军 {{ model_labels.get(fid.get('champion_rebuilt'), fid.get('champion_rebuilt')) }}
+              与正式榜冠军 {{ model_labels.get(fid.get('champion_official'), fid.get('champion_official')) }} 不是同一家，读"冠军是否易主"列时以此为准{% endif %}。</p>
+            {% endif %}
+            {% endif %}
             <table class="plain">
               <thead><tr><th>被扰动的口径</th><th>取值</th><th>与原本的名次相关</th><th>前十换了几家</th><th>冠军是否易主</th></tr></thead>
               <tbody>
@@ -894,6 +912,15 @@ const TIP = {trigger: "axis", confine: true,
   backgroundColor: "rgba(12,35,64,.94)", borderWidth: 0,
   textStyle: {color: "#eaf1fb", fontSize: 12}};
 
+/* 真中位（偶数取两中点均值）。§02 战场带与 §06 参考线共用一个定义——
+ * 旧实现一处真中位、一处上中位，偶数样本下"虚线 = 中位"自相矛盾（第四轮 P2-11） */
+function medianOf(sortedVals) {
+  const n = sortedVals.length;
+  if (!n) return null;
+  const mid = Math.floor((n - 1) / 2);
+  return n % 2 ? sortedVals[mid] : (sortedVals[mid] + sortedVals[mid + 1]) / 2;
+}
+
 /* 全体源逐档统计：min/max/中位 —— "战场带"的原料 */
 function fieldStats(getVal, n) {
   const out = [];
@@ -905,9 +932,7 @@ function fieldStats(getVal, n) {
     });
     if (!vals.length) { out.push(null); continue; }
     vals.sort((a, b) => a - b);
-    const mid = Math.floor((vals.length - 1) / 2);
-    out.push({lo: vals[0], hi: vals[vals.length - 1],
-              med: vals.length % 2 ? vals[mid] : (vals[mid] + vals[mid + 1]) / 2});
+    out.push({lo: vals[0], hi: vals[vals.length - 1], med: medianOf(vals)});
   }
   return out;
 }
@@ -1323,7 +1348,7 @@ function renderStation() {
     }));
     if (!all.length) return null;
     all.sort((a, b) => a - b);
-    return all[Math.floor(all.length / 2)];
+    return medianOf(all);
   })();
   // 纵轴刻度按指标类型定（见 ST_METRICS 的 kind 注释）。
   // 轴上界把中位参考线一并包进视野——否则参考线悬在轴外画不出来。
@@ -1432,9 +1457,11 @@ function renderBoard() {
   }
   const tsHead = document.getElementById("lbTsHead");
   if (tsHead) {
-    tsHead.textContent = lbMode === "all" ? "日雨 TS"
+    // 第四轮 P1-3：总榜的 ts 列是小时 TS 与日 TS 拼接后经难度对齐的行效应，
+    // 不是"日雨 TS"——同一家在总榜 0.21、日口径 0.61 曾被并排展示而无解释
+    tsHead.textContent = lbMode === "all" ? "晴雨 TS（两轨对齐）"
       : lbMode.startsWith("all:") ? "两轨 TS"
-      : (LB_TS_HEAD[lbMode.split(":")[0]] || "日雨 TS");
+      : (LB_TS_HEAD[lbMode.split(":")[0]] || "晴雨 TS");
   }
   const note = document.getElementById("lbNote");
   if (note) note.textContent = lbDesc(lbMode);

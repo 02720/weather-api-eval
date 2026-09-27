@@ -20,8 +20,8 @@ from typing import Any
 import requests
 from bs4 import BeautifulSoup
 
-from .base import ObsSource
-from ..forecast.http import request_with_retries
+from .base import ObsSource, plausible
+from ..forecast.http import DEFAULT_TIMEOUT, TimeBudget, request_with_retries
 from ..timeutil import iso, parse_iso, parse_obs_time, now_beijing
 
 logger = logging.getLogger(__name__)
@@ -37,7 +37,11 @@ HEADERS = {
 # 内嵌 JSON：const wd = {...};（兼容 var/let、末尾分号可有可无）
 WD_RE = re.compile(r"(?:const|var|let)\s+wd\s*=\s*(\{.*?\});?", re.DOTALL)
 
-# 数值字段（来自 wd）
+# 数值字段（来自 wd）。
+# 键集必须与 obs/cma_data.py 的 ELEMENT_MAP 完全一致（第四轮 P1-4）：两源的
+# 记录在 storage.save_obs 里按"可测量部分"判等来决定是否记回改——键集不同会让
+# 每次降级/恢复切换都伪造一条回改、并把另一通道的字段从存档里抹掉。
+# 两个源都按 OBS_FIELDS 输出固定键集（缺测即 None，绝不省略键）。
 NUMERIC_KEYS = {
     "temp": "temp",
     "pressure": "pressure",
@@ -45,6 +49,7 @@ NUMERIC_KEYS = {
     "rain": "rain",
     "wind_speed": "wind_speed",
     "wind_dir": "wind_dir",
+    "visibility": "visibility",
 }
 
 # 最新观测滞后超过该小时数视为"数据可能停摆"，告警暴露
@@ -105,7 +110,11 @@ def _check_freshness(records: list[dict], station_id: str) -> None:
     try:
         latest = max(parse_iso(r["time"]) for r in records if r.get("time"))
         age_h = (now_beijing() - latest).total_seconds() / 3600
-        if age_h > STALE_HOURS:
+        if age_h < -STALE_HOURS:
+            logger.error(
+                "站点 %s 最新观测落在未来 %.1f 小时——时钟或时区口径可疑"
+                "（UTC/北京时错标家族），请立即核对", station_id, -age_h)
+        elif age_h > STALE_HOURS:
             logger.warning(
                 "站点 %s 最新观测已陈旧 %.1f 小时（预期近 1 小时内）——"
                 "抓取链路正常但页面数据可能停摆，请核对 eia-data 页面",
@@ -128,6 +137,7 @@ def _records_from_wd(wd: dict, cnt: _NonHourCounter) -> list[dict]:
         rec = {"time": iso(dt), "source": "wd"}
         for src_key, out_key in NUMERIC_KEYS.items():
             arr = wd.get(src_key)
+            rec[out_key] = plausible(out_key, rec.get(out_key))
             rec[out_key] = _to_float(arr[i]) if (arr and i < len(arr)) else None
         out.append(rec)
     return out
@@ -186,10 +196,15 @@ def _records_from_table(html: str, cnt: _NonHourCounter) -> list[dict]:
 
 
 class EiaDataObsSource(ObsSource):
-    def __init__(self, timeout: int = 30, retries: int = 2, session: requests.Session | None = None):
+    def __init__(self, timeout: Any = DEFAULT_TIMEOUT, retries: int = 2,
+                 session: requests.Session | None = None):
+        # 第四轮 P2-5：标量 30 同时是 connect+read、单次最坏 60s、retries=2 时
+        # 每站最坏 189s——4 站 12.6 分钟里备用源一次都轮不到。统一到共享助手
+        # 的 (connect, read) 口径 + 单源总预算
         self.timeout = timeout
         self.retries = retries
         self.session = session or requests.Session()
+        self._budget = TimeBudget()
 
     def fetch(self, station: Any) -> list[dict]:
         url = station.obs_url
@@ -198,6 +213,7 @@ class EiaDataObsSource(ObsSource):
         resp = request_with_retries(
             self.session, url, headers=HEADERS, timeout=self.timeout,
             retries=self.retries, source=f"观测站点 {station.id}",
+            budget=self._budget,
         )
         html = resp.text  # requests 已按声明/探测编码解码
 
@@ -206,7 +222,11 @@ class EiaDataObsSource(ObsSource):
         m = WD_RE.search(html)
         if m:
             try:
-                wd = json.loads(m.group(1))
+                # raw_decode 而非 json.loads(m.group(1))（第四轮 P2-1）：非贪婪
+                # 正则不做括号配平，wd 里出现嵌套对象/字符串含 '}' 时捕获会
+                # 在第一个 '}' 截断，解析失败后被吞成一条 WARNING，根因被埋进
+                # 第二层日志；raw_decode 原生处理嵌套与转义
+                wd, _end = json.JSONDecoder().raw_decode(html[m.start(1):])
                 recs = _records_from_wd(wd, cnt)
                 if recs:
                     logger.info("站点 %s 解析 wd JSON 得到 %d 条", station.id, len(recs))
@@ -224,6 +244,15 @@ class EiaDataObsSource(ObsSource):
             # 页面 200 但无任何观测：视为抓取失败（可能是反爬/登录页/改版），让上层标红
             raise RuntimeError(
                 f"站点 {station.id} 页面未解析到任何观测记录（可能页面改版或返回异常页）"
+            )
+        if not any(r.get("temp") is not None or r.get("rain") is not None
+                   for r in records):
+            # 第四轮 P2-2：字段改名（如 temp→temperature）时 time 数组仍在，
+            # 返回 N 条全 None 记录——不抛错即静默产出一整份空档案。
+            # 只有 chain 的 _payload_useful 兜得住它，直接调用方拿到的就是空档案
+            raise RuntimeError(
+                f"站点 {station.id} 解析到 {len(records)} 条记录但气温与降水全为缺测"
+                "（字段可能已改名，请核对 eia_data.py 的 NUMERIC_KEYS）"
             )
         # 新鲜度检查在成功路径上（两条解析路径汇合后、返回前）：页面数据停摆时告警
         _check_freshness(records, station.id)

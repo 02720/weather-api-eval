@@ -84,7 +84,7 @@ from typing import Any, Iterable
 
 import requests
 
-from .base import ObsSource
+from .base import ObsSource, plausible
 from ..forecast.http import DEFAULT_TIMEOUT, TimeBudget, request_with_retries
 from ..timeutil import iso, now_beijing, parse_obs_time
 
@@ -111,6 +111,10 @@ ELEMENT_MAP: dict[str, str] = {
     "V11293": "wind_speed",
     "V13019": "rain",
     "V20001": "visibility",
+    # eia 主源有风向而本接口无对应要素码（第四轮 P1-4）：固定键集要求两源
+    # 输出完全同构的记录——缺的要素写 None，绝不省略键（否则降级切换会把
+    # 主源的字段从存档抹掉、并伪造"回改"）
+    "": "wind_dir",
 }
 
 # 入库记录的来源标记（可追溯：这一小时的实况是哪条链路抓回来的）
@@ -180,7 +184,8 @@ def _record_from_content(content: dict, obs_dt: datetime) -> dict:
         "source": SOURCE_TAG,
     }
     for code, field in ELEMENT_MAP.items():
-        rec[field] = _to_float(content.get(code))
+        # 合理性哨兵（第四轮 P2-10）：越界/非物理值按缺测，绝不伪装成数值
+        rec[field] = plausible(field, _to_float(content.get(code)))
     return rec
 
 
@@ -260,6 +265,8 @@ class CmaDataObsSource(ObsSource):
         n_skipped = 0
         n_late_echo = 0     # 回显晚于请求：接口语义漂移（严重）
         n_early_echo = 0    # 回显早于请求：该时刻未发布、封顶到最新（正常）
+        n_failed = 0        # 单时刻请求失败（不拖垮整窗，第四轮 P2-3）
+        last_error: str | None = None
 
         for target in hours:
             t_iso = iso(target)
@@ -267,10 +274,24 @@ class CmaDataObsSource(ObsSource):
                 n_skipped += 1
                 continue
             if self.budget.expired():
-                logger.error("站点 %s CMA 实况抓取时间预算耗尽（%s），提前收尾",
-                             station.id, self.budget.describe())
-                break
-            content = self._fetch_hour(station.id, station_no, target)
+                # 第四轮 P2-4：预算耗尽提前收尾的半截窗口（如 27h 只取到 8h）
+                # 曾以"ok"身份进编排判定——新鲜 + ≥6 条即可用，30% 覆盖无人知晓。
+                # 视为抓取失败：可见的失败优于看起来正常的部分成功
+                raise RuntimeError(
+                    f"站点 {station.id} CMA 实况抓取时间预算耗尽"
+                    f"（{self.budget.describe()}），仅取到 {len(records)} 小时；"
+                    "半截窗口不冒充完整观测")
+
+            try:
+                content = self._fetch_hour(station.id, station_no, target)
+            except Exception as e:  # noqa: BLE001
+                # 第四轮 P2-3：27 次请求里最脆弱的一次抖动不该让已成功解析的
+                # 24 小时全部作废——备用源本该比一次请求的主源更抗打断
+                n_failed = n_failed + 1
+                last_error = str(e)
+                logger.warning("站点 %s 时刻 %s 的 CMA 实况请求失败: %s",
+                               station.id, t_iso, e)
+                content = None
             if self.sleep_seconds:
                 time.sleep(self.sleep_seconds)
             if not content:
@@ -306,9 +327,14 @@ class CmaDataObsSource(ObsSource):
         if not out:
             # 整窗全空：视为抓取失败（站号错配 / 接口改版 / 反爬），让上层降级或标红。
             # 绝不返回空列表冒充"成功"——空数据不建记录，也不伪装成"本轮没有新观测"。
+            # 全部因请求失败而空时，带上最后一次的具体错误（反爬页/非 JSON 的
+            # 根因不该被"整窗无数据"这个泛化措辞埋掉）
+            detail = (f"最后一次请求错误：{last_error}"
+                      if n_failed and last_error else
+                      "可能站号未在该平台收录、接口已改版或被限流")
             raise RuntimeError(
                 f"站点 {station.id}（站号 {station_no}）CMA 实况整窗无数据"
-                f"（{len(hours)} 个整点全空；可能站号未在该平台收录、接口已改版或被限流）"
+                f"（{len(hours)} 个整点，请求失败 {n_failed}；{detail}）"
             )
 
         if len(out) < self.min_hours:
@@ -319,6 +345,6 @@ class CmaDataObsSource(ObsSource):
 
         logger.info(
             "站点 %s CMA 实况取到 %d 条（窗口 %d 小时，空气 %d，跳过已知 %d，"
-            "回显封顶 %d）", station.id, len(out), len(hours), n_empty, n_skipped,
-            n_early_echo)
+            "回显封顶 %d，请求失败 %d）", station.id, len(out), len(hours), n_empty,
+            n_skipped, n_early_echo, n_failed)
         return out

@@ -172,4 +172,29 @@ def test_ew4all_declares_model_run_anchor():
     assert snap["issue_source"] == "model_run"
     assert snap["issue_raw"] == snap["run_label_utc"]
     assert snap["precip_accum_window_hours"] == 3
-    assert snap["resolution_hours"] == 1
+    # 第四轮 P1-2：入库序列经插值铺成逐小时，但原生温度步长是 3h
+    # （CMA-NDFS 0-72h 逐小时、其后逐 3h，取主导步长）——申报 1 等于把
+    # "平铺"伪装成"原生逐小时"
+    assert snap["resolution_hours"] == 3
+
+
+def test_all_providers_share_the_same_user_agent():
+    """全部 provider 引用 http.DEFAULT_UA（第四轮 P3-6）。
+
+    彩云等源的返回点数与 UA 强相关（改了会被静默截断至约 48h 且不报错）。
+    12 处各写一份字符串时，改一处即静默破功——集中成单一常量并由本测试钉住。
+    """
+    import importlib
+    from weather_eval.forecast import http as _http
+
+    modules = [
+        "caiyun", "accuweather", "cma_public", "fuxi_data", "fengwu", "msn",
+        "tianji", "open_meteo", "geovis", "fuxi", "qweather", "ew4all",
+    ]
+    for name in modules:
+        mod = importlib.import_module(f"weather_eval.forecast.{name}")
+        headers = getattr(mod, "HEADERS", None)
+        assert headers is not None, f"{name} 没有模块级 HEADERS"
+        assert headers.get("User-Agent") == _http.DEFAULT_UA, (
+            f"{name} 的 User-Agent 偏离统一常量——彩云等源的返回点数与 UA 强相关，"
+            "改动必须走 http.DEFAULT_UA 单点")

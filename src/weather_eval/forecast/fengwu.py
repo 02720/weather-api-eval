@@ -62,7 +62,9 @@ from typing import Any
 import requests
 
 from .base import ForecastProvider
-from .http import DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, request_with_retries
+from .http import ( DEFAULT_UA,
+DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, TimeBudget,
+                   request_with_retries)
 # 重采样（3h 采样→逐小时插值、6h 累计→逐小时均摊）的实现在 resample.py 中唯一一份，
 # EW4ALL 接入也复用同一套；本模块保留原函数名作为薄封装，既有调用方/测试不受影响。
 from .resample import interpolate_hourly, spread_accumulation
@@ -71,7 +73,7 @@ logger = logging.getLogger(__name__)
 
 AVAIL_URL = "https://fengwuai.com/api/v1/weather/availability"
 QUERY_URL = "https://fengwuai.com/api/open/v1/weather/visual/query"
-HEADERS = {"User-Agent": "weather-api-eval/0.1 (+https://github.com/)"}
+HEADERS = {"User-Agent": DEFAULT_UA}
 
 SOURCE = "fengwu"
 MODEL_NAME = "fengwu_ghr_9km"
@@ -156,6 +158,7 @@ class FengWuProvider(ForecastProvider):
         self.timeout = timeout
         self.retries = retries
         self.session = session or requests.Session()
+        self._budget = TimeBudget()  # 单源单轮总预算（第四轮 P1-7）
         self._issue_cache: datetime | None = None  # 最新可查起报（产品级，跨站点复用）
 
     def fetch_snapshot(self, station: Any, models: list[str] | None = None) -> dict:
@@ -256,7 +259,10 @@ class FengWuProvider(ForecastProvider):
             pass
         snapshot = {
             "issue_iso": issue_iso,
-            "issue_source": "axis_start",
+            # 第四轮 P1-4：forecast_time 是 00/06/12/18 UTC 的真实模式轮次回显，
+            # 且序列从 +1h 起（首点≠锚点）——标 axis_start 是反向的口径漂移，
+            # 把本项目锚点最可靠的一家标成了弱锚点
+            "issue_source": "model_run",
             "issue_raw": issue_iso,
             # 游客态 3h 步长、授权态 1h：原生分辨率必须留档，否则"3 小时产品被线性
             # 平铺"与"原生逐小时"在同一张榜上看起来一模一样。步长直接由响应采样点
@@ -315,7 +321,7 @@ class FengWuProvider(ForecastProvider):
             self.session, url, params=params, headers=headers,
             timeout=self.timeout, retries=self.retries, source="风乌",
             classify=_classify,
-        )
+                budget=self._budget)
 
 
 class _Rejected(Exception):

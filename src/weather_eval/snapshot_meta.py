@@ -63,8 +63,13 @@ SUSPECT_ISSUE_SOURCES = frozenset({
     ISSUE_SOURCE_DATA_UPDATED, ISSUE_SOURCE_REQUEST_FLOOR, ISSUE_SOURCE_UNKNOWN,
 })
 
-# 参与哈希计算的字段名（自引用字段必须排除，否则哈希不可复算）
-_HASH_EXCLUDED = ("payload_sha256", "fetched_at_bj", "fetched_at_utc", "meta_schema")
+# 参与哈希计算的字段名（自引用字段必须排除，否则哈希不可复算）。
+# 第四轮 P1-3：fetched_at_bj/utc 曾被排除在摘要之外——封存时刻是"先封存后对账"
+# 这条地基唯一的机器证人（封存门槛用它判 vt < fetched），却被排除在保护范围外，
+# 改掉它 verify 照样全绿。写入口对已存在的快照是幂等跳过、从不二次盖章，
+# "重复盖章哈希不变"这个性质没有生产消费者，因此把封存时刻纳入摘要，
+# 换来"封存时刻可改 = verify 变红"这条硬保证。meta_schema 同理（纯版本标记）。
+_HASH_EXCLUDED = ("payload_sha256",)
 
 
 def snapshot_complete(snap: dict) -> bool:
@@ -114,6 +119,20 @@ def merkle_root(hashes: list[str]) -> str | None:
     return level[0]
 
 
+def _legacy_canonical_bytes(snapshot: dict) -> bytes:
+    """旧契约（第四轮 P1-3 之前）的哈希口径：排除封存时刻与版本标记。
+
+    已存档快照的内嵌哈希都是这个规则盖的章——重算侧必须能按同一规则复算，
+    否则整个存量档案会被误判为篡改（verify 永久变红）。仅用于迁移比对，
+    新快照一律走新口径（封存时刻参与哈希）。
+    """
+    obj = {k: v for k, v in snapshot.items()
+           if k not in ("payload_sha256", "fetched_at_bj", "fetched_at_utc",
+                        "meta_schema")}
+    return json.dumps(obj, ensure_ascii=False, sort_keys=True,
+                      separators=(",", ":")).encode("utf-8")
+
+
 def check_snapshot_integrity(snapshot: dict) -> tuple[str, bool]:
     """重算快照内容哈希，并与快照内嵌的 ``payload_sha256`` 比对。
 
@@ -133,7 +152,14 @@ def check_snapshot_integrity(snapshot: dict) -> tuple[str, bool]:
     stored = snapshot.get("payload_sha256")
     if not isinstance(stored, str) or not stored:
         return real, True          # 历史存档：无内嵌值可比对，不判不一致
-    return real, real == stored.strip().lower()
+    stored = stored.strip().lower()
+    if real == stored:
+        return real, True
+    # 第四轮 P1-3 的迁移兼容：旧口径（排除封存时刻）盖的章按旧口径复算。
+    # 旧口径匹配 → legacy 印章，如实披露（见 integrity_summary 的 n_legacy_hash），
+    # 不算篡改；新旧两种口径都不匹配才是真失配。
+    legacy = hashlib.sha256(_legacy_canonical_bytes(snapshot)).hexdigest()
+    return real, legacy == stored
 
 
 def integrity_summary(snapshots: list[dict]) -> dict:
@@ -151,9 +177,17 @@ def integrity_summary(snapshots: list[dict]) -> dict:
     hashes = []
     stamps = []
     n_mismatch = 0
+    n_legacy = 0
     mismatches: list[dict] = []
     for s in snapshots:
         real, ok = check_snapshot_integrity(s)
+        if not ok and isinstance(s.get("payload_sha256"), str) and s["payload_sha256"]:
+            # 旧口径（排除封存时刻）盖章的存量快照：迁移期内如实计数披露，
+            # 新封存的快照不会再产生这一类
+            import hashlib as _h
+            if _h.sha256(_legacy_canonical_bytes(s)).hexdigest() == \
+                    s["payload_sha256"].strip().lower():
+                n_legacy += 1
         if not ok:
             n_mismatch += 1
             if len(mismatches) < 20:      # 只留前若干条供人工定位，避免摘要爆炸
@@ -176,6 +210,9 @@ def integrity_summary(snapshots: list[dict]) -> dict:
         "n_without_fetched_at": len(snapshots) - len(stamps),
         # 内嵌哈希与重算哈希的失配数：> 0 即"有快照在封存后被改过"
         "n_hash_mismatch": n_mismatch,
+        # 旧口径印章数（第四轮 P1-3 迁移）：这些快照的封存时刻在旧规则下
+        # 不受哈希保护，随存量自然消亡
+        "n_legacy_hash": n_legacy,
         "hash_mismatches": mismatches,
         # 有多少份快照真正参与了"可比对"的校验（历史存档无内嵌值，只贡献根）
         "n_with_embedded_hash": sum(
