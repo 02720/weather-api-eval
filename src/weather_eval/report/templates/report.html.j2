@@ -25,7 +25,10 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- 手机端：地址栏/状态栏与 Hero 深蓝同色，页面不再是"白底深色头"的割裂感 -->
+<meta name="theme-color" content="#0c2340">
+<meta name="color-scheme" content="light">
 <meta name="description" content="自动把 20 多家天气预报与气象站实况逐小时对账，用数据回答：谁家预报更准？每天自动更新。">
 <title>{{ title }}</title>
 <!-- ECharts 使用仓库内本地副本（避免 CDN 不可达）。加载失败时图表区会显示
@@ -49,7 +52,10 @@
   * { box-sizing:border-box; }
   html, body { overflow-x:clip; }
   [hidden] { display:none !important; }
-  html { scroll-behavior:smooth; }
+  /* 移动端横竖屏切换时 iOS 会擅自放大字号，正文排版随之跳动——显式关掉 */
+  html { scroll-behavior:smooth; -webkit-text-size-adjust:100%; text-size-adjust:100%; }
+  /* 只在宽屏/只在手机出现的句子（对应不同的交互方式，见 §01 说明与 §04 提示） */
+  .only-mobile { display:none; }
   @media (prefers-reduced-motion: reduce) {
     html { scroll-behavior:auto; }
     * { animation-duration:.01ms !important; transition-duration:.01ms !important; }
@@ -260,15 +266,86 @@
                text-decoration:none; }
   .back-home:hover { text-decoration:underline; }
 
+  /* ================= 手机窄屏（≤760px）=================
+     这里不是"把宽版等比缩小"，而是按手机真正擅长的事重排：
+       1. 总榜从 10 列表格改成逐源卡片——宽表在手机上必然横滑，而横滑会把
+          「综合分」这一页唯一的答案滑出屏幕；
+       2. 图表让出被右侧名签吃掉的留白，并给热力图加一条可拖动的日期滑块；
+       3. 选源面板改成贴底浮层，弹出框不会再跑出屏幕外；
+       4. 折叠区里那些"公式 + 数字"的长表格允许换行，卡片不被撑破。
+     服务端渲染的表结构原样保留（只是 display 变了），因此"榜单可读"这条
+     硬约束不依赖 JS，排序与榜单切换也照常工作。 */
   @media (max-width:760px) {
-    .hero h1 { font-size:30px; }
-    .hero-inner { padding:34px 16px 44px; }
-    .champ { grid-template-columns:1fr; padding:18px; }
-    .champ-score-box { text-align:left; }
-    .card { padding:20px 16px; }
-    .chart { height:300px; }
-    .controls select { max-width:none; flex:1 1 140px; }
+    /* ---- 排版与留白：两侧收窄、字号降一档 ---- */
+    .wrap { padding:8px 14px 40px; }
+    .card { padding:20px 15px; margin:14px 0; }
+    .card > h2 { font-size:19px; }
+    .card .desc { font-size:13px; }
+    .hint { font-size:12px; }
+    .hero-inner { padding:34px 15px 46px; }
+    .hero h1 { font-size:28px; letter-spacing:1px; }
+    .hero .lede { font-size:14px; margin-bottom:20px; }
     .hero-curve { height:120px; }
+    .champ { grid-template-columns:1fr; padding:16px 15px; gap:14px; }
+    .champ-score-box { text-align:left; }
+    .champ-name { font-size:25px; }
+    .champ-facts { gap:5px 16px; font-size:13px; }
+    .champ-score { font-size:46px; }
+    .champ-honest { font-size:12px; }
+    .chart { height:300px; }
+    .only-wide { display:none !important; }
+    .only-mobile { display:inline; }
+
+    /* ---- 触控目标：下拉/分段/复选框抬到 36px 以上，指头点得中 ---- */
+    select, .seg button, .picker-btn { min-height:36px; }
+    .controls { gap:8px; }
+    .controls select { max-width:none; flex:1 1 140px; }
+    .seg button { padding:7px 12px; }
+
+    /* ---- 选源面板：贴底浮层（固定在视口内，与按钮位置无关） ---- */
+    .picker-panel { position:fixed; left:0; right:0; bottom:0; top:auto;
+                    width:auto; max-width:none; max-height:65vh;
+                    border-radius:16px 16px 0 0;
+                    padding-bottom:calc(14px + env(safe-area-inset-bottom,0px));
+                    box-shadow:0 -12px 34px rgba(12,35,64,.24); }
+
+    /* ---- §01 总榜：表格 → 逐源卡片 ---- */
+    .lb-scroll { overflow:visible; border:0; border-radius:0; }
+    .lb-table { display:block; min-width:0; font-size:13.5px; }
+    .lb-table thead { display:none; }
+    .lb-table tbody { display:block; }
+    .lb-table tr { display:block; border:1px solid var(--line); border-radius:12px;
+                   background:#fff; padding:12px 14px; margin:0 0 10px; }
+    .lb-table tr.is-top { border-color:var(--gold-line); }
+    .lb-table td { display:inline; border:0; padding:0; min-width:0; white-space:normal;
+                   text-align:left; }
+    /* 桌面端的单元格底色（白底粘性列、行悬浮）在卡片里全都要让位给卡片本身 */
+    .lb-table tbody tr td, .lb-table tbody tr:hover td, .lb-table tr.is-top td,
+    .lb-table tr.is-top:hover td, .lb-table tr.is-weak:hover td { background:transparent; }
+    .lb-table .c-rk { display:inline-block; min-width:20px; margin-right:4px;
+                      color:var(--muted); }
+    .lb-table .c-name { position:static; border:0; padding:0; min-width:0; }
+    .lb-table .c-name b { font-size:15px; }
+    .lb-table .c-name .mid { display:none; }   /* 原始模型 id 留给宽屏 */
+    .lb-table .c-score { display:block; margin:10px 0 7px; }
+    .lb-table .c-score .cell { gap:10px; }
+    .lb-table .c-score .thermo { min-width:0; }
+    .lb-table .c-score .score-num { font-size:21px; min-width:54px;
+                                    font-variant-numeric:tabular-nums; }
+    .lb-table .c-spark { display:none; }       /* 走势留给 §02 的衰减曲线 */
+    /* 其余指标折成一行小字，标签由 data-label 提供（服务端与前端生成的行共用）。
+       inline-block + nowrap 让「标签 数值」成为一个整体换行单元——
+       否则行尾会在「晴雨TS」与它后面的 0.33 之间断开，读起来像是漏了一项。 */
+    .lb-table td[data-label] { display:inline-block; white-space:nowrap;
+                               margin-right:12px; font-size:12.5px; color:var(--slate); }
+    .lb-table td[data-label]::before { content:attr(data-label) " "; color:var(--muted); }
+
+    /* ---- 折叠区：诊断类长表格在手机上改为可横向滚动。body 是 overflow-x:clip，
+         7 列的表（如「名义 vs 实际」）会顶出卡片、最后一列被裁掉且无法滚到，
+         所以这里给表格自己一条滚动条，并把字距收紧尽量少滚。 ---- */
+    table.plain { display:block; overflow-x:auto; -webkit-overflow-scrolling:touch;
+                  max-width:100%; }
+    table.plain th, table.plain td { white-space:normal; padding:4px 6px; font-size:11.5px; }
   }
 </style>
 </head>
@@ -380,8 +457,9 @@
     <p class="eyebrow">§01 · 证据</p>
     <h2>预报源总榜</h2>
     <p class="desc">「综合分」由温度 7 项 + 降水 5 项指标加权而成，并且先把每一档提前量的
-      难度统一扣掉再比——能报 3 天的和能报 15 天的同榜也公平。点任意列名可重新排序；
-      「得分走势」是综合分随提前天数（1~16 天，小时口径）的衰减，<b>谁在右边还站得高，谁的长期预报就更可靠</b>。
+      难度统一扣掉再比——能报 3 天的和能报 15 天的同榜也公平。<span class="only-wide">点任意列名可重新排序；
+      「得分走势」是综合分随提前天数（1~16 天，小时口径）的衰减，<b>谁在右边还站得高，谁的长期预报就更可靠</b>。</span><span class="only-mobile">每个源一张卡片：大字是综合分，
+      下面一行是它的分项。</span>
       想看某个具体提前量的排名，用下面的<b>榜单下拉</b>切到「提前 N 天」分榜——同一档内直接对照、不经难度对齐。</p>
     <div class="controls">
       <label for="lbBoard">榜单</label>
@@ -424,12 +502,12 @@
           <td class="c-score"><div class="cell">
             {{ thermo(r.get('score'), r.get('ci90'), 'sm') }}
             <b class="score-num">{{ num(r.get('score')) }}</b></div></td>
-          <td>{{ num(r.get('temp_score')) }}</td>
-          <td>{{ num(r.get('precip_score')) }}</td>
-          <td>{{ pct(r.get('acc2')) }}</td>
-          <td>{{ num(r.get('ts'), 2) }}</td>
-          <td>{% if r.get('lead_days') %}{{ r.lead_days }} 天{% else %}—{% endif %}</td>
-          <td class="ci-cell">{% if r.get('ci90') %}{{ num(r.get('ci90')[0]) }}~{{ num(r.get('ci90')[1]) }}{% else %}—{% endif %}</td>
+          <td data-label="温度">{{ num(r.get('temp_score')) }}</td>
+          <td data-label="降水">{{ num(r.get('precip_score')) }}</td>
+          <td data-label="±2°C">{{ pct(r.get('acc2')) }}</td>
+          <td data-label="晴雨TS">{{ num(r.get('ts'), 2) }}</td>
+          <td data-label="覆盖">{% if r.get('lead_days') %}{{ r.lead_days }} 天{% else %}—{% endif %}</td>
+          <td class="ci-cell" data-label="90%CI">{% if r.get('ci90') %}{{ num(r.get('ci90')[0]) }}~{{ num(r.get('ci90')[1]) }}{% else %}—{% endif %}</td>
           <td class="l c-spark">{{ spark_svg.get(r.model, '') | safe }}</td>
         </tr>
         {% endfor %}
@@ -612,7 +690,7 @@
     </div>
     <div id="chartHeat" class="chart"></div>
     <p class="hint">💡 <b>怎么看：</b>整列发红往往是天气突变（大家都难），<b>整行偏红才是这家整体拉胯</b>；
-      降水的 TS 天然比温度准确率低一截（雨是否下在那一刻本来就难报），请按行内相对高低读。</p>
+      降水的 TS 天然比温度准确率低一截（雨是否下在那一刻本来就难报），请按行内相对高低读。<span class="only-mobile">手机上格子很密，可拖动图表下方的滑块，只放大看某几天。</span></p>
   </section>
 
   <!-- ==================== §05 预报 vs 实况 ==================== -->
@@ -888,6 +966,12 @@ const DAYS = 16;
 const BUCKETS = Array.from({length: DAYS}, (_, i) => (i + 1) + "d");
 const HAS_ECHARTS = typeof echarts !== "undefined";
 const charts = [];
+/* 窄屏（手机）判定：与 CSS 的 @media (max-width:760px) 保持同一断点。
+   它影响的是图表的"排版取舍"——右侧给线尾名签留的 96px 留白在手机上等于
+   白白吃掉四分之一画布，热力图则要改配一条日期滑块。 */
+const SMALL = window.matchMedia("(max-width: 760px)").matches;
+/* 折线图右侧留白：宽屏给线尾名签留 96px，窄屏没有名签就不该留。 */
+const GRID_R = SMALL ? 14 : 96;
 
 function chart(elId) {
   const el = document.getElementById(elId);
@@ -1031,7 +1115,8 @@ function legendSelected(sel) {
 /* 全体模型线：选中者加粗（选源面板/图例控制显隐），选得少时带线尾名签 */
 function modelSeries(getVal, n, {unit = "", digits = 1, sel = null} = {}) {
   const chosen = sel || new Set(TOP3);
-  const withTag = chosen.size > 0 && chosen.size <= 8;
+  // 线尾名签是宽屏的奢侈品：手机上它会顶出绘图区，改为靠图例认色
+  const withTag = chosen.size > 0 && chosen.size <= 8 && !SMALL;
   const series = RANKED.map(m => {
     const on = chosen.has(m);
     return {
@@ -1065,7 +1150,7 @@ function renderDecay() {
   const ms = modelSeries(getVal, DAYS, {digits: 1, sel: decayPicker && decayPicker.get()});
   c.setOption({
     textStyle: {fontFamily: getComputedStyle(document.body).fontFamily},
-    grid: {left: 8, right: 96, top: 40, bottom: 8, containLabel: true},
+    grid: {left: 8, right: GRID_R, top: 40, bottom: 8, containLabel: true},
     legend: Object.assign(legendOpt(), {selected: ms.selected}),
     tooltip: TIP, xAxis: X_DAYS, yAxis: YAXIS,
     series: [...bandSeries(stats), ...ms.series],
@@ -1125,7 +1210,7 @@ function renderWx() {
   const ms = modelSeries(getVal, DAYS, {unit, digits, sel: wxPicker && wxPicker.get()});
   c.setOption({
     textStyle: {fontFamily: getComputedStyle(document.body).fontFamily},
-    grid: {left: 8, right: 96, top: 40, bottom: 8, containLabel: true},
+    grid: {left: 8, right: GRID_R, top: 40, bottom: 8, containLabel: true},
     legend: Object.assign(legendOpt(), {selected: ms.selected}),
     tooltip: TIP, xAxis: X_DAYS, yAxis: YAXIS,
     series: [...bandSeries(stats), ...ms.series],
@@ -1161,7 +1246,8 @@ function renderHeat() {
   // 容器高度按行数走：固定 380px 装不下 28 行，类目轴标签会被 auto-interval
   // 整行吞掉（"左边源名显示不全"的根源）——行距给足 + interval:0 双保险。
   const el = document.getElementById("chartHeat");
-  el.style.height = Math.max(380, models.length * 24 + 110) + "px";
+  el.style.height = Math.max(SMALL ? 420 : 380,
+                             models.length * (SMALL ? 22 : 24) + 110) + "px";
   c.resize();
   const selMt = document.getElementById("heatMetric");
   if (!heatMetrics().some(m => m[0] === heatMetric)) heatMetric = heatMetrics()[0][0];
@@ -1193,7 +1279,8 @@ function renderHeat() {
   }
   c.setOption({
     textStyle: {fontFamily: getComputedStyle(document.body).fontFamily},
-    grid: {left: 8, right: 16, top: 8, bottom: 52, containLabel: true},
+    // 手机上除色带外再叠一条日期滑块，两者分层摆放（bottom 抬高色带、滑块贴底）
+    grid: {left: 8, right: 16, top: 8, bottom: SMALL ? 122 : 52, containLabel: true},
     title: showEmpty ? {text: "该指标本窗口样本不足，暂无格子", left: "center",
       top: "middle", textStyle: {color: "#68778f", fontSize: 13, fontWeight: 400}} : undefined,
     tooltip: Object.assign({}, TIP, {trigger: "item",
@@ -1203,13 +1290,29 @@ function renderHeat() {
         return `${escHtml(labelOf(m))} · ${dates[p.value[0]]}<br>${label} <b>${p.value[2]}${unit}</b>` +
                (n ? ` · 样本 ${n}` : "");
       }}),
+    // 窄屏格子密（约 30 天挤进 300px），写死 interval:2 仍会叠字——交给
+    // ECharts 自适应：未放大时它自动隐藏到不重叠，放大后自动补回更多日期。
     xAxis: Object.assign({}, AXIS, {type: "category", data: dates,
-      axisLabel: {color: "#68778f", fontSize: 10, interval: 2}}),
+      axisLabel: {color: "#68778f", fontSize: 10,
+        ...(SMALL ? {} : {interval: 2})}}),
     yAxis: Object.assign({}, AXIS, {type: "category",
       data: models.slice().reverse().map(labelOf),
       axisLabel: {color: "#35455e", fontSize: 11, interval: 0}}),
+    // 手机专属：横轴日期缩放滑块（§04 提示词承诺的"拖动看某几天"）。
+    // 未放大=看全局色块分布，放大=看某几天的逐源差异；手柄标签显示日期。
+    dataZoom: SMALL ? [{type: "slider", xAxisIndex: 0, bottom: 6, height: 22,
+      start: 0, end: 100,
+      borderColor: "#dce3ec", backgroundColor: "#f7f9fc",
+      fillerColor: "rgba(32,95,167,.14)",
+      handleStyle: {color: "#205fa7", borderColor: "#205fa7"},
+      moveHandleStyle: {color: "#205fa7"},
+      dataBackground: {lineStyle: {color: "#c6d0dd"}, areaStyle: {color: "#e8edf3"}},
+      selectedDataBackground: {lineStyle: {color: "#205fa7"},
+                               areaStyle: {color: "#cfe0f2"}},
+      textStyle: {color: "#68778f", fontSize: 10},
+      labelFormatter: v => dates[Math.round(v)] || ""}] : [],
     visualMap: {min: vMin, max: vMax, calculable: true, orient: "horizontal",
-      left: "center", bottom: 0, itemHeight: 90, text: vText,
+      left: "center", bottom: SMALL ? 46 : 0, itemHeight: 90, text: vText,
       textStyle: {color: "#68778f", fontSize: 11},
       inRange: {color: inRange}},
     series: [{type: "heatmap", data: cells,

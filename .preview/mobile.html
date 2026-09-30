@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  body { margin:0; background:#2a2e35; font-family:-apple-system,"PingFang SC",sans-serif; }
+  .row { display:flex; gap:16px; padding:16px; align-items:flex-start; }
+  .col { width:390px; flex:0 0 390px; }
+  .cap { color:#cfd6e0; font-size:12px; margin:0 0 6px 2px; }
+  iframe { width:390px; height:1800px; border:0; background:#fff; display:block; }
+</style>
+</head>
+<body>
+<div class="row" id="row"></div>
+<script>
+const SECS = [
+  ["首屏 + §01 总榜", "reports/index.html"],
+  ["§02 衰减曲线", "reports/index.html#decay"],
+  ["§03 温度/降水", "reports/index.html#wx"],
+  ["§04 热力图", "reports/index.html#heat"],
+  ["§05 预报 vs 实况", "reports/index.html#vs"],
+  ["§06 分站对比", "reports/index.html#stations"],
+];
+document.getElementById("row").innerHTML = SECS.map(([cap, url]) =>
+  `<div class="col"><p class="cap">${cap}</p><iframe src="/${url}"></iframe></div>`).join("");
+</script>
+</body>
+</html>
