@@ -1,0 +1,13 @@
+{
+  "n_snapshots": 6189,
+  "merkle_root": "fd17d37efe2cafec2104acada06bad422ca2b67a0efed1e83dad68b3068a14e7",
+  "fetched_first": "2026-09-19T21:50:42",
+  "fetched_last": "2026-10-01T01:53:31",
+  "n_without_fetched_at": 4095,
+  "n_hash_mismatch": 0,
+  "n_legacy_hash": 0,
+  "hash_mismatches": [],
+  "n_with_embedded_hash": 2094,
+  "period_label": "2026-10",
+  "generated_at": "2026-10-01 01:00"
+}
