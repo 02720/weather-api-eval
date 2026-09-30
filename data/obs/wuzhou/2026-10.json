@@ -1,0 +1,24 @@
+{
+  "2026-10-01T01:00": {
+    "time": "2026-10-01T01:00",
+    "source": "wd",
+    "temp": 28.1,
+    "pressure": 998.4,
+    "humidity": 83.0,
+    "rain": 0.0,
+    "wind_speed": 1.8,
+    "wind_dir": 32.0,
+    "visibility": null
+  },
+  "2026-10-01T00:00": {
+    "time": "2026-10-01T00:00",
+    "source": "wd",
+    "temp": 28.7,
+    "pressure": 998.5,
+    "humidity": 81.0,
+    "rain": 0.0,
+    "wind_speed": 1.2,
+    "wind_dir": 75.0,
+    "visibility": null
+  }
+}
