@@ -1489,7 +1489,7 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     # 失败降级而非崩溃：诊断层的定位是"补充披露"，绝不能因为它把报告构建搞挂。
     if eval_cfg.get("enable_diagnostics", True):
         report["meta"]["diagnostics"] = _compute_diagnostics(
-            report, eval_cfg.get("data_root"))
+            report, start_dt, end_dt, eval_cfg.get("data_root"))
         # k_eff 无论采用哪套 Holm 口径都要披露——它直接决定"第一名领先第二名"
         # 这句话的含金量。诊断层已经算过跨源相关了，这里回填即可，零额外开销。
         _backfill_k_eff(report["meta"])
@@ -1510,6 +1510,23 @@ def _backfill_k_eff(meta: dict) -> None:
         holm["reason"] = corr.get("available") and "由诊断层回填" or holm.get("reason")
 
 
+def _months_between(start_dt, end_dt) -> list[str]:
+    """[start_dt, end_dt] 覆盖的全部自然月（"YYYY-MM"，升序）。
+
+    评估窗口自 2026-10 起支持跨月（实时总榜持续累计历史样本），凡"按月组织
+    的冻结数据"（观测月文件、快照 bundle）都要按窗口枚举月份去读——枚举逻辑
+    只此一份，Holm 校正与诊断层共用，避免两处各自维护产生口径漂移。
+    """
+    months: list[str] = []
+    y, mth = start_dt.year, start_dt.month
+    while (y, mth) <= (end_dt.year, end_dt.month):
+        months.append(f"{y:04d}-{mth:02d}")
+        mth += 1
+        if mth > 12:
+            mth, y = 1, y + 1
+    return months
+
+
 def _resolve_holm_m_eff(eval_cfg: dict, models: list[str], start_dt, end_dt,
                         data_root=None) -> tuple[float | None, dict]:
     """按配置决定 Holm 校正的有效检验数；返回 (m_eff, 披露用 dict)。
@@ -1523,20 +1540,11 @@ def _resolve_holm_m_eff(eval_cfg: dict, models: list[str], start_dt, end_dt,
     无论选哪套，k_eff 都会被算出来并原样披露：读者有权知道"27 家其实只相当于
     约 1.6 家独立信源"这个事实，也有权知道当前结论用的是哪套口径。
     """
-    import calendar
-    from datetime import date as _date
     from .report import diagnostics as _dg
     from .storage import _root as _data_root
 
     mode = str(eval_cfg.get("holm_effective_tests", "m")).lower()
-    months: list[str] = []
-    y, mth = start_dt.year, start_dt.month
-    while (y, mth) <= (end_dt.year, end_dt.month):
-        months.append(f"{y:04d}-{mth:02d}")
-        mth += 1
-        if mth > 12:
-            mth, y = 1, y + 1
-    del calendar, _date
+    months = _months_between(start_dt, end_dt)
 
     root = Path(data_root) if data_root else _data_root()
     k_eff = None
@@ -1571,8 +1579,15 @@ def _resolve_holm_m_eff(eval_cfg: dict, models: list[str], start_dt, end_dt,
     return None, disclosure
 
 
-def _compute_diagnostics(report: dict, data_root=None) -> dict:
-    """调用诊断层，并把任何异常收敛成"不可用 + 原因"（诊断层不得拖垮报告）。"""
+def _compute_diagnostics(report: dict, start_dt, end_dt, data_root=None) -> dict:
+    """调用诊断层，并把任何异常收敛成"不可用 + 原因"（诊断层不得拖垮报告）。
+
+    月份必须按评估窗口显式枚举传入（诊断层要读的观测月文件/快照 bundle 是
+    按月组织的）。此前不传，compute_all 拿 meta.period_label 当月份——旧口径
+    下"实时总榜的 period_label 恰好等于窗口月份"才碰巧正确；总榜改跨月累计后
+    period_label 变成区间标签，靠它找文件会静默读不到任何数据。这是把"巧合
+    正确"升级为"契约正确"的那一步。
+    """
     import logging
     from pathlib import Path
     from .report import diagnostics as _dg
@@ -1580,7 +1595,7 @@ def _compute_diagnostics(report: dict, data_root=None) -> dict:
 
     root = Path(data_root) if data_root else _data_root()
     try:
-        diag = _dg.compute_all(report, root)
+        diag = _dg.compute_all(report, root, months=_months_between(start_dt, end_dt))
         diag["available"] = True
         return diag
     except Exception as exc:                      # pragma: no cover - 兜底路径

@@ -16,7 +16,8 @@
   python -m weather_eval fetch-forecast --source accuweather 抓取 AccuWeather 逐小时预报起报（需 ACCUWEATHER_API_KEY）
   python -m weather_eval fetch-forecast --source msn        抓取 MSN 天气（中国天气网）起报（网页接口，无需凭据）
   python -m weather_eval fetch-forecast --source cma_public 抓取中国气象局公众网（weather.cma.cn）起报（公开接口，无需凭据）
-  python -m weather_eval report                   用本月至今数据更新主报告 reports/index.html
+  python -m weather_eval report                   用跨月累计窗口（最早可用数据 → 现在）
+                                                  重建主报告 reports/index.html
   python -m weather_eval monthly [--month YYYY-MM] 生成月度归档报告 reports/monthly/YYYY-MM.html
   python -m weather_eval archive [--days 60] [--apply]  把超窗口的旧快照 gzip 归档（默认 dry-run）
   python -m weather_eval compact [--retain-months 13] [--apply]  月度冻结 + 超期出仓
@@ -25,9 +26,13 @@
                                                    （超硬阈值非零退出，CI 据此告警）
   python -m weather_eval all                       抓取观测+预报+更新主报告（GitHub Action 调用）
 
-报告体系（2026-08 重设计）：
-  index.html 是"本月至今"的累积视图，每次运行覆盖更新（不再保留每次运行一份的 runs/）；
-  monthly/ 每月归档一份冻结的历史月份，主报告页脚自动列出归档链接。
+报告体系（2026-08 重设计；2026-10 总榜改跨月累计）：
+  index.html 是"数据起点至今"的**跨月累计**视图，每次运行覆盖更新（不再保留
+  每次运行一份的 runs/）。总榜回答"到现在为止谁最准"——历史月的预报误差与
+  本月是同一个物理量的独立观测，样本只增不减，每月 1 号不清零、不退回
+  "样本积累中"；窗口的天然上界是数据保留期（compact_retain_months，默认
+  滚动 13 个月）。monthly/ 每月归档一份冻结的历史月份，回答"那个自然月谁
+  最准"，与总榜分工互不干扰；主报告页脚自动列出归档链接。
 
 快照粒度说明：Open-Meteo/彩云/和风的一次抓取共享同一条时间轴与起报口径，按模型拆分
 存档；中科天机各模式最新可用起报轮次可能不同步（发布进度独立），故其提供方直接按
@@ -42,7 +47,7 @@ import logging
 import os
 import re
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -50,7 +55,8 @@ from .config import DEFAULT_EVAL, load_config
 from .timeutil import now_beijing, ymd, parse_iso, floor_to_hour, ym
 from .storage import (
     _atomic_write_json,
-    PROJECT_ROOT, compact_snapshots, data_footprint, period_summary_path, reports_footprint,
+    PROJECT_ROOT, available_months, compact_snapshots, data_footprint,
+    period_summary_path, reports_footprint,
     save_obs,
     save_forecast_snapshot,
 )
@@ -303,12 +309,48 @@ def cmd_fetch_forecast(args):
     return failures
 
 
-def _update_live_report(cfg):
-    """用"本月 1 号至今"的累计数据重建主报告 reports/index.html（覆盖写）。"""
+def _live_window(cfg) -> tuple[datetime, datetime, str]:
+    """实时总榜的对账窗口：起点 = 最早可用数据月，终点 = 当前整点。
+
+    第一性原理：总榜回答"**到现在为止**谁最准"。这个问题只能用保留期内的
+    全部样本回答——8 月的预报误差和 10 月的预报误差是同一个物理量的独立
+    观测，历史样本的信息量不因换月失效。旧口径把窗口钉在"本月 1 号至今"，
+    等于每月 1 号人为清零样本量，让全榜退回"样本积累中"——那是把日历的
+    节奏误当成了统计的节奏。
+
+    起点 resolution 顺序：
+      1. eval.live_window_start 显式指定（"YYYY-MM" 或 "YYYY-MM-DD"）；
+      2. 自动：data/ 里最早可用数据的月份（storage.available_months，
+         覆盖观测与快照冷热两层）。
+    数据保留期（compact_retain_months）是自动窗口的天然上界：更早的原始
+    快照已出仓，重算无米下锅——窗口因此表现为"保留期内的滚动累计"。
+    """
     now = floor_to_hour(now_beijing())
-    month = ym(now)  # YYYY-MM
-    start = parse_iso(f"{month}-01T00:00")
-    data = build_report(cfg.station_ids, cfg.models, cfg.eval, start, now, period_label=month)
+    override = cfg.eval.get("live_window_start")
+    if override:
+        s = str(override).strip()
+        if _MONTH_RE.match(s):
+            start = parse_iso(f"{s}-01T00:00")
+        else:
+            start = parse_iso(f"{s[:10]}T00:00")
+    else:
+        months = available_months()
+        first = min(months) if months else ym(now)  # 尚无数据时退回当月（空窗口不崩）
+        start = parse_iso(f"{first}-01T00:00")
+    return start, now, f"{start:%Y-%m-%d} ~ {now:%Y-%m-%d}"
+
+
+def _update_live_report(cfg):
+    """用跨月累计窗口（数据起点 → 现在）重建主报告 reports/index.html（覆盖写）。
+
+    月度归档（monthly 命令）不受影响：它用自然月窗口 + is_monthly 语义回答
+    "那个月谁最准"，与总榜分工（见模块 docstring 的报告体系说明）。
+    """
+    start, end, label = _live_window(cfg)
+    month = ym(end)  # 哈希链清单的期号：manifest 审计的是"快照封存完整性"，
+    # 与评估窗口正交（历史月的清单已在其月度归档轮生成），故按当前月落盘。
+    data = build_report(cfg.station_ids, cfg.models, cfg.eval, start, end,
+                        period_label=label)
     out = write_live_report(data, station_labels={s.id: s.name for s in cfg.stations})
     # 哈希链清单（§7.1）：把当轮全部快照的 Merkle 根落盘，供 verify 与月度归档公示
     from .storage import save_manifest
@@ -316,6 +358,8 @@ def _update_live_report(cfg):
         **data["meta"].get("integrity", {}),
         "period_label": month,
         "generated_at": data["meta"]["generated_at"],
+        # 主报告的对账区间留痕：跨月累计后"窗口"≠"期号"，verify/公示时可对账
+        "window": {"start": data["meta"]["start"], "end": data["meta"]["end"]},
     })
     # 源健康度看板与主报告同批刷新（P1-8）：让"静默死亡"变成"一眼可见"。
     # 它不进主报告（主报告面向读者，健康度面向维护者），但必须与主报告同时是新
@@ -323,7 +367,7 @@ def _update_live_report(cfg):
     n_stale = write_health_report(cfg, stale_hours=int(cfg.eval.get("source_stale_hours", 30)))
     if n_stale:
         log.warning("有 %d 个源已陈旧，详见 reports/health.html", n_stale)
-    return month, out
+    return label, out
 
 
 def write_health_report(cfg, stale_hours: int = 30):
@@ -425,8 +469,8 @@ def _preload_snapshots(cfg):
 
 def cmd_report(args):
     cfg = load_config(args.config)
-    month, out = _update_live_report(cfg)
-    log.info("主报告已更新（%s 累积至今）: %s", month, out)
+    label, out = _update_live_report(cfg)
+    log.info("主报告已更新（对账区间 %s，跨月累计）: %s", label, out)
 
 
 def cmd_monthly(args):

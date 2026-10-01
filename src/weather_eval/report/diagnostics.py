@@ -732,12 +732,39 @@ def _compare(name: str, value: str, default: float, base_scores: np.ndarray,
 
 
 # ------------------------------------------------------------------ 汇总入口
+def _months_from_meta(meta: dict) -> list[str]:
+    """从报告 meta 推导要读的月份：优先按 start/end 枚举（支持跨月窗口），
+    解析不了时回退 period_label（旧档案兼容）。
+
+    诊断层读的观测/快照数据按自然月组织，月份集合必须覆盖整个评估窗口——
+    不能拿 period_label 当月份（总榜跨月累计后它是区间标签，不是任何一个月）。
+    """
+    from datetime import datetime as _dt
+    try:
+        start = _dt.fromisoformat(str(meta.get("start")))
+        end = _dt.fromisoformat(str(meta.get("end")))
+    except (TypeError, ValueError):
+        return [meta.get("period_label") or ""]
+    months: list[str] = []
+    y, m = start.year, start.month
+    while (y, m) <= (end.year, end.month):
+        months.append(f"{y:04d}-{m:02d}")
+        m += 1
+        if m > 12:
+            m, y = 1, y + 1
+    return [mo for mo in months if mo]
+
+
 def compute_all(report: dict, data_root: Path, months: list[str] | None = None,
                 families: dict[str, str] | None = None,
                 with_fingerprint: bool = True) -> dict[str, Any]:
-    """一次性算出全部诊断项，返回可直接并进 ``meta`` 的 dict。"""
+    """一次性算出全部诊断项，返回可直接并进 ``meta`` 的 dict。
+
+    months：窗口覆盖的自然月列表。缺省时按 meta.start/end 枚举（evaluate 的
+    主调用路径会显式传入，这里的行为只为独立调用/旧档案兜底）。
+    """
     meta = report.get("meta") or {}
-    months = months or [meta.get("period_label") or ""]
+    months = months or _months_from_meta(meta)
     months = [m for m in months if m]
     obs_root = Path(data_root) / "obs"
     fc_root = Path(data_root) / "forecasts"

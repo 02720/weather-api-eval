@@ -394,7 +394,7 @@
   <div class="hero-curve">{{ hero_curve | safe }}</div>
   <div class="hero-inner">
     {% if report.meta.is_monthly %}
-    <a class="back-home" href="{{ base }}index.html">← 返回本月实时报告</a><br>
+    <a class="back-home" href="{{ base }}index.html">← 返回实时总榜</a><br>
     <span class="hero-badge">🗂️ 月度归档 · 数据已冻结</span>
     {% else %}
     <span class="hero-badge">🤖 自动检验 · 每天 6:00 / 13:00 / 20:00（北京时）更新</span>
@@ -402,7 +402,7 @@
     <h1>谁家天气预报<span class="q">最准</span>？</h1>
     <p class="lede">把 <b>{{ report.meta.models|length }} 家预报源</b>与
       <b>{{ report.meta.stations|length }} 个气象站的逐小时实况</b>逐时对账。
-      这是 {{ report.meta.period_label }} 月{% if not report.meta.is_monthly %}至今{% endif %}
+      这是 {% if report.meta.is_monthly %}{{ report.meta.period_label }} 月{% else %}{{ report.meta.period_label }}{% endif %}
       的对账结果——预报先封存、后验证，不看谁嗓门大，只看谁报得准。</p>
 
     {% if champ %}
@@ -445,7 +445,7 @@
       </div>
     </div>
     {% else %}
-    <div class="champ champ-empty">🌱 数据积累中——样本攒够后，这里会公布本月的"预报冠军"。</div>
+    <div class="champ champ-empty">🌱 数据积累中——样本攒够后，这里会公布"预报冠军"。</div>
     {% endif %}
   </div>
 </header>
@@ -727,8 +727,8 @@
         <ol class="steps">
           <li>每天 06:00 / 13:00 / 20:00（北京时）自动抓取 {{ report.meta.stations|length }} 个气象站的实况，以及各家预报源当时发布的起报数据。</li>
           <li>预报一旦发布立即原样封存，等真实天气发生后逐小时对账——先封存、后验证，杜绝"事后改预报"。</li>
-          <li>本页每次都用当月积累的全部数据重新计算（评估由开源库 cyeva 完成），打开永远是"本月至今"的最新结果。</li>
-          <li>每月 1 号把上个月冻结成月度归档，永久可查（见页脚）。</li>
+          <li>本页每次都用<b>保留期内的全部累计数据</b>重新计算（评估由开源库 cyeva 完成），打开永远是"数据起点至今"的最新结果——总榜<b>跨月累计</b>，每月 1 号不清零、不退回"样本积累中"。</li>
+          <li>每月 1 号把上个月冻结成月度归档，回答"那个自然月谁最准"，永久可查（见页脚）。</li>
         </ol>
         <h3>口径与已知差异</h3>
         <p class="why">① <b>天桶按日历对齐</b>：「提前 N 天」= 起报日之后第 N 个自然日，两个口径同窗比较。

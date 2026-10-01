@@ -245,6 +245,49 @@ def load_obs(station_id: str, month: str | None = None) -> dict[str, dict]:
     return result
 
 
+def available_months() -> set[str]:
+    """扫描 data/ 里已归档数据的全部自然月（观测 + 预报快照冷热两层）。
+
+    给"实时总榜跨月累计"做窗口探测（``__main__._live_window``）：总榜的对账
+    起点取这里最早的月份——历史月的预报误差与本月是同一个物理量的独立观测，
+    信息不因换月失效，总榜月初不该清零重攒样本。只做文件名级扫描（iterdir /
+    glob，不读任何内容），全量约数千文件名，毫秒级。
+
+    三个来源的月份藏在不同的文件名里：
+      obs/{station}/{YYYY-MM}.json          → stem 即月份
+      forecasts/{station}/{model}/{YYYY-MM}.json.gz → 冷层月度 bundle
+      forecasts/{station}/{model}/{issue}.json → 热层散装快照，issue 形如
+        "2026-10-01T0600"（见 _issue_filename），前 7 位即月份
+    """
+    root = _root()
+    months: set[str] = set()
+    obs_dir = root / "obs"
+    if obs_dir.is_dir():
+        for st in obs_dir.iterdir():
+            if st.is_dir():
+                months.update(p.stem for p in st.glob("*.json")
+                              if _looks_like_month(p.stem))
+    fc_dir = root / "forecasts"
+    if fc_dir.is_dir():
+        for st in fc_dir.iterdir():
+            if not st.is_dir():
+                continue
+            for mdir in st.iterdir():
+                if not mdir.is_dir():
+                    continue
+                for p in mdir.iterdir():
+                    name = p.name
+                    if name.endswith(BUNDLE_SUFFIX):
+                        m = name[:-len(BUNDLE_SUFFIX)]
+                    elif p.suffix == ".json":
+                        m = p.stem[:7]      # 热层：issue 文件名前 7 位
+                    else:
+                        continue            # 锁文件等杂项
+                    if _looks_like_month(m):
+                        months.add(m)
+    return months
+
+
 # ------------------------------------------------------------------ 预报快照
 def _issue_filename(issue_iso: str) -> str:
     return issue_iso.replace(":", "") + ".json"

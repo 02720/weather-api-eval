@@ -2,9 +2,10 @@
 
 报告体系（2026-09 再设计）：
 
-- ``reports/index.html``           **主报告（本月至今累积）**。每次 Action 运行覆盖更新，
+- ``reports/index.html``           **主报告（数据起点至今，跨月累计）**。每次 Action 运行覆盖更新，
   GitHub Pages 首页打开即是它 —— 数据在 ``data/`` 里持续积累，报告只是当前累计数据
   的一个"视图"，没必要每次运行留一份文件（那是旧版 reports/runs/ 的做法，已废弃）。
+  2026-10 起总榜窗口跨月：样本只增不减，月初不清零。
 - ``reports/monthly/YYYY-MM.html`` **月度归档**。每月 1 号把上个月的数据冻结成一份
   永久档案；主报告页脚会自动列出所有归档链接。
 
@@ -494,7 +495,10 @@ def write_health_page(html: str) -> Path:
 
 
 def write_live_report(report_data: dict, station_labels: dict[str, str] | None = None) -> Path:
-    """写主报告：覆盖 reports/index.html（Pages 首页）。每次运行都基于当月全部数据重算。"""
+    """写主报告：覆盖 reports/index.html（Pages 首页）。
+
+    每次运行都基于跨月累计窗口（数据起点 → 现在）重算——月度归档另有
+    write_monthly_report，两榜分工见模块 docstring。"""
     root = _reports_root()
     root.mkdir(parents=True, exist_ok=True)
     out = root / "index.html"
