@@ -355,4 +355,10 @@ class TianjiProvider(ForecastProvider):
             self.session, ENDPOINT, params=params, headers=HEADERS,
             timeout=self.timeout, retries=self.retries, source="中科天机",
             classify=_classify,
-                budget=self._budget)
+            # TLS 降级仅本源启用（2026-10-01 事故留档）：该站为游客态、无凭据的
+            # 公开网页接口，其证书运维不可靠——旧证约 09-26 到期后拖延 5 天未换，
+            # 期间所有抓取被客户端正确拒绝，快照缺口无法追补。降级只放弃服务端
+            # 身份校验（连接仍加密），残余风险是中间人篡改"用于评估的公开预报值"，
+            # 可接受；每次尝试仍先走严格校验，服务端修复后自动恢复严格模式。
+            # 带凭据的源严禁开启——降级连接上的 Token 会被中间人窃取。
+                budget=self._budget, tls_insecure_fallback=True)

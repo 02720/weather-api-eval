@@ -21,11 +21,20 @@ Token 失效（401）、权限/参数错误（4xx）、配额超限这类失败�
 - redact：异常消息入日志/异常前统一脱敏（Token 常在 URL/响应回显里）。
 - on_exhausted(last_status, last_err) -> Exception：重试穷尽时定制最终异常
   （如 AccuWeather 的"503 穷尽 = 疑似配额"置熔断标志）。
+- TLS 降级（tls_insecure_fallback，默认关闭）：证书校验失败（服务端证书过期/
+  证书链断裂）与超时不同——等待重试无法自愈，也不是客户端能修的；对声明为
+  "无凭据公开接口"的源，单次尝试遇到此类失败时以 verify=False 立即重发一次。
+  连接仍加密，仅放弃服务端身份校验（残余风险：中间人篡改公开数据）。**每次
+  尝试仍先走严格校验**，服务端修复后自动回到严格模式（例外状态绝不持久化）；
+  同源告警每次进程只打一条，避免淹没其他信号。**带凭据的源严禁开启**——降级
+  连接上的 Token 可被中间人窃取。
 """
 from __future__ import annotations
 
 import logging
+import ssl
 import time
+import warnings
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -46,6 +55,34 @@ DEFAULT_TIMEOUT = (10, 60)        # (connect, read) 秒
 # 直接以明确错误收尾——把"这个源这轮废了"变成一个可见的失败，而不是一个
 # 看起来正常、实际只抓了一半的慢速成功。
 TOTAL_BUDGET_SECONDS = 900
+
+# TLS 降级的同源告警去重（每进程每源只打一条 WARNING，后续降级走 DEBUG）
+_TLS_FALLBACK_WARNED: set[str] = set()
+
+# verify=False 时 urllib3 会对每个请求发 InsecureRequestWarning；降级本身已有
+# 专门的 WARNING 告警（且做了去重），这条重复噪声在降级重发期间抑制掉。
+try:
+    from urllib3.exceptions import InsecureRequestWarning as _InsecureRequestWarning
+except Exception:  # noqa: BLE001  非 requests/urllib3 环境（测试假会话）不抑制
+    _InsecureRequestWarning = None
+
+
+def _is_cert_verify_error(exc: BaseException) -> bool:
+    """沿异常链判定是否"证书校验失败"类错误（过期/链断裂/主机名不符等）。
+
+    requests 把 ssl.SSLCertVerificationError 层层包进 SSLError→MaxRetryError，
+    只看最外层类型会漏判，因此沿 __cause__/__context__ 链查类型或消息特征。
+    """
+    cur: BaseException | None = exc
+    for _ in range(10):
+        if cur is None:
+            return False
+        if isinstance(cur, ssl.SSLCertVerificationError):
+            return True
+        if "certificate verify failed" in str(cur).lower():
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
 
 
 class TimeBudget:
@@ -73,13 +110,18 @@ class TimeBudget:
 
 
 def _dispatch(session: Any, method: str, url: str, *, params: dict | None,
-              json_body: dict | None, headers: dict | None, timeout: Any) -> Any:
+              json_body: dict | None, headers: dict | None, timeout: Any,
+              verify: bool | None = None) -> Any:
     """统一请求入口。优先走 requests 的 session.request；测试假会话等只实现
     .get/.post 的对象回退到对应方法（保持既有注入契约可用）。kwarg 命名与
-    requests 一致（json=），既有假会话按 kwargs.get("json") 断言请求体。"""
+    requests 一致（json=），既有假会话按 kwargs.get("json") 断言请求体。
+    verify=None 表示不显式传（走会话默认的严格校验），正常路径 kwargs 保持
+    与旧版完全一致；仅 TLS 降级重发时显式传 verify=False。"""
     kwargs: dict = {"params": params, "headers": headers, "timeout": timeout}
     if json_body is not None:
         kwargs["json"] = json_body
+    if verify is not None:
+        kwargs["verify"] = verify
     if hasattr(session, "request"):
         return session.request(method, url, **kwargs)
     sender = getattr(session, method.lower(), None)
@@ -103,6 +145,7 @@ def request_with_retries(
     classify: Callable[[Any], tuple[str, Any]] | None = None,
     on_exhausted: Callable[[int | None, Exception | None], Exception] | None = None,
     budget: "TimeBudget | None" = None,
+    tls_insecure_fallback: bool = False,
 ) -> Any:
     """带退避与熔断的请求。返回 classify 判定成功的值（默认分类返回 Response）。
 
@@ -112,12 +155,36 @@ def request_with_retries(
     def _mask(text: Any) -> str:
         return redact(str(text)) if redact else str(text)
 
+    def _send_with_tls_fallback() -> Any:
+        """单次尝试：默认全程严格校验；仅当调用方声明允许（无凭据公开接口）
+        且失败确为证书校验类时，本次尝试内以 verify=False 立即重发。下一次
+        尝试仍先走严格校验——服务端修复后自动回到严格模式，例外状态不持久。"""
+        try:
+            return _dispatch(session, method, url, params=params, json_body=json_body,
+                             headers=headers, timeout=timeout)
+        except Exception as exc:  # noqa: BLE001
+            if not tls_insecure_fallback or not _is_cert_verify_error(exc):
+                raise
+            if source in _TLS_FALLBACK_WARNED:
+                logger.debug("%s TLS 证书校验仍失败，本次尝试继续以不校验模式重发", source)
+            else:
+                _TLS_FALLBACK_WARNED.add(source)
+                logger.warning(
+                    "%s TLS 证书校验失败（服务端证书异常，如过期或证书链断裂，等待重试"
+                    "无法自愈）。该源已声明为无凭据公开接口：本次请求降级为不校验证书"
+                    "重发——连接仍加密，仅放弃服务端身份校验，存在中间人篡改公开数据的"
+                    "残余风险；带凭据的源不适用此降级。", source)
+            with warnings.catch_warnings():
+                if _InsecureRequestWarning is not None:
+                    warnings.simplefilter("ignore", _InsecureRequestWarning)
+                return _dispatch(session, method, url, params=params, json_body=json_body,
+                                 headers=headers, timeout=timeout, verify=False)
+
     last_err: Exception | None = None
     last_status: int | None = None
     for attempt in range(retries + 1):
         try:
-            resp = _dispatch(session, method, url, params=params, json_body=json_body,
-                             headers=headers, timeout=timeout)
+            resp = _send_with_tls_fallback()
         except Exception as e:  # noqa: BLE001  网络类异常 → 可重试
             # 归一为脱敏后的 RuntimeError：底层异常消息（requests 常把完整 URL
             # 带进去，可能含凭据）不会绕过掩码外泄——最终 raise 挂 __cause__ 链

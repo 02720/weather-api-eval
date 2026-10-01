@@ -220,4 +220,9 @@ class FuxiC88Provider(ForecastProvider):
             self.session, url, method=method, json_body=json_body,
             headers=HEADERS, timeout=self.timeout, retries=self.retries,
             source="伏羲", classify=_classify,
-                budget=self._budget)
+            # TLS 降级仅本源启用（与中科天机同批启用，2026-10-01 留档）：同为
+            # 游客态、无凭据的公开可视化接口，小站证书运维不可靠——天机站证书
+            # 过期拖延 5 天的前车之鉴。降级只放弃服务端身份校验（连接仍加密），
+            # 残余风险是中间人篡改"用于评估的公开预报值"，可接受；每次尝试仍先
+            # 走严格校验，服务端修复后自动恢复严格模式。带凭据的源严禁开启。
+                budget=self._budget, tls_insecure_fallback=True)
