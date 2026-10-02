@@ -147,5 +147,154 @@
         ]
       }
     }
+  },
+  {
+    "at": "2026-10-02T09:24:01",
+    "stations": {
+      "wuzhou": {
+        "degraded": false,
+        "n_records": 24,
+        "n_filled": 0,
+        "served_by": [
+          "eia_data"
+        ],
+        "attempts": [
+          {
+            "name": "eia_data",
+            "attempted": true,
+            "ok": true,
+            "n_records": 24,
+            "n_hours": 24,
+            "n_used": 24,
+            "n_conflict": 0,
+            "latest": "2026-10-02T09:00",
+            "age_hours": 0.39924857472222225,
+            "degraded_reason": null,
+            "error": null
+          },
+          {
+            "name": "cma_data",
+            "attempted": false,
+            "ok": false,
+            "n_records": 0,
+            "n_hours": 0,
+            "n_used": 0,
+            "n_conflict": 0,
+            "latest": null,
+            "age_hours": null,
+            "degraded_reason": null,
+            "error": null
+          }
+        ]
+      },
+      "bobai": {
+        "degraded": false,
+        "n_records": 24,
+        "n_filled": 0,
+        "served_by": [
+          "eia_data"
+        ],
+        "attempts": [
+          {
+            "name": "eia_data",
+            "attempted": true,
+            "ok": true,
+            "n_records": 24,
+            "n_hours": 24,
+            "n_used": 24,
+            "n_conflict": 0,
+            "latest": "2026-10-02T09:00",
+            "age_hours": 0.3995977030555556,
+            "degraded_reason": null,
+            "error": null
+          },
+          {
+            "name": "cma_data",
+            "attempted": false,
+            "ok": false,
+            "n_records": 0,
+            "n_hours": 0,
+            "n_used": 0,
+            "n_conflict": 0,
+            "latest": null,
+            "age_hours": null,
+            "degraded_reason": null,
+            "error": null
+          }
+        ]
+      },
+      "pingnan": {
+        "degraded": false,
+        "n_records": 24,
+        "n_filled": 0,
+        "served_by": [
+          "eia_data"
+        ],
+        "attempts": [
+          {
+            "name": "eia_data",
+            "attempted": true,
+            "ok": true,
+            "n_records": 24,
+            "n_hours": 24,
+            "n_used": 24,
+            "n_conflict": 0,
+            "latest": "2026-10-02T09:00",
+            "age_hours": 0.39994478083333335,
+            "degraded_reason": null,
+            "error": null
+          },
+          {
+            "name": "cma_data",
+            "attempted": false,
+            "ok": false,
+            "n_records": 0,
+            "n_hours": 0,
+            "n_used": 0,
+            "n_conflict": 0,
+            "latest": null,
+            "age_hours": null,
+            "degraded_reason": null,
+            "error": null
+          }
+        ]
+      },
+      "wanning": {
+        "degraded": false,
+        "n_records": 24,
+        "n_filled": 0,
+        "served_by": [
+          "eia_data"
+        ],
+        "attempts": [
+          {
+            "name": "eia_data",
+            "attempted": true,
+            "ok": true,
+            "n_records": 24,
+            "n_hours": 24,
+            "n_used": 24,
+            "n_conflict": 0,
+            "latest": "2026-10-02T09:00",
+            "age_hours": 0.40028710333333334,
+            "degraded_reason": null,
+            "error": null
+          },
+          {
+            "name": "cma_data",
+            "attempted": false,
+            "ok": false,
+            "n_records": 0,
+            "n_hours": 0,
+            "n_used": 0,
+            "n_conflict": 0,
+            "latest": null,
+            "age_hours": null,
+            "degraded_reason": null,
+            "error": null
+          }
+        ]
+      }
+    }
   }
 ]
