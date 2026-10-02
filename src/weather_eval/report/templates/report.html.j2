@@ -506,7 +506,7 @@
           <td data-label="降水">{{ num(r.get('precip_score')) }}</td>
           <td data-label="±2°C">{{ pct(r.get('acc2')) }}</td>
           <td data-label="晴雨TS">{{ num(r.get('ts'), 2) }}</td>
-          <td data-label="覆盖">{% if r.get('lead_days') %}{{ r.lead_days }} 天{% else %}—{% endif %}</td>
+          <td data-label="覆盖">{% if r.get('lead_days') %}{{ r.lead_days }} 天{% if r.get('lead_temp_days') and r.get('lead_rain_days') and r.lead_temp_days != r.lead_rain_days %}<span class="mid" title="覆盖时效按维核计：温度维最远 {{ r.lead_temp_days }} 天、降水维 {{ r.lead_rain_days }} 天（两维不等时，数字取两维最远）">温{{ r.lead_temp_days }}·雨{{ r.lead_rain_days }}</span>{% endif %}{% else %}—{% endif %}</td>
           <td class="ci-cell" data-label="90%CI">{% if r.get('ci90') %}{{ num(r.get('ci90')[0]) }}~{{ num(r.get('ci90')[1]) }}{% else %}—{% endif %}</td>
           <td class="l c-spark">{{ spark_svg.get(r.model, '') | safe }}</td>
         </tr>
@@ -515,8 +515,10 @@
       </table>
     </div>
     <p class="hint">💡 <b>怎么看：</b>综合分的<b>金色须线</b>是 90% 置信区间——须线重叠的两家，
-      先后在统计上还说不清；名字带 <b>†</b> 同理。<b>覆盖时效</b>是这家实际能报到的最远提前量，
-      也是它的分数所覆盖的范围；残缺的误差类指标（RMSE 等）越低越好。</p>
+      先后在统计上还说不清；名字带 <b>†</b> 同理。<b>覆盖时效</b>是这家实际参与计算的样本最远覆盖到的提前量；
+      温度维与降水维分别核计，两维不等时数字后括注（如「温16·雨5」：逐日预报产品把温度维带到 16 天，
+      降水维仍止于逐小时的 5 天）——该行综合分的桶覆盖范围见下方「难度对齐」折叠区。
+      残缺的误差类指标（RMSE 等）越低越好。</p>
 
     {% set dw = ((report.meta.get('difficulty_window') or {}).get('all') or {}) %}
     {% if report.meta.model_caveats %}
@@ -739,7 +741,9 @@
           ⑤ <b>日聚合门槛</b>：只在观测与预报两侧当日非缺测小时数都达标（≥{{ report.meta.daily_min_hours }}/24）的天上比较——
           降水全缺测的样本绝不折算成"预报无雨"。
           {% if report.meta.daily_source_fallback %}⑥ <b>逐日预报补位</b>：逐小时够不着的日子用该源自带的逐日预报补位参与按天评估；
-          <b>逐小时指标与排行榜永不掺入日预报反推的样本</b>。{% endif %}
+          <b>逐小时指标与排行榜永不掺入日预报反推的样本</b>。逐日块只接可信要素（缺测要素整列为 null，绝不折算）；
+          只延展了部分要素的源（如中科星图逐日块只接温度），其补位天桶的综合分仍判"缺一即缺"，
+          只有温度分可见——覆盖列与分时效榜会把这种情况如实标出。{% endif %}
           {% if report.meta.get('require_complete_snapshots') %}{{ '⑦' if report.meta.daily_source_fallback else '⑥' }}
           <b>残缺快照默认排除</b>：接口只返回部分分片的快照不参与评估{% if report.meta.get('excluded_incomplete') %}（本窗口已排除
           {% for m, n in report.meta.excluded_incomplete.items() %}{{ model_labels.get(m, m) }} {{ n }} 份{% if not loop.last %}、{% endif %}{% endfor %}）{% endif %}。{% endif %}
@@ -898,7 +902,7 @@
           <div><dt>时效（提前 N 天）</dt><dd>有效时刻 − 起报时刻 = "提前多久做的预报"，按日历天分桶；每个桶里同难度比较。</dd></div>
           <div><dt>综合得分 / 温度分 / 降水分</dt><dd>多个指标压缩成 0~100：温度 7 项、降水 5 项加权，综合 = 两者各半；缺项按剩余权重折算。</dd></div>
           <div><dt>难度对齐（总榜）</dt><dd>先把每一档提前量有多难算出来、统一扣掉再比（双向加法模型），能报 3 天的和能报 15 天的同榜也不吃亏。</dd></div>
-          <div><dt>覆盖时效</dt><dd>该源实际参与计算的样本最长覆盖到提前第几天。可用时效越少，总榜平均所依据的"桶"越少。</dd></div>
+          <div><dt>覆盖时效</dt><dd>该源实际参与计算的样本最长覆盖到提前第几天。温度维与降水维分别核计：榜上数字取两维最远值，两维不一致时括注各自的天数（逐日预报块通常只延展温度维，如中科星图温度至 16 天、降水仍止于逐小时的 5 天）。可用时效越少，总榜平均所依据的"桶"越少。</dd></div>
           <div><dt>90% 置信区间与 †</dt><dd>对评估窗口内的<b>天</b>做分块重采样 {{ report.meta.bootstrap_runs }} 次重算榜单得到的波动范围。名字带 <b>†</b> = 与第一名的差距经 Holm–Bonferroni 校正后仍与 0 分不开——不宜过度解读名次先后。</dd></div>
           <div><dt>有效样本量 n_eff</dt><dd>逐小时误差强自相关，名义 n 会把同一信息重复计数；n_eff 按"每天真正带来多少新信息"折算，跨源比较请以它为准。</dd></div>
           <div><dt>RMSE / MAE / MBE</dt><dd>温度误差的典型大小（°C，越小越好）：RMSE 对偶发大误差惩罚更重；MAE 是最朴素的"平均差多少度"；MBE 正 = 习惯性报偏高，负 = 报偏低。</dd></div>
@@ -1525,7 +1529,8 @@ function lbDesc(mode) {
       "同一档内的直接对照，不经难度对齐。";
   }
   return `日口径 · 提前 ${day} 天：日最高/最低温度 + 24h 累计 ≥1mm 晴雨；` +
-    "同一档内的直接对照，不经难度对齐。";
+    "同一档内的直接对照，不经难度对齐。综合分缺任一维即空（缺一即缺），" +
+    "只有单维的源仍在该列显示它那一维的分数。";
 }
 function leadRow(m, rk, s, t, p, a2, ts) {
   const weak = (s === null || s === undefined);

@@ -2017,16 +2017,21 @@ def _track_lead_boards(models, track: str, src: dict, days: int) -> dict[str, li
         for m in models:
             t = temp_src[m].get(bk) or {}
             p = precip_src[m].get(bk) or {}
-            composite, ts, ps = track_cells(track, t, p)
+            # 分数三件套**显式给出**：日榜的温度分必须由日最高/日最低两个量算出
+            # （daily_temp_score），而 _board_row 默认会对传入的"显示视图"直接套
+            # temp_score——那只是 acc2/rmse/n 三个字段，算出来的是另一个数
+            # （实测 97.5 vs 96.56）。榜单、走势图、冠军横幅同式，杜绝"同名不同值"。
+            ts = daily_temp_score(t) if track == "daily" else temp_score(t)
+            ps = precip_score(p)
+            # 综合分仍缺一即缺（MSN 凭纯温度分登顶的教训，与 _score_trend 同式）；
+            # 但**两维分数各自可见**：第 6~16 天只有逐日温度产品的源（星图），
+            # 综合分就该是空的，而温度维在同一天桶里与满分工的源同难度直接可比，
+            # 把它连同温度分一起置空等于把"它报了 15 天温度"这一事实藏起来。
+            composite = _mean2(ts, ps)
             rows.append(_board_row(
                 m,
                 daily_temp_view(t) if track == "daily" else t,
                 p,
-                # 分数三件套**显式给出**：日榜的温度分必须由日最高/日最低两个量
-                # 算出（daily_temp_score），而 _board_row 默认会对传入的"显示视图"
-                # 直接套 temp_score——那只是 acc2/rmse/n 三个字段，算出来的是
-                # 另一个数（实测 97.5 vs 96.56）。榜单、趋势图、冠军横幅共用
-                # track_cells，杜绝这类"同名不同值"。
                 score=composite, temp_score=ts, precip_score=ps,
                 qualified=(composite is not None)))
         boards[f"{track}:{bk}"] = _rank_rows(rows)
@@ -2653,6 +2658,25 @@ def _build_board_rows(models, name, design, *, by_model,
         score = _fin(scores[i], 2)
         t_score = _fin(aligned["temp_score"][i], 2)
         p_score = _fin(aligned["precip_score"][i], 2)
+        # 覆盖时效按**本榜口径**取数（第四轮 P3-b），且**按维拆开**（2026-10）：
+        # "覆盖"回答的是"这家实际参与计算的样本最远到了第几天"——温度维与降水
+        # 维的答案可以不同（典型：星图逐日产品把温度维带到第 16 天、降水维只有
+        # 逐小时聚合的 5 天），单一数字必然谎报其中一维。lead_days 取两维最远值
+        # （与名词词典"实际参与计算的样本最长覆盖到提前第几天"一致），
+        # lead_temp_days / lead_rain_days / rain_days 逐维披露，页面在两维不一致
+        # 时括注。旧口径的日榜 lead_days 实际数的是**降水**天（与 rain_days 重复），
+        # 温度维的延伸完全不可见——读者看到"15 天逐日源只显示覆盖 5 天"的根源。
+        h_temp = _valid_lead_days(scored, "temp_obs", "temp_fcst")
+        h_rain = _valid_lead_days(scored, "rain_obs", "rain_fcst")
+        d_temp = _valid_daily_temp_days(daily_by_model[m])
+        d_rain = _valid_rain_days(daily_by_model[m])
+        if name == "hourly":
+            lead_temp, lead_rain = h_temp, h_rain
+        elif name == "daily":
+            lead_temp, lead_rain = d_temp, d_rain
+        else:  # 总榜跨两条轨道：同一维取两轨的最远（单位同为"天"）
+            lead_temp, lead_rain = (_max_or_none(h_temp, d_temp),
+                                    _max_or_none(h_rain, d_rain))
         row = _board_row(
             m,
             {"acc2": _fin(aligned["acc2"][i]), "rmse": _fin(aligned["rmse"][i], 3),
@@ -2666,15 +2690,10 @@ def _build_board_rows(models, name, design, *, by_model,
             # 全 lead 的配对数（含起报当日）：明细口径核对用，不参与名次
             n_all_leads=n_all_leads,
             n_buckets=int(np.isfinite(mat["composite"][i]).sum()),
-            # 覆盖时效按**本榜口径**取数（第四轮 P3-b）：小时榜数逐小时轨道、
-            # 日榜数按天轨道；旧实现三张榜都用逐小时温度 + 按天降水，
-            # metrics JSON 里日榜行的"覆盖时效"其实是逐小时的
-            lead_days=(_valid_rain_days(daily_by_model[m])
-                       if name == "daily" else
-                       _valid_lead_days(scored, "temp_obs", "temp_fcst")),
-            rain_days=(_valid_lead_days(scored, "rain_obs", "rain_fcst")
-                       if name == "hourly" else
-                       _valid_rain_days(daily_by_model[m])),
+            lead_days=_max_or_none(lead_temp, lead_rain),
+            rain_days=lead_rain,
+            lead_temp_days=lead_temp,
+            lead_rain_days=lead_rain,
             n_days=len(days_temp | days_rain),
             # 降水维单独的验证日数（前端"验证日数"列的括号注）：日累计降水的
             # 样本日与逐小时温度的样本日可能不同（补位/覆盖差异），分开披露
@@ -2806,6 +2825,26 @@ def _valid_rain_days(recs: list[dict]) -> int | None:
     offs = [r["offset"] for r in recs
             if r["rain_obs"] is not None and r["rain_fcst"] is not None]
     return max(offs) if offs else None
+
+
+def _valid_daily_temp_days(recs: list[dict]) -> int | None:
+    """按天轨道的温度覆盖时效：日最高与日最低**两对**同时非缺测的最长日偏移。
+
+    为什么要求两对齐备：日榜温度维的得分（daily_temp_score）是 max/min 两量
+    缺一即缺——只报最高不报最低的源在那一天根本没有温度维结论，把它数进
+    覆盖就是虚报。典型如中科星图：逐日产品把温度维带到第 16 天而降水维止于
+    逐小时的第 5 天，覆盖时效必须把"这家实际被验证到了多远"如实说出来。
+    """
+    offs = [r["offset"] for r in recs
+            if r["temp_max_obs"] is not None and r["temp_max_fcst"] is not None
+            and r["temp_min_obs"] is not None and r["temp_min_fcst"] is not None]
+    return max(offs) if offs else None
+
+
+def _max_or_none(*vals: int | None) -> int | None:
+    """多值取最大，全 None 才 None（覆盖时效按维取最远）。"""
+    got = [v for v in vals if v is not None]
+    return max(got) if got else None
 
 
 def _model_status(models: list[str], snapshots: dict,

@@ -791,7 +791,75 @@ def test_daily_fallback_extends_beyond_hourly_coverage(tmp_path, monkeypatch):
     assert data["temp_hourly"]["ecmwf_ifs"]["1d"]["n"] == 24   # 08-25 全天
     assert data["temp_hourly"]["ecmwf_ifs"]["2d"]["n"] == 0
     assert data["temp_hourly"]["ecmwf_ifs"]["3d"]["n"] == 0
-    assert data["leaderboards"]["all"][0]["lead_days"] == 2
+    # 覆盖时效按"实际参与计算的样本最远到了第几天"核计：日产品让两维都到第 4 天，
+    # 总榜必须报 4（2026-10 起两维拆分后的口径；旧口径只数逐小时，报 2——与本
+    # 测试名"逐日补位延伸到逐小时覆盖之外"自相矛盾）
+    all_row = data["leaderboards"]["all"][0]
+    assert all_row["lead_days"] == 4
+    assert all_row["lead_temp_days"] == 4 and all_row["lead_rain_days"] == 4
+    assert data["leaderboards"]["hourly"][0]["lead_days"] == 2      # 逐小时榜不受影响
+    assert data["leaderboards"]["daily"][0]["lead_days"] == 4       # 日榜数到补位桶
+
+
+def test_daily_temp_only_extension_disclosed_not_scored(tmp_path, monkeypatch):
+    """逐日产品只接温度（中科星图口径）时：温度维覆盖如实外延、综合分仍判死。
+
+    形态与中科星图一致——逐小时产品 5 天（温度+降水），逐日产品 15 天但降水
+    为量级码不接（全 null）。两条纪律同时成立：
+      * 覆盖时效按维披露：温度维到第 4 天（日产品补位），降水维止于第 2 天
+        （逐小时聚合），总榜取最远并把拆分写进行内字段；
+      * 第 3~4 天综合分仍为 None——只有温度半边，不配叫综合分（MSN 教训）。
+        但温度维分数必须可见：它与同档满分工的源同难度，是这家的真实水平。
+    """
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    start = datetime(2026, 8, 24, 0, 0)
+    obs = []
+    for h in range(5 * 24):
+        t = start + timedelta(hours=h)
+        obs.append({"time": iso(t), "temp": 20.0 + (h % 3),
+                    "rain": 5.0 if h >= 2 * 24 else 0.0})
+    storage.save_obs("s1", obs)
+
+    snap = _snap_with_daily(
+        "geovis_v1", start,
+        hourly_days=[(0, 24), (1, 24)],
+        temps=lambda off, h: 21.0, precs=lambda off, h: 0.0,
+        daily_days=[2, 3, 4],
+        daily_max=[22.0, 22.0, 22.0],
+        daily_min=[20.0, 20.0, 20.0],
+        daily_rain=[None, None, None],        # 逐日降水不可信 → 全 null，绝不折算
+    )
+    storage.save_forecast_snapshot("s1", "geovis_v1", snap)
+
+    data = build_report(["s1"], ["geovis_v1"], dict(CFG, min_sample=1), start,
+                        start + timedelta(hours=5 * 24 - 1), "2026-08")
+
+    # 温度维：第 2~4 天（桶 3d/4d…按自然日口径 offset=3,4）都入样且进了温度指标
+    for off in (2, 3, 4):
+        assert data["temp_daily"]["geovis_v1"][f"{off}d"]["max"]["n"] == 1
+        assert data["precip_daily"]["geovis_v1"][f"{off}d"]["n"] == 0   # 降水维无样本
+
+    # 覆盖时效按维拆分
+    all_row = data["leaderboards"]["all"][0]
+    assert (all_row["lead_temp_days"], all_row["lead_rain_days"]) == (4, 2)
+    assert all_row["lead_days"] == 4
+    d_row = data["leaderboards"]["daily"][0]
+    # 日榜各维数本榜自己的轨道：温度到补位桶第 4 天；降水只到 offset 1——
+    # 起报当日（offset 0）按口径不入按天轨道，逐小时聚合在日榜里只留下 08-25
+    assert (d_row["lead_temp_days"], d_row["lead_rain_days"]) == (4, 1)
+    assert d_row["lead_days"] == 4
+    # 总榜的降水维取两轨最远（逐小时 lead 48h → 2 天），与日榜的 1 天并不矛盾
+    assert all_row["lead_rain_days"] == 2
+
+    # 综合分缺一即缺：只有温度半边的那些天桶，综合分必须是 None，
+    # 但温度分必须可见（同一天桶内与满分工的源同难度，是这家的真实水平）
+    daily_lead_rows = {off: next(r for r in data["leaderboards"][f"daily:{off}d"]
+                                 if r["model"] == "geovis_v1")
+                       for off in (2, 3, 4)}
+    for off, row in daily_lead_rows.items():
+        assert row["score"] is None, off          # 综合分判死
+        assert row["temp_score"] is not None, off  # 温度分可见
+        assert row["precip_score"] is None, off
 
 
 def test_daily_prefers_hourly_aggregation_when_covered(tmp_path, monkeypatch):
