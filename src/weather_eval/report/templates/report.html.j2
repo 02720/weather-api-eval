@@ -1514,6 +1514,10 @@ const LB_BODY_SERVER = () => document.getElementById("lbBody").innerHTML;
 let lbBodyServer = null;      // 首次切换前快照，切回总榜时原样恢复
 const SPARK_SVG = {};         // 服务端走势线：从总榜行里收集，分榜行复用
 const LB_TS_HEAD = {all: "日雨 TS", hourly: "时雨 TS", daily: "日雨 TS"};
+/* 移动端卡片藏掉 thead，列含义全靠 td 的 data-label 生成（见上方媒体查询）。
+   分榜的 TS 列沿用桌面的分轨命名（第四轮 P1-3 的教训：总榜与日口径的 TS
+   数值不同源，共用一个名字曾被并排误读）。 */
+const LB_TS_LABEL = {all: "两轨TS", hourly: "时雨TS", daily: "日雨TS"};
 function lbDesc(mode) {
   if (mode === "all") {
     return "难度对齐总榜：先把每一档提前量的难度统一扣掉再比（原理见下方折叠区）；" +
@@ -1537,6 +1541,9 @@ function leadRow(m, rk, s, t, p, a2, ts) {
   const c = colorOf(m);
   const v = Math.max(0, Math.min(100, Number(s) || 0));
   const cls = (rk === 1 && !weak ? "is-top " : "") + (weak ? "is-weak" : "");
+  // data-label 与服务端总榜行一一对应：移动端卡片没有表头，少了它
+  // 六个指标会连成一串裸数字（分榜曾在手机上这样坏了）。
+  const tsLab = LB_TS_LABEL[(lbMode.split(":")[0])] || "晴雨TS";
   return `<tr class="${cls}" data-m="${escHtml(m)}" data-rk="${rk}"` +
     ` data-score="${s ?? ""}" data-temp="${t ?? ""}" data-precip="${p ?? ""}"` +
     ` data-acc2="${a2 ?? ""}" data-ts="${ts ?? ""}" data-lead="">` +
@@ -1547,9 +1554,10 @@ function leadRow(m, rk, s, t, p, a2, ts) {
     `<td class="c-score"><div class="cell">` +
     `<div class="thermo sm"><span class="tube"><b style="--v:${v}%"></b></span></div>` +
     `<b class="score-num">${weak ? "—" : fmt(s)}</b></div></td>` +
-    `<td>${fmt(t)}</td><td>${fmt(p)}</td>` +
-    `<td>${a2 == null ? "—" : fmt(a2) + "%"}</td>` +
-    `<td>${fmt(ts, 2)}</td><td>—</td><td class="ci-cell">—</td>` +
+    `<td data-label="温度">${fmt(t)}</td><td data-label="降水">${fmt(p)}</td>` +
+    `<td data-label="±2°C">${a2 == null ? "—" : fmt(a2) + "%"}</td>` +
+    `<td data-label="${tsLab}">${fmt(ts, 2)}</td>` +
+    `<td data-label="覆盖">—</td><td class="ci-cell" data-label="90%CI">—</td>` +
     `<td class="l c-spark">${SPARK_SVG[m] || ""}</td></tr>`;
 }
 function renderBoard() {
