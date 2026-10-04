@@ -1,2 +1,14 @@
-# 开发/测试依赖
+# 开发/测试/CI 依赖
+#
+# 这份清单是 **pip 安装路径的事实来源**（scripts/install.sh 在没有 uv 时走它，
+# .github/workflows/*.yml 也直接用它）。凡是 CI 会用到的工具都必须在这里出现——
+# pyproject.toml 的 [project.optional-dependencies].dev 只覆盖"有 uv 的人"：
+# 2026-10-04 那次 CI 红灯（`python -m ruff` → No module named ruff）就是两份清单
+# 漂移造成的，ruff 与 pytest-xdist 只写在 pyproject 里，pip 路径根本没装。
+#
+# 版本区间与 pyproject 的 dev extra 保持一致，改一处必须改另一处。
 pytest>=8.0,<9
+# ci.yml 的快层用 `-n auto` 并行跑；缺它 pytest 会直接报 "unrecognized arguments: -n"
+pytest-xdist>=3,<4
+# ci.yml 有一步 `python -m ruff check src scripts tests`
+ruff>=0.8,<0.9

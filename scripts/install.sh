@@ -11,8 +11,18 @@
 #   * uv（推荐）：pyproject 里的 `override-dependencies` 让解析器一次通过；
 #   * pip：先 --no-deps 装 cyeva，再装其余依赖。
 #
+# ⚠️ 两条路装进的**不是同一个解释器**，这是本脚本最容易骗人的地方：
+#   * `--pip` 装进**当前解释器**（`python3`）——CI 用这条；
+#   * uv 路径的 `uv sync` 装进**项目虚拟环境** `./.venv`，当前 `python3` 看不见它。
+# 于是"装完了"与"python -m pytest/ruff 能跑"是两件事。2026-10-04 的 CI 红灯正是
+# 栽在这里：CI 跑的是 `uv sync`（若镜像带 uv）或 pip 缺 ruff 的清单，随后
+# `python -m ruff` 却问 setup-python 的解释器要模块。
+# 两道防线：① CI 用 `--pip` 显式选路，不依赖镜像里"恰好有没有 uv"；
+#          ② 脚本末尾做**真实自检**（不是 echo 一句建议），装没装上当场硬失败。
+#
 # 用法：
-#   ./scripts/install.sh                # 装运行时 + 开发依赖
+#   ./scripts/install.sh                # 装运行时 + 开发依赖（有 uv 就用 uv）
+#   ./scripts/install.sh --pip          # 强制 pip 装进当前解释器（CI 用这条）
 #   ./scripts/install.sh --runtime-only # CI 只跑采集/评估时用
 #   ./scripts/install.sh --frozen       # 严格按锁文件（带哈希）装，用于可复现构建
 set -euo pipefail
@@ -22,10 +32,12 @@ ROOT="$PWD"
 
 RUNTIME_ONLY=0
 FROZEN=0
+FORCE_PIP=0
 for arg in "$@"; do
   case "$arg" in
     --runtime-only) RUNTIME_ONLY=1 ;;
     --frozen) FROZEN=1 ;;
+    --pip) FORCE_PIP=1 ;;
     *) echo "未知参数: $arg" >&2; exit 2 ;;
   esac
 done
@@ -38,7 +50,14 @@ case "$PY" in
      echo "    若你确知自己在做什么，可自行改用 3.12 后重跑本脚本。" >&2 ;;
 esac
 
-if command -v uv >/dev/null 2>&1; then
+USE_UV=0
+if [ "$FORCE_PIP" = "1" ]; then
+  echo "→ --pip：强制 pip 装进当前解释器（不依赖镜像里有没有 uv）"
+elif command -v uv >/dev/null 2>&1; then
+  USE_UV=1
+fi
+
+if [ "$USE_UV" = "1" ]; then
   echo "→ 使用 uv（依赖冲突由 pyproject 的 override-dependencies 解决）"
   if [ "$FROZEN" = "1" ]; then
     uv sync --frozen --all-extras
@@ -50,7 +69,7 @@ if command -v uv >/dev/null 2>&1; then
     fi
   fi
 else
-  echo "→ 未找到 uv，改用 pip 两步安装"
+  echo "→ 使用 pip 两步安装（装进当前解释器 $(command -v python3)）"
   if [ "$FROZEN" = "1" ] && [ -f requirements.lock.txt ]; then
     echo "   cyeva 无法参与 --require-hashes（它必须 --no-deps），先单独装："
     python3 -m pip install --no-deps cyeva==0.2.3
@@ -69,4 +88,34 @@ else
     echo "   （可编辑安装失败，不影响 PYTHONPATH=src 的用法）"
 fi
 
-echo "✓ 安装完成。验证： python3 -m pytest -m unit -q"
+# ------------------------------------------------------------------ 安装自检
+# 为什么必须是真检查而不是一句 echo：安装脚本最恶劣的失败模式是"报告成功、实际
+# 什么都没装进你要用的解释器"——本项目已经为此付过一次 CI 红灯（No module named
+# ruff）。自检用**与后面步骤相同的解释器**去问工具要版本，问不到就当场非零退出，
+# 把故障钉在安装这一步，而不是让它漂到三条命令之后以一句莫名其妙的报错出现。
+if [ "$USE_UV" = "1" ]; then
+  # uv sync 的目标是项目 .venv，当前 python3 看不见它——问错解释器等于没问
+  CHECK_CMD=(uv run python)
+  VERIFY_HINT="uv run pytest -m unit -q   # 或先 source .venv/bin/activate"
+else
+  CHECK_CMD=(python3)
+  VERIFY_HINT="python3 -m pytest -m unit -q"
+fi
+
+selfcheck_fail() {
+  echo "✗ 安装自检失败：$1" >&2
+  echo "  这不是代码的问题，是依赖没装到位——**不要**继续往下跑，"
+  echo "  那样只会在更远的地方看到更难懂的报错。" >&2
+  exit 1
+}
+
+"${CHECK_CMD[@]}" -m pytest --version >/dev/null 2>&1 || \
+  selfcheck_fail "pytest 不可用（${CHECK_CMD[*]} -m pytest）。"
+if [ "$RUNTIME_ONLY" != "1" ]; then
+  # ruff 是 CI 的硬门禁；缺它会让 ci.yml 的 lint 步骤以 'No module named ruff' 变红
+  "${CHECK_CMD[@]}" -m ruff --version >/dev/null 2>&1 || \
+    selfcheck_fail "ruff 不可用（${CHECK_CMD[*]} -m ruff）。它在 requirements-dev.txt 里，检查该文件是否被安装。"
+fi
+
+echo "✓ 安装完成并通过自检（$("${CHECK_CMD[@]}" -m pytest --version 2>&1 | head -1)）。"
+echo "  验证： $VERIFY_HINT"

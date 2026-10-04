@@ -142,6 +142,18 @@ python -m weather_eval fetch-forecast --source tianji   # 其他源同理，凭�
 python -m weather_eval report                          # 生成 reports/index.html
 ```
 
+也可以用 `./scripts/install.sh --pip` 一条命令装齐（`--pip` = 装进**当前**解释器；
+省略该参数时若本机有 uv 则走 `uv sync`，依赖落在项目 `.venv` 里，得用 `uv run` 或
+先激活 `.venv` 才能调用）。CI 一律用 `--pip`：让"装到了哪个解释器"成为显式选择，
+而不是取决于 runner 镜像里恰好有没有 uv。
+
+提交前跑一遍 CI 的两道快门（几秒，不碰真实数据）：
+
+```bash
+python -m ruff check src scripts tests
+python -m pytest -m "not golden and not slow" -n auto
+```
+
 抓取是**幂等**的（按 站点 × 模型 × 起报时刻 去重），重复运行不产生冗余数据；单次失败不丢数据，下次运行会自动补回近 24h 的观测窗口。
 
 ### 命令一览

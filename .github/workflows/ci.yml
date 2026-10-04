@@ -28,7 +28,11 @@ jobs:
           python-version: "3.12"
 
       - name: 安装依赖（含 cyeva 的 --no-deps 两步）
-        run: ./scripts/install.sh
+        # 必须显式 --pip：默认路径在镜像带 uv 时会走 `uv sync`，而它装进项目 .venv，
+        # 后面几步用的却是 setup-python 的解释器——于是"装好了"与"python -m 能跑"
+        # 成了两件事，lint 步骤会以 `No module named ruff` 收场（2026-10-04 实况）。
+        # 显式选路 = CI 的行为不再取决于 runner 镜像里恰好有没有 uv。
+        run: ./scripts/install.sh --pip
 
       - name: ruff
         run: python -m ruff check src scripts tests
@@ -53,7 +57,7 @@ jobs:
           python-version: "3.12"
 
       - name: 安装依赖
-        run: ./scripts/install.sh
+        run: ./scripts/install.sh --pip      # 同 fast：显式选路，见该文件上方注释
 
       - name: Golden Master 对拍 + 性能预算
         run: python -m pytest -m "golden" -q
