@@ -103,7 +103,7 @@ import base64
 import json
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from math import asin, cos, radians, sin, sqrt
 from typing import Any
 from urllib.parse import quote
@@ -114,7 +114,7 @@ from .base import ForecastProvider
 from .http import ( DEFAULT_UA,
 DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, TimeBudget,
                    request_with_retries)
-from ..timeutil import BEIJING, floor_to_hour, parse_iso
+from ..timeutil import BEIJING, floor_to_hour
 
 logger = logging.getLogger(__name__)
 

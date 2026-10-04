@@ -21,7 +21,6 @@ from weather_eval.forecast.fuxi_data import (
     looks_like_running_accumulation,
     parse_avail_hours,
     parse_query_response,
-    utc_now,
 )
 
 TOKEN = "tok-abc123"
@@ -209,7 +208,7 @@ def test_non_zero_padded_hour_picks_latest():
 
 def test_avail_response_without_msgcode_raises():
     routes = _routes(avail_by_date={})
-    sess = RoutingSession(routes)
+    _sess = RoutingSession(routes)
     with pytest.raises(RuntimeError, match="无 msgCode"):
         parse_avail_hours({"success": False, "msg": "token 无效", "data": None})
 

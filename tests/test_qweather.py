@@ -176,7 +176,7 @@ def test_v1_request_contract(monkeypatch):
 
 def test_duplicate_times_merged_keep_first(caplog):
     """同一整点的两条时间戳（下取整后碰撞）应去重并保留首见条目。"""
-    base = datetime(2026, 8, 27, 15, 0)
+    _base = datetime(2026, 8, 27, 15, 0)
     hours = [
         # 两个不同 UTC 分钟均落在北京时 15 点档
         {"forecastTime": _bjt(datetime(2026, 8, 27, 14, 5)),

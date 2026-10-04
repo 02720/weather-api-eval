@@ -1,13 +1,13 @@
 # 天气预报 API 准确度评估系统 —— 运行时依赖
 #
-# 关键：cyeva 0.2.3 的元数据把 pint 钉死为 ==0.24.3，而 pint 0.24.3 在 Python 3.12+
-# 上会因 @dataclass(frozen=True) 继承问题导入失败（已实测）；实际可用的是 pint 0.24.4。
-# 由于 pip 的依赖解析器不允许「cyeva==0.2.3 + pint==0.24.4」同时出现，cyeva 不能与本文件
-# 里其它对 pint 的约束一起被一次性解析。因此 cyeva 用下面的独立命令安装（--no-deps 跳过其
-# 错误的 pint 约束），再由本文件显式提供兼容的 pint==0.24.4 及其余运行依赖：
+# ⚠️ 完整安装步骤在 scripts/install.sh，请用它而不是手动敲：  ./scripts/install.sh
 #
-#     python -m pip install --no-deps cyeva==0.2.3
-#     python -m pip install -r requirements.txt -r requirements-dev.txt
+# 原因（一句话）：cyeva 0.2.3 的元数据把 pint 钉死为 ==0.24.3，而 pint 0.24.3 在
+# Python 3.12+ 上会因 @dataclass(frozen=True) 的继承问题导入失败（已实测）；实际
+# 可用的是 pint 0.24.4。pip 的解析器不允许「cyeva==0.2.3 + pint==0.24.4」同时出现，
+# 所以 cyeva 必须先 --no-deps 单独装，再由本文件显式提供 pint==0.24.4。
+# 完整说明与两条出路（uv 的 override-dependencies / pip 的两步）见
+# scripts/install.sh 顶部与 pyproject.toml 的 [tool.uv] 段。
 #
 # 下面 pandas/scipy 是 cyeva 的真实运行依赖（因其用 --no-deps 安装，需在此显式列出）。
 #
@@ -16,8 +16,8 @@
 # （README 宣称"固定种子可复现"）。这里给每个未钉死的依赖补上主版本上界：
 # 允许补丁/次版本演进，挡住破坏性主版本。
 #
-# 这仍不是真正的 lock（不锁定传递依赖的精确版本）。要做完整锁定请用
-# pip-compile / uv 生成带哈希的 lock 文件，并每年复核一次。
+# 传递依赖的精确版本由锁文件承担（uv.lock，带哈希），可复现构建用
+# `./scripts/install.sh --frozen`。
 pint==0.24.4
 numpy==2.1.2
 pandas>=2.2.3,<3

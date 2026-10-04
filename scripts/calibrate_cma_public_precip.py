@@ -158,7 +158,12 @@ def window_ratio_test(series: dict[str, dict[datetime, float]]) -> None:
 
 
 def _accumulate(a: list, x: float, y: float) -> None:
-    a[0] += x; a[1] += y; a[2] += x * x; a[3] += y * y; a[4] += x * y; a[5] += 1
+    a[0] += x
+    a[1] += y
+    a[2] += x * x
+    a[3] += y * y
+    a[4] += x * y
+    a[5] += 1
 
 
 def _corr(a: list) -> float:

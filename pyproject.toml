@@ -1,4 +1,79 @@
+[project]
+name = "weather-eval"
+version = "0.1.0"
+description = "天气预报 API 准确度评估：封存纪律 + 统计严谨性 + 可复核的公开榜单"
+readme = "README.md"
+# cyeva 0.2.3 的元数据把 Python 钉在 <3.13（其 binarize 用了 exec + locals() 的
+# 写法，在 3.13 的 PEP 667 语义下会 KeyError）。**显式写明**而不是让下一个人在
+# 干净安装时踩到它——隐式约束等于没有约束。
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "numpy>=2.1.2,<3",
+    "pandas>=2.2.3,<3",
+    "scipy>=1.14.1,<2",
+    "requests>=2.31,<3",
+    "beautifulsoup4>=4.12,<5",
+    "jinja2>=3.1,<4",
+    "pyyaml>=6.0,<7",
+    # cyeva 是指标口径的**权威实现**，保留；pint 随它保留（cyeva 内部用）。
+    "cyeva==0.2.3",
+    "pint==0.24.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<9",
+    "pytest-xdist>=3,<4",
+    "ruff>=0.8,<0.9",
+    "mypy>=1.13,<2",
+]
+analysis = ["duckdb>=1.1,<2"]
+
+[project.scripts]
+weather-eval = "weather_eval.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["weather_eval", "weather_eval.forecast", "weather_eval.obs",
+            "weather_eval.report"]
+
+# ---------------------------------------------------------------------------
+# cyeva 的依赖冲突（装包前必读，scripts/install.sh 里同样写了一份）
+#
+# cyeva 0.2.3 的元数据把 pint 钉死为 ==0.24.3，而 pint 0.24.3 在 Python 3.12+
+# 上会因 @dataclass(frozen=True) 的继承问题**导入失败**；实际可用的是 0.24.4。
+# pip 的解析器不允许「cyeva==0.2.3 + pint==0.24.4」同时出现，于是裸跑
+# `pip install -e .` 会失败。两条出路：
+#   * uv（推荐）：下面的 override-dependencies 让解析器一次通过；
+#   * pip：走 scripts/install.sh 的两步（先 --no-deps 装 cyeva，再装其余）。
+# ---------------------------------------------------------------------------
+[tool.uv]
+override-dependencies = ["pint==0.24.4"]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "unit: 快层：纯逻辑，无 IO、无 cyeva 重计算（PR 必跑）",
+    "contract: 管道边界的契约校验",
+    "golden: 与 Golden Master 基线的对拍（I8：口径逐位不变）",
+    "slow: 慢层：真实数据全量构建、两次构建比对、性能预算（定时跑）",
+    "parity: 快速路径与权威实现（cyeva / dict 路径）的同值对拍",
+]
+
+[tool.ruff]
+# 120 而不是 79/88：本项目的注释与 docstring 大量是中文，一个宽字符占一个字符位
+# 却占两列宽，88 会把"为什么这么写"逼成断行碎句——可读性比对齐更重要。
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+# 分阶段打开（§8.3）：先只开 E/F，稳定后再逐步开 I/UP/B。
+select = ["E", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]

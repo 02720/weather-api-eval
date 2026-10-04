@@ -379,6 +379,7 @@
 {% set rs = ((report.meta.get('difficulty_window') or {}).get('all') or {}).get('rank_sensitivity') or {} %}
 {% set ws = report.meta.get('weight_sensitivity') or {} %}
 {% set integ = report.meta.get('integrity') or {} %}
+{% set prov = report.meta.get('provenance') or {} %}
 {% macro pct(v) %}{{ '—' if v is none else '%.1f%%'|format(v) }}{% endmacro %}
 {% macro num(v, d=1) %}{{ '—' if v is none else ('%.' ~ d ~ 'f')|format(v) }}{% endmacro %}
 {% macro thermo(score, ci, cls) %}
@@ -937,6 +938,16 @@
   中科星图 · AccuWeather ｜ 实况：环境气象数据服务平台 eia-data.com<br>
   本页由 GitHub Actions 自动生成，每天 3 次更新；仅供学习参考，出行请以官方气象部门预报为准。
   {% if integ.get('merkle_root') %}<div class="merkle">Merkle root {{ integ.merkle_root }}</div>{% endif %}
+  {# 来源留痕（I5/I6）："同数据 + 同代码 + 同依赖 + 同种子 ⇒ 同一份报告"必须
+     可被读者核对，而不是一句 README 里的承诺。脏工作区的报告自认不可复现。 #}
+  {% if prov %}
+  <div class="merkle">
+    复现凭据：code {{ prov.code_sha }}{% if prov.code_dirty %}（工作区有未提交改动，本轮结果不可复现）{% endif %}
+    ｜ 依赖锁 {{ prov.lock_file or "无" }}{% if prov.lock_hash %}#{{ prov.lock_hash }}{% endif %}
+    ｜ bootstrap 种子 {{ prov.bootstrap_seed }} ｜ Python {{ prov.python }}
+    ｜ numpy {{ prov.deps.numpy }} · pandas {{ prov.deps.pandas }} · cyeva {{ prov.deps.cyeva }}
+  </div>
+  {% endif %}
 </footer>
 
 <script>

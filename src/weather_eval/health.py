@@ -18,7 +18,6 @@
 """
 from __future__ import annotations
 
-from datetime import timedelta
 
 from .snapshot_meta import ISSUE_SOURCE_LABELS, snapshot_complete
 from .timeutil import now_beijing, parse_iso
@@ -128,7 +127,6 @@ def evaluate_staleness(health: dict, stale_hours: int = 30) -> dict:
     不算故障——把正常状态当成故障会让告警迅速失去意义。
     """
     now = now_beijing()
-    limit = timedelta(hours=stale_hours)
     out: dict[str, dict] = {}
     for m, h in health.items():
         if h["status"] == "no_data":

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import sys
 from collections import defaultdict
-from datetime import datetime
 
 sys.path.insert(0, "src")
 
@@ -28,8 +27,10 @@ THRESHOLDS = (0.1, 0.5, 1.0, 2.0, 5.0, 10.0)
 def binarize_stats(obs, fcst, thr):
     ob = np.round(np.asarray(obs, dtype=float), 2) >= thr
     fb = np.round(np.asarray(fcst, dtype=float), 2) >= thr
-    h = int((ob & fb).sum()); f = int((~ob & fb).sum())
-    m = int((ob & ~fb).sum()); c = int((~ob & ~fb).sum())
+    h = int((ob & fb).sum())
+    f = int((~ob & fb).sum())
+    m = int((ob & ~fb).sum())
+    c = int((~ob & ~fb).sum())
     return h, f, m, c
 
 

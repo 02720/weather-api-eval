@@ -173,7 +173,6 @@ def test_all_models_registered_in_report_layer():
     逻辑无需改动"——但 MSN 接入时漏登了 MODEL_LABELS/MODEL_COLORS/MODEL_FAMILIES，
     它以原始 id 显示在总榜第 3 名附近且不属于任何源分组。这条测试把该契约变成
     机器可校验的：任何新源漏登任何一张表，CI 直接红。"""
-    import json
     from weather_eval.config import load_config
     from weather_eval.report import render
 

@@ -59,7 +59,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .timeutil import now_beijing, ym, ymd
+from .timeutil import now_beijing, ym
 
 logger = logging.getLogger(__name__)
 
@@ -328,7 +328,6 @@ def save_forecast_snapshot(station_id: str, model: str, snapshot: dict, *,
     同源（同一配置项），详见 snapshot_meta.truncate_daily_block。
     """
     from .snapshot_meta import stamp_snapshot, truncate_daily_block
-    from .timeutil import now_beijing
     issue_iso = snapshot["issue_iso"]
     path = _root() / "forecasts" / station_id / model / _issue_filename(issue_iso)
     with _exclusive_lock(path):

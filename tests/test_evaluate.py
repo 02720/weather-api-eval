@@ -1,5 +1,4 @@
 from datetime import datetime, timedelta
-import math
 
 from weather_eval import storage
 from weather_eval.evaluate import (
@@ -1012,7 +1011,8 @@ def test_daily_block_missing_or_malformed_is_backward_compatible(tmp_path, monke
                     "temp_max": [1.0], "temp_min": [1.0], "precipitation": [0.0]}}}):
         import shutil
         shutil.rmtree(tmp_path / "forecasts", ignore_errors=True)
-        broken = dict(base); broken.update(bad)
+        broken = dict(base)
+        broken.update(bad)
         storage.save_forecast_snapshot("s1", "ecmwf_ifs", broken)
         d = build_report(["s1"], ["ecmwf_ifs"], cfg, start, start + timedelta(hours=47),
                          "2026-08")

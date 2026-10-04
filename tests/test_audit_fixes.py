@@ -14,7 +14,6 @@
 import copy
 import json
 
-import pytest
 
 from weather_eval import stats as st
 from weather_eval.evaluate import (

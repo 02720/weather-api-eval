@@ -64,8 +64,6 @@ def test_fetch_forecast_splits_daily_block_per_model(tmp_path, monkeypatch):
 def test_archive_dry_run_and_apply(tmp_path, monkeypatch, caplog):
     """P3-5：archive 命令 dry-run 列候选、--apply 压缩删源文件。"""
     import logging
-    import json as _json
-    from pathlib import Path
     monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
     for issue in ("2026-07-01T08:00", "2026-09-06T08:00"):
         snap = {"issue_iso": issue, "models": ["ecmwf_ifs"],

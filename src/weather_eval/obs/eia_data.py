@@ -149,7 +149,9 @@ def _records_from_table(html: str, cnt: _NonHourCounter) -> list[dict]:
     tables = soup.find_all("table", class_="modern-table")
     target = None
     for table in tables:
-        header = [th.get_text(strip=True) for th in table.find_all("tr")[0].find_all(["th", "td"])] if table.find("tr") else []
+        first_row = table.find("tr")
+        header = ([th.get_text(strip=True) for th in first_row.find_all(["th", "td"])]
+                  if first_row else [])
         text = " ".join(header)
         # 观测表签名：含 气温 + 降水量（预报表只有"温度/降水"且无气压/湿度）
         if "气温" in text and "降水量" in text:
