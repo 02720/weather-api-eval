@@ -1,0 +1,79 @@
+name: ci
+
+# 这是补"改代码不跑测试"这个缺口的那一步（§8.4）。此前仓库只有 eval.yml，
+# 触发器只有 schedule 与 workflow_dispatch——合并一个 PR 不会跑任何一个测试，
+# 533 个用例只在每天三次的定时运行里被顺带执行（而且失败时无人盯着）。
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---- 快层：PR 必跑。纯逻辑 + 契约 + 快速路径对拍，不碰真实数据 ----
+  fast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          # cyeva 0.2.3 在 3.13 上会 KeyError（PEP 667），故硬钉 3.12
+          python-version: "3.12"
+
+      - name: 安装依赖（含 cyeva 的 --no-deps 两步）
+        run: ./scripts/install.sh
+
+      - name: ruff
+        run: python -m ruff check src scripts tests
+
+      - name: 快层测试
+        run: python -m pytest -m "not golden and not slow" -n auto -q
+
+  # ---- 慢层：golden 对拍与性能预算。定时跑 + PR 上可选触发 ----
+  # 为什么不塞进 fast：一次真实数据全量构建约 1 分钟，PR 上每次都跑会把反馈
+  # 周期拉长一倍；而它保护的是"口径有没有变"，那是按天盯就够的不变量。
+  golden:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'golden')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0      # provenance.code_sha 需要真实的 commit SHA
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装依赖
+        run: ./scripts/install.sh
+
+      - name: Golden Master 对拍 + 性能预算
+        run: python -m pytest -m "golden" -q
+
+  # ---- 3.13 就绪度：只记录，不阻塞（§8.1 第 3 条）----
+  # cyeva 0.2.3 把本项目钉在 3.12。将来上游更新或决策变化时，这份每周记录
+  # 直接可用——它把"到时候再说"变成"一直有数据"。
+  py313-readiness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: 尝试在 3.13 上安装并跑快层测试
+        run: |
+          python -m pip install -q --no-deps cyeva==0.2.3 || \
+            echo "::warning::cyeva 在 3.13 上无法安装（其元数据 Requires-Python <3.13）"
+          python -m pip install -q -r requirements.txt -r requirements-dev.txt || true
+          python -m pytest -m "not golden and not slow" -q 2>&1 | tail -40 || true
