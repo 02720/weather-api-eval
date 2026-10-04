@@ -8,6 +8,15 @@
   * 展示数字**逐位相同**（已 round 到展示精度）；
   * 内部浮点允许 1e-9 相对容差（跨进程/跨 BLAS 的求和顺序差异）。
 
+**先分清"输入变了"还是"口径变了"，再谈对拍**（2026-10-04 补）：基线要成立，
+输入必须不变。但本项目的输入并不都是不变量——预报快照写一次就不再改，**观测
+却会被后续抓取轮次回改**（第三方源修正错报是常态，回看 26h、其中 6h 强制重抓）。
+第一版基线把窗口终点取在"最新观测整点"，正落在回改窗口里：4 站各 1 个整点气温
+被回改约 +1℃，1283 个展示字段随之位移、对拍红一片，而红的根因既不在代码里也
+不在口径里。于是这里有两条前置守卫（`test_window_is_settled` /
+`test_frozen_inputs_unchanged`）：它们把"基线的输入还是不是当初那份"变成可核验
+的事实，让后面那条零容差断言的红灯只有一个可能的含义——**口径变了**。
+
 为什么基线里必须冻结 `eval_days`（window.json）：`build_day_stat_tables` 的天数轴
 取 hourly 与 daily 记录的天并集，`day_block_weights` 的形状依赖 `n_days`。新增一天
 会改变整个权重矩阵，bootstrap 的 CI 随之变化——这是**正确行为**。若不冻结天数轴，
@@ -22,6 +31,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -35,6 +45,13 @@ BUDGET_PATH = BASELINE_DIR / "perf_budget.json"
 # 1.5M 条样本的求和累积误差上界约 n·eps ≈ 3e-10（成对求和更低），
 # 1e-9 留了一个数量级余量，足以吸收 BLAS/线程数变化，又足以抓住真正的口径漂移。
 REL_TOL = 1e-9
+
+# 不能逐位冻结的诊断字段：它们是**仓库累计量**而不是窗口量。
+# `fingerprint.checked_snapshots` 数的是 data/forecasts 里的全部快照（含窗口
+# 之外、乃至窗口结束之后才落盘的那些），每天三次抓取各 +100 上下，单调增长。
+# 把它钉死 = 每一次数据提交都让对拍变红，而报告其实一位没变——这与基线自己
+# CHANGELOG 里记的"假红灯"是同一类错误，只是方向相反。
+REPO_SCALE_DIAG_FIELDS = {"fingerprint": ("checked_snapshots",)}
 
 pytestmark = [pytest.mark.golden]
 
@@ -106,6 +123,73 @@ def test_window_matches_frozen_days(frozen_report):
         "不要放宽这条断言。")
 
 
+def test_window_is_settled():
+    """冻结窗口的终点必须落在观测回改窗口之外（基线可复现的前提）。
+
+    观测是活的：`obs/cma_data.py` 每轮回看 `DEFAULT_LOOKBACK_HOURS`，其中最近
+    `DEFAULT_REVISION_HOURS` 强制重抓，第三方源修正错报时就地改值。窗口压在这个
+    回看深度之内，基线的输入就会随着下一轮抓取移动——那时对拍红灯的含义是"数据
+    变了"，而本文件要守的结论是"口径没变"。两个含义混在一起，守卫就废了。
+
+    这条断言不依赖基线里的任何数字，只对着**当下的数据**核验：窗口终点 + 沉降期
+    必须不晚于最新观测。于是"在活边上冻结"这个动作当场失败，而不是等到某次
+    回改之后以 1283 个字段的红灯形式失败。
+    """
+    from weather_eval.obs.cma_data import DEFAULT_LOOKBACK_HOURS
+    from weather_eval.provenance import newest_obs_hour
+    from weather_eval.timeutil import iso, parse_iso
+
+    win = _load(WINDOW_PATH)
+    end = parse_iso(win["end_dt"])
+    settle = int(win.get("settle_hours") or 0)
+
+    assert settle >= DEFAULT_LOOKBACK_HOURS, (
+        f"window.json 的 settle_hours={settle} 小于观测回看深度 "
+        f"{DEFAULT_LOOKBACK_HOURS}h：窗口内的观测仍可被回改，基线从写下起就不成立。"
+        f"重冻结请用 scripts/make_baseline.py（默认沉降 "
+        f"{settle or 48}h）。")
+
+    newest = newest_obs_hour(win["stations"])
+    assert newest is not None, "data/obs 为空，无法核验窗口是否沉降"
+    assert end <= newest - timedelta(hours=settle), (
+        f"窗口终点 {iso(end)} 距最新观测 {iso(newest)} 不足 {settle}h，"
+        f"仍在观测回改窗口之内——这份基线会随下一次观测回改而腐烂。"
+        f"请重跑 scripts/make_baseline.py 让窗口落在已沉降数据上。")
+    assert end.hour == 23 and end.minute == 0, (
+        f"窗口终点 {iso(end)} 没有对齐整点日界：日榜按自然日聚合，切在半天中间会"
+        f"让最后一天变成半截样本，钉住一个现实中不存在的切片。")
+
+
+def test_frozen_inputs_unchanged():
+    """冻结窗口内的观测输入必须还是冻结时那一份（把"数据变了"与"口径变了"分开）。
+
+    没有这条，`test_report_matches_frozen_baseline` 的红灯有两种完全不同的成因，
+    而处置方式正好相反：输入变了 → 查观测回改（`revisions` 里有据可查），重冻结
+    并在 CHANGELOG 记一笔；输入没变 → 才是口径漂移，是代码事故。
+
+    指纹口径与 `provenance.obs_input_digest` 同源（同一份实现，不在这里重写一遍：
+    两份哈希实现迟早会分叉，届时"指纹没变"就成了最危险的那句话）。
+    """
+    from weather_eval.provenance import obs_input_digest
+
+    base = _load(BASELINE_PATH)
+    frozen = ((base.get("inputs") or {}).get("obs")) or {}
+    assert frozen.get("sha256"), (
+        "基线里没有 inputs.obs 指纹：这份基线无法区分'数据变了'与'口径变了'。"
+        "请用当前 scripts/make_baseline.py 重新冻结。")
+
+    win = _load(WINDOW_PATH)
+    live = obs_input_digest(win["stations"], win["start_dt"], win["end_dt"])
+    assert live["sha256"] == frozen["sha256"], (
+        "冻结窗口内的观测输入已被回改，对拍失败不是口径漂移。\n"
+        f"  基线指纹 {frozen['sha256'][:16]}（{frozen.get('hours')} 小时）\n"
+        f"  实测指纹 {live['sha256'][:16]}（{live['hours']} 小时）\n"
+        f"  各站小时数 基线 {frozen.get('per_station')} / 实测 {live.get('per_station')}\n"
+        "处置：确认是观测回改（data/obs/*/*.json 的 revisions 字段留痕）后，"
+        "重跑 scripts/make_baseline.py，并在 tests/baseline/CHANGELOG.md 记一笔；"
+        "不要放宽对拍判据。")
+
+
 def test_report_matches_frozen_baseline(frozen_report):
     """I8：报告对外展示的每个数字逐位不变，名次零容差。"""
     base = _load(BASELINE_PATH)
@@ -156,6 +240,11 @@ def test_diagnostics_unchanged(frozen_report):
     未封存快照），而 `build_report` 传给评估的快照口径可能不同。把"不再二次读盘"
     接上去时，最危险的失败不是变慢，而是**顺手缩小了读取范围**导致跨源相关与
     指纹漂移静默改变——这条测试就是那个失败的警报器。
+
+    `REPO_SCALE_DIAG_FIELDS` 里的字段例外：它们数的是仓库累计量（今天一共存在
+    多少份快照），不是窗口量，每轮抓取都在涨。钉死它们等于把每一次数据提交变成
+    一次假红灯；但"只增不减"这条性质本身就是警报器的一部分——快照数**变少**，
+    正是"诊断层缩小了读取范围"的直接证据，所以对它们断言下界而非等值。
     """
     base = _load(BASELINE_PATH)
     base_diag = (base["meta"] or {}).get("diagnostics") or {}
@@ -168,7 +257,16 @@ def test_diagnostics_unchanged(frozen_report):
         assert (base_item is None) == (live_item is None), f"诊断项 {key} 的出现与否变了"
         if not isinstance(base_item, dict):
             continue
+        repo_scale = REPO_SCALE_DIAG_FIELDS.get(key, ())
         for field, bv in base_item.items():
+            if field in repo_scale:
+                lv = live_item.get(field)
+                assert isinstance(lv, (int, float)) and lv >= bv, (
+                    f"diagnostics.{key}.{field} 是仓库累计量（每轮抓取都在涨，不逐位"
+                    f"冻结），但它**变小**了：基线 {bv} vs 实测 {lv}。快照只会增加不会"
+                    f"减少，变小意味着诊断层看到的快照变少——这正是 TASK-04 要防的"
+                    f"‘顺手缩小读取范围’。")
+                continue
             if isinstance(bv, (int, float)) and not isinstance(bv, bool):
                 assert _num_close(live_item.get(field), bv), (
                     f"diagnostics.{key}.{field}: 基线 {bv} vs 实测 {live_item.get(field)}")

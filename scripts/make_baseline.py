@@ -3,8 +3,25 @@
 
 产物：
   tests/baseline/window.json           冻结的 start_dt / end_dt / eval_days 列表
-  tests/baseline/report_baseline.json  报告对外展示的全部数字
+  tests/baseline/report_baseline.json  报告对外展示的全部数字 + 冻结输入的指纹
   tests/baseline/env.json              code_sha / 依赖版本 / 种子 / Python 版本
+
+**基线只能冻结"已沉降"的窗口**（2026-10-04 补，第一性原理）：
+Golden Master 的全部价值来自"同输入必然同输出"。而本项目的输入并不都是不变
+量——预报快照写一次就不再改（`save_forecast_snapshot` 幂等跳过 + Merkle 根可
+验），**观测却是活的**：第三方源修正错报是常态，`obs/cma_data.py` 每轮回看 26
+小时并对其中 6 小时强制重抓，`save_obs` 就地改值（旧值挂进 `revisions` 留痕）。
+
+第一版基线把窗口终点取在"最新观测整点"（`_live_window` 的口径），也就是**回改
+窗口的正中央**。后果是基线从冻结那一刻起就开始腐烂：下一轮抓取回改窗口内的任
+何一个整点，对拍立刻红一片，而红的原因既不在代码里、也不在口径里。实测
+（2026-10-04）：4 站各 1 个整点（2026-10-03T08:00）气温被回改约 +1℃，1283 个
+展示字段位移、8 处名次互换（显示分打平后顺序翻转）。
+
+因此窗口终点改为 **最新观测 − SETTLE_HOURS**，并对齐到完整自然日：超过回改深度
+后输入不再移动，基线才真的具备"重跑必得同一结果"的性质。冻结的输入指纹
+（`inputs.obs`）把这件事变成可核验的：对拍变红时先看指纹——指纹变了是**数据
+变了**，指纹没变才是**口径变了**，两者的处置方式正好相反。
 
 **为什么必须冻结 eval_days 列表**（这条最容易被误解，也是最容易让后续对拍
 失败的地方）：`build_day_stat_tables` 的天数轴取 hourly 与 daily 记录的天并集，
@@ -19,8 +36,8 @@
 内部浮点允许 1e-9 相对容差，但**排名零容差**。
 
 用法：
-    python scripts/make_baseline.py                # 用默认窗口（数据起点 → 最新观测）
-    python scripts/make_baseline.py --end 2026-10-03T23:00
+    python scripts/make_baseline.py                # 数据起点 → 已沉降的窗口终点
+    python scripts/make_baseline.py --end 2026-10-01T23:00   # 手工指定（未沉降会告警）
 """
 from __future__ import annotations
 
@@ -30,12 +47,19 @@ import math
 import platform
 import subprocess
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 BASELINE_DIR = PROJECT_ROOT / "tests" / "baseline"
+
+# 沉降期：窗口终点至少要比"最新观测"早这么久，窗口内的观测才不再可能被回改。
+# 下界是 `obs/cma_data.py` 的 DEFAULT_LOOKBACK_HOURS（26h，每轮回看深度）；
+# 48h = 26h + 两轮抓取周期 + 周末/上游故障余量。抓取每天 3 次（7~8h 一轮），
+# 48h 意味着窗口内的每个整点都已被 6 轮以上抓取反复确认过。
+SETTLE_HOURS = 48
 
 # 对外展示字段：这些值出现在 report.html 的表格/卡片上，逐位冻结。
 # 不含内部中间量（它们有 1e-9 容差，且不在页面上）。
@@ -82,25 +106,69 @@ def _pick(d: dict, fields):
     return {k: _round(d.get(k)) for k in fields if k in d}
 
 
-def build(end_override: str | None = None) -> tuple[dict, dict, dict]:
+def settled_end(newest, settle_hours: int):
+    """已沉降的窗口终点（纯函数）：`newest` 往前推 `settle_hours`，再对齐整点日界。
+
+    为什么对齐整点日界（23:00）而不是直接取整点：日榜的口径是"自然日聚合"，
+    窗口切在半天中间会让最后一天变成半截样本——那份基线钉住的是一个现实中不存
+    在的时间切片，日后没人能复现出同一个"当日"。基线要的是稳定，不是新鲜。
+
+    `newest` 为 None（无观测）时返回 None。纯函数是为了让这条规则能在 PR 快层
+    里被秒级覆盖，而不是只能靠 4 分钟的 golden 全量构建来验。
+    """
+    if newest is None:
+        return None
+    cutoff = newest - timedelta(hours=settle_hours)
+    end = cutoff.replace(hour=23, minute=0, second=0, microsecond=0)
+    if end > cutoff:                      # 当天 23:00 还没沉降 → 退到前一天
+        end -= timedelta(days=1)
+    return end
+
+
+def build(end_override: str | None = None,
+          settle_hours: int = SETTLE_HOURS) -> tuple[dict, dict, dict]:
     import os
     os.environ.setdefault("TZ", "Asia/Shanghai")
     from weather_eval.config import load_config
     from weather_eval.evaluate import build_report
+    from weather_eval.obs.cma_data import DEFAULT_LOOKBACK_HOURS
+    from weather_eval.provenance import obs_input_digest
     from weather_eval.timeutil import parse_iso
 
     cfg = load_config(None)
+    from weather_eval.provenance import newest_obs_hour
+    newest_obs = newest_obs_hour(cfg.station_ids)
+    settled_end_dt = settled_end(newest_obs, settle_hours)
+
     if end_override:
         end = parse_iso(end_override)
-        start = parse_iso(f"{end:%Y-%m}-01T00:00")
         # 起点仍取最早可用月：总榜是跨月累计窗口（见 __main__._live_window）
+        from weather_eval.storage import available_months
+        months = sorted(available_months())
+        start = parse_iso(f"{months[0]}-01T00:00") if months \
+            else parse_iso(f"{end:%Y-%m}-01T00:00")
+        settled = bool(settled_end_dt is not None and end <= settled_end_dt)
+        if not settled:
+            print(f"⚠️  警告：--end {end_override} 落在观测回改窗口"
+                  f"（最新观测 {newest_obs} − {DEFAULT_LOOKBACK_HOURS}h）之内，"
+                  f"已沉降终点为 {settled_end_dt}。\n"
+                  f"    这份基线会随下一次观测回改而腐烂，对拍将红。\n"
+                  f"    仅在明知代价时使用（例如复现某次历史对拍）。", file=sys.stderr)
+    else:
+        if settled_end_dt is None:
+            raise SystemExit("data/obs 为空：没有可冻结的观测。先跑一次 fetch-obs。")
+        if settle_hours < DEFAULT_LOOKBACK_HOURS:
+            raise SystemExit(
+                f"沉降期 {settle_hours}h 小于观测回看深度 "
+                f"{DEFAULT_LOOKBACK_HOURS}h（obs/cma_data.py）——冻结的窗口"
+                f"仍可被回改，这份基线从写下那一刻起就是假的。")
+        start, end = None, settled_end_dt
         from weather_eval.storage import available_months
         months = sorted(available_months())
         if months:
             start = parse_iso(f"{months[0]}-01T00:00")
-    else:
-        from weather_eval.__main__ import _live_window
-        start, end, _ = _live_window(cfg)
+        settled = True
+    assert start is not None
 
     label = f"{start:%Y-%m-%d} ~ {end:%Y-%m-%d}"
     import resource
@@ -130,6 +198,12 @@ def build(end_override: str | None = None) -> tuple[dict, dict, dict]:
         "scorecard": scorecard,
         "meta": meta,
         "coverage": report.get("coverage"),
+        # 冻结输入的指纹：对拍变红时，先分清是输入动了还是口径动了
+        "inputs": {
+            "obs": obs_input_digest(cfg.station_ids, start, end),
+            "settled": settled,
+            "settle_hours": int(settle_hours),
+        },
     }
 
     # 天数轴：与 build_day_stat_tables 同源（hourly 的 valid 日 ∪ daily 的 valid_day）
@@ -143,8 +217,16 @@ def build(end_override: str | None = None) -> tuple[dict, dict, dict]:
         "hourly_board_days": len(hourly_days),
         # eval_days 需要在 collect 之后才算得出，这里从 bootstrap 的披露里取
         "n_boot_days": meta.get("bootstrap_days"),
+        # 沉降声明：窗口内的输入从此不再移动，是"重跑必得同一结果"的前提。
+        # tests/test_baseline.py::test_window_is_settled 会拿它对着数据核验，
+        # 所以它不是注释，而是一条可失败的断言。
+        "settle_hours": int(settle_hours),
+        "settled": settled,
+        "newest_obs_at_freeze": newest_obs.strftime("%Y-%m-%dT%H:%M") if newest_obs else None,
         "note": ("eval_days 由 hourly/daily 记录的天并集决定，"
-                 "day_block_weights 的形状依赖 n_days；对拍必须同轴"),
+                 "day_block_weights 的形状依赖 n_days；对拍必须同轴。"
+                 "end_dt 取的是已沉降终点（最新观测 − settle_hours，再对齐整点日界）："
+                 "观测会被后续轮次回改，窗口压在回改窗口里，基线从写下起就会腐烂"),
     }
 
     deps = {}
@@ -177,18 +259,53 @@ def build(end_override: str | None = None) -> tuple[dict, dict, dict]:
                  "进程内竞争都很大），峰值 RSS 给 1.5×（与机器关系较小，是更硬的约束："
                  "13 个月数据下 ~20 GB 会 OOM）"),
     }
+    # 棘轮的方向由 _apply_ratchet 守住（main 里最后一步调用），不靠人记得。
     return baseline, window, env, budget
+
+
+def _apply_ratchet(budget: dict, out_dir: Path) -> dict:
+    """重冻结不得让性能预算变松（就地修改并返回 `budget`）。
+
+    为什么需要代码来守：窗口换了（新数据变多、或为了沉降把窗口挪早）都可能让本次
+    实测高于上一版，那是"换了更大的考题"而不是"变慢了"。若照抄实测 × 倍率，就等于
+    用换题目的机会给自己提额，棘轮从此失效——而棘轮的全部价值就在于它是自动的。
+    """
+    prev = _load_budget(out_dir)
+    if not prev:
+        return budget
+    clamped = []
+    for key in ("max_seconds", "max_peak_rss_mb"):
+        old, new = prev.get(key), budget.get(key)
+        if isinstance(old, (int, float)) and isinstance(new, (int, float)) and new > old:
+            budget[key] = old
+            clamped.append(f"{key}: {new} → {old}")
+    if clamped:
+        budget["note"] += "｜本次重冻结沿用上一版更紧的预算（棘轮只许收紧）"
+        print("棘轮：沿用上一版更紧的预算 " + "，".join(clamped), file=sys.stderr)
+    return budget
+
+
+def _load_budget(out_dir: Path) -> dict:
+    """读上一版性能预算（不存在则返回 {}）。棘轮比较需要它。"""
+    p = Path(out_dir) / "perf_budget.json"
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--end", default=None, help="窗口终点 ISO（默认取最新观测整点）")
+    ap.add_argument("--end", default=None,
+                    help="窗口终点 ISO（默认取**已沉降**终点：最新观测 − 沉降期）")
+    ap.add_argument("--settle-hours", type=int, default=SETTLE_HOURS,
+                    help=f"沉降期小时数（默认 {SETTLE_HOURS}；不得小于观测回看深度 26h）")
     ap.add_argument("--out", default=str(BASELINE_DIR), help="输出目录")
     ap.add_argument("--budget-multiplier", type=float, default=1.5,
                     help="性能预算相对实测值的倍率（默认 1.5）")
     args = ap.parse_args(argv)
 
-    baseline, window, env, budget = build(args.end)
+    baseline, window, env, budget = build(args.end, args.settle_hours)
     if args.budget_multiplier != 1.5:
         budget["max_seconds"] = round(budget["measured_at_freeze"]["seconds"]
                                       * args.budget_multiplier, 1)
@@ -196,6 +313,7 @@ def main(argv=None) -> int:
                                           * args.budget_multiplier, 0)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    budget = _apply_ratchet(budget, out)   # 永远最后一步：任何倍率都不得放松棘轮
     for name, obj in (("report_baseline.json", baseline),
                       ("window.json", window),
                       ("env.json", env),
