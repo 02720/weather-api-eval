@@ -44,8 +44,10 @@
 
    | 模型 | mode | 温度 | 降水 | 逐小时上限 |
    |---|---|---|---|---|
-   | CMA-NDFS | GDFS5KM | `TEM` 逐小时 0–72h、其后逐 3 小时 | `ONETPE`（1 小时累计）0–72h ＋ `HOURTPE`（3 小时累计）全时效 | 240h（10 天） |
-   | 风清AI模式 | NMCFENGQING | `TEM` 逐 6 小时（+6h 起） | `SIXTPE`（6 小时累计，逐 6 小时） | 温度 360h（15 天）/ 降水 240h（10 天） |
+   | CMA-NDFS | GDFS5KM | `TEM` 逐小时 0–72h、其后逐 3 小时 |
+   | `ONETPE`（1 小时累计）0–72h ＋ `HOURTPE`（3 小时累计）全时效 | 240h（10 天） |
+   | 风清AI模式 | NMCFENGQING | `TEM` 逐 6 小时（+6h 起） |
+   | `SIXTPE`（6 小时累计，逐 6 小时） | 温度 360h（15 天）/ 降水 240h（10 天） |
 
 5. ── 降水口径：**优先用原生 1 小时产品，其余按累计窗口展开为逐小时** ──
    该源的降水要素是一族后向累计：`ONETPE`(1h)/`HOURTPE`(3h)/`SIXTPE`(6h)/
@@ -434,7 +436,7 @@ class Ew4allProvider(ForecastProvider):
         self._warn_health(station, spec, tem, prc, one, axis, temps, precips)
 
         # 口径留档：便于日后复核时不必再逆向接口
-        expansion = [f"temperature: linear-interp-1h",
+        expansion = ["temperature: linear-interp-1h",
                      f"precipitation: {spec.precip_element}/{spec.precip_window_hours}h "
                      f"spread over (t-{spec.precip_window_hours}h, t]"]
         if spec.precip_1h_element:

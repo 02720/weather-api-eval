@@ -144,24 +144,18 @@ import numpy as np
 from cyeva import PrecipitationComparison, TemperatureComparison
 # cyeva 未导出 threshold 版 ETS/空报频率：用其内部二分类统计函数在同一口径下补齐
 from cyeva.core.statistic import (
-    calc_binary_accuracy_ratio as _stat_acc,
-    calc_bias_score as _stat_bias,
     calc_ets as _stat_ets,
     calc_false_alarm_rate as _stat_farate,
-    calc_false_alarm_ratio as _stat_far,
-    calc_hit_ratio as _stat_pod,
-    calc_miss_ratio as _stat_miss,
-    calc_ts as _stat_ts,
 )
 
 from . import stats as _stats
+from .graded import precip_graded_metrics
+from .pairtable import PairTable, grouped_by_station, min_lead_select
+from .provenance import provenance
 from .stats import (
     GROUP_MIN_N,
     binary_counts,
     binary_metrics_from_counts,
-    day_block_bootstrap,
-    difficulty_adjusted,
-    effective_n,
     r_slope_numpy,
     temp_core_numpy,
     two_way_adjust,
@@ -741,13 +735,24 @@ def temp_curve_metrics(obs_vals, fcst_vals, min_sample) -> dict:
     return {"n": n, "rmse": _r(mm.get("rmse")), "acc2": _r(mm.get("acc2"))}
 
 
+# 分级指标的计算后端：numpy = 快速路径（与 cyeva 逐位同值，由
+# scripts/parity_graded.py 与 tests/test_graded_parity.py 锁定）；cyeva = 权威
+# 原路（保留为对拍参照与兜底）。可由 eval.graded_backend 覆盖。
+DEFAULT_GRADED_BACKEND = "numpy"
+
+
 def precip_metrics(obs_vals, fcst_vals, threshold, min_sample,
                    kind: str | None = None, graded_levs: tuple = (),
-                   n_eff: int | None = None) -> dict:
+                   n_eff: int | None = None,
+                   graded_backend: str | None = None) -> dict:
     """降水全套指标：晴雨二分类 8 项 + 连续量 3 项（+ 可选分级每级 7 项）。
 
     kind/graded_levs：传 "1h"+("1".."5") 算逐小时雨强区间分级，
     传 "24h"+("+1".."+6") 算按天累计分级；不传则只算晴雨与连续量。
+
+    graded_backend：分级指标走哪条实现（默认 numpy 快速路径，见
+    `weather_eval.graded` 的模块 docstring）。两条路径的输出由对拍脚本逐格锁死，
+    切换它**不改变任何对外数字**。
     """
     obs = np.asarray(obs_vals, dtype=float)
     fcst = np.asarray(fcst_vals, dtype=float)
@@ -784,6 +789,12 @@ def precip_metrics(obs_vals, fcst_vals, threshold, min_sample,
     out["mae"] = _r(pc.calc_mae())
     out["mbe"] = _r(pc.calc_mbe())
     if graded_levs and kind:
+        if str(graded_backend or DEFAULT_GRADED_BACKEND).lower() != "cyeva":
+            # 分级指标占全部 cyeva 调用的 70%（实测 26.65s / 38.06s）。它的数学
+            # 只有"一次区间比较 + 4 个计数"，可加，故一次向量化扫描即可给出全部
+            # 级别的全部指标，无需每个 (级别, 指标) 各扫一遍全序列。
+            out["graded"] = precip_graded_metrics(obs, fcst, kind, graded_levs)
+            return out
         for lev in graded_levs:
             try:
                 out["graded"][lev] = {
@@ -1034,6 +1045,85 @@ def _n_eff_rain(recs: list[dict], thr: float, time_key: str,
     return _stats.n_eff_from_station_series(series, times)
 
 
+def _n_eff_temp_columnar(pt: "PairTable", idx: np.ndarray) -> int | None:
+    """`_n_eff_temp` 的列式等价实现（同输入、同输出，见 TASK-08）。
+
+    只换"怎么扫"，不换"算什么"：min-lead 去重后仍交给**未修改的**
+    `n_eff_from_station_series`。等价性由 `min_lead_select` 的四条语义保证
+    （稳定排序 → lead 并列取最先出现；时刻按字符串升序；站序按首次出现），
+    并由 `test_neff_columnar_matches_dict` 在真实数据上按整数零容差锁定。
+    """
+    sel, sel_st, keep = min_lead_select(
+        pt.h_station[idx], pt.h_valid[idx], pt.h_lead[idx], pt.h_temp_ok[idx])
+    if sel is None:
+        return None
+    err = (pt.h_temp_f[idx][keep] - pt.h_temp_o[idx][keep])[sel]
+    times = pt.h_valid[idx][keep][sel]
+    return _stats.n_eff_from_station_series(
+        grouped_by_station(sel_st, err, pt.station_names_h),
+        grouped_by_station(sel_st, times, pt.station_names_h))
+
+
+def _n_eff_rain_columnar(pt: "PairTable", idx: np.ndarray, thr: float,
+                         daily: bool = False) -> int | None:
+    """`_n_eff_rain` 的列式等价实现（逐小时用 lead、按天用 offset 当"新近度"）。
+
+    阈值在**去重之后**才施加：min-lead 的选择只取决于"两侧是否都有值"，与阈值
+    无关（旧实现也是先按 o/f 非 None 入桶、再算指示值），故两条路径对同一份
+    样本选出的是同一条记录。
+    """
+    if daily:
+        station, valid_t, lead, ok = (pt.d_station[idx], pt.d_valid[idx],
+                                      pt.d_offset[idx], pt.d_rain_ok[idx])
+        names = pt.station_names_d
+        o_arr, f_arr = pt.d_rain_o[idx], pt.d_rain_f[idx]
+    else:
+        station, valid_t, lead, ok = (pt.h_station[idx], pt.h_valid[idx],
+                                      pt.h_lead[idx], pt.h_rain_ok[idx])
+        names = pt.station_names_h
+        o_arr, f_arr = pt.h_rain_o[idx], pt.h_rain_f[idx]
+    sel, sel_st, keep = min_lead_select(station, valid_t, lead, ok)
+    if sel is None:
+        return None
+    o = o_arr[keep][sel]
+    f = f_arr[keep][sel]
+    ind = np.where((o >= thr) != (f >= thr), 1.0, 0.0)
+    return _stats.n_eff_from_station_series(
+        grouped_by_station(sel_st, ind, names),
+        grouped_by_station(sel_st, valid_t[keep][sel], names))
+
+
+def _n_eff_daily_temp_columnar(pt: "PairTable", idx: np.ndarray) -> int | None:
+    """`_n_eff_daily_temp` 的列式等价实现。
+
+    值口径：日最高/最低里**成对的那几个量**的误差取平均（旧实现
+    `sum(vals)/len(vals)`，vals 只含成对的量）。这里用
+    `(emax·pmax + emin·pmin)/(pmax+pmin)` 表达，与逐分支算式逐位相同。
+    """
+    pmax = pt.d_tmax_ok[idx]
+    pmin = pt.d_tmin_ok[idx]
+    any_ok = pmax | pmin
+    sel, sel_st, keep = min_lead_select(
+        pt.d_station[idx], pt.d_valid[idx], pt.d_offset[idx], any_ok)
+    if sel is None:
+        return None
+    pmax_k, pmin_k = pmax[keep][sel], pmin[keep][sel]
+    emax = (pt.d_max_f[idx][keep] - pt.d_max_o[idx][keep])[sel]
+    emin = (pt.d_min_f[idx][keep] - pt.d_min_o[idx][keep])[sel]
+    # ⚠️ 未成对的那个量在列里是 NaN（缺测不是 0），直接 `emax*pmax + emin*pmin`
+    # 会被 NaN 乘 0 污染成 NaN——`nan * 0.0 == nan`，不是 0.0。必须先按成对标记
+    # 把未成对的一侧**换成 0 再加**，绝不能让它进乘法。（这条是列式化对拍抓出来的
+    # 第一个真 bug：日温度 n_eff 从 3 掉到 2。）
+    emax = np.where(pmax_k, emax, 0.0)
+    emin = np.where(pmin_k, emin, 0.0)
+    den = pmax_k.astype(float) + pmin_k.astype(float)
+    with np.errstate(invalid="ignore"):
+        vals = np.where(den > 0, (emax + emin) / np.where(den > 0, den, 1.0), np.nan)
+    return _stats.n_eff_from_station_series(
+        grouped_by_station(sel_st, vals, pt.station_names_d),
+        grouped_by_station(sel_st, pt.d_valid[idx][keep][sel], pt.station_names_d))
+
+
 def _station_groups(recs: list[dict], ka: str, kb: str) -> list[tuple[list, list]]:
     """按站分组取 (obs, fcst) 值对列表（站序稳定），供 temp_metrics 的站内合并。"""
     by: dict[str, list[dict]] = defaultdict(list)
@@ -1051,6 +1141,20 @@ def _pool(records, keys, filt=None):
         o.append(r[keys[0]])
         f.append(r[keys[1]])
     return o, f
+
+
+def _farrays(records, keys) -> tuple[np.ndarray, np.ndarray]:
+    """两条值列 → float64 数组（None → NaN），供指标函数直接消费。
+
+    I4 守卫（最容易在这里踩坑，故显式写明）：**NaN 只是"缺测在数组里的表示"，
+    不是判定依据**。判定仍由 `temp_metrics` / `precip_metrics` 内部的
+    `isfinite` / `isnan` 掩膜完成——它们本来就会对含 None 的 list 做
+    `np.asarray(..., dtype=float)`（None → NaN），这里提前转换的结果与之逐位
+    相同。转成数组而不是 list 的唯一目的是让并行分发（pickle）便宜一个数量级。
+    """
+    ka, kb = keys
+    return (np.asarray([r[ka] for r in records], dtype=float),
+            np.asarray([r[kb] for r in records], dtype=float))
 
 
 def _preload(station_ids: list[str], models: list[str]) -> tuple[dict, dict]:
@@ -1119,43 +1223,83 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
         if r["model"] in daily_by_model:
             daily_by_model[r["model"]].append(r)
 
+    # ---- 列式配对表（Phase 2）：一次构建，供 n_eff 与充分统计量表复用 ----
+    # 为什么在这里建：n_eff 有 2,044 次调用、每次都要把同一批记录重新扫一遍
+    # （合计 9.7 s），充分统计量表还要再扫一遍（10.7 s）。列式表让"扫记录"从
+    # 每格一次变成全程一次。表是**可重建的视图**，删掉它一切照旧。
+    eval_days_list = _stats.eval_days(hourly, daily)
+    pt = PairTable(hourly, daily, models, station_ids, eval_days_list) \
+        if (hourly or daily) else None
+
+    # ---- 指标计算：先收集全部格子，再一次分派（可并行，见 parallel.py）----
+    # 每次 temp_metrics / precip_metrics 调用对应一个 (模型, 天桶, 轨道) 格子，
+    # 彼此独立、无共享状态。攒成一批再分派，才能在 runner 的多核上真正并行；
+    # 逐格内联调用只能串行。收集阶段只做"取数 + 算 n_eff"，不做 cyeva 计算。
+    graded_backend = str(eval_cfg.get("graded_backend", DEFAULT_GRADED_BACKEND))
+    jobs_temp: list[tuple[tuple, dict]] = []
+    slots_temp: list[tuple[dict, str]] = []
+    jobs_precip: list[tuple[tuple, dict]] = []
+    slots_precip: list[tuple[dict, str]] = []
+
+    def add_temp(target: dict, key: str, args: tuple, kw: dict) -> None:
+        jobs_temp.append((args, kw))
+        slots_temp.append((target, key))
+
+    def add_precip(target: dict, key: str, args: tuple, kw: dict) -> None:
+        jobs_precip.append((args, kw))
+        slots_precip.append((target, key))
+
     # ---- 评分卡（模型级）----
     # 24h/72h 池 = 固定时效窗的 pooled 指标；all 池 = 评估窗口内全部逐小时样本。
     # 评分卡是明细表数据源（诊断），综合分不再从这里出（见总榜 macro 化）。
     scorecard = {}
-    for m in models:
+    for mi, m in enumerate(models):
         recs = by_model[m]
         h24 = [r for r in recs if 1 <= r["lead"] <= 24]
         h72 = [r for r in recs if 1 <= r["lead"] <= 72]
         g24 = _station_groups(h24, "temp_obs", "temp_fcst")
         g72 = _station_groups(h72, "temp_obs", "temp_fcst")
         gall = _station_groups(recs, "temp_obs", "temp_fcst")
-        neff_all = _n_eff_temp(recs)
-        scorecard[m] = {
-            "temp_24h": temp_metrics(*_pool(h24, ("temp_obs", "temp_fcst")),
-                                     limits, min_sample,
-                                     n_eff=_n_eff_temp(h24), groups=g24),
-            "temp_72h": temp_metrics(*_pool(h72, ("temp_obs", "temp_fcst")),
-                                     limits, min_sample,
-                                     n_eff=_n_eff_temp(h72), groups=g72),
-            "temp_all": temp_metrics(*_pool(recs, ("temp_obs", "temp_fcst")),
-                                     limits, min_sample,
-                                     n_eff=neff_all, groups=gall),
-            "precip_24h": precip_metrics(*_pool(h24, ("rain_obs", "rain_fcst")),
-                                         thr, min_sample,
-                                         n_eff=_n_eff_rain(h24, thr, "valid_iso", "lead")),
-            "precip_72h": precip_metrics(*_pool(h72, ("rain_obs", "rain_fcst")),
-                                         thr, min_sample,
-                                         n_eff=_n_eff_rain(h72, thr, "valid_iso", "lead")),
-            "precip_all": precip_metrics(*_pool(recs, ("rain_obs", "rain_fcst")),
-                                         thr, min_sample,
-                                         n_eff=_n_eff_rain(recs, thr, "valid_iso", "lead")),
-        }
+        if pt is not None:
+            i24 = pt.hourly_lead_window(mi, 1, 24)
+            i72 = pt.hourly_lead_window(mi, 1, 72)
+            iall = pt.hourly_model(mi)
+            ne_all = _n_eff_temp_columnar(pt, iall)
+            ne24 = _n_eff_temp_columnar(pt, i24)
+            ne72 = _n_eff_temp_columnar(pt, i72)
+            re24 = _n_eff_rain_columnar(pt, i24, thr)
+            re72 = _n_eff_rain_columnar(pt, i72, thr)
+            re_all = _n_eff_rain_columnar(pt, iall, thr)
+        else:
+            ne_all, ne24, ne72 = (_n_eff_temp(recs), _n_eff_temp(h24),
+                                  _n_eff_temp(h72))
+            re24 = _n_eff_rain(h24, thr, "valid_iso", "lead")
+            re72 = _n_eff_rain(h72, thr, "valid_iso", "lead")
+            re_all = _n_eff_rain(recs, thr, "valid_iso", "lead")
+        cell = scorecard.setdefault(m, {})
+        add_temp(cell, "temp_24h",
+                 (*_farrays(h24, ("temp_obs", "temp_fcst")), limits, min_sample),
+                 {"n_eff": ne24, "groups": g24})
+        add_temp(cell, "temp_72h",
+                 (*_farrays(h72, ("temp_obs", "temp_fcst")), limits, min_sample),
+                 {"n_eff": ne72, "groups": g72})
+        add_temp(cell, "temp_all",
+                 (*_farrays(recs, ("temp_obs", "temp_fcst")), limits, min_sample),
+                 {"n_eff": ne_all, "groups": gall})
+        add_precip(cell, "precip_24h",
+                   (*_farrays(h24, ("rain_obs", "rain_fcst")), thr, min_sample),
+                   {"n_eff": re24})
+        add_precip(cell, "precip_72h",
+                   (*_farrays(h72, ("rain_obs", "rain_fcst")), thr, min_sample),
+                   {"n_eff": re72})
+        add_precip(cell, "precip_all",
+                   (*_farrays(recs, ("rain_obs", "rain_fcst")), thr, min_sample),
+                   {"n_eff": re_all})
 
     # ---- 逐小时按天桶：温度（入分）/ 逐小时降水（诊断，含 1h 雨强分级） ----
     temp_hourly: dict[str, dict] = {}
     precip_hourly: dict[str, dict] = {}
-    for m in models:
+    for mi, m in enumerate(models):
         by_bucket: dict[int, list] = defaultdict(list)
         for r in by_model[m]:
             by_bucket[r["bucket"]].append(r)
@@ -1163,15 +1307,19 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
         precip_hourly[m] = {}
         for b in range(1, hourly_lead_days + 1):
             recs = by_bucket.get(b, [])
-            to, tf = _pool(recs, ("temp_obs", "temp_fcst"))
-            ro, rf = _pool(recs, ("rain_obs", "rain_fcst"))
-            temp_hourly[m][f"{b}d"] = temp_metrics(
-                to, tf, limits, min_sample,
-                n_eff=_n_eff_temp(recs),
-                groups=_station_groups(recs, "temp_obs", "temp_fcst"))
-            precip_hourly[m][f"{b}d"] = precip_metrics(
-                ro, rf, thr, min_sample, kind="1h", graded_levs=HOURLY_GRADED_LEVS,
-                n_eff=_n_eff_rain(recs, thr, "valid_iso", "lead"))
+            to, tf = _farrays(recs, ("temp_obs", "temp_fcst"))
+            ro, rf = _farrays(recs, ("rain_obs", "rain_fcst"))
+            icell = pt.hourly_cell(mi, b) if pt is not None else None
+            ne_t = (_n_eff_temp_columnar(pt, icell) if icell is not None
+                    else _n_eff_temp(recs))
+            ne_r = (_n_eff_rain_columnar(pt, icell, thr) if icell is not None
+                    else _n_eff_rain(recs, thr, "valid_iso", "lead"))
+            add_temp(temp_hourly[m], f"{b}d", (to, tf, limits, min_sample),
+                     {"n_eff": ne_t,
+                      "groups": _station_groups(recs, "temp_obs", "temp_fcst")})
+            add_precip(precip_hourly[m], f"{b}d", (ro, rf, thr, min_sample),
+                       {"kind": "1h", "graded_levs": HOURLY_GRADED_LEVS,
+                        "n_eff": ne_r, "graded_backend": graded_backend})
 
     # ---- 小时榜的降水维：逐小时晴雨 @ rain_hourly_threshold_mm ----
     # 同一份逐小时样本，两个用途不能混：precip_hourly（上）用 0.1mm 口径算全套
@@ -1181,7 +1329,7 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     # 阈值提到 1mm/h 后基率回到同一水平（5.66% vs 4.64%，BIAS 1.26），ETS 中位数
     # 也最高——分数这才开始测技巧（标定见 scripts/calibrate_hourly_threshold.py）。
     precip_hourly_score: dict[str, dict] = {}
-    for m in models:
+    for mi, m in enumerate(models):
         by_bucket: dict[int, list] = defaultdict(list)
         for r in by_model[m]:
             by_bucket[r["bucket"]].append(r)
@@ -1189,14 +1337,16 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
         for b in range(1, hourly_lead_days + 1):
             recs = by_bucket.get(b, [])
             ro, rf = _pool(recs, ("rain_obs", "rain_fcst"))
+            icell = pt.hourly_cell(mi, b) if pt is not None else None
+            ne_r = (_n_eff_rain_columnar(pt, icell, thr_hourly) if icell is not None
+                    else _n_eff_rain(recs, thr_hourly, "valid_iso", "lead"))
             precip_hourly_score[m][f"{b}d"] = precip_binary_metrics(
-                ro, rf, thr_hourly, min_sample,
-                n_eff=_n_eff_rain(recs, thr_hourly, "valid_iso", "lead"))
+                ro, rf, thr_hourly, min_sample, n_eff=ne_r)
 
     # ---- 降水的评分轨道：按天累计（24h）+ rain_daily_threshold_mm 阈值 ----
     # 每模型每日偏移一份二分类指标（P0-3），入分的同时披露 acc 供明细。
     precip_score_daily: dict[str, dict] = {}
-    for m in models:
+    for mi, m in enumerate(models):
         by_off: dict[int, list] = defaultdict(list)
         for r in daily_by_model[m]:
             by_off[r["offset"]].append(r)
@@ -1207,9 +1357,12 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
         for off in range(1, daily_max_offset + 1):
             recs = by_off.get(off, [])
             ro, rf = _pool(recs, ("rain_obs", "rain_fcst"))
+            dcell = pt.daily_cell(mi, off) if pt is not None else None
+            ne_r = (_n_eff_rain_columnar(pt, dcell, thr_daily, daily=True)
+                    if dcell is not None
+                    else _n_eff_rain(recs, thr_daily, "valid_day", "offset"))
             precip_score_daily[m][f"{off}d"] = precip_binary_metrics(
-                ro, rf, thr_daily, min_sample,
-                n_eff=_n_eff_rain(recs, thr_daily, "valid_day", "offset"))
+                ro, rf, thr_daily, min_sample, n_eff=ne_r)
 
     # ---- 逐小时逐时效曲线（1..72h）温度 RMSE / ±2°C 准确率（轻量路径）----
     temp_lead_curve: dict[str, dict] = {m: {} for m in models}
@@ -1229,7 +1382,7 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     # ---- 按天按偏移：温度（最高/最低） / 降水（诊断口径 0.1mm，含 24h 累计分级） ----
     temp_daily: dict[str, dict] = {}
     precip_daily: dict[str, dict] = {}
-    for m in models:
+    for mi, m in enumerate(models):
         by_off = defaultdict(lambda: {"max": ([], []), "min": ([], []), "rain": ([], [])})
         for r in daily_by_model[m]:
             by_off[r["offset"]]["max"][0].append(r["temp_max_obs"])
@@ -1249,15 +1402,26 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
             # 不同单位。日最高/最低各自的误差序列都过一遍去重（同日多起报取最小
             # 日偏移），有效样本量进格子权重与门槛——**这一项不能缺**：缺失会让
             # 日轨的格子权重全 0，劈分设计塌缩成"所有源一个分"（2026-09-25 审查）。
-            neff_b = _n_eff_daily_temp(sub)
-            maxmm = temp_metrics(by_off[off]["max"][0], by_off[off]["max"][1],
-                                 limits, min_sample, n_eff=neff_b, groups=gmax)
-            minmm = temp_metrics(by_off[off]["min"][0], by_off[off]["min"][1],
-                                 limits, min_sample, n_eff=neff_b, groups=gmin)
-            temp_daily[m][f"{off}d"] = {"max": maxmm, "min": minmm}
-            precip_daily[m][f"{off}d"] = precip_metrics(
-                by_off[off]["rain"][0], by_off[off]["rain"][1], thr, min_sample,
-                kind="24h", graded_levs=DAILY_GRADED_LEVS)
+            dcell = pt.daily_cell(mi, off) if pt is not None else None
+            neff_b = (_n_eff_daily_temp_columnar(pt, dcell) if dcell is not None
+                      else _n_eff_daily_temp(sub))
+            cell = temp_daily[m].setdefault(f"{off}d", {})
+            add_temp(cell, "max",
+                     (np.asarray(by_off[off]["max"][0], dtype=float),
+                      np.asarray(by_off[off]["max"][1], dtype=float),
+                      limits, min_sample),
+                     {"n_eff": neff_b, "groups": gmax})
+            add_temp(cell, "min",
+                     (np.asarray(by_off[off]["min"][0], dtype=float),
+                      np.asarray(by_off[off]["min"][1], dtype=float),
+                      limits, min_sample),
+                     {"n_eff": neff_b, "groups": gmin})
+            add_precip(precip_daily[m], f"{off}d",
+                       (np.asarray(by_off[off]["rain"][0], dtype=float),
+                        np.asarray(by_off[off]["rain"][1], dtype=float),
+                        thr, min_sample),
+                       {"kind": "24h", "graded_levs": DAILY_GRADED_LEVS,
+                        "graded_backend": graded_backend})
 
     # ---- 分站概览（24h 桶）：按（站, 模型）分一次组，避免 O(站×模型×全量) 重扫 ----
     by_station_model: dict[tuple, list] = {(sid, m): [] for sid in station_ids for m in models}
@@ -1270,12 +1434,21 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
         per_station[sid] = {}
         for m in models:
             h = [r for r in by_station_model[(sid, m)] if 1 <= r["lead"] <= 24]
-            to, tf = _pool(h, ("temp_obs", "temp_fcst"))
-            ro, rf = _pool(h, ("rain_obs", "rain_fcst"))
-            per_station[sid][m] = {
-                "temp": temp_metrics(to, tf, limits, min_sample),
-                "precip": precip_metrics(ro, rf, thr, min_sample),
-            }
+            to, tf = _farrays(h, ("temp_obs", "temp_fcst"))
+            ro, rf = _farrays(h, ("rain_obs", "rain_fcst"))
+            cell = per_station[sid].setdefault(m, {})
+            add_temp(cell, "temp", (to, tf, limits, min_sample), {})
+            add_precip(cell, "precip", (ro, rf, thr, min_sample), {})
+
+    # ---- 一次性分派：全部分时效格子走同一批调用（并行或串行由 parallel 决定）----
+    from .parallel import map_metric_calls
+
+    for (target, key), res in zip(slots_temp,
+                                  map_metric_calls("temp_metrics", jobs_temp)):
+        target[key] = res
+    for (target, key), res in zip(slots_precip,
+                                  map_metric_calls("precip_metrics", jobs_precip)):
+        target[key] = res
 
     # ---- 时间序列（最近 72h，用于预报 vs 观测叠图） ----
     ts_start = end_dt - timedelta(hours=72)
@@ -1300,7 +1473,7 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     # 表格排行榜、冠军横幅与趋势图共用同一套桶得分。
     # 块长（P1-1）：块长 1 天只捕获日内相关，块间相关被当成独立 ⇒ CI 偏窄。
     # 由日尺度温度误差的 lag-1 自相关推出去相关时间，再受"块数下限"约束。
-    n_boot_days = len(_stats.eval_days(hourly, daily))
+    n_boot_days = len(eval_days_list)
     boot_rho = _stats.daily_error_lag1_rho(hourly)
     block_days = _stats.resolve_block_days(n_boot_days, bootstrap_block_days, boot_rho)
 
@@ -1344,7 +1517,7 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
         hourly=hourly, daily=daily,
             cell_weighting=cell_weighting, min_cell_neff=min_cell_neff,
             min_col_frac=min_col_frac, ridge=ridge, long_tail_board=long_tail,
-            model_issue=model_issue, m_eff=holm_m_eff)
+            model_issue=model_issue, m_eff=holm_m_eff, pt=pt)
     for name, rows in resolution_out["boards"].items():
         leaderboards[name] = rows
     for name, win in resolution_out["windows"].items():
@@ -1458,6 +1631,12 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
             "board_ridge": ridge,
             # 不确定性披露：冠军在不同权重方案下的分布（P0-2.2）
             "weight_sensitivity": weight_sensitivity,
+            # ---- 来源留痕（I5/I6，TASK-00c）----
+            # "同数据 + 同代码 + 同依赖 + 同种子 ⇒ 同一份报告" 从此是一条**可核对**
+            # 的陈述：code_sha 锁算法、lock_hash 锁依赖、bootstrap_seed 锁随机性。
+            # 缺了它，README 承诺的"固定种子可复现"无从兑现——换一个小版本依赖
+            # 就可能给出不同的浮点结果，而读者分辨不出来。
+            "provenance": provenance(seed=BOOTSTRAP_SEED),
         },
         "coverage": coverage,
         "scorecard": scorecard,
@@ -1489,7 +1668,8 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     # 失败降级而非崩溃：诊断层的定位是"补充披露"，绝不能因为它把报告构建搞挂。
     if eval_cfg.get("enable_diagnostics", True):
         report["meta"]["diagnostics"] = _compute_diagnostics(
-            report, start_dt, end_dt, eval_cfg.get("data_root"))
+            report, start_dt, end_dt, eval_cfg.get("data_root"),
+            obs_maps=obs_maps, snapshots=snapshots)
         # k_eff 无论采用哪套 Holm 口径都要披露——它直接决定"第一名领先第二名"
         # 这句话的含金量。诊断层已经算过跨源相关了，这里回填即可，零额外开销。
         _backfill_k_eff(report["meta"])
@@ -1579,8 +1759,15 @@ def _resolve_holm_m_eff(eval_cfg: dict, models: list[str], start_dt, end_dt,
     return None, disclosure
 
 
-def _compute_diagnostics(report: dict, start_dt, end_dt, data_root=None) -> dict:
+def _compute_diagnostics(report: dict, start_dt, end_dt, data_root=None,
+                         *, obs_maps=None, snapshots=None) -> dict:
     """调用诊断层，并把任何异常收敛成"不可用 + 原因"（诊断层不得拖垮报告）。
+
+    obs_maps / snapshots：`build_report` 已在内存里的观测与快照（TASK-04）。传给
+    诊断层后它就不再二次读盘。⚠️ 必须是**未过滤的全量快照**——诊断层的口径是
+    "窗口内全部快照"，含被评估排除的残缺与未封存快照；传被过滤的集合会让
+    跨源相关与指纹漂移的口径静默改变，那比慢 4 秒严重得多。
+
 
     月份必须按评估窗口显式枚举传入（诊断层要读的观测月文件/快照 bundle 是
     按月组织的）。此前不传，compute_all 拿 meta.period_label 当月份——旧口径
@@ -1595,7 +1782,8 @@ def _compute_diagnostics(report: dict, start_dt, end_dt, data_root=None) -> dict
 
     root = Path(data_root) if data_root else _data_root()
     try:
-        diag = _dg.compute_all(report, root, months=_months_between(start_dt, end_dt))
+        diag = _dg.compute_all(report, root, months=_months_between(start_dt, end_dt),
+                               obs_maps=obs_maps, snapshots=snapshots)
         diag["available"] = True
         return diag
     except Exception as exc:                      # pragma: no cover - 兜底路径
@@ -2276,7 +2464,8 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
                        bootstrap_runs, block_days, hourly, daily,
                        cell_weighting, min_cell_neff, min_col_frac, ridge,
                        long_tail_board, model_issue,
-                       m_eff: float | None = None) -> dict:
+                       m_eff: float | None = None,
+                       pt: PairTable | None = None) -> dict:
     """出三张难度对齐榜：总榜（跨分辨率）/ 小时榜 / 日榜。
 
     三张共用**同一次重采样**与同一套口径开关，只在"列是谁"这件事上不同：
@@ -2364,12 +2553,24 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
     # ---- 逐榜：行分 + 派生列 + 样例充分性 ----
     # 各桶 Wi 的行级有效样本量（跨轨道取"更薄的那一维"，与格子权重同原则）
     scored = {m: [r for r in by_model[m] if r.get("bucket", 0) >= 1] for m in models}
-    neff_t_hourly = {m: _n_eff_temp(scored[m]) for m in models}
-    neff_t_daily = {m: _n_eff_daily_temp(daily_by_model[m]) for m in models}
-    neff_r_hourly = {m: _n_eff_rain(scored[m], thr_hourly, "valid_iso", "lead")
-                     for m in models}
-    neff_r_daily = {m: _n_eff_rain(daily_by_model[m], thr_daily, "valid_day", "offset")
-                    for m in models}
+    if pt is not None:
+        neff_t_hourly = {m: _n_eff_temp_columnar(pt, pt.hourly_scored(mi))
+                         for mi, m in enumerate(models)}
+        neff_t_daily = {m: _n_eff_daily_temp_columnar(pt, pt.daily_model(mi))
+                        for mi, m in enumerate(models)}
+        neff_r_hourly = {m: _n_eff_rain_columnar(pt, pt.hourly_scored(mi), thr_hourly)
+                         for mi, m in enumerate(models)}
+        neff_r_daily = {m: _n_eff_rain_columnar(pt, pt.daily_model(mi), thr_daily,
+                                                daily=True)
+                        for mi, m in enumerate(models)}
+    else:
+        neff_t_hourly = {m: _n_eff_temp(scored[m]) for m in models}
+        neff_t_daily = {m: _n_eff_daily_temp(daily_by_model[m]) for m in models}
+        neff_r_hourly = {m: _n_eff_rain(scored[m], thr_hourly, "valid_iso", "lead")
+                         for m in models}
+        neff_r_daily = {m: _n_eff_rain(daily_by_model[m], thr_daily, "valid_day",
+                                       "offset")
+                        for m in models}
 
     # 同一批存档里，逐小时温度 n_eff 数的是"独立小时误差"、日最高/最低 n_eff 数的
     # 是"独立自然日"，逐小时晴雨 n_eff 数的是"独立小时判定"、日累计降水 n_eff 数
@@ -2491,7 +2692,8 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
         # Holm 校正的有效检验数（审查 P1-3）：默认 None = 保守口径 m；
         # 配置为 k_eff 时按跨源相关折算，两套口径都进 meta.holm 披露
         m_eff=m_eff,
-        temp_point_valid=tv_all, rain_point_valid=rv_all)
+        temp_point_valid=tv_all, rain_point_valid=rv_all,
+        pairs=pt)
     holm_family_actual: dict[str, int | None] = {}
     for name in _BOARD_ORDER:
         got = boot.get(name, {})

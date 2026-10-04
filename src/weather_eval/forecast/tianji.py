@@ -127,7 +127,8 @@ def _parse_tj_response(payload: Any, factor_code: str) -> dict[str, list[float |
     """
     if not isinstance(payload, dict) or payload.get("code") != 200:
         msg = payload.get("message") if isinstance(payload, dict) else payload
-        raise RuntimeError(f"中科天机响应异常: code={payload.get('code') if isinstance(payload, dict) else None} message={msg!r}")
+        code = payload.get("code") if isinstance(payload, dict) else None
+        raise RuntimeError(f"中科天机响应异常: code={code} message={msg!r}")
     data = payload.get("data") or {}
     for item in data.get("forecast") or []:
         if item.get("factorCode") != factor_code:

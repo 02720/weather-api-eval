@@ -546,6 +546,89 @@ def build_day_stat_tables(
     return days, tables
 
 
+def build_day_stat_tables_columnar(pt, models: list[str],
+                                   n_buckets_hourly: int, n_buckets_daily: int,
+                                   rain_thr_daily: float, rain_thr_hourly: float,
+                                   ) -> tuple[list[str], dict[str, np.ndarray]]:
+    """`build_day_stat_tables` 的列式实现：从 PairTable 直接算出同一批充分统计量表。
+
+    输出的形状、列含义、以及**累加顺序**都与 dict 版逐位一致——`np.add.at` 对重复
+    下标按出现顺序累加，而列式数组保持的是与 dict 版完全相同的记录顺序，因此
+    浮点结果一位不差（守卫：`test_daystats_columnar_matches_dict`，`array_equal`
+    零容差）。
+
+    快在哪里：dict 版要为每条记录做 2 次 dict 取键、1 次 `_temp_stat_row` 调用和
+    2 次 list append（150 万条 ≈ 10.7 s）；列式版是 11 次向量化运算加一次
+    `np.add.at`，Python 层的 per-record 成本为零。
+
+    ⚠️ I4：所有取值都先经 `*_ok` 布尔列过滤（两侧都有值才入表）。列式化把缺测
+    变成了 NaN，若依赖 NaN 语义就会把缺测当 0.0 —— 那正是本模块要防的事。
+    """
+    days = list(pt.days)
+    n_s = max(1, len(pt.station_code_all))
+    n_m = max(1, len(models))
+    shape_t_h = (n_m, n_buckets_hourly, n_s, len(days), len(_TEMP_STATS))
+    shape_r_h = (n_m, n_buckets_hourly, n_s, len(days), len(_RAIN_STATS))
+    shape_t_d = (n_m, n_buckets_daily, n_s, len(days), len(_TEMP_STATS))
+    shape_r_d = (n_m, n_buckets_daily, n_s, len(days), len(_RAIN_STATS))
+    tables = {
+        "temp_hourly": np.zeros(shape_t_h, dtype=np.float64),
+        "rain_hourly": np.zeros(shape_r_h, dtype=np.float64),
+        "temp_daily_max": np.zeros(shape_t_d, dtype=np.float64),
+        "temp_daily_min": np.zeros(shape_t_d, dtype=np.float64),
+        "rain_daily": np.zeros(shape_r_d, dtype=np.float64),
+    }
+
+    def _scatter(table, cols, idx):
+        for k in range(cols.shape[1]):
+            np.add.at(table[:, :, :, :, k], idx, cols[:, k])
+
+    def _temp_cols(o: np.ndarray, f: np.ndarray) -> np.ndarray:
+        e = f - o
+        return np.stack([np.ones_like(e), e * e, np.abs(e), e,
+                         (np.abs(e) <= 1).astype(np.float64),
+                         (np.abs(e) <= 2).astype(np.float64),
+                         f, o, f * o, f * f, o * o], axis=1)
+
+    def _rain_cols(o: np.ndarray, f: np.ndarray, thr: float) -> np.ndarray:
+        ob, fb = o >= thr, f >= thr
+        return np.stack([(ob & fb), (~ob & fb), (ob & ~fb), (~ob & ~fb)],
+                        axis=1).astype(np.float64)
+
+    # ---- 逐小时 ----
+    m_h = pt.h_model
+    b_h = pt.h_bucket
+    base = (m_h >= 0) & (b_h >= 1) & (b_h <= n_buckets_hourly)
+    sel = base & pt.h_temp_ok
+    if sel.any():
+        _scatter(tables["temp_hourly"],
+                 _temp_cols(pt.h_temp_o[sel], pt.h_temp_f[sel]),
+                 (m_h[sel], b_h[sel] - 1, pt.h_station_all[sel], pt.h_day[sel]))
+    sel = base & pt.h_rain_ok
+    if sel.any():
+        _scatter(tables["rain_hourly"],
+                 _rain_cols(pt.h_rain_o[sel], pt.h_rain_f[sel], rain_thr_hourly),
+                 (m_h[sel], b_h[sel] - 1, pt.h_station_all[sel], pt.h_day[sel]))
+
+    # ---- 按天 ----
+    m_d = pt.d_model
+    o_d = pt.d_offset
+    dbase = (m_d >= 0) & (o_d >= 1) & (o_d <= n_buckets_daily)
+    for name, ok_flag, o_arr, f_arr in (
+            ("temp_daily_max", pt.d_tmax_ok, pt.d_max_o, pt.d_max_f),
+            ("temp_daily_min", pt.d_tmin_ok, pt.d_min_o, pt.d_min_f)):
+        sel = dbase & ok_flag
+        if sel.any():
+            _scatter(tables[name], _temp_cols(o_arr[sel], f_arr[sel]),
+                     (m_d[sel], o_d[sel] - 1, pt.d_station_all[sel], pt.d_day[sel]))
+    sel = dbase & pt.d_rain_ok
+    if sel.any():
+        _scatter(tables["rain_daily"],
+                 _rain_cols(pt.d_rain_o[sel], pt.d_rain_f[sel], rain_thr_daily),
+                 (m_d[sel], o_d[sel] - 1, pt.d_station_all[sel], pt.d_day[sel]))
+    return days, tables
+
+
 def _score_from_parts(values: dict[str, np.ndarray], parts) -> np.ndarray:
     """按评分权重表把指标值数组组合成 0~100 子分；缺项（NaN）按剩余权重归一。
 
@@ -579,8 +662,6 @@ def _temp_scores_from_aggregate(A: np.ndarray, temp_parts) -> np.ndarray:
     has_run = A.ndim == 5
     if not has_run:
         A = A[None, ...]
-    n_run = A.shape[0]
-    n_m, n_b, n_s = A.shape[1], A.shape[2], A.shape[3]
     n = A[..., 0]
     se2, ae, se = A[..., 1], A[..., 2], A[..., 3]
     h1, h2 = A[..., 4], A[..., 5]
@@ -658,7 +739,8 @@ def _rain_scores_from_aggregate(A: np.ndarray, precip_parts) -> np.ndarray:
     h, fa, mi, c = tot[..., 0], tot[..., 1], tot[..., 2], tot[..., 3]
     n = h + fa + mi + c
     with np.errstate(invalid="ignore", divide="ignore"):
-        nz = lambda x: np.where(x > 0, x, np.nan)
+        def nz(x):
+            return np.where(x > 0, x, np.nan)
         acc = 100.0 * (h + c) / np.where(n > 0, n, np.nan)
         pod = 100.0 * h / nz(h + mi)
         far = 100.0 * fa / nz(h + fa)
@@ -690,8 +772,13 @@ def day_block_bootstrap(
     adj_w: np.ndarray | None = None,
     adj_ridge: float = 0.0,
     m_eff: float | None = None,
+    pairs=None,
 ) -> dict[str, dict[str, Any]]:
     """按天分块 bootstrap：各榜单那个"难度对齐综合分"的不确定性。
+
+    pairs：可选的列式配对表（`weather_eval.pairtable.PairTable`）。给了它就走
+    列式的 `build_day_stat_tables_columnar`，与 dict 路径产出**逐位相同**的表。
+    不传时行为与改造前完全一致（向后兼容，测试与旧调用点不受影响）。
 
     返回 {榜单名: {model: {"ci90": [lo, hi] | None, "champion_pct": float,
                   "sig_vs_top": bool | None}}}；未传 boards 时只有一个键 "all"。
@@ -721,9 +808,14 @@ def day_block_bootstrap(
         if not boards:
             return {"all": empty}
         return {name: {m: dict(v) for m, v in empty.items()} for name in boards}
-    days, tables = build_day_stat_tables(hourly, daily, models,
-                                         n_buckets_hourly, n_buckets_daily,
-                                         rain_thr_daily, rain_thr_hourly)
+    if pairs is not None:
+        days, tables = build_day_stat_tables_columnar(
+            pairs, models, n_buckets_hourly, n_buckets_daily,
+            rain_thr_daily, rain_thr_hourly)
+    else:
+        days, tables = build_day_stat_tables(hourly, daily, models,
+                                             n_buckets_hourly, n_buckets_daily,
+                                             rain_thr_daily, rain_thr_hourly)
     W = day_block_weights(runs, len(days), block_days, seed=seed)
     if not boards:
         macro = macro_scores_from_weights(
@@ -1171,7 +1263,8 @@ def variance_decomposition(S: np.ndarray, row_keep: np.ndarray,
     ss_total = _ss(S - grand)
     ss_resid = max(0.0, ss_total - ss_row - ss_col)
     denom = ss_total if ss_total > 0 else None
-    share = (lambda x: round(x / denom, 4) if denom else None)
+    def share(x):
+        return round(x / denom, 4) if denom else None
     return {
         "total": round(ss_total / max(int(V.sum()), 1), 4),
         "row": round(ss_row / max(int(V.sum()), 1), 4),
@@ -1625,7 +1718,7 @@ def weight_champion_distribution(
     敏感"，若用另一把尺子归总，答的就是另一个冠军。故这里也走同一步难度对齐
     （同一张设计、同一组格子权重）。
     """
-    n_m, n_b = temp_sub.shape[0], temp_sub.shape[1]
+    n_m = temp_sub.shape[0]
     w_t0 = np.array([p[1] for p in temp_parts])
     w_p0 = np.array([p[1] for p in precip_parts])
     rng = np.random.default_rng(seed)

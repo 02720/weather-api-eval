@@ -295,13 +295,13 @@ def test_version_drift_restarts_on_new_version(caplog):
                                     last_updated=lu))
 
     # 第一次遍历：day=1 是旧版本，day>=2 全是新版本 → 触发一次整体重抓
-    old_first = {1: page(base, 30, LU)}
+    _old_first = {1: page(base, 30, LU)}
     calls = {"n": 0}
 
     class _RollSession:
         def get(self, url, **kwargs):
             m = re.search(r"day=(\d+)", url)
-            day = int(m.group(1)) if m else 1
+            _day = int(m.group(1)) if m else 1
             calls["n"] += 1
             # 前 2 次请求（day=1 与 day=2）仍属旧版本，之后服务端已滚动到新版本
             text = page(base, 30, LU) if calls["n"] <= 2 else page(base, 29, new_lu)

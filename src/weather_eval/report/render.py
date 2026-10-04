@@ -222,8 +222,9 @@ def _slim_report(report_data: dict) -> dict:
     for m in heat_models:
         # .get 防御（第四轮 P2-10）：直接下标遇任一缺字段即 KeyError → 整份
         # 报告构建失败 → index.html 本轮不更新（Pages 部署旧报告）
-        row_at = lambda key, nd=3: [
-            _r(heat_idx[(m, d)].get(key), nd) if (m, d) in heat_idx else None for d in dates]
+        def row_at(key, nd=3):
+            return [_r(heat_idx[(m, d)].get(key), nd) if (m, d) in heat_idx else None
+                    for d in dates]
         heat_mats["acc"].append(row_at("acc2", 1))
         heat_mats["acc1"].append(row_at("acc1", 1))
         heat_mats["rmse"].append(row_at("rmse", 2))
@@ -322,14 +323,16 @@ def _sparkline_svg(values: list, med: float | None = None,
     pts = [(i, v) for i, v in enumerate(values) if v is not None]
     if not pts:
         return ""
-    xs = [p[0] for p in pts]
     vs = [p[1] for p in pts]
     lo, hi = min(vs + ([med] if med is not None else [])), \
         max(vs + ([med] if med is not None else []))
     span = (hi - lo) or 1.0
     pad = 3.0
-    px = lambda i: round(pad + i * (w - 2 * pad) / max(len(values) - 1, 1), 1)
-    py = lambda v: round(h - pad - (v - lo) * (h - 2 * pad) / span, 1)
+    def px(i):
+        return round(pad + i * (w - 2 * pad) / max(len(values) - 1, 1), 1)
+
+    def py(v):
+        return round(h - pad - (v - lo) * (h - 2 * pad) / span, 1)
     # None 断开处拆成多段 polyline
     segs, cur = [], [pts[0]]
     for prev, item in zip(pts, pts[1:]):

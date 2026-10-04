@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from weather_eval.forecast.http import DEFAULT_TIMEOUT, TimeBudget, request_with_retries
+from weather_eval.forecast.http import TimeBudget, request_with_retries
 from weather_eval.snapshot_meta import VALID_ISSUE_SOURCES
 
 FORECAST_DIR = Path(__file__).resolve().parents[1] / "src" / "weather_eval" / "forecast"
@@ -102,7 +102,7 @@ def test_ew4all_run_probe_is_per_station(monkeypatch):
                                     "data": [{"data_time": "20260912000000"},
                                              {"data_time": "20260911120000"}]})
         if url == FIND_BY_POINT_URL:
-            mode, el, dt = body["mode"], body["elements"], body["dataTime"]
+            _mode, el, dt = body["mode"], body["elements"], body["dataTime"]
             lon = body["point"][0][0]
             run = datetime.strptime(dt, "%Y%m%d%H")
             # 站点 B 在最新轮（00Z）的降水要素尚未出数 -> 该轮对它不可用

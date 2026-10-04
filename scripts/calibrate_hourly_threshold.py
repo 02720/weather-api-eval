@@ -17,7 +17,7 @@ from __future__ import annotations
 import statistics as st
 import sys
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 sys.path.insert(0, "src")
 
@@ -98,8 +98,9 @@ def main():
         common = set(base) & set(rows[thr])
         if len(common) < 5:
             continue
-        order = lambda parent: {m: i for i, m in enumerate(
-            sorted(common, key=lambda x: -parent[x]))}
+        def order(parent):
+            return {m: i for i, m in enumerate(
+                sorted(common, key=lambda x: -parent[x]))}
         r0, r1 = order(base), order(rows[thr])
         shift = st.mean(abs(r0[m] - r1[m]) for m in common)
         print(f"  {THRESHOLDS[0]:>4}mm → {thr:>4}mm ：平均名次变动 {shift:.2f} 位"

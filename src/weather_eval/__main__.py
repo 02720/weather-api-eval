@@ -15,7 +15,8 @@
   python -m weather_eval fetch-forecast --source geovis    抓取中科星图逐小时预报起报（需 GEVIS_TOKEN）
   python -m weather_eval fetch-forecast --source accuweather 抓取 AccuWeather 逐小时预报起报（需 ACCUWEATHER_API_KEY）
   python -m weather_eval fetch-forecast --source msn        抓取 MSN 天气（中国天气网）起报（网页接口，无需凭据）
-  python -m weather_eval fetch-forecast --source cma_public 抓取中国气象局公众网（weather.cma.cn）起报（公开接口，无需凭据）
+  python -m weather_eval fetch-forecast --source cma_public 抓取中国气象局公众网
+                                        （weather.cma.cn）起报（公开接口，无需凭据）
   python -m weather_eval report                   用跨月累计窗口（最早可用数据 → 现在）
                                                   重建主报告 reports/index.html
   python -m weather_eval monthly [--month YYYY-MM] 生成月度归档报告 reports/monthly/YYYY-MM.html
@@ -52,7 +53,8 @@ from pathlib import Path
 from typing import Any
 
 from .config import DEFAULT_EVAL, load_config
-from .timeutil import now_beijing, ymd, parse_iso, floor_to_hour, ym
+from .evaluate import build_report
+from .timeutil import now_beijing, parse_iso, floor_to_hour, ym
 from .storage import (
     _atomic_write_json,
     PROJECT_ROOT, available_months, compact_snapshots, data_footprint,
@@ -77,6 +79,7 @@ from .forecast.accuweather import MODEL_NAME as ACCUWEATHER_MODEL
 from .forecast.msn import MODEL_NAME as MSN_MODEL
 from .forecast.ew4all import MODEL_SPECS as EW4ALL_MODEL_SPECS
 from .forecast.cma_public import MODEL_NAME as CMA_PUBLIC_MODEL
+from .report import write_live_report, write_monthly_report
 # 独立抓取源（非 Open-Meteo 模型）的登记处：source -> (模型集合, 提供方类)。
 # 单一数据源：模型集合与提供方类必须同步登记，此前分成两张表（SOURCE_MODELS 与
 # _build_provider 内的内联字典）手工同步，新增源漏登其一会退化成运行期 KeyError
@@ -108,8 +111,6 @@ NON_OPENMETEO_MODELS = {
     CAIYUN_DEFAULT_MODEL, QWEATHER_DEFAULT_MODEL, *TJ_MODEL_SPECS,
     *(m for ms in SOURCE_MODELS.values() for m in ms),
 }
-from .evaluate import build_report
-from .report import write_live_report, write_monthly_report
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("weather_eval")
@@ -154,7 +155,7 @@ def _build_obs_sources(cfg, source: str, station):
     auto = 把配置里登记的全部源都交给编排层，主源可用时不惊动备用源；
     指定单个源 = 只跑该源（用于对照、故障定位与单源复算）。
     """
-    from .obs import CmaDataObsSource, EiaDataObsSource
+    from .obs import CmaDataObsSource
     wanted = list(cfg.obs_sources) if source == "auto" else [source]
     out = {}
     for name in wanted:

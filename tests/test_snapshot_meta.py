@@ -5,7 +5,6 @@
 """
 import json
 
-import pytest
 
 from weather_eval import storage
 from weather_eval.snapshot_meta import (

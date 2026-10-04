@@ -270,7 +270,7 @@ def test_nan_and_invalid_values_to_none():
 
 
 def test_empty_data_treated_as_failure_and_falls_back():
-    payload = json.dumps({"longitude": 111.33, "latitude": 23.49, "data": [],
+    _payload = json.dumps({"longitude": 111.33, "latitude": 23.49, "data": [],
                           "forecast_time": "2026-08-28T00:00:00Z"})
     good = _query_payload(_samples_3h()).replace(
         "2026-08-28T00:00:00Z", "2026-08-27T18:00:00Z")

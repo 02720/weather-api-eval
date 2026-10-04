@@ -269,7 +269,7 @@ def test_run_with_temperature_but_no_precip_is_skipped():
         if url == MODEL_TIME_LIST_URL:
             return 200, json.dumps({"code": 200, "data": [
                 {"data_time": "20260912120000"}, {"data_time": "20260912000000"}]})
-        mode, el, dt = body["mode"], body["elements"], body["dataTime"]
+        _mode, el, dt = body["mode"], body["elements"], body["dataTime"]
         if dt == "2026091212" and el != "TEM":
             return 200, json.dumps({"code": 200, "data": []})       # 降水尚未出数
         rows = _rows(el, datetime(2026, 9, 12, 1), 3, 1, lambda i: 20.0) \
@@ -412,7 +412,7 @@ def test_run_with_all_none_precip_values_is_skipped():
         if url == MODEL_TIME_LIST_URL:
             return 200, json.dumps({"code": 200, "data": [
                 {"data_time": "20260912120000"}, {"data_time": "20260912000000"}]})
-        mode, el, dt = body["mode"], body["elements"], body["dataTime"]
+        _mode, el, dt = body["mode"], body["elements"], body["dataTime"]
         rows = _rows(el, datetime(2026, 9, 12, 1), 3, 1, lambda i: 20.0) \
             if el == "TEM" else _rows(el, datetime(2026, 9, 12, 3), 2, 3, lambda i: 3.0)
         if dt == "2026091212" and el != "TEM":

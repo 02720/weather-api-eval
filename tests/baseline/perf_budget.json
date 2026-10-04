@@ -1,0 +1,9 @@
+{
+ "max_peak_rss_mb": 2798.0,
+ "max_seconds": 149.7,
+ "measured_at_freeze": {
+  "peak_rss_mb": 1865.2,
+  "seconds": 74.83
+ },
+ "note": "预算是棘轮：随优化推进单向收紧。耗时给 2×（跨机差异与全量 pytest 的进程内竞争都很大），峰值 RSS 给 1.5×（与机器关系较小，是更硬的约束：13 个月数据下 ~20 GB 会 OOM）"
+}

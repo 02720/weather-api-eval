@@ -62,7 +62,7 @@ def test_5xx_and_network_retry_then_exhaust():
 
 
 def test_retry_success_on_second_attempt_and_no_sleep_after_last():
-    sleeps = []
+    _sleeps = []
     # 第 1 次 503，第 2 次 200：只在两次之间 sleep 一次
     sess = _Session([_Resp(503), _Resp(200)])
     resp = request_with_retries(sess, "http://x/", retries=2, source="测试")
@@ -71,7 +71,7 @@ def test_retry_success_on_second_attempt_and_no_sleep_after_last():
 
 def test_no_sleep_after_final_attempt():
     """末次尝试失败后直接上抛：失败已注定，白等纯属浪费（旧实现通病）。"""
-    sleeps = []
+    _sleeps = []
     sess = _Session([_Resp(503), _Resp(503)])
     with pytest.raises(RuntimeError):
         request_with_retries(sess, "http://x/", retries=1, source="测试")

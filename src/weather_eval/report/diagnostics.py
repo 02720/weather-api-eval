@@ -34,7 +34,6 @@ import glob
 import gzip
 import json
 import logging
-import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
@@ -97,6 +96,7 @@ def load_observations(obs_dir: Path, months: Iterable[str]) -> dict[str, dict]:
 def iter_error_samples(forecasts_root: Path, obs_by_station: dict[str, dict],
                        months: list[str], start: str | None = None,
                        end: str | None = None,
+                       snapshots: dict[tuple[str, str], list[dict]] | None = None,
                        ) -> tuple[dict[str, dict[tuple, float]],
                                    dict[str, dict[tuple, float]]]:
     """遍历全部冻结快照，重建"逐样本误差"。
@@ -108,6 +108,13 @@ def iter_error_samples(forecasts_root: Path, obs_by_station: dict[str, dict],
     "同源冗余"的物理来源。缺测小时自然跳过，不做任何插补（插补会凭空制造相关）。
 
     error 的符号统一为「预报 − 实况」：相关的符号不依赖方向，但一致的定义便于复核。
+
+    snapshots：调用方已在内存里的快照（``{(station, model): [snap, ...]}``）。
+    给了它就**不再读盘**（TASK-04：诊断层此前把 build_report 已经读过的全量快照
+    又读了一遍）。
+    ⚠️ 语义纪律：诊断层读的是窗口内的**全部**快照，含被评估排除的（残缺、未封存）。
+    传入的必须同样是"未过滤"的全量快照——顺手把被评估排除的剔掉，会让
+    `cross_source_correlation` / `fingerprint_drift` 的口径静默改变。
     """
     temp_err: dict[str, dict[tuple, float]] = {}
     rain_err: dict[str, dict[tuple, float]] = {}
@@ -115,63 +122,75 @@ def iter_error_samples(forecasts_root: Path, obs_by_station: dict[str, dict],
     t_start = _parse_iso(start) if start else None
     t_end = _parse_iso(end) if end else None
 
-    for station_dir in sorted(forecasts_root.iterdir()):
-        if not station_dir.is_dir():
-            continue
-        station = station_dir.name
+    if snapshots is not None:
+        pairs = [(station, model, snap)
+                 for (station, model), snaps in sorted(snapshots.items())
+                 for snap in snaps]
+    else:
+        pairs = None
+
+    def _iter_pairs():
+        """产出 (station, model, snap)；有内存快照时用它，否则走目录。"""
+        if pairs is not None:
+            yield from pairs
+            return
+        for station_dir in sorted(Path(forecasts_root).iterdir()):
+            if not station_dir.is_dir():
+                continue
+            for model_dir in sorted(station_dir.iterdir()):
+                if not model_dir.is_dir():
+                    continue
+                for path in _snapshot_files(model_dir):
+                    snap = _read_json(path)
+                    if isinstance(snap, dict):
+                        yield station_dir.name, model_dir.name, snap
+
+    for station, model, snap in _iter_pairs():
         obs = obs_by_station.get(station) or {}
         if not obs:
             continue
-        for model_dir in sorted(station_dir.iterdir()):
-            if not model_dir.is_dir():
+        t_map = temp_err.setdefault(model, {})
+        r_map = rain_err.setdefault(model, {})
+        issue = _parse_iso(snap.get("issue_iso") or "")
+        if issue is None:
+            continue
+        times = snap.get("hourly_time") or []
+        data = snap.get("data") or {}
+        if not isinstance(data, dict) or not times:
+            continue
+        # 一份快照可能同时封装多个模型（Open-Meteo 批量接口）
+        for mid, series in data.items():
+            if not isinstance(series, dict):
                 continue
-            model = model_dir.name
-            t_map = temp_err.setdefault(model, {})
-            r_map = rain_err.setdefault(model, {})
-            for path in _snapshot_files(model_dir):
-                snap = _read_json(path)
-                if not isinstance(snap, dict):
+            key_model = mid if mid in (snap.get("models") or []) else model
+            temps = series.get("temperature_2m") or []
+            rains = series.get("precipitation") or []
+            tg = t_map if key_model == model else temp_err.setdefault(key_model, {})
+            rg = r_map if key_model == model else rain_err.setdefault(key_model, {})
+            for idx, t_iso in enumerate(times):
+                vt = _parse_iso(t_iso)
+                if vt is None:
                     continue
-                issue = _parse_iso(snap.get("issue_iso") or "")
-                if issue is None:
+                if t_start and vt < t_start:
                     continue
-                times = snap.get("hourly_time") or []
-                data = snap.get("data") or {}
-                if not isinstance(data, dict) or not times:
+                if t_end and vt > t_end:
                     continue
-                # 一份快照可能同时封装多个模型（Open-Meteo 批量接口）
-                for mid, series in data.items():
-                    if not isinstance(series, dict):
-                        continue
-                    key_model = mid if mid in (snap.get("models") or []) else model
-                    temps = series.get("temperature_2m") or []
-                    rains = series.get("precipitation") or []
-                    tg = t_map if key_model == model else temp_err.setdefault(key_model, {})
-                    rg = r_map if key_model == model else rain_err.setdefault(key_model, {})
-                    for idx, t_iso in enumerate(times):
-                        vt = _parse_iso(t_iso)
-                        if vt is None:
-                            continue
-                        if t_start and vt < t_start:
-                            continue
-                        if t_end and vt > t_end:
-                            continue
-                        lead_days = int((vt - issue) // timedelta(days=1))
-                        if lead_days < lo or lead_days > hi:
-                            continue
-                        rec = obs.get(t_iso)
-                        if not rec:
-                            continue
-                        key = (station, t_iso, lead_days)
-                        if idx < len(temps) and rec.get("temp") is not None:
-                            fv = temps[idx]
-                            if isinstance(fv, (int, float)) and abs(float(fv)) < 900:
-                                tg[key] = float(fv) - float(rec["temp"])
-                        if idx < len(rains) and rec.get("rain") is not None:
-                            fv = rains[idx]
-                            if isinstance(fv, (int, float)) and float(fv) >= 0:
-                                # 降水用"有无"的偏离（观测 −0.5/预报 +0.5 会互相抵消）
-                                rg[key] = float(fv) - float(rec["rain"])
+                lead_days = int((vt - issue) // timedelta(days=1))
+                if lead_days < lo or lead_days > hi:
+                    continue
+                rec = obs.get(t_iso)
+                if not rec:
+                    continue
+                key = (station, t_iso, lead_days)
+                if idx < len(temps) and rec.get("temp") is not None:
+                    fv = temps[idx]
+                    if isinstance(fv, (int, float)) and abs(float(fv)) < 900:
+                        tg[key] = float(fv) - float(rec["temp"])
+                if idx < len(rains) and rec.get("rain") is not None:
+                    fv = rains[idx]
+                    if isinstance(fv, (int, float)) and float(fv) >= 0:
+                        # 降水用"有无"的偏离（观测 −0.5/预报 +0.5 会互相抵消）
+                        rg[key] = float(fv) - float(rec["rain"])
     return temp_err, rain_err
 
 
@@ -248,7 +267,9 @@ _FINGERPRINT_FIELDS = (
 
 
 def fingerprint_drift(forecasts_root: Path, months: list[str],
-                      split_fraction: float = FINGERPRINT_SPLIT_FRACTION) -> dict[str, Any]:
+                      split_fraction: float = FINGERPRINT_SPLIT_FRACTION,
+                      snapshots: dict[tuple[str, str], list[dict]] | None = None,
+                      ) -> dict[str, Any]:
     """逐源比对快照契约字段的前后半周期众数，漂移即告警（审查 P1-5）。
 
     为什么这比 health 的"最新快照超过 N 小时未更新"更关键：本项目源的典型失效
@@ -256,25 +277,33 @@ def fingerprint_drift(forecasts_root: Path, months: list[str],
     UA 被改后静默截断到 48 小时）。这类失效 health 完全看不见，但契约字段会变。
     """
     per_model: dict[str, list[tuple[datetime, dict]]] = {}
-    for station_dir in sorted(forecasts_root.iterdir()):
-        if not station_dir.is_dir():
-            continue
-        for model_dir in sorted(station_dir.iterdir()):
-            if not model_dir.is_dir():
+
+    def _iter():
+        if snapshots is not None:
+            for (_station, model), snaps in sorted(snapshots.items()):
+                for snap in snaps:
+                    yield model, snap
+            return
+        for station_dir in sorted(Path(forecasts_root).iterdir()):
+            if not station_dir.is_dir():
                 continue
-            model = model_dir.name
-            for path in _snapshot_files(model_dir):
-                snap = _read_json(path)
-                if not isinstance(snap, dict):
+            for model_dir in sorted(station_dir.iterdir()):
+                if not model_dir.is_dir():
                     continue
-                issue = _parse_iso(snap.get("issue_iso") or "")
-                if issue is None:
-                    continue
-                fp = {k: snap.get(k) for k in _FINGERPRINT_FIELDS}
-                fp["actual_hours"] = snap.get("actual_hours")
-                fp["complete"] = snap.get("complete")
-                fp["missing_shards"] = bool(snap.get("missing_shards"))
-                per_model.setdefault(model, []).append((issue, fp))
+                for path in _snapshot_files(model_dir):
+                    snap = _read_json(path)
+                    if isinstance(snap, dict):
+                        yield model_dir.name, snap
+
+    for model, snap in _iter():
+        issue = _parse_iso(snap.get("issue_iso") or "")
+        if issue is None:
+            continue
+        fp = {k: snap.get(k) for k in _FINGERPRINT_FIELDS}
+        fp["actual_hours"] = snap.get("actual_hours")
+        fp["complete"] = snap.get("complete")
+        fp["missing_shards"] = bool(snap.get("missing_shards"))
+        per_model.setdefault(model, []).append((issue, fp))
 
     out_models: dict[str, Any] = {}
     drifted: list[str] = []
@@ -621,7 +650,8 @@ def corridor_sensitivity(report: dict, board_key: str = "all",
         "champion_rotations": sum(1 for c in corridors if c["champion_changed"]),
         "n_corridors": len(corridors),
         "fidelity": reconstruction_fidelity(report, board_key),
-        "note": "降水阈值 / daily_min_hours / 逐格权重门槛走廊需重跑全量评估或导出逐格 n_eff，由 scripts/sensitivity_corridors.py 离线产出",
+        "note": ("降水阈值 / daily_min_hours / 逐格权重门槛走廊需重跑全量评估"
+                 "或导出逐格 n_eff，由 scripts/sensitivity_corridors.py 离线产出"),
     }
 
 
@@ -757,11 +787,20 @@ def _months_from_meta(meta: dict) -> list[str]:
 
 def compute_all(report: dict, data_root: Path, months: list[str] | None = None,
                 families: dict[str, str] | None = None,
-                with_fingerprint: bool = True) -> dict[str, Any]:
+                with_fingerprint: bool = True,
+                *, obs_maps: dict[str, dict] | None = None,
+                snapshots: dict[tuple[str, str], list[dict]] | None = None,
+                ) -> dict[str, Any]:
     """一次性算出全部诊断项，返回可直接并进 ``meta`` 的 dict。
 
     months：窗口覆盖的自然月列表。缺省时按 meta.start/end 枚举（evaluate 的
     主调用路径会显式传入，这里的行为只为独立调用/旧档案兜底）。
+
+    obs_maps / snapshots：`build_report` 已在内存里的观测与快照。给了就**不再二次
+    读盘**（TASK-04）。两者必须同时给或同时不给——只给一个会让"读盘口径"与
+    "内存口径"混在同一个诊断结果里，那是比慢更糟的问题。
+    ⚠️ 传入的快照必须是**未过滤的全量快照**（含被评估排除的残缺/未封存快照）：
+    诊断层的口径就是"窗口内全部快照"，顺手缩小范围会让跨源相关与指纹漂移静默改变。
     """
     meta = report.get("meta") or {}
     months = months or _months_from_meta(meta)
@@ -770,23 +809,31 @@ def compute_all(report: dict, data_root: Path, months: list[str] | None = None,
     fc_root = Path(data_root) / "forecasts"
     out: dict[str, Any] = {"generated_from": "data/ 冻结快照 + 已算好的分桶榜单"}
 
-    obs_by_station = {}
-    if obs_root.exists():
-        for st_dir in sorted(obs_root.iterdir()):
-            if st_dir.is_dir():
-                obs_by_station[st_dir.name] = load_observations(st_dir, months)
+    if obs_maps is not None:
+        # 诊断层只消费 temp/rain 两个字段，其余（source/revisions）不影响任何诊断项
+        obs_by_station = {
+            sid: {t: {"temp": (rec or {}).get("temp"), "rain": (rec or {}).get("rain")}
+                  for t, rec in (m or {}).items()}
+            for sid, m in obs_maps.items()}
+    else:
+        obs_by_station = {}
+        if obs_root.exists():
+            for st_dir in sorted(obs_root.iterdir()):
+                if st_dir.is_dir():
+                    obs_by_station[st_dir.name] = load_observations(st_dir, months)
 
-    if fc_root.exists() and obs_by_station:
+    if (snapshots is not None or fc_root.exists()) and obs_by_station:
         start = (meta.get("start") or "").replace(" ", "T")
         end = (meta.get("end") or "").replace(" ", "T")
         temp_err, rain_err = iter_error_samples(
-            fc_root, obs_by_station, months, start=start or None, end=end or None)
+            fc_root, obs_by_station, months, start=start or None, end=end or None,
+            snapshots=snapshots)
         out["source_correlation"] = cross_source_correlation(temp_err, families=families)
         out["station_rho"] = station_rho(temp_err)
         out["_debug"] = {"models_with_series": len(temp_err),
                          "samples": sum(len(s) for s in temp_err.values())}
         if with_fingerprint:
-            out["fingerprint"] = fingerprint_drift(fc_root, months)
+            out["fingerprint"] = fingerprint_drift(fc_root, months, snapshots=snapshots)
     else:
         out["source_correlation"] = {"available": False, "reason": "未找到 data/forecasts"}
         out["station_rho"] = {"available": False, "reason": "未找到 data/forecasts"}

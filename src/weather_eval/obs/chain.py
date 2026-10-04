@@ -136,7 +136,9 @@ def _payload_useful(rec: dict) -> bool:
     return rec.get("temp") is not None or rec.get("rain") is not None
 
 
-def _usability(recs: list[dict], *, stale_hours: float, min_hours: int) -> tuple[bool, str | None, str | None, float | None]:
+def _usability(
+    recs: list[dict], *, stale_hours: float, min_hours: int
+) -> tuple[bool, str | None, str | None, float | None]:
     """判定一个源的产出是否可直接采用。
 
     返回 (可用?, 降级原因, 最新观测时刻, 滞后小时数)。**不可用不等于丢弃**——
