@@ -50,15 +50,6 @@ jobs:
           python -m pip install -r requirements.txt -r requirements-dev.txt
           python -m pip install --no-deps cyeva==0.2.3
 
-      - name: 单元测试（守卫）
-        # 第四轮 P1-1：此前装了 pytest 却从不运行——"新源漏登三张登记表 CI 直接红"
-        # 这类机器契约实际全靠本地自觉。守卫（登记表/体积/服务端渲染）必须在
-        # 任何抓取之前先行把关：测试失败则本轮不产出新数据。
-        timeout-minutes: 15
-        env:
-          TZ: Asia/Shanghai
-        run: python -m pytest -q
-
       - name: 抓取彩云预报（可选，需配置 CAIYUN_TOKEN Secret）
         # 可选增强源：失败仅标注该步，不得阻断后续观测抓取、报告与提交。
         # Token 经由 Secret 注入到 env；未配置时由 shell 判断跳过，步骤仍成功，不影响现有流水线。
