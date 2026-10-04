@@ -976,5 +976,38 @@
     "wind_speed": 0.8,
     "wind_dir": 142.0,
     "visibility": null
+  },
+  "2026-10-04T18:00": {
+    "time": "2026-10-04T18:00",
+    "source": "wd",
+    "temp": 24.8,
+    "pressure": 999.1,
+    "humidity": 70.0,
+    "rain": 0.0,
+    "wind_speed": 2.8,
+    "wind_dir": 22.0,
+    "visibility": null
+  },
+  "2026-10-04T17:00": {
+    "time": "2026-10-04T17:00",
+    "source": "wd",
+    "temp": 25.3,
+    "pressure": 998.8,
+    "humidity": 74.0,
+    "rain": 0.0,
+    "wind_speed": 0.9,
+    "wind_dir": 277.0,
+    "visibility": null
+  },
+  "2026-10-04T16:00": {
+    "time": "2026-10-04T16:00",
+    "source": "wd",
+    "temp": 26.4,
+    "pressure": 998.5,
+    "humidity": 71.0,
+    "rain": 0.0,
+    "wind_speed": 2.8,
+    "wind_dir": 26.0,
+    "visibility": null
   }
 }
