@@ -64,6 +64,40 @@ def test_n_eff_cross_station_falls_back_without_times():
     assert stats.n_eff_from_station_series({"a": [1.0, 2.0, 3.0]}) == 3
 
 
+def test_effective_n_no_cliff_when_series_grows():
+    """样本变多，n_eff 绝不许变少（UKMO"样本积累中"事故回归）。
+
+    旧实现有 NEFF_MIN_SERIES=30 的硬开关：每站序列 ≤30 天完全不估自相关，
+    ≥31 天全额折减。跨月累计窗口把日温度序列从 30 天养到 37 天时，估计器
+    "换挡"，UKMO 的 n_eff 从 51（9 月月报，达标）骤跌到 18（掉出门槛）——
+    **加了数据反而更缺样本**，违反信息量单调不减的第一性原理，把一个数据
+    链路完全正常的源踢回"样本积累中"。改为连续噪声下限后：
+
+    - 强持久序列（滞后 1 天相关 ≈ 1）在 30/37 天两个长度上都必须真折减
+      （旧开关在 30 天处返回原始 n，正是悬崖的起跳点）；
+    - 且 n_eff 随序列变长不减。
+    改回硬开关或去掉噪声下限，本测试变红。
+    """
+    t = np.arange(60, dtype=float)
+    smooth = np.sin(2 * np.pi * t / 100.0)      # 滞后 1 天相关 ≈ 0.998（RHO_CLAMP 触顶）
+    n30 = stats.effective_n(smooth[:30])
+    n37 = stats.effective_n(smooth[:37])
+    assert n30 < 30, "强持久序列按原始 n 记数 = 旧硬开关复辟"
+    assert n37 >= n30, (n30, n37)
+
+
+def test_effective_n_small_sample_still_protected():
+    """噪声下限保留了旧 guard 的本意：短序列的噪声 ρ̂ 不许凭空折损样本。
+
+    白噪声短序列（n=10，下限 z/√n≈0.52）的任何滞后相关都按噪声抹平，
+    n_eff 必须接近原始 n；长序列（n=600）下限趋近 0，全额校正照常生效
+    （AR(1) 的定量断言见 test_evaluate.py::test_neff_effective_sample_size_and_gate）。
+    """
+    rng = np.random.default_rng(7)
+    white_short = rng.normal(0, 1, 10)
+    assert stats.effective_n(white_short) >= 8
+
+
 # ------------------------------------------------------ P0-1 加权双向拟合
 def test_two_way_fit_weights_change_the_answer():
     """等权与加权**必须**给出不同的行分——否则权重根本没进拟合。"""

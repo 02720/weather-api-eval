@@ -25,8 +25,9 @@ from typing import Any
 
 import numpy as np
 
-# n_eff 的最小估计样本：序列短于该值时自相关估计噪声大于信号，直接返回 n
-NEFF_MIN_SERIES = 30
+# ρ₁ 的噪声下限系数：|ρ̂| 低于 z/√n 的部分按估计噪声处理，不参与折减
+# （z=1.64 ≈ 单侧 95% 显著性门槛；相关系数估计的标准误 ≈ 1/√n）
+NEFF_RHO_NOISE_Z = 1.64
 # ρ₁ 的截断：ρ→1 时 (1−ρ)/(1+ρ) 发散，截断避免单个高自相关序列炸掉 n_eff
 RHO_CLAMP = 0.95
 # 站内 r/slope 参与合并的最小站内样本量（与点估计路径一致）
@@ -69,19 +70,28 @@ def pearson_r(a: np.ndarray, b: np.ndarray) -> float | None:
 def effective_n(err: np.ndarray) -> int:
     """自相关校正后的有效样本量：n_eff = n·(1−ρ₁)/(1+ρ₁)。
 
-    err 是按时间排序的误差（或事件指示）序列。n < NEFF_MIN_SERIES 时不估自相关
-    （估计量本身太噪，直接返回 n 不惩罚小样本）；ρ₁ 估计为 None（方差为 0 等
-    退化情形）同样返回 n。结果截断到 [1, n]。
+    err 是按时间排序的误差（或事件指示）序列。ρ̂₁ 只在**超出噪声下限**
+    z/√n（NEFF_RHO_NOISE_Z）的部分参与折减——相关系数估计的标准误 ≈ 1/√n，
+    短序列的 ρ̂ 本身噪声很大，把噪声当信号会凭空折损样本。ρ₁ 估计为 None
+    （方差为 0 等退化情形）同样返回 n。结果截断到 [1, n]。
+
+    为什么必须是连续下限而不是"序列短于 N 就不校正"的硬开关：硬开关让 n_eff
+    在 N/N+1 之间跳变——同一源多攒一周数据，估计器"换挡"全额折减，n_eff 反而
+    骤降（实测 UKMO 日温度 n_eff 从 9 月月报的 51 跌到跨月累计的 18，样本更多
+    却被踢回"样本积累中"）。信息量必须随样本单调不减，这是有效样本量的第一
+    性原理；噪声下限在 n→∞ 时收敛到 0，全额校正照常生效。
     """
     e = np.asarray(err, dtype=float)
     e = e[np.isfinite(e)]
     n = int(e.size)
-    if n < NEFF_MIN_SERIES + 1 or n <= 2:
+    if n <= 2:
         return n
     rho = pearson_r(e[:-1], e[1:])
     if rho is None:
         return n
     rho = max(-RHO_CLAMP, min(RHO_CLAMP, rho))
+    floor = NEFF_RHO_NOISE_Z / np.sqrt(n)
+    rho = float(np.copysign(max(0.0, abs(rho) - floor), rho))
     n_eff = int(round(n * (1 - rho) / (1 + rho)))
     return max(1, min(n, n_eff))
 
