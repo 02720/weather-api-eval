@@ -103,15 +103,23 @@
 
 得分体系（排行榜、分时效榜单与时效趋势共用）：
 - 把预报质量拆成互不重复的维度，每维度取代表性指标换算成 0~100 的子分后加权平均：
-  温度 7 项入分（±2°C/±1°C 准确率、RMSE/MAE 换算分、相关系数、|MBE| 偏差分、回归斜率分），
-  降水 5 项入分（ETS（首位）、TS、POD、100−FAR、|BIAS−1| 偏差分）。
-  降水中不再入分：晴雨准确率 acc——它主要由气候基率决定（无雨日占 70%+ 全
-  答无雨即得高分），不是技巧；ETS 本身已做过基率校正。POD 权重低于
-  FAR+BIAS 之和，评分不再奖励"多报占便宜"（旧权重下超报 15 倍的源反而
-  高于克制源）。
+  温度 5 项入分（±2°C 准确率、RMSE 换算分、相关系数、|MBE| 偏差分、回归斜率分），
+  降水 4 项入分（ETS（首位）、POD、100−FAR、|log₂BIAS| 偏差分）。
+  2026-10-05 去冗余（第一性原理审查 P2-4）：acc1↔acc2、mae↔rmse 的桶内跨源
+  相关实测 0.95 / 0.96，ts↔ets 0.84——同一份证据拆成两个高相关子分加权，
+  "权重"就失去语义；它们照算不入分（明细表保留）。晴雨准确率 acc 同样不入分：
+  它主要由气候基率决定（无雨日占 70%+ 全答无雨即得高分），不是技巧。
+  POD 权重低于 FAR+BIAS 之和，评分不奖励"多报占便宜"。
+- 换算斜率 λ 是标定值，不是拍脑袋（第一性原理审查 P1-1/P1-2 的落地）：
+  实际话语权 = 权重 × 换算斜率 × 数据离散度，三者耦合——只声明前两个，第三个
+  （数据的偶然分布）就会替你决定名次。故每项 λ 按"子分桶内跨源 sd = 8 分"在
+  真实存档上反解（scripts/calibrate_score_slopes.py），值冻结进 config 的
+  eval.score_slopes，使实际话语权 ≈ 名义权重；季度重标定，λ 变更视为评分口径
+  变更并在月报注明。BIAS/斜率的偏差项用 |log₂| 度量：超报 k 倍与欠报 1/k 是
+  信息论上同一量级的错误，惩罚必须对称。
   各子分截断到 [0,100]，缺项按剩余权重归一（不让单一缺项把整行踢出局）。
   不入分的指标及理由见 TEMP/PRECIP_SCORE_PARTS 注释与 README。
-- 综合得分 = mean(温度得分, 降水分)，缺项不计。
+- 综合得分 = mean(温度得分, 降水分)，缺一即缺——单维分不冒充综合分（MSN 教训）。
 - 排行榜（leaderboards）分**两个维度**：分辨率层 × 时效层，共 3+3·N 张榜。
   * 分辨率层三张（"all" / "hourly" / "daily"）：**难度对齐分**——用(天桶×分辨率)做
     列的双向加法模型把难度与技巧劈开后给出的期望分。三张答三个问题：
@@ -149,6 +157,7 @@ from cyeva.core.statistic import (
 )
 
 from . import stats as _stats
+from .config import DEFAULT_EVAL
 from .graded import precip_graded_metrics
 from .pairtable import PairTable, grouped_by_station, min_lead_select
 from .provenance import provenance
@@ -844,44 +853,152 @@ def precip_binary_metrics(obs_vals, fcst_vals, threshold, min_sample,
 # 每项以 (指标键, 权重, 白话标签, 换算说明, 换算函数) 描述：换算函数把指标映射到
 # 0~100 的子分（统一截断到 [0,100]），权重决定该维度对总分的话语权。
 #
-# 温度（5 个维度、7 项入分）：
-#   报准比例 acc2/acc1 · 误差幅度 RMSE/MAE · 起伏节奏 r · 系统偏差 |MBE| · 幅度校准 slope。
-#   不入分：RSS 与 χ² —— χ²=RMSE²、RSS=n×χ²，是样本量的函数而非预报技巧，只进明细表。
-# 降水（4 个维度、5 项入分；2026-09-06 重构）：
-#   晴雨综合技巧 ETS（首位）/TS · 命中 POD · 空报 FAR · 频率无偏 BIAS。
-#   不入分：晴雨准确率 acc——主要由气候基率决定（无雨日 70%+，全答无雨即得高分），
-#   ETS 已含基率校正，acc 只进明细表；漏报率（=100−POD，纯冗余）、空报频率 POFD
-#   （与 FAR 同族仅分母不同）、雨量 RMSE/MAE/MBE（连续雨量误差由个别强降水时段
-#   主导、随样本期气候波动大，跨源横向比较不公平，只进明细表）。
-#   POD 权重 (0.15) 低于 FAR+BIAS (0.15+0.10=0.25)：评分不奖励"多报占便宜"
+# 换算斜率 λ：标定值，不是设计者的直觉（2026-10-05，第一性原理审查 P1-1 落地）。
+#   一项指标对名次的实际影响力 = 权重 × 换算斜率 × 该指标在同期数据里的跨源离散度，
+#   三者耦合、缺一不可。旧表（RMSE×5、MBE×10、BIAS−1 线性……）只声明了前两个，
+#   于是第三个——数据的偶然分布——实际决定了名次：2026-09 实测 mae 名义 10% 的
+#   话语权只有 2.5%，bias 名义 10% 却拿到 27%。修法是把斜率从自由度变成标定量：
+#   每项 λ 按"该子分桶内跨源 sd = sd*（8 分）"在真实存档上反解（影响力 = w×8，
+#   占比自动 = 名义权重），标定脚本 scripts/calibrate_score_slopes.py，值冻结进
+#   config 的 eval.score_slopes（与降水阈值同模式），季度重标定。
+#   三个偏差族，锚定方向沿用各自旧口径（避免无谓的量表跳动）：
+#     · 百分比乘法式（acc2/r/ets/pod：v×λ）——数据离满分远的项（ets 中位 0.11）
+#       只能乘法入分：偏差式会把中位带整个压进 0 分饱和区，重蹈旧 BIAS 的覆辙；
+#     · 幅度式（rmse/mbe/far：100 − 偏差×λ）——0 误差 = 满分，灾难值截断 0 分；
+#     · 倍率式（bias/slope：100 − |log₂v|×λ）——超报 k 倍与欠报 1/k 在信息论上
+#       是同一量级的错误（|log₂k| 相等），惩罚必须对称；旧 BIAS 线性式超报 2 倍
+#       即 0 分、欠报一半却得 50 分，既不对称又把日轨 57% 的格子压进饱和区。
+#
+# 温度（4 个维度、5 项入分；2026-10-05 去冗余）：
+#   报准比例 acc2 · 误差幅度 RMSE · 起伏节奏 r · 系统偏差 |MBE| · 幅度校准 slope。
+#   不入分：acc1（与 acc2 桶内相关 0.95）、mae（与 rmse 0.96——保留对大误差更严的
+#   RMSE）、RSS 与 χ²（χ²=RMSE²、RSS=n×χ²，是样本量的函数而非预报技巧）。
+# 降水（4 个维度、4 项入分；2026-10-05 去冗余）：
+#   晴雨综合技巧 ETS（首位）· 命中 POD · 空报 FAR · 频率无偏 BIAS。
+#   不入分：TS（与 ETS 桶内相关 0.84——ETS 就是 TS 的基率校正版，两者同时加权
+#   等于把基率敏感性请回来）、晴雨准确率 acc（主要由气候基率决定：无雨日 70%+，
+#   全答无雨即得高分；ETS 已含基率校正）、漏报率（=100−POD，纯冗余）、空报频率
+#   POFD（与 FAR 同族仅分母不同）、雨量 RMSE/MAE/MBE（连续雨量误差由个别强降水
+#   时段主导、随样本期气候波动大，跨源横向比较不公平）。
+#   POD 权重（0.20）仍低于 FAR+BIAS（0.20+0.133=0.333）：评分不奖励"多报占便宜"
 #   （旧权重下超报 15 倍的源反而高于克制源）。
+# 权重口径：温度在旧 7 项配比下去掉 acc1/mae 后归一（0.25/0.25/0.15/0.10/0.05
+# ÷ 0.80），降水去掉 ts 后归一（0.35/0.15/0.15/0.10 ÷ 0.75）——只做减法不改配比，
+# 原设计意图（ETS 首位、抑制超报）原样保留。
+
+# 换算说明模板：{lam}=当期斜率、{per}=每扣 1 分的偏差量、{sat}=记 0 分的饱和线。
+# 数字在渲染期由 score_map_text() 按 SCORE_SLOPES 填入——同一份表驱动评分、
+# 页面"评分构成"与 README 三处，斜率重标定后白话自动跟着走。
+SCORE_MAP_TEMPLATES: dict[str, str] = {
+    "acc2": "百分比×{lam}（±2°C 命中率每差 {per} 个百分点扣 1 分）",
+    "rmse": "100 − RMSE×{lam}（每差 {per}°C 扣 1 分，≥{sat}°C 记 0 分）",
+    "r": "r×{lam}（同步程度 −1~1 线性入分，负值记 0 分）",
+    "mbe": "100 − |MBE|×{lam}（每差 {per}°C 扣 1 分，≥{sat}°C 记 0 分）",
+    "slope": "100 − |log₂斜率|×{lam}（幅度每偏 2 倍（log₂ 刻度）扣 {lam} 分，超/欠对称；偏差 ≥{satx} 倍才记 0 分）",
+    "ets": "ETS×{lam}（晴雨技巧 0~1 线性入分，负值记 0 分）",
+    "pod": "POD×{lam}（命中率每差 {per} 个百分点扣 1 分）",
+    "far": "100 − FAR×{lam}（空报率每高 {per} 个百分点扣 1 分）",
+    "bias": "100 − |log₂BIAS|×{lam}（报雨频率每偏 2 倍（log₂ 刻度）扣 {lam} 分，"
+                   "超/欠报对称；偏差 ≥{satx} 倍才记 0 分）",
+}
+
+# 斜率的**代码内缺省值** = 2026-09 全月分桶数据标定的冻结值（28 源、两轨、
+# 桶内 ≥3 家、目标 sd*=8 分）；运行时以 config eval.score_slopes 的同名字段
+# 覆盖（apply_score_slopes，build_report 入口调用）。标定方法与扫描结果见
+# docs/score_slopes.md；季度重标定时只改 config，不动这里的代码缺省。
+DEFAULT_SCORE_SLOPES: dict[str, float] = dict(DEFAULT_EVAL["score_slopes"])
+SCORE_SLOPES: dict[str, float] = dict(DEFAULT_SCORE_SLOPES)
+
+
+def apply_score_slopes(slopes: dict | None) -> None:
+    """装载当期换算斜率（config eval.score_slopes → 模块级换算函数）。
+
+    换算函数在**调用时**读 SCORE_SLOPES（模块级名字，而不是闭包捕获的旧对象），
+    故这里整体重绑后，TEMP/PRECIP_SCORE_PARTS 里的同一批函数即刻按新斜率工作——
+    PARTS 表对象本身永不重绑（多处 `parts is TEMP_SCORE_PARTS` 身份判断依赖它）。
+    传 None = 回到代码内缺省（标定冻结值）。评分与渲染必须同斜率：build_report
+    入口装载一次，meta.score_slopes 留痕，渲染层从 meta 回放。
+    """
+    global SCORE_SLOPES
+    SCORE_SLOPES = {**DEFAULT_SCORE_SLOPES, **(slopes or {})}
+
+
+def _sig(x: float, n: int = 2) -> str:
+    """有效数字展示（换算白话用）：0.0563 → '0.056'（n=2）、17.76 → '17.8'（n=3）。"""
+    if x == 0 or not math.isfinite(x):
+        return "0"
+    exp = math.floor(math.log10(abs(x)))
+    decimals = max(0, n - 1 - exp)
+    v = round(x, decimals)
+    if decimals == 0:
+        return str(int(round(v)))
+    return f"{v:.{decimals}f}"
+
+
+def score_map_text(key: str, template: str | None = None) -> str:
+    """把换算说明模板按当期斜率填成白话（"评分构成"表与斜率影响力诊断共用）。"""
+    lam = SCORE_SLOPES.get(key)
+    tpl = template if template is not None else SCORE_MAP_TEMPLATES.get(key, key)
+    if lam is None:
+        return tpl
+    ctx = {"lam": _sig(lam, 3)}
+    if key in ("acc2", "rmse", "r", "mbe", "ets", "pod", "far"):
+        ctx["per"] = _sig(1.0 / lam)          # 每扣 1 分的偏差量
+    if key in ("rmse", "mbe", "far"):
+        ctx["sat"] = _sig(100.0 / lam)        # 幅度式记 0 分的饱和线
+    if key in ("slope", "bias"):
+        ctx["satx"] = _sig(2.0 ** (100.0 / lam))   # 倍率式记 0 分的偏差倍数
+    try:
+        return tpl.format(**ctx)
+    except (KeyError, IndexError):
+        return tpl
+
+
+def _conv_pct(key: str):
+    """百分比乘法式换算：v×λ（acc2/r/ets/pod）。"""
+    return lambda v: v * SCORE_SLOPES[key]
+
+
+def _conv_dev(key: str):
+    """幅度式换算：100 − 偏差×λ（rmse/mbe/far；mbe 对正负偏差对称）。"""
+    if key == "mbe":
+        return lambda v: 100 - abs(v) * SCORE_SLOPES[key]
+    return lambda v: 100 - v * SCORE_SLOPES[key]
+
+
+def _conv_log(key: str):
+    """倍率式换算：100 − |log₂v|×λ（bias/slope）。
+
+    两条纪律同时守：
+    * v ≤ 0（从未报雨 / 幅度关系反向）不是"缺数据"而是该维度的最大错误，记 0 分
+      ——绝不借非有限拒收通道把它洗成"缺项按剩余权重归一"；
+    * NaN 仍传播为 NaN（缺项按剩余权重归一），与 stats._score_from_parts 的
+      "有效性必须在 clip 之前按原始值判定"（第四轮 P2-10）同守。
+    标量与 numpy 数组同函数：分桶聚合按数组批量调用（bootstrap 每天重算一遍），
+    榜单与展示按标量调用。
+    """
+    def conv(v):
+        arr = np.asarray(v, dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            out = 100.0 - np.abs(np.log2(arr)) * SCORE_SLOPES[key]
+        out = np.where(np.isnan(arr), np.nan, out)
+        out = np.where(arr <= 0, 0.0, out)
+        return float(out) if np.ndim(out) == 0 else out
+    return conv
+
+
 TEMP_SCORE_PARTS = (
-    ("acc2", 0.25, "±2°C 准确率", "百分比直接入分",
-     lambda v: v),
-    ("rmse", 0.25, "RMSE 误差换算分", "100 − RMSE×5（0°C 记 100 分，每多 0.2°C 扣 1 分）",
-     lambda v: 100 - v * 5),
-    ("r", 0.15, "相关系数 r", "r×100（起伏节奏的同步程度）",
-     lambda v: v * 100),
-    ("acc1", 0.10, "±1°C 准确率", "百分比直接入分（更严格的命中口径）",
-     lambda v: v),
-    ("mae", 0.10, "MAE 误差换算分", "100 − MAE×5（典型误差，对偶发大误差不敏感）",
-     lambda v: 100 - v * 5),
-    ("mbe", 0.10, "偏差换算分", "100 − |MBE|×10（无系统性偏高/偏低 = 满分）",
-     lambda v: 100 - abs(v) * 10),
-    ("slope", 0.05, "回归斜率换算分", "100 − |斜率−1|×100（冷热幅度恰如其分 = 满分）",
-     lambda v: 100 - abs(v - 1) * 100),
+    ("acc2", 0.3125, "±2°C 准确率", SCORE_MAP_TEMPLATES["acc2"], _conv_pct("acc2")),
+    ("rmse", 0.3125, "RMSE 误差换算分", SCORE_MAP_TEMPLATES["rmse"], _conv_dev("rmse")),
+    ("r", 0.1875, "相关系数 r", SCORE_MAP_TEMPLATES["r"], _conv_pct("r")),
+    ("mbe", 0.125, "偏差换算分", SCORE_MAP_TEMPLATES["mbe"], _conv_dev("mbe")),
+    ("slope", 0.0625, "回归斜率换算分", SCORE_MAP_TEMPLATES["slope"], _conv_log("slope")),
 )
 PRECIP_SCORE_PARTS = (
-    ("ets", 0.35, "晴雨 ETS 评分", "ETS×100（对“瞎蒙也能蒙对”做过校正，技巧首位）",
-     lambda v: v * 100),
-    ("ts", 0.25, "晴雨 TS 评分", "TS×100（报中/空报/漏报一账清）",
-     lambda v: v * 100),
-    ("pod", 0.15, "命中率 POD", "百分比直接入分（漏报少）",
-     lambda v: v),
-    ("far", 0.15, "空报率换算分", "100 − FAR（不喊“狼来了” = 满分）",
-     lambda v: 100 - v),
-    ("bias", 0.10, "频率偏差换算分", "100 − |BIAS−1|×100（报雨频率恰如其分 = 满分）",
-     lambda v: 100 - abs(v - 1) * 100),
+    ("ets", 0.35 / 0.75, "晴雨 ETS 评分", SCORE_MAP_TEMPLATES["ets"], _conv_pct("ets")),
+    ("pod", 0.15 / 0.75, "命中率 POD", SCORE_MAP_TEMPLATES["pod"], _conv_pct("pod")),
+    ("far", 0.15 / 0.75, "空报率换算分", SCORE_MAP_TEMPLATES["far"], _conv_dev("far")),
+    ("bias", 0.10 / 0.75, "频率偏差换算分", SCORE_MAP_TEMPLATES["bias"], _conv_log("bias")),
 )
 
 
@@ -924,7 +1041,7 @@ def _mean2(a: float | None, b: float | None) -> float | None:
 
 
 def temp_score(t: dict) -> float | None:
-    """温度得分(0~100)：7 项指标按 TEMP_SCORE_PARTS 权重加权，缺项按剩余权重归一。"""
+    """温度得分(0~100)：5 项指标按 TEMP_SCORE_PARTS 权重加权，缺项按剩余权重归一。"""
     return _weighted_score(TEMP_SCORE_PARTS, t)
 
 
@@ -962,13 +1079,19 @@ def daily_temp_view(md: dict) -> dict:
 
 
 def precip_score(p: dict) -> float | None:
-    """降水分(0~100)：5 项指标按 PRECIP_SCORE_PARTS 权重加权，缺项按剩余权重归一。"""
+    """降水分(0~100)：4 项指标按 PRECIP_SCORE_PARTS 权重加权，缺项按剩余权重归一。"""
     return _weighted_score(PRECIP_SCORE_PARTS, p)
 
 
 def overall_score(t: dict, p: dict) -> float | None:
-    """综合得分：温度分与降水分的均分，缺项不计。"""
-    return _mean_or_none([temp_score(t), precip_score(p)])
+    """综合得分：温度分与降水分的均分，**缺一即缺**（任一维为 None 即 None）。
+
+    2026-10-05 起改用 _mean2 语义（第一性原理审查 P3-6）：旧实现 _mean_or_none
+    会在缺一维时把另一维**原样**当综合分返回——那正是 MSN"纯温度分当综合分"
+    的老洞。当前三处榜单调用点都显式传 score= 覆盖，洞未实际触发，但本函数是
+    _board_row 的默认值，未来任何新调用点忘了覆盖就会复活。堵在源头。
+    """
+    return _mean2(temp_score(t), precip_score(p))
 
 
 TRACKS = ("hourly", "daily")
@@ -990,7 +1113,9 @@ def track_cells(track: str, t: dict, p: dict) -> tuple[float | None, ...]:
     ps = precip_score(p)
     if ts is None or ps is None:
         return (None, None, None)
-    return (_mean_or_none([ts, ps]), ts, ps)
+    # 此处 ts/ps 均非 None，_mean_or_none 与 _mean2 等价；写 _mean2 是为了让
+    # "两维各半、缺一即缺"的意图在所有合成点保持同一个措辞
+    return (_mean2(ts, ps), ts, ps)
 
 
 # ----------------------------------------------------------------- 有效样本量
@@ -1167,6 +1292,10 @@ def _preload(station_ids: list[str], models: list[str]) -> tuple[dict, dict]:
 
 def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
                  period_label: str, is_monthly: bool = False) -> dict:
+    # 评分换算斜率：config eval.score_slopes（季度标定冻结值）覆盖代码缺省。
+    # 必须在任何子分计算之前装载——榜单、走势、敏感性、诊断要跑在**同一把尺子**上；
+    # meta.score_slopes 留痕当期值，渲染层回放同一份，保证"评分构成"表与实际换算一致。
+    apply_score_slopes(eval_cfg.get("score_slopes") if eval_cfg else None)
     limits = eval_cfg["temp_accuracy_limits"]
     thr = eval_cfg["rain_threshold_mm"]
     thr_daily = eval_cfg.get("rain_daily_threshold_mm", 1.0)
@@ -1569,6 +1698,9 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
             "rain_daily_threshold_mm": thr_daily,
             # 小时榜的降水阈值（0.1mm 口径被毛毛雨偏差主导，见配置注释）
             "rain_hourly_threshold_mm": thr_hourly,
+            # 评分换算斜率（当期实际生效值）：话语权 = 权重×斜率×离散度，斜率是
+            # 季度标定的冻结值——披露当期值，读者才能把"评分构成"表对回配置
+            "score_slopes": dict(SCORE_SLOPES),
             "min_sample": min_sample,
             "min_board_neff": min_board_neff,
             "min_board_neff_rain": min_board_neff_rain,

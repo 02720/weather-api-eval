@@ -7,9 +7,11 @@
   3) 超报倍率（预报雨日率/实测雨日率）是否回到 1 附近。
 结论写进 README 与 evaluate.py docstring。运行：
   PYTHONPATH=src python scripts/calibrate_daily_threshold.py
+  PYTHONPATH=src python scripts/calibrate_daily_threshold.py --out docs/calibrate_daily_threshold.md
 """
 from __future__ import annotations
 
+import argparse
 import sys
 from collections import defaultdict
 
@@ -46,6 +48,16 @@ def ts_ets(h, f, m, c):
 
 
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", help="把本次扫描曲线留档到这个 Markdown 文件")
+    args = ap.parse_args()
+    say = print
+    lines: list[str] = []
+    if args.out:
+        def say(*a):                      # noqa: D401 —— 打印同时收集，留档用
+            line = " ".join(str(x) for x in a)
+            lines.append(line)
+            print(line)
     cfg = load_config()
     end = now_beijing().replace(minute=0, second=0, microsecond=0)
     start = end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -61,9 +73,9 @@ def main():
             by_model[r["model"]][1].append(r["rain_fcst"])
 
     all_obs = np.concatenate([v[0] for v in by_model.values()]) if by_model else np.array([])
-    print(f"按天样本（日累计配对）总数: {len(all_obs)}")
-    print(f"窗口: {start} ~ {end}")
-    print()
+    say(f"按天样本（日累计配对）总数: {len(all_obs)}")
+    say(f"窗口: {start} ~ {end}")
+    say()
     for thr in THRESHOLDS:
         wet = float((np.round(all_obs, 2) >= thr).mean()) * 100
         rows = []
@@ -75,13 +87,28 @@ def main():
             rows.append((m, ts, ets, obs_rate, fcst_rate))
         ets_vals = [e for _, _, e, _, _ in rows if e is not None]
         span = (max(ets_vals) - min(ets_vals)) if len(ets_vals) >= 2 else 0.0
-        print(f"== 阈值 {thr} mm/日：实测雨日率 {wet:.1f}%，ETS 跨度 {span:.3f} ==")
+        say(f"== 阈值 {thr} mm/日：实测雨日率 {wet:.1f}%，ETS 跨度 {span:.3f} ==")
         for m, ts, ets, orate, frate in rows:
             ratio = (frate / orate) if orate else float("inf")
             ets_s = f"{ets:.3f}" if ets is not None else "  —  "
             ts_s = f"{ts:.3f}" if ts is not None else "  —  "
-            print(f"  {m:<32s} TS={ts_s} ETS={ets_s} 实测雨日 {orate:5.1f}% 预报雨日 {frate:5.1f}% 超报×{ratio:.2f}")
-        print()
+            say(f"  {m:<32s} TS={ts_s} ETS={ets_s} 实测雨日 {orate:5.1f}% 预报雨日 {frate:5.1f}% 超报×{ratio:.2f}")
+        say()
+
+    if args.out:
+        head = [
+            "# 按天降水阈值扫描（留档）",
+            "",
+            "本文件由 `scripts/calibrate_daily_threshold.py --out docs/calibrate_daily_threshold.md` 生成，",
+            "是 README/配置里 `rain_daily_threshold_mm = 1.0` 结论的原始扫描曲线。",
+            "**窗口是运行当月的自然月**（数据持续增长，重跑得到的窗口会不同；",
+            "结论的引用请以配置注释里的定标窗口为准）。",
+            "",
+            "```",
+        ]
+        with open(args.out, "w", encoding="utf-8") as f:
+            f.write("\n".join(head + lines + ["```", ""]))
+        print(f"已留档 {args.out}")
 
 
 if __name__ == "__main__":

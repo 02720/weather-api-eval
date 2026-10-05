@@ -457,7 +457,7 @@
   <section class="card" id="board">
     <p class="eyebrow">§01 · 证据</p>
     <h2>预报源总榜</h2>
-    <p class="desc">「综合分」由温度 7 项 + 降水 5 项指标加权而成，并且先把每一档提前量的
+    <p class="desc">「综合分」由温度 5 项 + 降水 4 项指标加权而成，并且先把每一档提前量的
       难度统一扣掉再比——能报 3 天的和能报 15 天的同榜也公平。<span class="only-wide">点任意列名可重新排序；
       「得分走势」是综合分随提前天数（1~16 天，小时口径）的衰减，<b>谁在右边还站得高，谁的长期预报就更可靠</b>。</span><span class="only-mobile">每个源一张卡片：大字是综合分，
       下面一行是它的分项。</span>
@@ -545,32 +545,51 @@
     </details>
     {% endif %}
 
-    <details class="fold"><summary>🧮 综合分怎么算：12 项指标的加权构成</summary>
+    <details class="fold"><summary>🧮 综合分怎么算：{{ score_temp_parts|length + score_precip_parts|length }} 项指标的加权构成</summary>
       <div class="fold-body">
         <div class="weights-grid">
           <div>
-            <h3>🌡️ 温度分（7 项）</h3>
+            <h3>🌡️ 温度分（{{ score_temp_parts|length }} 项）</h3>
             <table class="plain">
               <thead><tr><th class="l">指标</th><th>权重</th><th class="l">0~100 换算</th></tr></thead>
               <tbody>{% for p in score_temp_parts %}
-                <tr><td class="l">{{ p.label }}</td><td>{{ p.pct }}%</td><td class="l">{{ p.map }}</td></tr>
+                <tr><td class="l">{{ p.label }}</td><td>{{ '%.2f'|format(p.weight * 100) }}%</td><td class="l">{{ p.map }}</td></tr>
               {% endfor %}</tbody>
             </table>
-            <p class="why">不入分：RSS、χ²（样本量的函数，不是预报技巧）。</p>
+            <p class="why">不入分：±1°C 准确率与 MAE（与上表两项桶内相关 0.95 / 0.96——同一信息记两遍
+              会让权重失去语义）、RSS、χ²（样本量的函数，不是预报技巧）。</p>
           </div>
           <div>
-            <h3>🌧️ 降水分（5 项，日雨量 ≥{{ report.meta.rain_daily_threshold_mm }}mm 口径）</h3>
+            <h3>🌧️ 降水分（{{ score_precip_parts|length }} 项，日雨量 ≥{{ report.meta.rain_daily_threshold_mm }}mm 口径）</h3>
             <table class="plain">
               <thead><tr><th class="l">指标</th><th>权重</th><th class="l">0~100 换算</th></tr></thead>
               <tbody>{% for p in score_precip_parts %}
-                <tr><td class="l">{{ p.label }}</td><td>{{ p.pct }}%</td><td class="l">{{ p.map }}</td></tr>
+                <tr><td class="l">{{ p.label }}</td><td>{{ '%.2f'|format(p.weight * 100) }}%</td><td class="l">{{ p.map }}</td></tr>
               {% endfor %}</tbody>
             </table>
-            <p class="why">不入分：晴雨准确率（由气候基率主导，ETS 已校正）、雨量误差
-              （被个别强降水时段主导，跨源比较不公平）。</p>
+            <p class="why">不入分：TS（与 ETS 桶内相关 0.84，ETS 已含基率校正）、晴雨准确率
+              （由气候基率主导）、雨量误差（被个别强降水时段主导，跨源比较不公平）。</p>
           </div>
         </div>
         <p class="why">某项缺数据时按<b>剩余权重</b>折算（缺数据 ≠ 差数据）；综合分 = 温度分与降水分各半。</p>
+        <p class="why"><b>换算斜率是标定值，不是随手定的</b>：一项指标对名次的实际影响力 =
+          权重 × 斜率 × 该指标在本期数据里的离散度——只声明前两个，第三个（数据的偶然分布）
+          就会替你决定名次。每项斜率按"子分桶内跨源 sd ≈ 8 分"在真实存档上反解
+          （<code>scripts/calibrate_score_slopes.py</code>，值随配置季度重标定），
+          因此上表的权重就是各项<b>实际</b>话语权的近似值；"🔬 这份名次有多结实"
+          一节逐轨列出实测占比供核对。</p>
+        {% set cs = diag.get('composite_share') or {} %}
+        {% if cs.get('available') and cs.get('tracks') %}
+        {% for trk, cvs in cs.tracks.items() %}
+        <p class="why"><b>"温度:降水各半"的兑现度</b>（{{ '小时轨' if trk == 'hourly' else '日轨' }}）：
+          本期综合分方差中温度贡献 <b>{{ '%.0f%%'|format(cvs.temp_share * 100) }}</b> ·
+          降水贡献 <b>{{ '%.0f%%'|format(cvs.precip_share * 100) }}</b> ·
+          协方差 {{ '%.0f%%'|format(cvs.cov_share * 100) }}（两维桶内标准差
+          {{ cvs.temp_sd }} vs {{ cvs.precip_sd }} 分，样本 {{ cvs.cells }} 格）。
+          50:50 是<b>名义</b>权重，名次上的实际话语权由两维离散度决定——
+          温度:降水的宏观权重已在冠军频率敏感性里按 U(30%,70%) 扰动（{{ report.meta.macro_weight_range }}）。</p>
+        {% endfor %}
+        {% endif %}
       </div>
     </details>
 
@@ -839,33 +858,38 @@
 
             {% set si = diag.get('slope_influence') or {} %}
             {% if si.get('available') %}
-            <h3>评分斜率的实测影响力：名义权重 ≠ 实际说了多少话</h3>
-            <p class="why">名义权重是写在评分卡里的 25% / 15% / …，但真正推动名次的是
-              <b>斜率 × 数据分布</b>：某项指标在实际数据上跨得多大，才决定它能把分拉开多少。
-              下表用本轮真实分桶指标估算每项指标 ±1 个标准差能推动多少加权子分——
-              这就是它<b>实际</b>的影响力占比。</p>
+            <h3>评分斜率的实测影响力：名义权重兑现了吗</h3>
+            <p class="why">一项指标对名次的实际影响力 = <b>名义权重 × 换算斜率 × 数据离散度</b>——
+              三者耦合，只声明前两个，第三个（数据的偶然分布）就会替你决定名次。斜率现已按
+              "子分桶内跨源 sd ≈ 8 分"标定（<code>scripts/calibrate_score_slopes.py</code>，
+              值随配置季度重标定），下表用本轮真实分桶指标<b>核验</b>标定是否兑现：
+              实际占比 / 名义权重 ≈ 1 即达标，逐轨列出。
+              单一斜率无法同时把两条轨校准（同一 λ，小时轨与日轨的离散度本就不同），
+              分轨残差由这张表逐项暴露。</p>
+            {% for trk, tw in (si.get('tracks') or {}).items() %}
             <table class="plain">
-              <thead><tr><th>维度</th><th>指标</th><th>换算式</th><th>名义权重</th><th>实测分布(均值±SD)</th><th>实际影响力</th><th>名义 vs 实际</th></tr></thead>
+              <thead><tr><th>轨道·维度</th><th>指标</th><th>换算式</th><th>名义权重</th><th>子分桶内 SD</th><th>实际影响力</th><th>名义 vs 实际</th></tr></thead>
               <tbody>
-              {% for r in si.get('temp', []) %}
-                <tr><td>温度</td><td>{{ r.get('key') }}</td><td class="l">{{ r.get('formula') }}</td>
-                    <td class="num">{{ r.get('nominal_weight') }}</td>
-                    <td class="num">{{ r.get('metric_mean') }} ± {{ r.get('metric_sd') }}</td>
-                    <td class="num">{{ r.get('effective_share') }}</td>
-                    <td class="num">×{{ (r.get('effective_share') / r.get('nominal_weight'))|round(2) if r.get('nominal_weight') else '—' }}</td></tr>
-              {% endfor %}
-              {% for r in si.get('precip', []) %}
-                <tr><td>降水</td><td>{{ r.get('key') }}</td><td class="l">{{ r.get('formula') }}</td>
-                    <td class="num">{{ r.get('nominal_weight') }}</td>
-                    <td class="num">{{ r.get('metric_mean') }} ± {{ r.get('metric_sd') }}</td>
-                    <td class="num">{{ r.get('effective_share') }}</td>
+              {% for r in (tw.get('temp') or []) + (tw.get('precip') or []) %}
+                <tr><td>{{ '小时' if trk == 'hourly' else '日' }}·{{ '温度' if r in (tw.get('temp') or []) else '降水' }}</td>
+                    <td>{{ r.get('key') }}</td><td class="l">{{ r.get('formula') }}</td>
+                    <td class="num">{{ '%.3f'|format(r.get('nominal_weight')) }}</td>
+                    <td class="num">{{ r.get('swing') }}</td>
+                    <td class="num">{{ '%.3f'|format(r.get('effective_share')) }}</td>
                     <td class="num">×{{ (r.get('effective_share') / r.get('nominal_weight'))|round(2) if r.get('nominal_weight') else '—' }}</td></tr>
               {% endfor %}
               </tbody>
             </table>
-            <p class="why">斜率本身<b>尚未纳入敏感性走廊</b>（那需要把评分部件参数化，改动面较大）——
-              这张表是"这个旋钮有多重"的实测证据，不是"换了斜率名次会怎样"的模拟。
-              权重敏感性只扰动权重，扰不到斜率，这一点在 README 的已知缺口里已记明。</p>
+            {% endfor %}
+            {% if si.get('most_influential') %}
+            <p class="why">偏离最大的一项：{{ si.most_influential.get('key') }}
+              （{{ '小时' if si.most_influential.get('track') == 'hourly' else '日' }}轨，
+              名义 {{ '%.3f'|format(si.most_influential.nominal) }} vs 实际
+              {{ '%.3f'|format(si.most_influential.effective) }}）。偏离显著时说明本期数据
+              分布与标定期不同，应重跑标定脚本复核。</p>
+            {% endif %}
+            <p class="why">这张表是"这个旋钮有多重"的实测证据，不是"换了斜率名次会怎样"的模拟——
+              斜率敏感性走廊（对 λ 做走廊扰动）尚未纳入，与权重敏感性的区别见 README。</p>
             {% endif %}
 
             {% set sl = report.meta.get('seal_lag') or {} %}
@@ -901,7 +925,7 @@
         <dl class="glossary">
           <div><dt>起报 / 起报快照</dt><dd>预报发布的那一刻叫"起报"。每次起报的"未来 16 天逐小时预报"原样存档封存，等真实天气发生后对账——预报不能事后改，检验才算数。</dd></div>
           <div><dt>时效（提前 N 天）</dt><dd>有效时刻 − 起报时刻 = "提前多久做的预报"，按日历天分桶；每个桶里同难度比较。</dd></div>
-          <div><dt>综合得分 / 温度分 / 降水分</dt><dd>多个指标压缩成 0~100：温度 7 项、降水 5 项加权，综合 = 两者各半；缺项按剩余权重折算。</dd></div>
+          <div><dt>综合得分 / 温度分 / 降水分</dt><dd>多个指标压缩成 0~100：温度 5 项、降水 4 项加权（换算斜率按数据标定），综合 = 两者各半；缺项按剩余权重折算。分数只用于排序，绝对值不可跨榜、跨期解读。</dd></div>
           <div><dt>难度对齐（总榜）</dt><dd>先把每一档提前量有多难算出来、统一扣掉再比（双向加法模型），能报 3 天的和能报 15 天的同榜也不吃亏。</dd></div>
           <div><dt>覆盖时效</dt><dd>该源实际参与计算的样本最长覆盖到提前第几天。温度维与降水维分别核计：榜上数字取两维最远值，两维不一致时括注各自的天数（逐日预报块通常只延展温度维，如中科星图温度至 16 天、降水仍止于逐小时的 5 天）。可用时效越少，总榜平均所依据的"桶"越少。</dd></div>
           <div><dt>90% 置信区间与 †</dt><dd>对评估窗口内的<b>天</b>做分块重采样 {{ report.meta.bootstrap_runs }} 次重算榜单得到的波动范围。名字带 <b>†</b> = 与第一名的差距经 Holm–Bonferroni 校正后仍与 0 分不开——不宜过度解读名次先后。</dd></div>

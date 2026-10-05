@@ -34,6 +34,7 @@ import glob
 import gzip
 import json
 import logging
+from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
@@ -656,67 +657,168 @@ def corridor_sensitivity(report: dict, board_key: str = "all",
 
 
 def score_slope_influence(report: dict) -> dict[str, Any]:
-    """评分斜率的**实测影响力**（审查 P2-7）。
+    """评分斜率的**实测影响力**（审查 P2-7 的持续审计）。
 
-    名义权重是写在 `TEMP_SCORE_PARTS` / `PRECIP_SCORE_PARTS` 里的那 25%/15%/…
+    名义权重是写在 `TEMP_SCORE_PARTS` / `PRECIP_SCORE_PARTS` 里的那 31.25%/…
     但真正决定名次的是"**斜率 × 数据分布**"：acc2 的真实分布跨 32 个百分点，
-    RMSE 只跨 1.1°C，于是同为 25% 名义权重，前者对综合分的实际推动力是后者的
-    数倍。这个旋钮此前从未进过任何敏感性分析（权重敏感性只扰动权重，扰不到斜率）。
+    RMSE 只跨 1.1°C，同为 25% 名义权重，前者对综合分的实际推动力是后者的数倍。
+    这个旋钮此前从未进过任何敏感性分析（权重敏感性只扰动权重，扰不到斜率）。
 
-    这里的做法不是"重跑一遍榜"（那需要把评分部件参数化，改动面大且容易跑偏口径），
-    而是**实测每项指标在当前数据上的 ±1 标准差能推动子分多少**——数字直接来自
-    本轮真实分桶指标，读者一眼能看出"名义权重"与"实际影响力"差多少。
+    2026-10-05 起斜率不再是自由度而是标定值（scripts/calibrate_score_slopes.py
+    按"子分桶内跨源 sd = 8 分"反解，λ 冻结进 config eval.score_slopes），
+    本诊断因此从"揭示缺陷"变成"持续核验"：**实际占比/名义 ≈ 1 是标定的契约**，
+    系统性偏离说明该重标定了，或本期数据分布与标定期显著不同。
 
-    结论若显示某项的名义权重与实际影响力严重不符，那是**口径本身**该被讨论的
-    事，而不该由读者从榜单数字里反推。
+    逐轨分别报（hourly / daily）：单一 λ 无法同时把两条轨的离散度都校到 8 分
+    （日轨的日极值比小时预报天然更分散），分轨残差由这份表逐项暴露；
+    残差的绝对水位已由 macro_weight_range 敏感性与 composite_dimension_share
+    （温度:降水的宏观话语权）覆盖披露。
+    """
+    from ..evaluate import TEMP_SCORE_PARTS, PRECIP_SCORE_PARTS, score_map_text
+
+    def _parts(parts: tuple, cells: dict) -> list[dict]:
+        """cells: {model: {bucket: 指标 dict}} → 逐项估算桶内中心化 sd 的话语权占比。"""
+        out = []
+        for key, w, label, formula, fn in parts:
+            by_bucket: dict[str, list[float]] = defaultdict(list)
+            for per in cells.values():
+                for b, met in per.items():
+                    v = (met or {}).get(key)
+                    if isinstance(v, (int, float)) and np.isfinite(v):
+                        try:
+                            c = float(fn(v))
+                        except Exception:                   # 斜率函数在边界上可能溢出
+                            continue
+                        if np.isfinite(c):
+                            by_bucket[b].append(max(0.0, min(100.0, c)))
+            devs: list[float] = []
+            for vals in by_bucket.values():
+                if len(vals) < 3:                            # 桶内 ≥3 家才可横向比
+                    continue
+                arr = np.asarray(vals)
+                devs.extend((arr - arr.mean()).tolist())
+            if len(devs) < 8:
+                continue
+            out.append({"key": key, "nominal_weight": round(float(w), 3),
+                        "swing": round(float(np.std(devs, ddof=1)), 2),
+                        "label": label, "formula": score_map_text(key, formula)})
+        total = sum(r["nominal_weight"] * r["swing"] for r in out) or 1.0
+        for r in out:
+            r["effective_share"] = round(r["nominal_weight"] * r["swing"] / total, 3)
+        return sorted(out, key=lambda r: -r["effective_share"])
+
+    cell_sources = {
+        "hourly": {"temp": report.get("temp_hourly") or {},
+                   "precip": (report.get("precip_hourly_score")
+                              or report.get("precip_hourly") or {})},
+        "daily": {"temp": report.get("temp_daily") or {},
+                  "precip": report.get("precip_score_daily")
+                  or report.get("precip_daily") or {}},
+    }
+    tracks: dict[str, Any] = {}
+    gaps = []
+    for track, dims in cell_sources.items():
+        t = _parts(TEMP_SCORE_PARTS, dims["temp"])
+        p = _parts(PRECIP_SCORE_PARTS, dims["precip"])
+        if not t and not p:
+            continue
+        tracks[track] = {"temp": t, "precip": p}
+        for dim, rows in (("temp", t), ("precip", p)):
+            for r in rows:
+                gaps.append({"key": r["key"], "dim": dim, "track": track,
+                             "nominal": r["nominal_weight"],
+                             "effective": r["effective_share"],
+                             "ratio": (round(r["effective_share"] / r["nominal_weight"], 2)
+                                       if r["nominal_weight"] else None)})
+    if not tracks:
+        return {"available": False, "reason": "报告里没有逐桶指标，无法估算"}
+    # 名义 vs 有效的最大偏离（审查真正关心的那一个数字）
+    worst = max(gaps, key=lambda g: (abs((g["ratio"] or 1.0) - 1.0))) if gaps else None
+    return {"available": True, "tracks": tracks,
+            "temp": tracks.get("hourly", {}).get("temp", []),
+            "precip": tracks.get("hourly", {}).get("precip", []),
+            "nominal_vs_effective": gaps,
+            "most_influential": worst,
+            "note": "effective_share = 名义权重 × 子分桶内 sd ÷ Σ(同维度全部项)；"
+                    "标定契约：各轨占比 ≈ 名义权重"}
+
+
+def composite_dimension_share(report: dict) -> dict[str, Any]:
+    """综合分"温度各半"的**实际兑现度**：方差里温度与降水各占多少（审查 P1-3）。
+
+    综合分 =（温度分 + 降水分）/ 2，50:50 是名义权重；名次上的实际话语权由两维
+    分数在同期数据里的离散度决定。2026-09 实测小时轨：温度 23% / 降水 68% /
+    协方差 9%——名次约七成由降水分决定。这里逐轨做桶内中心化的方差分解把这件事
+    摆到台面上：读者能自己判断 50:50 与 23:68 的差距该不该按现在的口径用。
+
+    注意分母：方差份额之和 = 100%（含协方差项，可为负）。
     """
     from ..evaluate import TEMP_SCORE_PARTS, PRECIP_SCORE_PARTS
 
-    def _parts(parts: tuple, cells: dict) -> list[dict]:
-        """cells: {model: {bucket: 指标 dict}} → 逐项估算 ±1SD 的子分推动力。"""
-        out = []
-        for key, w, label, formula, fn in parts:
-            vals = [v for per in cells.values() for d in per.values()
-                    for v in [d.get(key)] if isinstance(v, (int, float))
-                    and np.isfinite(v)]
-            if len(vals) < 8:
-                continue
-            arr = np.asarray(vals, dtype=float)
-            mu, sd = float(arr.mean()), float(arr.std())
-            if sd <= 0:
-                continue
-            try:
-                lo, hi = fn(mu - sd), fn(mu + sd)
-            except Exception:                       # 斜率函数在边界上可能溢出
-                continue
-            swing = abs(float(hi) - float(lo)) / 2.0     # ±1SD 推动的子分点数
-            out.append({"key": key, "nominal_weight": round(float(w), 3),
-                        "metric_mean": round(mu, 3), "metric_sd": round(sd, 3),
-                        "swing": round(swing, 2),
-                        "weighted_swing": round(swing * float(w), 3),
-                        "label": label, "formula": formula})
-        total = sum(r["weighted_swing"] for r in out) or 1.0
-        for r in out:
-            r["effective_share"] = round(r["weighted_swing"] / total, 3)
-        return sorted(out, key=lambda r: -r["effective_share"])
+    def _score(md: dict, parts, track: str) -> float | None:
+        def one(half: dict) -> float | None:
+            num = den = 0.0
+            for key, w, _label, _mp, fn in parts:
+                v = (half or {}).get(key)
+                if not isinstance(v, (int, float)) or not np.isfinite(v):
+                    continue
+                c = fn(v)
+                if c is None or not np.isfinite(c):
+                    continue
+                num += w * max(0.0, min(100.0, c))
+                den += w
+            return num / den if den else None
+        if track != "daily":
+            return one(md)
+        hi, lo = one((md or {}).get("max")), one((md or {}).get("min"))
+        return None if (hi is None or lo is None) else (hi + lo) / 2
 
-    temp_cells = report.get("temp_hourly") or {}
-    precip_cells = report.get("precip_hourly_score") or report.get("precip_hourly") or {}
-    t = _parts(TEMP_SCORE_PARTS, temp_cells)
-    p = _parts(PRECIP_SCORE_PARTS, precip_cells)
-    if not t and not p:
-        return {"available": False, "reason": "报告里没有逐桶指标，无法估算"}
-    # 名义 vs 有效的最大偏离（审查真正关心的那一个数字）
-    gaps = [{"key": r["key"], "nominal": r["nominal_weight"],
-             "effective": r["effective_share"],
-             "ratio": (round(r["effective_share"] / r["nominal_weight"], 2)
-                       if r["nominal_weight"] else None)}
-            for r in (t + p)]
-    worst = max(gaps, key=lambda g: (g["ratio"] or 0)) if gaps else None
-    return {"available": True, "temp": t, "precip": p,
-            "nominal_vs_effective": gaps,
-            "most_influential": worst,
-            "note": "effective_share = 该指标 ±1SD 能推动的加权子分 ÷ 全部指标之和"}
+    cell_sources = {
+        "hourly": (report.get("temp_hourly") or {},
+                   report.get("precip_hourly_score") or report.get("precip_hourly") or {}),
+        "daily": (report.get("temp_daily") or {},
+                  report.get("precip_score_daily") or report.get("precip_daily") or {}),
+    }
+    out: dict[str, Any] = {"available": True, "tracks": {}}
+    for track, (temp_src, precip_src) in cell_sources.items():
+        t_vals: list[float] = []
+        p_vals: list[float] = []
+        buckets: dict[str, list[tuple[float, float]]] = defaultdict(list)
+        for m, per in temp_src.items():
+            for b, md in (per or {}).items():
+                pm = (precip_src.get(m) or {}).get(b)
+                ts = _score(md, TEMP_SCORE_PARTS, track)
+                ps = _score(pm, PRECIP_SCORE_PARTS, track)
+                if ts is not None and ps is not None:       # 两维齐备才算综合分
+                    buckets[b].append((ts, ps))
+        for vals in buckets.values():
+            if len(vals) < 3:
+                continue
+            ta = np.asarray([x for x, _ in vals])
+            pa = np.asarray([y for _, y in vals])
+            t_vals.extend((ta - ta.mean()).tolist())
+            p_vals.extend((pa - pa.mean()).tolist())
+        if len(t_vals) < 8:
+            continue
+        t_arr, p_arr = np.asarray(t_vals), np.asarray(p_vals)
+        var_t, var_p = float(t_arr.var()), float(p_arr.var())
+        cov = float((t_arr * p_arr).mean())      # 均值已中心化 → 乘积均值即协方差
+        var_c = (var_t + var_p + 2 * cov) / 4    # C = (T+P)/2
+        if var_c <= 0:
+            continue
+        out["tracks"][track] = {
+            "temp_share": round(var_t / 4 / var_c, 3),
+            "precip_share": round(var_p / 4 / var_c, 3),
+            "cov_share": round(2 * cov / 4 / var_c, 3),
+            "temp_sd": round(float(t_arr.std(ddof=1)), 2),
+            "precip_sd": round(float(p_arr.std(ddof=1)), 2),
+            "cells": len(t_arr),
+        }
+    if not out["tracks"]:
+        return {"available": False, "reason": "没有两维齐备的逐桶格子"}
+    out["note"] = ("份额 = 各维方差贡献 ÷ 综合分方差（桶内中心化、两维齐备格）；"
+                   "两维份额 + 协方差份额 = 100%")
+    return out
 
 
 def _row_neff(lbs: dict, model: str, buckets: list[str],
@@ -841,4 +943,5 @@ def compute_all(report: dict, data_root: Path, months: list[str] | None = None,
     out["bridge"] = bridge_and_jackknife(report)
     out["corridor"] = corridor_sensitivity(report)
     out["slope_influence"] = score_slope_influence(report)
+    out["composite_share"] = composite_dimension_share(report)
     return out

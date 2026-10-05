@@ -11,9 +11,11 @@
   3) 换阈值时各家名次是否剧烈洗牌——洗牌剧烈说明这个分数高度依赖口径选择。
 结论写进 config.py 的 rain_hourly_threshold_mm 与 README。运行：
   PYTHONPATH=src python scripts/calibrate_hourly_threshold.py
+  PYTHONPATH=src python scripts/calibrate_hourly_threshold.py --out docs/calibrate_hourly_threshold.md
 """
 from __future__ import annotations
 
+import argparse
 import statistics as st
 import sys
 from collections import defaultdict
@@ -52,6 +54,15 @@ def metrics(h, f, m, c):
 
 
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", help="把本次扫描曲线留档到这个 Markdown 文件")
+    args = ap.parse_args()
+    lines: list[str] = []
+
+    def say(*a):
+        line = " ".join(str(x) for x in a)
+        lines.append(line)
+        print(line)
     cfg = load_config()
     ev = cfg.eval
     end = now_beijing().replace(minute=0, second=0, microsecond=0)
@@ -69,8 +80,8 @@ def main():
             f.append(r["rain_fcst"])
     used = [(m, np.asarray(o), np.asarray(f)) for m, (o, f) in flat.items()
             if len(o) >= 200]
-    print(f"窗口 {start:%Y-%m-%d} ~ {end:%Y-%m-%d}，参与标定的源 {len(used)} 家")
-    print(f"{'thr':>6} {'实况基率%':>9} {'预报基率%':>9} {'BIAS中位':>8} "
+    say(f"窗口 {start:%Y-%m-%d} ~ {end:%Y-%m-%d}，参与标定的源 {len(used)} 家")
+    say(f"{'thr':>6} {'实况基率%':>9} {'预报基率%':>9} {'BIAS中位':>8} "
           f"{'ETS中位':>8} {'ETS跨度':>8} {'TS中位':>7}")
     rows = {}
     for thr in THRESHOLDS:
@@ -88,12 +99,12 @@ def main():
             fb_l.append(100.0 * (f >= thr).mean())
             per_model[m] = bm["ets"]
         rows[thr] = per_model
-        print(f"{thr:>6.1f} {st.median(ob_l):>9.2f} {st.median(fb_l):>9.2f} "
+        say(f"{thr:>6.1f} {st.median(ob_l):>9.2f} {st.median(fb_l):>9.2f} "
               f"{st.median(bias_l):>8.2f} {st.median(ets_l):>8.3f} "
               f"{max(ets_l) - min(ets_l):>8.3f} {st.median(ts_l):>7.3f}")
     # 名次稳定性：阈值变化时各源 ETS 排名的平均绝对变动
     base = rows[THRESHOLDS[0]]
-    print("\n各源 ETS 名次随阈值的平均绝对变动（越小越稳健）：")
+    say("\n各源 ETS 名次随阈值的平均绝对变动（越小越稳健）：")
     for thr in THRESHOLDS[1:]:
         common = set(base) & set(rows[thr])
         if len(common) < 5:
@@ -103,8 +114,23 @@ def main():
                 sorted(common, key=lambda x: -parent[x]))}
         r0, r1 = order(base), order(rows[thr])
         shift = st.mean(abs(r0[m] - r1[m]) for m in common)
-        print(f"  {THRESHOLDS[0]:>4}mm → {thr:>4}mm ：平均名次变动 {shift:.2f} 位"
+        say(f"  {THRESHOLDS[0]:>4}mm → {thr:>4}mm ：平均名次变动 {shift:.2f} 位"
               f"（参与 {len(common)} 家）")
+
+    if args.out:
+        head = [
+            "# 小时榜降水阈值扫描（留档）",
+            "",
+            "本文件由 `scripts/calibrate_hourly_threshold.py --out docs/calibrate_hourly_threshold.md` 生成，",
+            "是 README/配置里 `rain_hourly_threshold_mm = 1.0` 结论的原始扫描曲线。",
+            "**窗口是运行时的最近 30 天**（数据持续增长，重跑窗口会不同；",
+            "结论的引用请以配置注释里的定标窗口为准）。",
+            "",
+            "```",
+        ]
+        with open(args.out, "w", encoding="utf-8") as f:
+            f.write("\n".join(head + lines + ["```", ""]))
+        print(f"已留档 {args.out}")
 
 
 if __name__ == "__main__":

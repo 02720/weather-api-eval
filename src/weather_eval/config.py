@@ -16,9 +16,12 @@ DEFAULT_EVAL = {
     "rain_daily_threshold_mm": 1.0,    # 降水分（日榜·降水维）阈值：24h 累计 ≥1mm 记"有效降水日"
                                        # （2026-09-06 标定：逐小时 0.1mm 口径全模式 ETS≤0.054
                                        # 无区分度，日累计 1mm 阈值下 ETS 上限恢复到 0.25，
-                                       # 扫描见 scripts/calibrate_daily_threshold.py）
+                                       # 扫描见 scripts/calibrate_daily_threshold.py，
+                                       #  曲线留档 docs/calibrate_daily_threshold.md）
     "rain_hourly_threshold_mm": 1.0,   # 降水分（小时榜·降水维）阈值：该小时 ≥1mm 记"在下雨"
-                                       # （2026-09-24 标定，扫描见 scripts/calibrate_hourly_threshold.py）
+                                       # （2026-09-24 标定，扫描见
+                                       #  scripts/calibrate_hourly_threshold.py，
+                                       #  曲线留档 docs/calibrate_hourly_threshold.md）
                                        # 逐小时 0.1mm 口径下模型报雨频率是实况的 2.7 倍（毛毛雨
                                        # 偏差），ETS 中位数 0.078 且分数实际上在给"谁更少毛毛雨"
                                        # 排序；阈值提到 1mm 后预报/实况基率趋于一致（5.66% vs
@@ -57,6 +60,31 @@ DEFAULT_EVAL = {
                                        # λ>0 时家数少的桶的"难度"被拉向平均值）
     "board_long_tail_board": True,      # 是否为被主设计剔除的长尾桶单独出一张参考榜
     "macro_weight_range": [0.30, 0.70], # 权重敏感性里"温度占综合分比例"的扰动区间（P1-2）
+    # ---- 评分换算斜率（2026-10-05 标定，第一性原理审查 P1-1 的落地）----
+    # 一项指标对名次的实际影响力 = 权重 × 换算斜率 × 数据离散度，三者耦合。
+    # 旧评分表只声明了权重，斜率（RMSE×5、MBE×10、BIAS−1 线性）无人标定，
+    # 2026-09 实测 mae 名义 10% 的实际话语权只有 2.5%、bias 名义 10% 却有 27%——
+    # 名次由数据的偶然分布决定，README 的权重承诺没有兑现。
+    # 此处的 λ 按"子分桶内跨源 sd = 8 分"在真实存档上反解（影响力 = w×8，
+    # 占比自动 ≈ 名义权重），标定脚本 scripts/calibrate_score_slopes.py，
+    # 方法论与分轨残差留档 docs/score_slopes.md。**季度重标定；λ 变更视为评分
+    # 口径变更，月报注明**（变更前后名次不直接可比）。
+    "score_slopes": {
+        # 温度 5 项（acc2/rmse/r/mbe/slope）
+        "acc2": 0.554,  # ±2°C 命中率每差 1.81 个百分点扣 1 分（×0.554 直接入分）
+        "rmse": 12.106, # 每差 0.083 °C 扣 1 分，≥8.3 °C 记 0 分（100−RMSE×12.1）
+        "r": 55.771,  # r×55.8（−1~1 线性入分，负值记 0 分）
+        "mbe": 13.223, # 每差 0.076 °C 扣 1 分，≥7.6 °C 记 0 分（正负偏差对称）
+        "slope": 11.584, # 幅度每偏 2 倍（log₂ 刻度）扣 11.6 分，超/欠对称
+                         # （旧式 100−|slope−1|×100 不对称且日轨 8.9% 格子归零）
+        # 降水 4 项（ets/pod/far/bias）
+        "ets": 114.08, # ETS×114（0~1 线性入分，负值记 0 分）
+        "pod": 0.568,  # 命中率每差 1.76 个百分点扣 1 分
+        "far": 0.665,  # 空报率每高 1.5 个百分点扣 1 分（100−FAR×0.665）
+        "bias": 16.513, # 报雨频率每偏 2 倍（log₂ 刻度）扣 16.5 分，超/欠报**对称**
+                         # （旧式 100−|BIAS−1|×100：超报 2 倍即 0 分、欠报一半
+                         #  却得 50 分，既不对称又把日轨 56.9% 的格子压死在 0）
+    },
     "require_complete_snapshots": True, # 是否排除快照契约标了 complete=false 的残缺快照
                                        # （旧存档无该字段，按完整处理——纯增量，不改旧结论）
     "bootstrap_runs": 500,              # 按天分块 bootstrap 重采样次数（置信区间/冠军频率）

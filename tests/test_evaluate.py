@@ -1,3 +1,4 @@
+import math
 from datetime import datetime, timedelta
 
 from weather_eval import storage
@@ -77,48 +78,63 @@ def test_min_sample_suppresses():
 
 
 def test_scores_weighted_multi_metric():
-    # 温度分：只有 acc2/rmse 时（权重各 0.25）等价于两者均分
+    import weather_eval.evaluate as ev
+    from weather_eval.evaluate import (PRECIP_SCORE_PARTS, SCORE_SLOPES,
+                                       TEMP_SCORE_PARTS)
+    # 温度分：只有 acc2/rmse 时（权重各 0.3125）两者均分
     t = {"acc2": 90.0, "rmse": 1.0}
-    assert temp_score(t) == (90.0 + 95.0) / 2
-    # 全项在位：按 TEMP_SCORE_PARTS 权重加权
-    t_full = {"acc2": 80, "rmse": 2.0, "r": 0.9, "acc1": 60,
-              "mae": 1.5, "mbe": 0.5, "slope": 1.1}
-    # 子分：80, 90, 90, 60, 92.5, 95, 90；权重 .25/.25/.15/.10/.10/.10/.05
-    assert abs(temp_score(t_full) - 85.25) < 1e-9
-    # 降水分（2026-09 重构）：acc 不再入分（主要由气候基率决定）——
-    # ts 单独在位即 ts×100；acc 无论多高/多低都不改变分数
-    p = {"ts": 0.5, "acc": 80.0}
-    assert precip_score(p) == 50.0
-    assert precip_score({"ts": 0.5, "acc": 0.0}) == 50.0
-    # ETS 首位（0.35）：ets 与 ts 同值时 ETS 话语权更大
-    p2 = {"ets": 0.5, "ts": 0.5}
-    assert precip_score(p2) == 50.0
-    # 子分截断到 [0,100]：ETS 为负记 0 分，不拖成负总分（缺项按剩余权重归一：
-    # 0×0.35 与 50×0.25 在剩余权重 0.60 上归一 -> 20.83）
-    assert precip_score({"ets": -0.5, "ts": 0.5}) == round(50.0 * 0.25 / 0.60, 2)
+    a, r = 90.0 * SCORE_SLOPES["acc2"], 100.0 - 1.0 * SCORE_SLOPES["rmse"]
+    assert temp_score(t) == round((a + r) / 2, 2)
+    # 全项在位：按 TEMP_SCORE_PARTS 权重加权（子分 = 指标 × 各自标定斜率）
+    t_full = {"acc2": 80, "rmse": 2.0, "r": 0.9, "mbe": 0.5, "slope": 1.1}
+    subs = {"acc2": 80 * SCORE_SLOPES["acc2"],
+            "rmse": 100 - 2.0 * SCORE_SLOPES["rmse"],
+            "r": 0.9 * SCORE_SLOPES["r"],
+            "mbe": 100 - 0.5 * SCORE_SLOPES["mbe"],
+            "slope": 100 - abs(math.log2(1.1)) * SCORE_SLOPES["slope"]}
+    expect = round(sum(w * min(100.0, max(0.0, subs[k]))
+                       for k, w, *_ in TEMP_SCORE_PARTS), 2)
+    assert abs(temp_score(t_full) - expect) < 1e-9
+    # 2026-10-05 去冗余：acc1/mae 不再入分（与 acc2/rmse 桶内相关 0.95/0.96），
+    # 在不在都不改变温度分——"少记一遍同一信息"的机器守卫
+    assert temp_score(dict(t_full, acc1=60, mae=1.5)) == temp_score(t_full)
+    # 降水分：acc/ts 均不入分（acc 由气候基率主导；ts 与 ETS 桶内相关 0.84）
+    p = {"ets": 0.2, "acc": 80.0}
+    assert precip_score(p) == round(0.2 * SCORE_SLOPES["ets"], 2)
+    assert precip_score({"ets": 0.2, "acc": 0.0}) == round(0.2 * SCORE_SLOPES["ets"], 2)
+    assert precip_score({"ets": 0.2, "ts": 0.9}) == precip_score({"ets": 0.2})
+    # 子分截断到 [0,100]：ETS 为负记 0 分，不拖成负总分（在位的两项按剩余权重归一）
+    w_p = {k: w for k, w, *_ in PRECIP_SCORE_PARTS}
+    assert precip_score({"ets": -0.5, "pod": 50.0}) == round(
+        (0.0 * w_p["ets"] + 50.0 * SCORE_SLOPES["pod"] * w_p["pod"])
+        / (w_p["ets"] + w_p["pod"]), 2)
     # RMSE 大到换算分为负时截断为 0
     assert temp_score({"rmse": 30.0}) == 0.0
-    # 缺项按剩余权重归一：只有 r 时常数为 r×100
-    assert temp_score({"r": 0.8}) == 80.0
+    # 缺项按剩余权重归一：只有 r 时常数为 r×λ
+    assert temp_score({"r": 0.8}) == round(0.8 * SCORE_SLOPES["r"], 2)
     # 综合分 = 两者均分
-    assert overall_score(t, p) == (92.5 + 50.0) / 2
-    # 缺项不计：只有温度分时综合分 = 温度分
-    assert overall_score(t, {"ts": None, "ets": None}) == 92.5
+    assert overall_score(t, p) == round((temp_score(t) + precip_score(p)) / 2, 2)
+    # 缺一即缺（2026-10-05：_mean2 语义，单维分不冒充综合分——MSN 教训）
+    assert overall_score(t, {"ets": None, "pod": None}) is None
     # 全缺 -> None
     assert overall_score({}, {}) is None
+    assert ev._mean2(None, 50.0) is None
 
 
 def test_score_parts_contract():
     # 权重表契约：指标键、权重和为 1、每项带白话标签与换算函数
     from weather_eval.evaluate import PRECIP_SCORE_PARTS, TEMP_SCORE_PARTS
     for parts, keys in (
-        (TEMP_SCORE_PARTS, {"acc2", "rmse", "r", "acc1", "mae", "mbe", "slope"}),
-        (PRECIP_SCORE_PARTS, {"ets", "ts", "pod", "far", "bias"}),
+        (TEMP_SCORE_PARTS, {"acc2", "rmse", "r", "mbe", "slope"}),
+        (PRECIP_SCORE_PARTS, {"ets", "pod", "far", "bias"}),
     ):
         assert {k for k, *_ in parts} == keys
         assert abs(sum(w for _k, w, *_ in parts) - 1.0) < 1e-9
         for _k, _w, label, mp, fn in parts:
             assert label and mp and callable(fn)
+    # 去冗余契约（2026-10-05）：互为冗余的一对不再同时入分
+    assert not {"acc1", "mae"} & {k for k, *_ in TEMP_SCORE_PARTS}
+    assert "ts" not in {k for k, *_ in PRECIP_SCORE_PARTS}
     # P0-3 契约：acc 不入分（气候基率主导）；ETS 权重首位；
     # FAR+BIAS 权重之和不低于 POD（不奖励"多报占便宜"）
     keys = [k for k, *_ in PRECIP_SCORE_PARTS]
@@ -128,20 +144,58 @@ def test_score_parts_contract():
     assert w["far"] + w["bias"] >= w["pod"]
 
 
+def test_score_slopes_frozen_and_log_symmetric():
+    """换算斜率：标定冻结值 + config 可覆盖 + log 口径双向对称。
+
+    三条纪律（第一性原理审查 P1-1/P1-2）：
+    * 斜率来自 config 的标定冻结值（DEFAULT_EVAL.score_slopes），不在代码里散落；
+    * BIAS/斜率的超报与欠报在 log₂ 尺度上同罚（|log₂k| 相等）——旧线性式
+      "超报 2 倍 = 0 分、欠报一半 = 50 分"的不对称必须回不来；
+    * v≤0 是"该维度的最大错误"而不是缺项，不得借缺项归一把它洗成中性分。
+    """
+    import weather_eval.evaluate as ev
+    from weather_eval.config import DEFAULT_EVAL
+    try:
+        assert ev.SCORE_SLOPES == DEFAULT_EVAL["score_slopes"]
+        assert set(ev.SCORE_SLOPES) == {k for k, *_ in
+                                       (*ev.TEMP_SCORE_PARTS, *ev.PRECIP_SCORE_PARTS)}
+        # log 口径对称：偏 k 倍与偏 1/k 同罚
+        assert precip_score({"bias": 2.0}) == precip_score({"bias": 0.5})
+        assert temp_score({"slope": 1.4}) == temp_score({"slope": 1 / 1.4})
+        # 超报 2 倍不再是悬崖：旧口径 0 分、日轨 57% 格子被压死在 0
+        assert 30.0 < precip_score({"bias": 2.0}) < 100.0
+        assert precip_score({"bias": 0.0}) == 0.0        # 从未报雨 = 最大错误
+        assert temp_score({"slope": -0.5}) == 0.0       # 幅度关系反向 = 最大错误
+        # config 覆盖即时生效（换算函数在调用时读当期斜率）
+        ev.apply_score_slopes({"rmse": 10.0})
+        assert temp_score({"rmse": 2.0}) == 80.0
+        assert "10" in ev.score_map_text("rmse")
+        ev.apply_score_slopes(None)                      # None = 回到代码内缺省
+        assert ev.SCORE_SLOPES == DEFAULT_EVAL["score_slopes"]
+    finally:
+        ev.apply_score_slopes(None)
+
+
 def test_score_clamps_and_dimension_conventions():
+    from weather_eval.evaluate import SCORE_SLOPES
     # 换算方向与截断的守卫：任一翻脸即红
     assert temp_score({"r": -0.5}) == 0.0            # r 为负 -> 截断 0
     assert temp_score({"slope": 0.0}) == 0.0         # 斜率 0（幅度全丢）-> 0 分
     assert temp_score({"slope": 1.0}) == 100.0       # 斜率恰为 1 -> 满分
-    assert temp_score({"mbe": -2.5}) == 75.0         # |MBE| 双向对称（负偏差同样扣分）
-    assert precip_score({"ts": 0.0}) == 0.0          # TS=0 不因截断变 None
-    assert precip_score({"bias": 4.6}) == 0.0        # BIAS 极端 -> 截断 0
+    assert temp_score({"mbe": -2.5}) == temp_score({"mbe": 2.5})   # |MBE| 双向对称
+    assert precip_score({"ets": 0.0}) == 0.0         # ETS=0 不因截断变 None
+    assert precip_score({"ets": -0.5}) == 0.0        # ETS 负值记 0 分
     assert precip_score({"bias": 1.0}) == 100.0      # 频率偏差恰为 1 -> 满分
-    # far 是百分比(0~100)的关键约定：100 − 100/3 ≈ 66.7；
+    # BIAS 极端值按 log 口径逐档递减（悬崖推到 2^(100/λ) 倍之外），不再一刀 0
+    assert precip_score({"bias": 4.6}) == round(
+        max(0.0, 100 - abs(math.log2(4.6)) * SCORE_SLOPES["bias"]), 2)
+    # far 是百分比(0~100)的关键约定：100 − (100/3)×λ；
     # 若上游漂移成比值(0~1)，这里会得到 ≈100 分，即暴露量纲回归
-    assert abs(precip_score({"far": 100.0 / 3}) - (100.0 - 100.0 / 3)) < 0.01
+    assert abs(precip_score({"far": 100.0 / 3})
+               - (100.0 - 100.0 / 3 * SCORE_SLOPES["far"])) < 0.01
     # far 缺项（如从不报雨的源）按剩余权重归一，不整行出局
-    assert precip_score({"far": None, "ts": 0.5}) == 50.0
+    assert precip_score({"far": None, "ets": 0.2}) == round(
+        0.2 * SCORE_SLOPES["ets"], 2)
 
 
 def test_build_report_end_to_end(tmp_path, monkeypatch):
@@ -513,10 +567,16 @@ def test_overall_board_boundaries_and_pooling_benefit(tmp_path, monkeypatch):
     assert info["wide"]["lead_days"] == 16 and info["wide"]["n"] == 360 * 5
     assert info["sparse"]["lead_days"] == 6 and info["sparse"]["n"] == 5 * 5
     # day1（25h 序列）在**小时榜**上两维齐备（1 个整点 × 5 站 = 5 对，≥min_sample）
-    # -> 小时榜有分（满分：夹具预报=观测）；但日聚合覆盖不足 20h -> 日榜无格。
-    # 本轮只有 wide 凑得出日榜天桶，日段同台家数不足 min_col -> 总榜的赛段门槛
-    # 被跳过（没有可要求的赛段），总榜退成小时榜，并**如实标注**在 window 里。
-    assert info["day1"]["score"] == 100.0
+    # -> 小时榜有分（夹具预报≈观测，子分都落在各自量表的顶部）；但日聚合覆盖
+    # 不足 20h -> 日榜无格。本轮只有 wide 凑得出日榜天桶，日段同台家数不足
+    # min_col -> 总榜的赛段门槛被跳过（没有可要求的赛段），总榜退成小时榜，
+    # 并**如实标注**在 window 里。
+    # 钉语义而非绝对值（2026-10-05 起换算斜率是标定值，完美预报的综合分不再
+    # 恰好 100）：综合分 = 两维各半，且完美源的分数处在这套量表的顶部。
+    row = info["day1"]
+    assert row["temp_score"] is not None and row["precip_score"] is not None
+    assert abs(row["score"] - round((row["temp_score"] + row["precip_score"]) / 2, 2)) < 1e-9
+    assert row["score"] >= 75.0
     assert info["day1"]["qualified"] is False      # n_eff=5 < min_board_neff=30
     assert 0 < info["wide"]["score"] < 100
     assert info["sparse"]["score"] is None and info["sparse"]["qualified"] is False
@@ -1309,10 +1369,23 @@ def test_bootstrap_rain_sample_size_counts_all_cells_not_hits():
         stats.aggregate_day_stats(W, T), TEMP_SCORE_PARTS)[0, 0, 0])
     rain = float(stats._rain_scores_from_aggregate(
         stats.aggregate_day_stats(W, R), PRECIP_SCORE_PARTS)[0, 0, 0])
-    assert abs(rain - 34.5) < 0.05, rain          # 降水分（ETS/TS/POD/FAR/BIAS 加权）
+    # 降水分 = 各子分按权重加权（2026-10-05 新口径）。本桶 h=2 / fa=0 / mi=6 /
+    # c=24 的人工可算期望：ets=0.2 记 0.2×114≈22.8 分、pod=25%（百分比口径）
+    # 记 14.2 分、far=0 记 100 分、bias=0.25 记 100−|log₂0.25|×16.5≈67 分
+    # （欠报两倍不是悬崖——旧线性式这里会记 0 分）。
+    from weather_eval.evaluate import SCORE_SLOPES
+    w_p = {k: w for k, w, *_ in PRECIP_SCORE_PARTS}
+    sub = {"ets": min(100.0, 0.2 * SCORE_SLOPES["ets"]),
+           "pod": 25.0 * SCORE_SLOPES["pod"],
+           "far": 100.0,
+           "bias": 100.0 - 2.0 * SCORE_SLOPES["bias"]}
+    expect_rain = sum(w_p[k] * sub[k] for k in w_p)
+    assert abs(rain - expect_rain) < 0.05, rain
     # 桶分必须含降水分：若被误剔，macro 会等于纯温度分
     assert abs(macro[0, 0] - (temp_only + rain) / 2) < 0.05
-    assert abs(macro[0, 0] - temp_only) > 30.0    # 与"只剩温度分"明确区分
+    assert abs(macro[0, 0] - temp_only) > 10.0    # 与"只剩温度分"明确区分
+    # （2026-10-05：斜率标定后两维量表更接近，实测差 17.7 分——仍远离 0，
+    #  这条断言守的是"降水维在不在桶分里"，不是两维的具体分差）
 
 
 def test_degenerate_bootstrap_reproduces_point_estimate(tmp_path, monkeypatch):
@@ -1417,7 +1490,13 @@ def test_degenerate_bootstrap_reproduces_point_estimate(tmp_path, monkeypatch):
         for mi, m in enumerate(models):
             if bboard[m]["score"] is None:
                 continue
-            assert abs(macro_b[0, mi] - bboard[m]["score"]) < 0.05, \
+            # 分轨容差 0.15 分（总榜仍用 0.05）：两条路径对 r/slope 的合并方式
+            # 并不逐位相同（点估计按 max/min 半格的已合分值，bootstrap 走分桶
+            # 充分统计量重新合并），实测既有残差旧口径 0.043、新口径 0.078
+            # ——2026-10-05 去冗余把温度权重按 0.80 归一后放大约 1/0.8。
+            # 0.15 仍比真实口径漂移小一个量级（2026-09-13 P0-1 的降水样本量
+            # 取错，差距是数分），这条断言要抓的是那类量级的漂移。
+            assert abs(macro_b[0, mi] - bboard[m]["score"]) < 0.15, \
                 (bname, m, macro_b[0, mi], bboard[m]["score"])
     # 验证日数 / 降水维有效样本量（P0-2 的日历维度披露）
     for m in models:

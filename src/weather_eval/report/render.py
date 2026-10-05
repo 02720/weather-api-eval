@@ -31,7 +31,8 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
 
-from ..evaluate import PRECIP_SCORE_PARTS, TEMP_SCORE_PARTS
+from ..evaluate import (PRECIP_SCORE_PARTS, TEMP_SCORE_PARTS, apply_score_slopes,
+                        score_map_text)
 from ..timeutil import now_beijing
 
 logger = logging.getLogger(__name__)
@@ -425,8 +426,13 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 
 def _score_parts_rows(parts) -> list[dict]:
-    """把得分构成表转成模板可渲染的行（权重百分比 + 白话换算说明）；函数本体不序列化。"""
-    return [{"key": k, "weight": w, "pct": round(w * 100), "label": label, "map": mp}
+    """把得分构成表转成模板可渲染的行（权重百分比 + 白话换算说明）；函数本体不序列化。
+
+    换算说明是带 {lam}/{per}/{sat} 槽位的模板，这里按**当期斜率**填成白话——
+    斜率是季度标定值（config eval.score_slopes），重标定后页面自动跟着走。
+    """
+    return [{"key": k, "weight": w, "pct": round(w * 100), "label": label,
+             "map": score_map_text(k, mp)}
             for (k, w, label, mp, _fn) in parts]
 
 
@@ -464,6 +470,11 @@ def render_report_html(report_data: dict, title: str | None = None,
     # 这些数字回答的是"这个第几名值多少信任"，与"谁第几名"属于两类问题，
     # 因此单开一个折叠区，绝不塞进榜单里干扰名次阅读。
     diag = (report_data.get("meta") or {}).get("diagnostics") or {}
+
+    # 评分斜率回放：meta.score_slopes 是本轮评分实际生效的标定值（build_report
+    # 留痕）。重渲染历史报告时进程未必跑过 build_report，"评分构成"表若按代码
+    # 缺省渲染就会与榜单数字用的尺子不一致——同一份数据必须同一把尺子。
+    apply_score_slopes((report_data.get("meta") or {}).get("score_slopes"))
 
     return tpl.render(
         report=report_data,
