@@ -63,6 +63,12 @@ def test_render_monthly_html_nonempty(tmp_path, monkeypatch):
     assert html.count('<tr class="') >= 1 and "thermo" in html and "<svg" in html
     # 评分构成表（服务端渲染）与"±2°C 准确率"白话标签
     assert "综合分怎么算" in html and "±2°C 准确率" in html
+    # 2026-10 呈现重构：换算白话拆成「主式（括注）」+ 份额条，起报锚点表改成
+    # "挂旗在前 + 按语义归组"，逐行重复的括注长句不再出现（旧版一句重复 27 遍，
+    # 且 nowrap 把表顶出卡片、body 的 overflow-x:clip 直接把溢出裁掉）
+    assert "w-map" in html and "w-bar" in html
+    assert "anchor-cell" in html and "rowspan=" in html   # 按语义归组的第二张表
+    assert "随归档递减" not in html
     # 内联数据必须是裁剪视图（_slim_report），不再内联全量评估输出
     assert '"board"' in html and '"scorecard"' not in html
 
@@ -222,6 +228,76 @@ def test_sparkline_svg_server_rendered(tmp_path, monkeypatch):
     assert m and "med" in m.group(0)
     # 前端不再有任何 spark 渲染函数
     assert "sparkSVG" not in html
+
+
+def test_issue_anchor_rows_puts_flags_first_then_groups():
+    """起报锚点披露重排（2026-10 呈现重构）：例外优先、其余按语义归组。
+
+    旧版是一张平表：同一句「（另有 N 份历史存档未声明，随归档递减）」逐行重复、
+    20 行存疑列是一串「—」，真正要看的挂旗源埋在灰字里（且长句 nowrap 把表顶出
+    卡片）。这里锁住新结构的性质：disputed 单独成块在前、其余按语义归组且组内
+    保序、未声明只留一个数字。
+    """
+    from weather_eval.report.render import _issue_anchor_rows
+
+    anchors = {
+        "a1": {"issue_source": "axis_start",
+               "issue_source_label": "时间轴首点（产品的起始时刻）",
+               "issue_source_undeclared": 100,
+               "issue_source_note": "仍有 100 份快照未声明锚点语义",
+               "disputed": False, "disputed_reasons": []},
+        "a2": {"issue_source": "axis_start",
+               "issue_source_label": "时间轴首点（产品的起始时刻）",
+               "issue_source_undeclared": 96,
+               "disputed": False, "disputed_reasons": []},
+        "b1": {"issue_source": "model_run", "issue_source_label": "模式轮次（真实起报时次）",
+               "issue_source_undeclared": 188,
+               "disputed": False, "disputed_reasons": []},
+        "bad": {"issue_source": "request_floor",
+                "issue_source_label": "请求时刻下取整（≈抓取时刻）",
+                "issue_source_undeclared": 316, "disputed": True,
+                "disputed_reasons": ["起报锚点语义为「请求时刻下取整（≈抓取时刻）」",
+                                     "最近城市吸附（平均 3.5 km，代表城市而非站点）"]},
+        "none": {"issue_source": None, "issue_source_undeclared": 0,
+                 "disputed": False, "disputed_reasons": []},   # 无可披露 → 不进表
+    }
+    out = _issue_anchor_rows({"meta": {"issue_anchors": anchors}})
+
+    assert (out["n_total"], out["n_flagged"], out["n_clean"]) == (4, 1, 3)
+    # 例外在前：挂旗的源单独成块，理由原样保留（= 榜上 ⚠️ 悬停看到的同一段话）
+    assert [r["m"] for r in out["flagged"]] == ["bad"]
+    assert out["flagged"][0]["reason_text"] == "；".join(anchors["bad"]["disputed_reasons"])
+    # 其余按语义归组，组内保持榜内序（dict 插入序）
+    assert [g["semantic"] for g in out["groups"]] == ["时间轴首点（产品的起始时刻）",
+                                                      "模式轮次（真实起报时次）"]
+    assert [r["m"] for r in out["groups"][0]["members"]] == ["a1", "a2"]
+    # 未声明只留数字；逐行复述该数字的 note 不上屏（重复即噪音）
+    assert out["groups"][0]["members"][0]["undeclared"] == 100
+    rows = out["flagged"] + [r for g in out["groups"] for r in g["members"]]
+    assert all("note" not in r for r in rows)
+    # 一份可披露信息都没有 → None，模板据此整节不渲染
+    assert _issue_anchor_rows({"meta": {}}) is None
+
+
+def test_score_parts_rows_split_formula_from_note():
+    """评分构成表把换算白话拆成「主式 + 括注」：信息一条不丢（可拼回原文）。
+
+    SCORE_MAP_TEMPLATES 的 9 条都是 ``主式（说明）`` 的形状；页面里主式要一眼
+    可读、括注退灰并放开换行——旧版整句一格、且 nowrap，正是把表顶出卡片的长句。
+    """
+    from weather_eval.report.render import _score_parts_rows, _split_map, TEMP_SCORE_PARTS
+
+    assert _split_map("主式（括注）") == ("主式", "括注")
+    assert _split_map("没有括注") == ("没有括注", "")
+
+    rows = _score_parts_rows(TEMP_SCORE_PARTS)
+    assert len(rows) == 5
+    for r in rows:
+        rebuilt = f"{r['formula']}（{r['note']}）" if r["note"] else r["formula"]
+        assert rebuilt == r["map"], "拆分不得丢字：主式+括注必须拼回原文"
+        assert r["formula"]
+    acc2 = next(r for r in rows if r["key"] == "acc2")
+    assert acc2["formula"].startswith("百分比×") and "个百分点扣 1 分" in acc2["note"]
 
 
 def render_mod_path():

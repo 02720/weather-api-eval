@@ -188,17 +188,48 @@
   .fold > summary::after { content:"展开 ▸"; float:right; font-size:12px;
                            color:var(--muted); font-weight:400; }
   .fold[open] > summary::after { content:"收起 ▾"; }
-  .fold .fold-body { padding:2px 16px 16px; border-top:1px solid var(--line-soft); }
+  /* 折叠区自带一条滚动兜底：body 是 overflow-x:clip，任何顶破卡片的宽表都会被
+     **静默裁掉**（桌面端连横向滚动条都拿不回来）。表内先换行、这里再兜一层底，
+     溢出的内容至少还能在本折叠区内滚到——"看不见"永远比"不好看"更严重。 */
+  .fold .fold-body { padding:2px 16px 16px; border-top:1px solid var(--line-soft);
+                     overflow-x:auto; }
   .fold h3 { font-size:14.5px; margin:16px 0 6px; }
+  .fold h3 .sub { font-weight:400; font-size:11.5px; color:var(--muted);
+                  letter-spacing:0; margin-left:7px; }
   .fold p.why { font-size:12.5px; color:var(--muted); margin:6px 0; line-height:1.8; }
+  /* .fine：走廊基线"达标"那类正面结论（此前漏了样式，混在 15px 正文里跳号） */
+  .fold p.fine { font-size:12.5px; color:var(--good); margin:6px 0; line-height:1.8; }
+  .fold .sub { font-size:11px; color:var(--muted); font-weight:400; }
   .weights-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(340px,100%),1fr));
                   gap:6px 22px; }
+  /* 网格项必须能被压窄：track 有显式下界（min(340px,100%)），子项 min-width:auto
+     会顶着 min-content 把自己撑出 track——两张表并排时互压、并把页面顶横滚。 */
+  .weights-grid > div { min-width:0; }
   table.plain { border-collapse:collapse; width:100%; font-size:12px; background:#fff;
                 border:1px solid var(--line-soft); }
+  /* 默认换行（旧版全局 nowrap 是把表顶出卡片的元凶：换算说明、存疑理由都是长句，
+     min-content 一列就 500px+）。只有纯数字列保持不折行。 */
   table.plain th, table.plain td { border:1px solid var(--line-soft); padding:5px 8px;
-                text-align:center; white-space:nowrap; font-variant-numeric:tabular-nums; }
+                text-align:center; white-space:normal; overflow-wrap:break-word;
+                font-variant-numeric:tabular-nums; }
   table.plain th { background:#f6f8fb; color:#42536e; }
   table.plain td.l, table.plain th.l { text-align:left; }
+  table.plain td.num, table.plain th.num { white-space:nowrap; }
+  /* 评分构成：权重列右对齐 + 行内份额条（同维内条长 = 该指标占本维的权重），
+     换算列是长句、放开换行；主式加重、括注退灰，9 行不再糊成一片。 */
+  table.plain .w-col { white-space:nowrap; text-align:right; width:1%;
+                       min-width:76px; padding-right:10px; }
+  table.plain .w-col b { color:var(--ink); }
+  .w-bar { display:block; height:4px; margin-top:3px; background:#e8edf4;
+           border-radius:2px; overflow:hidden; }
+  .w-bar > i { display:block; height:100%; background:var(--blue); opacity:.8; }
+  table.plain .w-map { text-align:left; color:#42536e; }
+  table.plain .w-map b { color:var(--ink); font-weight:600; }
+  table.plain .w-note { color:var(--muted); }
+  /* 起报锚点表：挂旗行的理由列是长句，给它左对齐 + 一点琥珀底，扫一眼能定位 */
+  table.plain .warn-cell { background:#fdf7ec; color:#8a5a17; }
+  table.plain .anchor-cell { background:#f6f8fb; }
+  table.plain th.r, table.plain td.r { text-align:right; }
 
   /* ================= 图表卡通用 ================= */
   .chart { width:100%; height:380px; margin-top:4px; }
@@ -346,6 +377,23 @@
     table.plain { display:block; overflow-x:auto; -webkit-overflow-scrolling:touch;
                   max-width:100%; }
     table.plain th, table.plain td { white-space:normal; padding:4px 6px; font-size:11.5px; }
+
+    /* 挂旗表（三列全是长句）在手机上按行拆卡：281px 宽里三列互相挤压，单行能折
+       出 200px 高的一坨；拆卡后每家一段，标签由 data-label 提供——与总榜在手机上
+       从表格改卡片是同一条理由：窄屏不该塞多列。 */
+    table.plain.anchor-flags { display:block; overflow:visible; max-width:none; }
+    table.plain.anchor-flags thead { display:none; }
+    table.plain.anchor-flags tbody { display:block; }
+    table.plain.anchor-flags tr { display:block; border:1px solid var(--line-soft);
+                                  border-radius:10px; padding:7px 11px;
+                                  margin:0 0 8px; background:#fff; }
+    table.plain.anchor-flags td { display:block; border:0; padding:2px 0;
+                                  text-align:left; white-space:normal; }
+    table.plain.anchor-flags td::before { content:attr(data-label); display:block;
+                                          font-size:10.5px; letter-spacing:1px;
+                                          color:var(--muted); }
+    table.plain.anchor-flags td.warn-cell { margin-top:5px; padding:5px 7px;
+                                            border-radius:7px; }
   }
 </style>
 </head>
@@ -549,22 +597,30 @@
       <div class="fold-body">
         <div class="weights-grid">
           <div>
-            <h3>🌡️ 温度分（{{ score_temp_parts|length }} 项）</h3>
+            <h3>🌡️ 温度分（{{ score_temp_parts|length }} 项）<span class="sub">该维占综合分 50%</span></h3>
             <table class="plain">
-              <thead><tr><th class="l">指标</th><th>权重</th><th class="l">0~100 换算</th></tr></thead>
+              <thead><tr><th class="l">指标</th><th class="w-col">权重</th><th class="l">0~100 换算</th></tr></thead>
               <tbody>{% for p in score_temp_parts %}
-                <tr><td class="l">{{ p.label }}</td><td>{{ '%.2f'|format(p.weight * 100) }}%</td><td class="l">{{ p.map }}</td></tr>
+                <tr>
+                  <td class="l">{{ p.label }}</td>
+                  <td class="w-col"><b>{{ '%.2f'|format(p.weight * 100) }}%</b><span class="w-bar"><i style="width:{{ '%.2f'|format(p.weight * 100) }}%"></i></span></td>
+                  <td class="l w-map"><b>{{ p.formula }}</b>{% if p.note %}<span class="w-note">（{{ p.note }}）</span>{% endif %}</td>
+                </tr>
               {% endfor %}</tbody>
             </table>
             <p class="why">不入分：±1°C 准确率与 MAE（与上表两项桶内相关 0.95 / 0.96——同一信息记两遍
               会让权重失去语义）、RSS、χ²（样本量的函数，不是预报技巧）。</p>
           </div>
           <div>
-            <h3>🌧️ 降水分（{{ score_precip_parts|length }} 项，日雨量 ≥{{ report.meta.rain_daily_threshold_mm }}mm 口径）</h3>
+            <h3>🌧️ 降水分（{{ score_precip_parts|length }} 项）<span class="sub">该维占综合分 50% · 日雨量 ≥{{ report.meta.rain_daily_threshold_mm }}mm 口径</span></h3>
             <table class="plain">
-              <thead><tr><th class="l">指标</th><th>权重</th><th class="l">0~100 换算</th></tr></thead>
+              <thead><tr><th class="l">指标</th><th class="w-col">权重</th><th class="l">0~100 换算</th></tr></thead>
               <tbody>{% for p in score_precip_parts %}
-                <tr><td class="l">{{ p.label }}</td><td>{{ '%.2f'|format(p.weight * 100) }}%</td><td class="l">{{ p.map }}</td></tr>
+                <tr>
+                  <td class="l">{{ p.label }}</td>
+                  <td class="w-col"><b>{{ '%.2f'|format(p.weight * 100) }}%</b><span class="w-bar"><i style="width:{{ '%.2f'|format(p.weight * 100) }}%"></i></span></td>
+                  <td class="l w-map"><b>{{ p.formula }}</b>{% if p.note %}<span class="w-note">（{{ p.note }}）</span>{% endif %}</td>
+                </tr>
               {% endfor %}</tbody>
             </table>
             <p class="why">不入分：TS（与 ETS 桶内相关 0.84，ETS 已含基率校正）、晴雨准确率
@@ -614,21 +670,45 @@
       </div>
     </details>
 
-    {% if report.meta.get('issue_anchors') %}
+    {% if anchors %}
     <details class="fold"><summary>🧭 各源的"起报时刻"到底是什么（口径存疑 ⚠️ 的出处）</summary>
       <div class="fold-body">
         <p class="why">同一个「提前 N 天」，各家用的起报锚点并不都是同一回事。
-          若锚点实质接近抓取时刻，声明的时效会系统性地长于实际时效——这样的源在榜上挂 ⚠️。</p>
-        <table class="plain">
-          <thead><tr><th class="l">预报源</th><th class="l">起报锚点语义</th><th class="l">口径存疑</th></tr></thead>
-          <tbody>{% for m, ia in report.meta.issue_anchors.items() %}
-            {% if ia.get('issue_source') and (ia.get('issue_source') != 'unknown' or ia.get('issue_source_undeclared')) %}
-            <tr><td class="l">{{ model_labels.get(m, m) }}</td>
-              <td class="l">{{ ia.get('issue_source_label') or '—' }}{% if ia.get('issue_source_undeclared') %}（另有 {{ ia.issue_source_undeclared }} 份历史存档未声明，随归档递减）{% endif %}</td>
-              <td class="l">{% if ia.get('disputed') %}⚠️ {{ ia.get('disputed_reasons')|join('；') }}{% else %}—{% endif %}</td></tr>
-            {% endif %}
+          若锚点实质接近抓取时刻，声明的时效会系统性地长于实际时效——这样的源在榜上挂 ⚠️。
+          {% if anchors.n_flagged %}本轮 {{ anchors.n_total }} 家里<b>挂旗 {{ anchors.n_flagged }} 家</b>，
+          理由列在前（= 榜上 ⚠️ 悬停时看到的同一段话）；其余 {{ anchors.n_clean }} 家按语义归组，
+          同一句话只说一遍。{% else %}本轮 {{ anchors.n_total }} 家的锚点语义均可核，按语义归组如下。{% endif %}
+          <b>未声明存档</b>＝早于元数据契约的历史快照（无从考证其锚点语义，不计入争议），随归档自然递减。</p>
+
+        {% if anchors.flagged %}
+        <h3>⚠️ 挂旗的 {{ anchors.flagged|length }} 家：榜上 ⚠️ 的出处</h3>
+        <table class="plain anchor-flags">
+          <thead><tr><th class="l">预报源</th><th class="l">起报锚点语义</th><th class="l">口径存疑（榜上 ⚠️ 的理由）</th></tr></thead>
+          <tbody>{% for r in anchors.flagged %}
+            <tr>
+              <td class="l" data-label="预报源"><b>{{ r.name }}</b></td>
+              <td class="l" data-label="起报锚点语义">{{ r.semantic }}
+                {%- if r.undeclared %}<br><span class="sub">未声明存档 {{ r.undeclared }}</span>{% endif %}</td>
+              <td class="l warn-cell" data-label="口径存疑">⚠️ {{ r.reason_text }}</td>
+            </tr>
           {% endfor %}</tbody>
         </table>
+        {% endif %}
+
+        {% if anchors.groups %}
+        <h3>{% if anchors.flagged %}口径无争议的其余 {{ anchors.n_clean }} 家{% else %}{{ anchors.n_total }} 家{% endif %}：按起报锚点语义归组</h3>
+        <table class="plain">
+          <thead><tr><th class="l">起报锚点语义</th><th class="l">预报源</th><th class="r">未声明存档</th></tr></thead>
+          <tbody>{% for g in anchors.groups %}{% for r in g.members %}
+            <tr>
+              {% if loop.first %}<td class="l anchor-cell" rowspan="{{ g.members|length }}"><b>{{ g.semantic }}</b>
+                <br><span class="sub">{{ g.members|length }} 家</span></td>{% endif %}
+              <td class="l">{{ r.name }}</td>
+              <td class="num r">{{ r.undeclared if r.undeclared else '—' }}</td>
+            </tr>
+          {% endfor %}{% endfor %}</tbody>
+        </table>
+        {% endif %}
       </div>
     </details>
     {% endif %}

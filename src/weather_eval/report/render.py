@@ -425,15 +425,86 @@ def _atomic_write_text(path: Path, text: str) -> None:
             os.remove(tmp)
 
 
+def _split_map(text: str) -> tuple[str, str]:
+    """把一条换算白话拆成「主式」与「括注」两段。
+
+    SCORE_MAP_TEMPLATES 里 9 条的形状都是 ``主式（括注说明）``——表格里主式要
+    一眼可读、括注是次要说明。混成一整行既难扫（9 行长句连成一片），也难换行
+    （长句是把表格顶出卡片的元凶之一）。不符合该形状的原样整段进主式，信息不丢。
+    """
+    if "（" in text and text.endswith("）"):
+        head, tail = text.split("（", 1)
+        return head.strip(), tail[:-1].strip()
+    return text, ""
+
+
 def _score_parts_rows(parts) -> list[dict]:
     """把得分构成表转成模板可渲染的行（权重百分比 + 白话换算说明）；函数本体不序列化。
 
     换算说明是带 {lam}/{per}/{sat} 槽位的模板，这里按**当期斜率**填成白话——
     斜率是季度标定值（config eval.score_slopes），重标定后页面自动跟着走。
     """
-    return [{"key": k, "weight": w, "pct": round(w * 100), "label": label,
-             "map": score_map_text(k, mp)}
-            for (k, w, label, mp, _fn) in parts]
+    rows = []
+    for (k, w, label, mp, _fn) in parts:
+        text = score_map_text(k, mp)
+        formula, note = _split_map(text)
+        rows.append({"key": k, "weight": w, "pct": round(w * 100), "label": label,
+                     "map": text, "formula": formula, "note": note})
+    return rows
+
+
+def _issue_anchor_rows(report_data: dict) -> dict | None:
+    """起报锚点披露表的分组视图（页面「🧭 各源的"起报时刻"到底是什么」一节）。
+
+    这一节存在的理由是**给榜上的 ⚠️ 口径存疑一个出处**，而不是逐条复述契约。
+    旧版是一张平表，两个第一性问题没被回答：
+
+    - 逐行重复同一句「（另有 N 份历史存档未声明，随归档递减）」，多数行的存疑列
+      是一串「—」——真正要看的挂旗源混在灰字里；
+    - 语义 + 存疑都是长句，单元格 nowrap 把表顶出卡片（body 是 overflow-x:clip，
+      溢出部分直接被裁掉，桌面端连横向滚动条都拿不回来）。
+
+    重排成两块：**挂旗的在前**（理由原样保留，即榜上 ⚠️ 悬停看到的同一段话），
+    **其余按锚点语义归组**（语义用 rowspan 只说一遍，未声明份数退成一列数字）。
+    组内沿用榜内序（dict 插入序），读者仍可按名次找家。
+
+    ``issue_source_note``（"仍有 N 份快照未声明锚点语义"）不上屏：它只是把已经
+    成列的未声明数字换个说法再念一遍，重复即噪音；未声明的**含义**由页面在表头
+    前用一句话统一解释（早于元数据契约的历史快照，不计争议）。
+    """
+    anchors = ((report_data.get("meta") or {}).get("issue_anchors")) or {}
+    flagged: list[dict] = []
+    clean: list[dict] = []
+    for m, ia in anchors.items():
+        # 与旧版同一过滤：没有 issue_source、且也没有"历史未声明"可披露的不进表
+        if not (ia.get("issue_source")
+                and (ia.get("issue_source") != "unknown"
+                     or ia.get("issue_source_undeclared"))):
+            continue
+        row = {
+            "m": m,
+            "name": MODEL_LABELS.get(m, m),
+            "semantic": ia.get("issue_source_label") or "—",
+            "undeclared": ia.get("issue_source_undeclared") or None,
+            "reason_text": "；".join(ia.get("disputed_reasons") or []),
+        }
+        (flagged if ia.get("disputed") else clean).append(row)
+
+    groups: list[dict] = []
+    by_semantic: dict[str, dict] = {}
+    for row in clean:
+        g = by_semantic.get(row["semantic"])
+        if g is None:
+            g = {"semantic": row["semantic"], "members": []}
+            by_semantic[row["semantic"]] = g
+            groups.append(g)
+        g["members"].append(row)
+
+    if not flagged and not groups:
+        return None
+    return {"flagged": flagged, "groups": groups,
+            "n_flagged": len(flagged), "n_clean": len(clean),
+            "n_total": len(flagged) + len(clean)}
 
 
 def render_report_html(report_data: dict, title: str | None = None,
@@ -471,6 +542,9 @@ def render_report_html(report_data: dict, title: str | None = None,
     # 因此单开一个折叠区，绝不塞进榜单里干扰名次阅读。
     diag = (report_data.get("meta") or {}).get("diagnostics") or {}
 
+    # 起报锚点披露：挂旗的源在前、其余按语义归组（见 _issue_anchor_rows 的 docstring）
+    anchors = _issue_anchor_rows(report_data)
+
     # 评分斜率回放：meta.score_slopes 是本轮评分实际生效的标定值（build_report
     # 留痕）。重渲染历史报告时进程未必跑过 build_report，"评分构成"表若按代码
     # 缺省渲染就会与榜单数字用的尺子不一致——同一份数据必须同一把尺子。
@@ -479,6 +553,7 @@ def render_report_html(report_data: dict, title: str | None = None,
     return tpl.render(
         report=report_data,
         diag=diag,
+        anchors=anchors,
         slim_json=slim_json,
         spark_med=spark_med,
         spark_svg=spark_svg,
