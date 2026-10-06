@@ -91,12 +91,13 @@ def test_grade_ets_point_matches_aggregate_path():
     _days, tables = stats.build_day_stat_tables(hourly, daily, ["m"], 1, 20,
                                                 1.0, 1.0)
     A = tables["rain_daily"]
-    # 直接全量（不重采样）= 点估计的同一样本
+    # 整表（不重采样）过一次生产评分路径。它内部对整表计数做向量化
+    # grade_ets_from_counts，与下面逐桶切片同值，故不在这里重复调用；能从复合分
+    # 里反推的只有分数本身——"表能被评分路径消费出有限分"必须钉住，否则下面的
+    # 计数层对拍可能是在一张空表上空跑。
     got = stats._rain_scores_from_aggregate(A, PRECIP_SCORE_PARTS, 5)
-    # 从聚合分反推不出 grade_ets 单值，改为直接对拍计数层：
-    tot = A.sum(axis=(0, 2, 3))          # (bucket, 13)
-    gh = stats.grade_ets_from_counts(tot, np.float64(tot[..., 0] + tot[..., 1]
-                                                     + tot[..., 2] + tot[..., 3]), 5)
+    assert np.isfinite(got).all(), "聚合表必须能被评分路径消费出有限分"
+    tot = A.sum(axis=(0, 2, 3))          # (bucket, 13)：整表计数汇总
     # 点估计的计数按 offset 分桶后应与聚合表逐位相同
     want_by_bucket = {}
     for i in range(400):
@@ -174,7 +175,8 @@ def test_between_station_mbe_sd_matches_full_sample_computation():
     direct = float(stats.between_station_mbe_sd(n_s, se_s))
 
     # bootstrap 口径：逐日行进表 → 按天权重求和 → 归约
-    row = lambda o, f: [1.0, (f - o) ** 2, abs(f - o), f - o] + [0.0] * 7
+    def row(o, f):
+        return [1.0, (f - o) ** 2, abs(f - o), f - o] + [0.0] * 7
     A = np.zeros((1, 1, n_st, n_days, len(stats._TEMP_STATS)))
     for d in range(n_days):
         for s in range(n_st):

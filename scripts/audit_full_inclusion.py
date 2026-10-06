@@ -417,8 +417,10 @@ def main() -> None:
                     continue
                 pr.append((st["rmse"] / st["mean_obs"], st["mae"] / st["mean_obs"]))
             if len(pr) >= MIN_MODELS:
-                ar = np.array([p[0] for p in pr]); aa = np.array([p[1] for p in pr])
-                xs.append(ar - ar.mean()); ys.append(aa - aa.mean())
+                ar = np.array([p[0] for p in pr])
+                aa = np.array([p[1] for p in pr])
+                xs.append(ar - ar.mean())
+                ys.append(aa - aa.mean())
         rho = np.corrcoef(np.concatenate(xs), np.concatenate(ys))[0, 1] if xs else float("nan")
         print(f"  {track:<7} ρ(相对雨量 rmse, amt_mae) = {rho:+.3f}   "
               f"（amt_mae 已入分 → rmse 属同族冗余）")
@@ -498,8 +500,9 @@ def main() -> None:
           f" ← 数学上等于恒等 0，写进公式也只是记账")
 
     # V2 加「空间一致性」代理：|r−r_pooled| 与 |log2(slope/slope_pooled)|
+    # λ 只在 hourly 格子上反解一次，两个轨共用（下方 for 循环用的是同一对 λ），
+    # 所以这里只需要 hourly 格子；早先版本还取了一份 daily 格子，从未被用到。
     cells_h = cells_by_bucket(ts, "hourly", "temp")
-    cells_d = cells_by_bucket(ts, "daily", "temp")
     def rgap(v):
         a, b = v.get("r"), v.get("r_pooled")
         return None if a is None or b is None else abs(a - b)
@@ -512,7 +515,6 @@ def main() -> None:
           f"{1/lam_rg:.3f} 扣 1 分）· |log₂(slope/slope_pooled)| λ={lam_sg:.2f}")
     for nm, l1, l2 in (("hourly", lam_rg, lam_sg), ("daily", lam_rg, lam_sg)):
         cb = cells_by_bucket(ts, nm, "temp")
-        sub = [s for c in cb.values() for v in c.values() for s in temp_subs(nm, v)]
         cellz = {b: {m: s for m, v in c.items() for s in temp_subs(nm, v)}
                  for b, c in cb.items()}
         print(f"     {nm}: |r−r_pooled| 子分 sd={sub_sd(cellz, rgap, 'dev', l1)['sd']:.2f} "
@@ -531,7 +533,7 @@ def main() -> None:
     # V3 加「雨强分辨力」：中等级别 ETS 的合成
     def grade_synth(levs):
         def f(v):
-            xs = [((v.get("graded") or {}).get(l) or {}).get("ets") for l in levs]
+            xs = [((v.get("graded") or {}).get(lev) or {}).get("ets") for lev in levs]
             xs = [x for x in xs if x is not None]
             return sum(xs) / len(xs) if xs else None
         return f

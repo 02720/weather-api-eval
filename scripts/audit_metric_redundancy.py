@@ -103,14 +103,14 @@ def centered_matrix(cellmap: dict) -> tuple[np.ndarray, list, list]:
     M = np.asarray(rows)
     # 按桶中心化
     out = M.copy()
-    for lab in sorted({(l[0], l[1]) for l in labels}):
-        idx = [i for i, l in enumerate(labels) if (l[0], l[1]) == lab]
+    for lab in sorted({(lb[0], lb[1]) for lb in labels}):
+        idx = [i for i, lb in enumerate(labels) if (lb[0], lb[1]) == lab]
         if len(idx) >= MIN_MODELS_PER_BUCKET:
             out[idx] -= M[idx].mean(axis=0)
         else:
             out[idx] = np.nan
     keep = ~np.isnan(out[:, 0])
-    return out[keep], [l for l, k in zip(labels, keep) if k], keys
+    return out[keep], [lb for lb, k in zip(labels, keep) if k], keys
 
 
 def corr_of(M: np.ndarray, keys: list) -> np.ndarray:

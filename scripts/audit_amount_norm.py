@@ -24,7 +24,7 @@ import json
 import math
 import sys
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 sys.path.insert(0, "src")
 
