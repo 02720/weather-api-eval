@@ -479,7 +479,7 @@
           {{ report.meta.bootstrap_runs }} 次的 90% 置信区间中位宽
           <b>{{ '%.1f'|format(cw_sorted[cw_sorted|length // 2]) if cw_sorted else '—' }} 分</b>{% if ns2.tied > 1 %}，
           与第一名<b>统计上并列</b>的有 {{ ns2.tied - 1 }} 家——前后名次未必是一分高下{% endif %}；
-          {% if ws.get('champions') %}把 12 项评分权重随机扰动 ±40% 重复 {{ ws.runs }} 次，
+          {% if ws.get('champions') %}把全部 {{ ws.n_parts }} 项子分权重随机扰动 ±40% 重复 {{ ws.runs }} 次，
           冠军归属：<b>{% for c in ws.champions[:2] %}{{ model_labels.get(c.model, c.model) }} {{ c.pct }}%{% if not loop.last %} / {% endif %}{% endfor %}</b>；
           {% endif %}名字带 † = 差距在统计上还分不开。<a href="#board" style="color:#9fc3e8">看完整榜单 →</a>
         </div>
@@ -608,8 +608,10 @@
                 </tr>
               {% endfor %}</tbody>
             </table>
-            <p class="why">不入分：±1°C 准确率与 MAE（与上表两项桶内相关 0.95 / 0.96——同一信息记两遍
-              会让权重失去语义）、RSS、χ²（样本量的函数，不是预报技巧）。</p>
+            <p class="why">同族的两项各分族权重的一半（= 族内先平均再入分）：相关 0.92 / 0.88 的
+              同一份证据不记两遍，但两处刻度都用上。<b>不入分</b>：RSS、χ²——它们
+              <b>数学上就是</b> RMSE² 与 n×RMSE²（实测残差 ≤2e−3，χ² 与 RMSE 桶内斯皮尔曼
+              ρ=1.00），入分即重复计权，且 RSS 还乘了样本量。</p>
           </div>
           <div>
             <h3>🌧️ 降水分（{{ score_precip_parts|length }} 项）<span class="sub">该维占综合分 50% · 日雨量 ≥{{ report.meta.rain_daily_threshold_mm }}mm 口径</span></h3>
@@ -623,8 +625,11 @@
                 </tr>
               {% endfor %}</tbody>
             </table>
-            <p class="why">不入分：TS（与 ETS 桶内相关 0.84，ETS 已含基率校正）、晴雨准确率
-              （由气候基率主导）、雨量误差（被个别强降水时段主导，跨源比较不公平）。</p>
+            <p class="why"><b>不入分</b>：TS、晴雨准确率、漏报率、空报频率——给定样本量的 2×2
+              列联表只有 3 个自由度，而 ETS/POD/FAR 恰好撑满，这四个<b>都是它们的函数</b>
+              （用它们反解列联表重建 acc/ts，残差 8e−4 / 1.3e−3，全是舍入）；
+              加进来不增加信息，只会把基率污染请回来。雨量 RMSE 亦不入分：与雨量 MAE
+              桶内相关 0.97，且平方刻度把跨桶尺度差放大一倍。</p>
           </div>
         </div>
         <p class="why">某项缺数据时按<b>剩余权重</b>折算（缺数据 ≠ 差数据）；综合分 = 温度分与降水分各半。</p>

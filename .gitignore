@@ -13,3 +13,5 @@ data/**/*.lock
 # 本地工作台：离线走廊（scripts/sensitivity_corridors.py）等中间产物与报告留档
 .work/
 reports/.baseline/
+# 浏览器工具的本地截图留档（对拍报告版面用），不是项目产物
+.openchamber/

@@ -81,28 +81,51 @@ def test_scores_weighted_multi_metric():
     import weather_eval.evaluate as ev
     from weather_eval.evaluate import (PRECIP_SCORE_PARTS, SCORE_SLOPES,
                                        TEMP_SCORE_PARTS)
-    # 温度分：只有 acc2/rmse 时（权重各 0.3125）两者均分
+    # 温度分：只有 acc2/rmse 时（命中轮廓族与误差幅度族各只剩一个成员，
+    # 两族权重 0.15625 各半 → 缺项按剩余权重归一后两者仍是均分）
     t = {"acc2": 90.0, "rmse": 1.0}
     a, r = 90.0 * SCORE_SLOPES["acc2"], 100.0 - 1.0 * SCORE_SLOPES["rmse"]
     assert temp_score(t) == round((a + r) / 2, 2)
     # 全项在位：按 TEMP_SCORE_PARTS 权重加权（子分 = 指标 × 各自标定斜率）
-    t_full = {"acc2": 80, "rmse": 2.0, "r": 0.9, "mbe": 0.5, "slope": 1.1}
+    t_full = {"acc2": 80, "acc1": 55, "rmse": 2.0, "mae": 1.6,
+              "r": 0.9, "mbe": 0.5, "slope": 1.1, "mbe_bdisp": 0.3}
     subs = {"acc2": 80 * SCORE_SLOPES["acc2"],
+            "acc1": 55 * SCORE_SLOPES["acc1"],
             "rmse": 100 - 2.0 * SCORE_SLOPES["rmse"],
+            "mae": 100 - 1.6 * SCORE_SLOPES["mae"],
             "r": 0.9 * SCORE_SLOPES["r"],
             "mbe": 100 - 0.5 * SCORE_SLOPES["mbe"],
-            "slope": 100 - abs(math.log2(1.1)) * SCORE_SLOPES["slope"]}
+            "slope": 100 - abs(math.log2(1.1)) * SCORE_SLOPES["slope"],
+            "mbe_bdisp": 100 - 0.3 * SCORE_SLOPES["mbe_bdisp"]}
     expect = round(sum(w * min(100.0, max(0.0, subs[k]))
                        for k, w, *_ in TEMP_SCORE_PARTS), 2)
     assert abs(temp_score(t_full) - expect) < 1e-9
-    # 2026-10-05 去冗余：acc1/mae 不再入分（与 acc2/rmse 桶内相关 0.95/0.96），
-    # 在不在都不改变温度分——"少记一遍同一信息"的机器守卫
-    assert temp_score(dict(t_full, acc1=60, mae=1.5)) == temp_score(t_full)
-    # 降水分：acc/ts 均不入分（acc 由气候基率主导；ts 与 ETS 桶内相关 0.84）
+    # 2026-10-06 全指标审计：acc1/mae **入分**（命中轮廓族 / 误差幅度族的第二个
+    # 成员，族权重在成员间平分），在不在**会**改变温度分——机器守卫反过来锁：
+    # 之前"在不在都不变"的断言若是复活，说明族内等权被改回了旧的单成员口径。
+    assert temp_score(dict(t_full, acc1=60, mae=1.5)) != temp_score(t_full)
+    # 站间一致性（2026-10-06 第二轮新增）：池化 MBE 相同但各站偏差互相抵消的源
+    # 必须在这里赔分——这是 |mbe| 看不见的维度（实测两者跨源相关仅 0.115）
+    assert temp_score(dict(t_full, mbe_bdisp=0.8)) < temp_score(dict(
+        t_full, mbe_bdisp=0.05))
+    # 拒收项（数学上是入分项的函数 / 样本量的函数）：在不在都不改变分数
+    assert temp_score(dict(t_full, chi2=4.0, rss=1e5)) == temp_score(t_full)
+    # 降水分：acc/ts 均不入分（acc 由气候基率主导且与 ETS/POD/FAR 同源同一张
+    # 列联表；ts 是未做基率校正的 ETS）
     p = {"ets": 0.2, "acc": 80.0}
     assert precip_score(p) == round(0.2 * SCORE_SLOPES["ets"], 2)
     assert precip_score({"ets": 0.2, "acc": 0.0}) == round(0.2 * SCORE_SLOPES["ets"], 2)
     assert precip_score({"ets": 0.2, "ts": 0.9}) == precip_score({"ets": 0.2})
+    # 雨量两维入分（2026-10-06 新增的唯一真新信息）
+    base = {"ets": 0.2, "pod": 50.0, "far": 60.0, "bias": 1.5}
+    assert precip_score(dict(base, amt_mae=1.2, amt_bias=1.1)) != precip_score(base)
+    # 雨强分辨力（2026-10-06 第二轮新增：中雨/大雨档 ETS，与晴雨 ETS 近乎正交）
+    assert precip_score(dict(base, grade_ets=0.30)) > precip_score(dict(
+        base, grade_ets=0.02))
+    # 该档样本不足 → None（缺项按剩余权重归一），**不是** 0 分
+    assert precip_score(dict(base, grade_ets=None)) == precip_score(base)
+    # amt_bias → 0（整桶的雨一滴没报）是该维的最大错误，记 0 分而不是"缺项归一"
+    assert precip_score(dict(base, amt_bias=0.0)) < precip_score(base)
     # 子分截断到 [0,100]：ETS 为负记 0 分，不拖成负总分（在位的两项按剩余权重归一）
     w_p = {k: w for k, w, *_ in PRECIP_SCORE_PARTS}
     assert precip_score({"ets": -0.5, "pod": 50.0}) == round(
@@ -125,16 +148,35 @@ def test_score_parts_contract():
     # 权重表契约：指标键、权重和为 1、每项带白话标签与换算函数
     from weather_eval.evaluate import PRECIP_SCORE_PARTS, TEMP_SCORE_PARTS
     for parts, keys in (
-        (TEMP_SCORE_PARTS, {"acc2", "rmse", "r", "mbe", "slope"}),
-        (PRECIP_SCORE_PARTS, {"ets", "pod", "far", "bias"}),
+        (TEMP_SCORE_PARTS, {"acc2", "acc1", "rmse", "mae", "r", "mbe", "slope",
+                            "mbe_bdisp"}),
+        (PRECIP_SCORE_PARTS, {"ets", "pod", "far", "bias", "amt_mae", "amt_bias",
+                              "grade_ets"}),
     ):
         assert {k for k, *_ in parts} == keys
         assert abs(sum(w for _k, w, *_ in parts) - 1.0) < 1e-9
         for _k, _w, label, mp, fn in parts:
             assert label and mp and callable(fn)
-    # 去冗余契约（2026-10-05）：互为冗余的一对不再同时入分
-    assert not {"acc1", "mae"} & {k for k, *_ in TEMP_SCORE_PARTS}
-    assert "ts" not in {k for k, *_ in PRECIP_SCORE_PARTS}
+    # 全指标审计的**拒收契约**（2026-10-06）：这些指标照算、明细表照列，但绝不
+    # 回到加权和里——它们数学上是入分项的函数（χ²=RMSE²、RSS=n·χ²、ts/acc/
+    # 漏报率/POFD 与 ETS/POD/FAR 同源同一张 2×2 列联表）或样本量的函数。
+    # 恒等式与残差留档 docs/metric_coverage.md、脚本 scripts/audit_metric_redundancy.py。
+    scored = {k for k, *_ in (*TEMP_SCORE_PARTS, *PRECIP_SCORE_PARTS)}
+    assert not {"chi2", "rss", "ts", "acc", "miss", "farate"} & scored
+    # 族内等权：两个"命中轮廓"成员与两个"误差幅度"成员权重必须相等
+    w_t = {k: w for k, w, *_ in TEMP_SCORE_PARTS}
+    assert w_t["acc1"] == w_t["acc2"] and w_t["rmse"] == w_t["mae"]
+    # 雨量两维与雨强分辨力的比例契约：雨量两维合计 0.225、grade_ets 0.10
+    # （2026-10-06 第二轮：全部旧项 ×0.9 等比缩放让出 0.10 槽位，故雨量两维
+    #  相对其他旧项的比例不变——原设计配比不做二次改动）
+    w_p = {k: w for k, w, *_ in PRECIP_SCORE_PARTS}
+    assert abs(w_p["amt_mae"] + w_p["amt_bias"] - 0.225) < 1e-9
+    assert abs(w_p["grade_ets"] - 0.10) < 1e-9
+    old6 = {k: w for k, w in w_p.items() if k != "grade_ets"}
+    assert all(abs(w - 0.9 * v) < 1e-9 for k, w in old6.items()
+               for v in [ {"ets": 0.35, "pod": 0.15, "far": 0.15,
+                           "amt_mae": 0.15, "bias": 0.10,
+                           "amt_bias": 0.10}[k] ])
     # P0-3 契约：acc 不入分（气候基率主导）；ETS 权重首位；
     # FAR+BIAS 权重之和不低于 POD（不奖励"多报占便宜"）
     keys = [k for k, *_ in PRECIP_SCORE_PARTS]
@@ -1347,10 +1389,16 @@ def test_bootstrap_rain_sample_size_counts_all_cells_not_hits():
     T = np.zeros((n_m, n_b, n_s, n_d, len(stats._TEMP_STATS)))
     R = np.zeros((n_m, n_b, n_s, n_d, len(stats._RAIN_STATS)))
     # 桶 1：三天合计 h=2 / fa=0 / mi=6 / c=24 → 真实样本 32（> min_sample=5），
-    # 但命中数只有 2（落在 1~4 之间，正是旧代码误判为"样本不足"的区间）
-    R[0, 0, 0, 0] = [1, 0, 2, 8]
-    R[0, 0, 0, 1] = [1, 0, 2, 8]
-    R[0, 0, 0, 2] = [0, 0, 2, 8]
+    # 但命中数只有 2（落在 1~4 之间，正是旧代码误判为"样本不足"的区间）。
+    # 后三列是 2026-10 起的雨量累计量（Σ实况 / Σ预报 / Σ|误差|），按"每次雨 1mm"
+    # 构造：8 次实况雨 → Σ实况=8；2 次命中各报 1mm → Σ预报=2；6 次漏报各差 1mm
+    # → Σ|误差|=6。三天均分：8/3 ≈ 2.67 / 0.67 / 2（可加量直接相加即可）。
+    # 末 6 列是 2026-10-06 起的分级计数（两个雨强档各自的 h/fa/mi），本用例全 0
+    # → 各档事件数 0 < min_sample → grade_ets 缺项（按剩余权重归一），不影响断言。
+    _rain_row = [1, 0, 2, 8, 8 / 3, 2 / 3, 6 / 3, 0, 0, 0, 0, 0, 0]
+    R[0, 0, 0, 0] = _rain_row
+    R[0, 0, 0, 1] = _rain_row
+    R[0, 0, 0, 2] = [0, 0, 2, 8, 8 / 3, 2 / 3, 6 / 3, 0, 0, 0, 0, 0, 0]
     # 温度：同样 32 条样本，恒定误差 0.5°C（r/slope 因零方差退化，按缺项处理）
     for d, n in enumerate((11, 11, 10)):
         T[0, 0, 0, d] = [n, n * 0.25, n * 0.5, n * 0.5, n, n,
@@ -1378,8 +1426,15 @@ def test_bootstrap_rain_sample_size_counts_all_cells_not_hits():
     sub = {"ets": min(100.0, 0.2 * SCORE_SLOPES["ets"]),
            "pod": 25.0 * SCORE_SLOPES["pod"],
            "far": 100.0,
-           "bias": 100.0 - 2.0 * SCORE_SLOPES["bias"]}
-    expect_rain = sum(w_p[k] * sub[k] for k in w_p)
+           "bias": 100.0 - 2.0 * SCORE_SLOPES["bias"],
+           # 雨量两维（2026-10 新增）：相对量级误差 = Σ|误差|/Σ实况 = 6/8 = 0.75，
+           # 总量比 = Σ预报/Σ实况 = 2/8 = 0.25（欠报 4 倍，log₂ 对称同罚）
+           "amt_mae": 100.0 - 0.75 * SCORE_SLOPES["amt_mae"],
+           "amt_bias": 100.0 - 2.0 * SCORE_SLOPES["amt_bias"]}
+    # grade_ets 在本桶缺项（分级计数全 0 → 各档事件数 0 < min_sample）→ 不入权，
+    # 期望 = 在位子分的加权和 ÷ 在位权重和（缺项按剩余权重归一）
+    expect_rain = sum(w_p[k] * sub[k] for k in sub) / sum(
+        w_p[k] for k in sub)
     assert abs(rain - expect_rain) < 0.05, rain
     # 桶分必须含降水分：若被误剔，macro 会等于纯温度分
     assert abs(macro[0, 0] - (temp_only + rain) / 2) < 0.05

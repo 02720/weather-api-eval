@@ -282,7 +282,7 @@ def test_issue_anchor_rows_puts_flags_first_then_groups():
 def test_score_parts_rows_split_formula_from_note():
     """评分构成表把换算白话拆成「主式 + 括注」：信息一条不丢（可拼回原文）。
 
-    SCORE_MAP_TEMPLATES 的 9 条都是 ``主式（说明）`` 的形状；页面里主式要一眼
+    SCORE_MAP_TEMPLATES 的每条都是 ``主式（说明）`` 的形状；页面里主式要一眼
     可读、括注退灰并放开换行——旧版整句一格、且 nowrap，正是把表顶出卡片的长句。
     """
     from weather_eval.report.render import _score_parts_rows, _split_map, TEMP_SCORE_PARTS
@@ -291,7 +291,7 @@ def test_score_parts_rows_split_formula_from_note():
     assert _split_map("没有括注") == ("没有括注", "")
 
     rows = _score_parts_rows(TEMP_SCORE_PARTS)
-    assert len(rows) == 5
+    assert len(rows) == 8          # 2026-10 全指标审计 7 项 + 第二轮新增站间一致性
     for r in rows:
         rebuilt = f"{r['formula']}（{r['note']}）" if r["note"] else r["formula"]
         assert rebuilt == r["map"], "拆分不得丢字：主式+括注必须拼回原文"

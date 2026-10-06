@@ -54,7 +54,9 @@ MIN_MODELS_PER_BUCKET = 3  # 同审查报告：桶内 ≥3 家才参与离散度
 ITEMS = (
     # (key, dim, family, gradient_only)
     ("acc2", "temp", "pct", False),
+    ("acc1", "temp", "pct", False),   # 2026-10 全指标审计后入分（命中轮廓族）
     ("rmse", "temp", "dev", False),
+    ("mae", "temp", "dev", False),    # 同（误差幅度族）
     ("r", "temp", "pct", False),
     ("mbe", "temp", "dev", False),
     ("slope", "temp", "log", True),
@@ -62,6 +64,8 @@ ITEMS = (
     ("pod", "precip", "pct", False),
     ("far", "precip", "dev", False),
     ("bias", "precip", "log", True),
+    ("amt_mae", "precip", "dev", False),   # 雨量量级（相对口径）
+    ("amt_bias", "precip", "log", True),   # 雨量总量比（log 对称）
 )
 
 
@@ -450,14 +454,18 @@ def main():
           "config.py 的 DEFAULT_EVAL 同步） ===")
     print("  score_slopes:")
     vern = {"acc2": "±2°C 命中率每差 %.2f 个百分点扣 1 分",
+            "acc1": "±1°C 命中率每差 %.2f 个百分点扣 1 分",
             "rmse": "每差 %.3f °C 扣 1 分（≥%.1f°C 记 0 分）",
+            "mae": "每差 %.3f °C 扣 1 分（≥%.1f°C 记 0 分）",
             "r": "r 每差 %.3f 扣 1 分",
             "mbe": "每差 %.3f °C 扣 1 分（≥%.1f°C 记 0 分）",
             "slope": "幅度每偏 %.2f 倍扣 1 分（超/欠对称，±%.0f 倍记 0 分）",
             "ets": "ETS 每差 %.3f 扣 1 分",
             "pod": "命中率每差 %.2f 个百分点扣 1 分",
             "far": "空报率每高 %.2f 个百分点扣 1 分",
-            "bias": "报雨频率每偏 %.2f 倍扣 1 分（超/欠报对称，±%.0f 倍记 0 分）"}
+            "bias": "报雨频率每偏 %.2f 倍扣 1 分（超/欠报对称，±%.0f 倍记 0 分）",
+            "amt_mae": "相对雨量误差每高 %.3f 扣 1 分（≥%.1f 倍记 0 分）",
+            "amt_bias": "雨量总量每偏 %.2f 倍扣 1 分（超/欠报对称，±%.0f 倍记 0 分）"}
     for key, _dim, fam, _g in ITEMS:
         if key not in lambdas:
             continue
@@ -465,7 +473,7 @@ def main():
         v = vern[key]
         if fam == "log":
             txt = v % (1 / lam, 2 ** (100 / lam))
-        elif key in ("rmse", "mbe"):
+        elif key in ("rmse", "mae", "mbe", "amt_mae"):
             txt = v % (1 / lam, 100 / lam)
         else:
             txt = v % (1 / lam)

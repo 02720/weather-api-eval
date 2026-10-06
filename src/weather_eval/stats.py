@@ -20,10 +20,15 @@
 """
 from __future__ import annotations
 
+import math
 import warnings
 from typing import Any
 
 import numpy as np
+
+# 分级阈值**只此一处**：直接读 cyeva 的配置模块，与 weather_eval.graded 同源，
+# 上游改阈值这里自动跟随（语义债 #9 的同款教训：绝不手工同步第二份阈值表）。
+from cyeva.config.levels.precip import ACC_PRECIP_LEVELS, PRECIP_LEVELS
 
 # ρ₁ 的噪声下限系数：|ρ̂| 低于 z/√n 的部分按估计噪声处理，不参与折减
 # （z=1.64 ≈ 单侧 95% 显著性门槛；相关系数估计的标准误 ≈ 1/√n）
@@ -35,6 +40,10 @@ GROUP_MIN_N = 30
 # 跨站相关 ρ̄ 的最小公共时刻数：少于此值时两两相关的估计噪声大于信号，
 # 退回"各站独立"的旧口径（不校正，宁可保守也不过校正）
 CROSS_STATION_MIN_OVERLAP = 30
+# 站间一致性（between_station_mbe_sd）要求的最少达标站数。两站的离散度只是两点
+# 距离、受单站噪声支配，撑不起"跨站一致性"这个命题；本项目 4 站，取 3 意味着
+# "至少覆盖多数站点才算数"，不足则整维缺项（按剩余权重归一）。
+MIN_STATIONS_BDISP = 3
 
 # 天桶难度的双向加法模型（见 two_way_adjust）：一道最少几家同台、一家最少几道
 # 才算"能够横向比较"。低于此阈值的单元格提供不了比较信息，会被剔除出劈分设计。
@@ -422,8 +431,45 @@ def day_block_weights(runs: int, n_days: int, block_days: int = 1,
 # ------------------------------------------------------------------ 按天分块 bootstrap
 # 温度充分统计量的列含义（逐样本可加，故"天"内可预聚合、重采样时按权重求和）
 _TEMP_STATS = ("n", "se2", "ae", "se", "h1", "h2", "sx", "sy", "sxy", "sxx", "syy")
-# 降水二分类列联计数的列含义
-_RAIN_STATS = ("h", "fa", "mi", "c")
+# 降水：二分类列联计数 + 雨量精度的可加充分统计量。
+# 后四项（2026-10 新增）服务于"雨量精度"两维（amt_mae / amt_bias，见
+# evaluate.precip_amount_metrics）：它们只由 Σo / Σf / Σ|f−o| 构成，因此按天
+# 分块 bootstrap 能逐位重算与点估计**同一把尺子**。这是可入分的**硬约束**——
+# 任何参考量不可加的口径（例如 1 − MAE/mean|o−mean o|，参考量随重采样的日集合
+# 变化且无法分解）都会让 bootstrap 静默地换一把尺子。
+# 后六列（2026-10 新增）服务于「雨强分辨力」一维（grade_ets）：两个雨强档位各自
+# 的 (hits, false_alarms, misses) 计数。它们与晴雨计数同源于**同一条记录**，故
+# 可按天分块重采样逐位重算——与雨量精度两维同纪律。
+#
+# 档位只取"中雨档 + 大雨档"两级：
+#   hourly（1h 口径）2 级 = 2~4.9 mm/h、3 级 = 5~9.9 mm/h
+#   daily（24h 口径）+2 级 = ≥10 mm、+3 级 = ≥25 mm
+# **1 级（小雨 ≥0.1mm）刻意不取**：实测它与晴雨判定的桶内跨源 ρ = 0.93（hourly）
+# / 0.98（daily），是同一件事换了个说法；而 2 级及以上对晴雨四项的 1−R² 达
+# 0.79~0.94、与晴雨 ETS 的 |ρ| ≤0.27——"下不下雨"和"下多大"是两种独立能力。
+# 4 级以上在该窗口的 ETS 中位已归零（强降水样本太稀疏），取了只增加噪声。
+# 逐位口径（含 source_round_digit(1) 的舍入时点）见 _rain_stat_row。
+_GRADE_NLEV = 2
+# 评分轨入分的雨强档位编号：hourly 走 1h 口径的中雨/大雨，daily 走 24h 累计的
+# 中雨/大雨（业务语义对齐：都是"中雨档 + 大雨档"）。
+_GRADE_LEVS = {"1h": ("2", "3"), "24h": ("+2", "+3")}
+_RAIN_STATS = ("h", "fa", "mi", "c", "so", "sf", "sae",
+               "gh1", "gfa1", "gmi1", "gh2", "gfa2", "gmi2")
+
+
+def grade_bounds(kind: str) -> tuple[tuple[float, float], ...]:
+    """评分轨入分的两个雨强档位的 (min, max) 区间，阈值**只此一处**且取自 cyeva。
+
+    与 `weather_eval.graded._level_config` 同源（都读 cyeva 的配置模块），上游改
+    阈值这里自动跟随——不存在第二份需要人工同步的阈值表。区间判定与舍入口径
+    见 graded 模块 docstring 的第 1、3 条（复刻 cyeva 的 `level_binarize`）。
+    """
+    table = ACC_PRECIP_LEVELS if kind == "24h" else PRECIP_LEVELS
+    out = []
+    for lev in _GRADE_LEVS[kind]:
+        iv = table[kind][int(lev.replace("+", ""))]
+        out.append((float(iv["min"]), float(iv["max"])))
+    return tuple(out)
 
 # ------------------------------------------------- 按时间分辨率拆分的证据表（2026-09 重构）
 # 重构前只有两张表：温度走逐小时、降水走日累计，两者 nanmean 成一个"综合分"。
@@ -455,11 +501,39 @@ def _temp_stat_row(o: float, f: float) -> list[float]:
             f, o, f * o, f * f, o * o]
 
 
-def _rain_stat_row(o: float, f: float, thr: float) -> list[float]:
-    """单个降水样本 → 4 项二分类列联计数（h / fa / mi / c）。"""
+def _rain_stat_row(o: float, f: float, thr: float,
+                   gbounds: tuple[tuple[float, float], ...] = ()) -> list[float]:
+    """单个降水样本 → 13 项可加统计量（4 项列联计数 + 3 项雨量 + 6 项分级计数）。
+
+    列联计数与雨量累计量必须来自**同一个样本**（这里是同一条记录），否则晴雨
+    维与雨量维在 bootstrap 里会落到不同的样本集合上；分级计数同理。
+
+    分级二值化复刻 cyeva 的 `level_binarize` 两条口径（对拍由
+    `test_grade_counts_match_cyeva` 锁定）：
+      * 输入先 `np.round(x, 1)`（**numpy** 的缩放舍入——与权威路径
+        `graded.graded_counts` 同一函数，而不是 Python 内置 round：两者在二进制
+        边界上不一致，`np.round(0.05, 1) == 0.0` 而 `round(0.05, 1) == 0.1`，
+        见 tests/test_graded_parity.py 的口径钉子），且**舍入发生在剔 NaN 之前**
+        ——NaN 已在上游被 *_ok 掩膜滤掉，这里拿到的必是有限值；
+      * 区间判定 `(v >= min) & (v <= max)`（`min > 0` 恒真；累积档 max=inf 退化
+        为 `v >= min`）。
+    注意晴雨列**不做**这层舍入：cyeva 的 `threshold_binarize` 用原值比较，与
+    分级走的是两个不同的二值化入口，不可混用。
+    """
     ob, fb = o >= thr, f >= thr
-    return [1.0 if (ob and fb) else 0.0, 1.0 if (not ob and fb) else 0.0,
-            1.0 if (ob and not fb) else 0.0, 1.0 if (not ob and not fb) else 0.0]
+    row = [1.0 if (ob and fb) else 0.0, 1.0 if (not ob and fb) else 0.0,
+           1.0 if (ob and not fb) else 0.0, 1.0 if (not ob and not fb) else 0.0,
+           o, f, abs(f - o)]
+    if gbounds:
+        ro, rf = float(np.round(o, 1)), float(np.round(f, 1))
+        for lo, hi in gbounds:
+            obg, fbg = (lo <= ro <= hi), (lo <= rf <= hi)
+            row += [1.0 if (obg and fbg) else 0.0,
+                    1.0 if (not obg and fbg) else 0.0,
+                    1.0 if (obg and not fbg) else 0.0]
+    else:
+        row += [0.0] * (3 * _GRADE_NLEV)
+    return row
 
 
 def build_day_stat_tables(
@@ -471,10 +545,13 @@ def build_day_stat_tables(
 
     返回 (days, tables)，tables 的形状：
       temp_hourly    (m, b, s, d, 11)  逐小时温度（小时榜 · 温度维）
-      rain_hourly    (m, b, s, d, 4)   逐小时晴雨，阈值 rain_thr_hourly（小时榜 · 降水维）
+      rain_hourly    (m, b, s, d, 13)  逐小时晴雨，阈值 rain_thr_hourly（小时榜 · 降水维）
       temp_daily_max (m, b, s, d, 11)  日最高温（日榜 · 温度维之一）
       temp_daily_min (m, b, s, d, 11)  日最低温（日榜 · 温度维之一）
-      rain_daily     (m, b, s, d, 4)   日累计晴雨，阈值 rain_thr_daily（日榜 · 降水维）
+      rain_daily     (m, b, s, d, 13)  日累计晴雨，阈值 rain_thr_daily（日榜 · 降水维）
+                                       （第 5~7 列 = Σ实况 / Σ预报 / Σ|误差|，雨量
+                                        精度维；第 8~13 列 = 两个雨强档位各自的
+                                        h/fa/mi 计数，雨强分辨力维）
 
     两条井水不犯河水的证据链是这次重构的核心：同一批存档，按"时刻"答一次
     （小时榜）、按"自然日"答一次（日榜），谁也不替谁说话。天数取两类记录的
@@ -485,6 +562,7 @@ def build_day_stat_tables(
     总榜才能把它们当成同一批"难度"来劈。
     """
     days = eval_days(hourly, daily)
+    gb_hourly, gb_daily = grade_bounds("1h"), grade_bounds("24h")
     day_idx = {d: i for i, d in enumerate(days)}
     model_idx = {m: i for i, m in enumerate(models)}
     station_idx: dict[str, int] = {}
@@ -525,7 +603,7 @@ def build_day_stat_tables(
         o, f = r["rain_obs"], r["rain_fcst"]
         if o is not None and f is not None:
             rows, idx = jobs["rain_hourly"]
-            rows.append(_rain_stat_row(o, f, rain_thr_hourly))
+            rows.append(_rain_stat_row(o, f, rain_thr_hourly, gb_hourly))
             idx.append(key)
     for r in daily:
         mi = model_idx.get(r["model"])
@@ -543,7 +621,7 @@ def build_day_stat_tables(
         o, f = r["rain_obs"], r["rain_fcst"]
         if o is not None and f is not None:
             rows, idx = jobs["rain_daily"]
-            rows.append(_rain_stat_row(o, f, rain_thr_daily))
+            rows.append(_rain_stat_row(o, f, rain_thr_daily, gb_daily))
             idx.append(key)
     for name, (rows, idx) in jobs.items():
         if not rows:
@@ -575,6 +653,7 @@ def build_day_stat_tables_columnar(pt, models: list[str],
     变成了 NaN，若依赖 NaN 语义就会把缺测当 0.0 —— 那正是本模块要防的事。
     """
     days = list(pt.days)
+    gb_hourly, gb_daily = grade_bounds("1h"), grade_bounds("24h")
     n_s = max(1, len(pt.station_code_all))
     n_m = max(1, len(models))
     shape_t_h = (n_m, n_buckets_hourly, n_s, len(days), len(_TEMP_STATS))
@@ -600,10 +679,20 @@ def build_day_stat_tables_columnar(pt, models: list[str],
                          (np.abs(e) <= 2).astype(np.float64),
                          f, o, f * o, f * f, o * o], axis=1)
 
-    def _rain_cols(o: np.ndarray, f: np.ndarray, thr: float) -> np.ndarray:
+    def _rain_cols(o: np.ndarray, f: np.ndarray, thr: float,
+                   gbounds: tuple[tuple[float, float], ...] = ()) -> np.ndarray:
         ob, fb = o >= thr, f >= thr
-        return np.stack([(ob & fb), (~ob & fb), (ob & ~fb), (~ob & ~fb)],
-                        axis=1).astype(np.float64)
+        cols = [(ob & fb), (~ob & fb), (ob & ~fb), (~ob & ~fb), o, f, np.abs(f - o)]
+        if gbounds:
+            # np.round 与权威路径 graded.graded_counts 同一舍入函数（而非 Python
+            # 内置 round——两者在二进制边界上不一致），与 _rain_stat_row 逐位一致
+            ro, rf = np.round(o, 1), np.round(f, 1)
+            for lo, hi in gbounds:
+                obg, fbg = (ro >= lo) & (ro <= hi), (rf >= lo) & (rf <= hi)
+                cols += [(obg & fbg), (~obg & fbg), (obg & ~fbg)]
+        else:
+            cols += [np.zeros_like(o, dtype=bool)] * (3 * _GRADE_NLEV)
+        return np.stack(cols, axis=1).astype(np.float64)
 
     # ---- 逐小时 ----
     m_h = pt.h_model
@@ -617,7 +706,8 @@ def build_day_stat_tables_columnar(pt, models: list[str],
     sel = base & pt.h_rain_ok
     if sel.any():
         _scatter(tables["rain_hourly"],
-                 _rain_cols(pt.h_rain_o[sel], pt.h_rain_f[sel], rain_thr_hourly),
+                 _rain_cols(pt.h_rain_o[sel], pt.h_rain_f[sel], rain_thr_hourly,
+                            gb_hourly),
                  (m_h[sel], b_h[sel] - 1, pt.h_station_all[sel], pt.h_day[sel]))
 
     # ---- 按天 ----
@@ -634,7 +724,8 @@ def build_day_stat_tables_columnar(pt, models: list[str],
     sel = dbase & pt.d_rain_ok
     if sel.any():
         _scatter(tables["rain_daily"],
-                 _rain_cols(pt.d_rain_o[sel], pt.d_rain_f[sel], rain_thr_daily),
+                 _rain_cols(pt.d_rain_o[sel], pt.d_rain_f[sel], rain_thr_daily,
+                            gb_daily),
                  (m_d[sel], o_d[sel] - 1, pt.d_station_all[sel], pt.d_day[sel]))
     return days, tables
 
@@ -661,6 +752,44 @@ def _score_from_parts(values: dict[str, np.ndarray], parts) -> np.ndarray:
     if num is None:
         return np.full(next(iter(values.values())).shape if values else (), np.nan)
     return np.where(den > 0, num / np.where(den > 0, den, 1.0), np.nan)
+
+
+def between_station_mbe_sd(n: np.ndarray, se: np.ndarray) -> np.ndarray:
+    """站间系统偏差的样本量加权离散度（度），沿**最后一个轴**（站维）归约。
+
+    **为什么需要这一维**：入分的 `mbe` 用的是池化口径 `Σe/N`。方向相反的站间
+    系统偏差会在这里互相抵消——实测各站 MBE 的离散度与 |池化 MBE| 的跨源相关
+    只有 **0.115**（近乎正交），也就是说"池化偏差接近 0"完全推不出"各站都不偏"。
+    一个各站都稳定偏 2°C 的源和一个两站分别偏 +2/−2 的源，池化口径给的分几乎
+    一样，但后者无法用单一订正量修好——业务价值完全不同。
+
+    **可加性（能进 bootstrap 的硬前提）**：设各站误差和 `E_s`、样本量 `n_s`，
+
+        between_var = [ Σ_s (E_s²/n_s) − (Σ_s E_s)² / N ] / N ,   N = Σ_s n_s
+
+    右端三项 `Σ_s E_s²/n_s`、`Σ_s E_s`、`Σ_s n_s` **全部可加**，故本函数既能吃
+    聚合前的逐站数组（点估计），也能吃聚合后的（重采样），两处同一把尺子。
+    注意 `E_s²/n_s` 本身**不可**逐记录累加（n_s 要先聚合才知道），所以减法必须
+    发生在归约之后——这也是它不需要在聚合表里新增列的原因。
+
+    **缺项纪律**：只把 `n_s ≥ GROUP_MIN_N` 的站计入（与 r/slope 的站内合并同门
+    槛），且要求达标站 ≥ `MIN_STATIONS_BDISP`：两站的"离散度"只是两点距离，受
+    单站噪声支配，不能算跨站一致性的证据。站数不足 → NaN → 按剩余权重归一。
+    """
+    ok = n >= GROUP_MIN_N
+    n_ok = np.where(ok, n, 0.0)
+    e_ok = np.where(ok, se, 0.0)
+    N = n_ok.sum(axis=-1)
+    E = e_ok.sum(axis=-1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        # Σ_s E_s²/n_s：n_s>0 才有定义；ok 掩膜已保证
+        nz = np.where(n_ok > 0, n_ok, np.nan)
+        sq_term = np.nansum(np.where(n_ok > 0, e_ok * e_ok / nz, 0.0), axis=-1)
+        var = (sq_term - E * E / np.where(N > 0, N, np.nan)) / np.where(N > 0, N, np.nan)
+        # 浮点上 var 可能算出微小负数（数学上 ≥0，Cauchy-Schwarz）——先夹到 0
+        sd = np.sqrt(np.maximum(var, 0.0))
+    enough = (np.count_nonzero(ok, axis=-1) >= MIN_STATIONS_BDISP) & (N > 0)
+    return np.where(enough, sd, np.nan)
 
 
 def _temp_scores_from_aggregate(A: np.ndarray, temp_parts) -> np.ndarray:
@@ -735,18 +864,101 @@ def _temp_scores_from_aggregate(A: np.ndarray, temp_parts) -> np.ndarray:
             "acc1": 100.0 * h1.sum(-1) / Nz,
             "acc2": 100.0 * h2.sum(-1) / Nz,
             "r": r, "slope": slope,
+            "mbe_bdisp": between_station_mbe_sd(n, se),
         }
     scores = _score_from_parts(pooled_values, temp_parts)
     return scores if has_run else scores[0]
 
 
-def _rain_scores_from_aggregate(A: np.ndarray, precip_parts) -> np.ndarray:
-    """聚合列联计数 (run?, m, b, s, 4) → 降水分 (run?, m, b)（跨站计数直接相加）。"""
+def grade_ets_from_counts(tot: np.ndarray, n: np.ndarray,
+                          min_sample: int) -> np.ndarray:
+    """跨站求和后的分级计数 (..., 13) + 样本量 n → 雨强分辨力 `grade_ets`。
+
+    两个雨强档位各算一个 ETS，再按该档的**事件数** `h+fa+mi` 加权合并：
+
+    * **为什么加权而不是等权**：ETS 的分母就是 `h+fa+mi`，样本稀的大雨档本来就
+      该少说话；等权会让"暴雨档 3 个样本碰巧命中"与"中雨档 300 个样本稳定命中"
+      拿到一样的权重。
+    * **缺项纪律**：某档事件数 < `min_sample` → 该档 NaN（不参与合并）；只剩一档
+      就用那一档（权重自然归一）；两档都缺 → 整维 NaN → 按剩余权重归一，与雨量
+      两维（`Σ实况 = 0` 时无定义）完全同纪律——绝不是 0 分。
+    * 数学上 `ETS ≤ 1` 恒成立（`fa+mi ≥ 0` ⇒ `h−href ≤ h+fa+mi−href`），故不存在
+      分母趋零导致的数值爆炸；`ETS` 的下界 −1/3 由换算族的截断统一处理。
+    """
+    num = None
+    den = None
+    for j in range(_GRADE_NLEV):
+        gh = tot[..., 7 + 3 * j]
+        gfa = tot[..., 8 + 3 * j]
+        gmi = tot[..., 9 + 3 * j]
+        ev = gh + gfa + gmi                     # 该档的"事件数" = ETS 的分母口径
+        with np.errstate(invalid="ignore", divide="ignore"):
+            gref = (gh + gmi) * (gh + gfa) / np.where(n > 0, n, np.nan)
+            gden = ev - gref
+            g_ets = np.where(gden > 0, (gh - gref) / np.where(gden > 0, gden, 1.0),
+                             np.nan)
+        ok = np.isfinite(g_ets) & (ev >= min_sample)
+        w = np.where(ok, ev, 0.0)
+        num = np.where(ok, g_ets * ev, 0.0) if num is None else num + np.where(
+            ok, g_ets * ev, 0.0)
+        den = w if den is None else den + w
+    if num is None:
+        return np.full(tot.shape[:-1], np.nan)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(den > 0, num / np.where(den > 0, den, 1.0), np.nan)
+
+
+def grade_counts(o: np.ndarray, f: np.ndarray,
+                 gbounds: tuple[tuple[float, float], ...]) -> list[tuple[int, int, int]]:
+    """点估计路径：一次性给出各雨强档的 (hits, false_alarms, misses)。
+
+    与聚合表的 `_rain_stat_row` / `_rain_cols` **同一套二值化**（`np.round(x, 1)`
+    后按 `(min ≤ v ≤ max)` 判定），故点估计与 bootstrap 落在同一把尺子上。
+    这里同样**先舍入、后剔 NaN 对**（与权威路径 graded.graded_counts 的口径顺序
+    一致）——调用方传入未过滤序列也安全。
+    """
+    ro, rf = np.round(np.asarray(o, dtype=float), 1), np.round(np.asarray(f, dtype=float), 1)
+    keep = ~(ro != ro) & ~(rf != rf)
+    ro, rf = ro[keep], rf[keep]
+    out = []
+    for lo, hi in gbounds:
+        ob, fb = (ro >= lo) & (ro <= hi), (rf >= lo) & (rf <= hi)
+        out.append((int((ob & fb).sum()), int((~ob & fb).sum()), int((ob & ~fb).sum())))
+    return out
+
+
+def grade_ets_point(counts: list[tuple[int, int, int]], n: int,
+                    min_sample: int) -> float | None:
+    """点估计路径的 grade_ets：把分档计数装进同一份 13 列布局再走同一函数。
+
+    **刻意不另写一份合并公式**——点估计与重采样若各有一套加权规则，bootstrap
+    就会静默地用另一把尺子（这是本项目反复堵的洞）。这里只做"标量 → (13,) 数组"
+    的搬运，真正的数学只有 `grade_ets_from_counts` 一处。
+    """
+    tot = np.zeros(len(_RAIN_STATS), dtype=np.float64)
+    for j, (h, fa, mi) in enumerate(counts[:_GRADE_NLEV]):
+        tot[7 + 3 * j], tot[8 + 3 * j], tot[9 + 3 * j] = h, fa, mi
+    v = grade_ets_from_counts(tot, np.float64(n), min_sample)
+    v = float(np.asarray(v).reshape(()))
+    return v if math.isfinite(v) else None
+
+
+def _rain_scores_from_aggregate(A: np.ndarray, precip_parts,
+                                min_sample: int = 5) -> np.ndarray:
+    """聚合列联计数 + 雨量 + 分级计数 (run?, m, b, s, 13) → 降水分 (run?, m, b)。
+
+    跨站直接相加：二分类计数与 Σo/Σf/Σ|f−o| 都可加（这是它们能进 bootstrap 的
+    前提）。雨量两维只在 **Σ实况 > 0** 的格子上定义（实况无降水时相对口径无
+    定义 → NaN → 按剩余权重归一），与点估计 `precip_amount_metrics` 同纪律。
+    总量比 Σf/Σo = 0（整桶的雨一滴没报）是有限值 0，由 log 族换算记 0 分——
+    绝不借 NaN 通道洗成"缺项"。
+    """
     has_run = A.ndim == 5
     if not has_run:
         A = A[None, ...]
-    tot = A.sum(axis=-2)          # 站维求和：二分类计数跨站可加
+    tot = A.sum(axis=-2)          # 站维求和
     h, fa, mi, c = tot[..., 0], tot[..., 1], tot[..., 2], tot[..., 3]
+    so, sf, sae = tot[..., 4], tot[..., 5], tot[..., 6]
     n = h + fa + mi + c
     with np.errstate(invalid="ignore", divide="ignore"):
         def nz(x):
@@ -758,7 +970,14 @@ def _rain_scores_from_aggregate(A: np.ndarray, precip_parts) -> np.ndarray:
         bias = (h + fa) / nz(h + mi)
         href = (h + mi) * (h + fa) / np.where(n > 0, n, np.nan)
         ets = (h - href) / ((h + fa + mi) - href)
-    values = {"acc": acc, "pod": pod, "far": far, "ts": ts, "ets": ets, "bias": bias}
+        # 雨量精度：只在实况有降水的格子上定义（so>0），否则 NaN（缺项归一）
+        so_pos = np.where(so > 0, so, np.nan)
+        amt_mae = sae / so_pos
+        amt_bias = sf / so_pos
+        grade_ets = grade_ets_from_counts(tot, n, min_sample)
+    values = {"acc": acc, "pod": pod, "far": far, "ts": ts, "ets": ets,
+              "bias": bias, "amt_mae": amt_mae, "amt_bias": amt_bias,
+              "grade_ets": grade_ets}
     scores = _score_from_parts(values, precip_parts)
     return scores if has_run else scores[0]
 
@@ -1595,19 +1814,23 @@ def track_bucket_scores(tables: dict[str, np.ndarray],
       数，只凭其中一个给分等于把半个证据当整个用（源可以靠容易的那一半刷分）。
     """
     t_h = _temp_scores_from_aggregate(tables["temp_hourly"], temp_parts)
-    r_h = _rain_scores_from_aggregate(tables["rain_hourly"], precip_parts)
+    r_h = _rain_scores_from_aggregate(tables["rain_hourly"], precip_parts,
+                                      min_sample)
     t_max = _temp_scores_from_aggregate(tables["temp_daily_max"], temp_parts)
     t_min = _temp_scores_from_aggregate(tables["temp_daily_min"], temp_parts)
-    r_d = _rain_scores_from_aggregate(tables["rain_daily"], precip_parts)
+    r_d = _rain_scores_from_aggregate(tables["rain_daily"], precip_parts,
+                                      min_sample)
     # 各维的有效成对样本数：沿站维求和后是 (run?, m, b)，与各自的计分函数内部
     # 用的 N 同口径（_temp_scores_from_aggregate 里 N = n.sum(-1)）。
     # 日最高/日最低**各自用自己的样本数**判定：两边都薄时"相加凑够样本"会把两个
     # 都不足门槛的量伪装成一个够样本的维度。
     n_th = tables["temp_hourly"][..., 0].sum(axis=-1)
-    n_rh = tables["rain_hourly"].sum(axis=(-2, -1))
+    # 只取前 4 列（列联计数）：2026-10 起雨量表多了 Σo/Σf/Σ|f−o| 三列，
+    # 整表求和会把雨量毫米数混进"样本数"
+    n_rh = tables["rain_hourly"][..., :4].sum(axis=(-2, -1))
     n_tmax = tables["temp_daily_max"][..., 0].sum(axis=-1)
     n_tmin = tables["temp_daily_min"][..., 0].sum(axis=-1)
-    n_rd = tables["rain_daily"].sum(axis=(-2, -1))
+    n_rd = tables["rain_daily"][..., :4].sum(axis=(-2, -1))
 
     def _thin(scores, counts):
         return np.where((counts > 0) & (counts < min_sample), np.nan, scores)

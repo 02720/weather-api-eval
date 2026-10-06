@@ -103,12 +103,15 @@
 
 得分体系（排行榜、分时效榜单与时效趋势共用）：
 - 把预报质量拆成互不重复的维度，每维度取代表性指标换算成 0~100 的子分后加权平均：
-  温度 5 项入分（±2°C 准确率、RMSE 换算分、相关系数、|MBE| 偏差分、回归斜率分），
-  降水 4 项入分（ETS（首位）、POD、100−FAR、|log₂BIAS| 偏差分）。
-  2026-10-05 去冗余（第一性原理审查 P2-4）：acc1↔acc2、mae↔rmse 的桶内跨源
-  相关实测 0.95 / 0.96，ts↔ets 0.84——同一份证据拆成两个高相关子分加权，
-  "权重"就失去语义；它们照算不入分（明细表保留）。晴雨准确率 acc 同样不入分：
-  它主要由气候基率决定（无雨日占 70%+ 全答无雨即得高分），不是技巧。
+  温度 5 族 / 7 项入分（命中轮廓 {±2°C, ±1°C}、误差幅度 {RMSE, MAE}、相关系数 r、
+  |MBE| 偏差分、回归斜率分），降水 6 项入分（ETS（首位）、POD、100−FAR、
+  |log₂BIAS|、雨量量级误差、雨量总量偏差）。
+  **2026-10-06 全指标审计**：每一个已评测的指标都有归属——真信息自己开权重槽位；
+  同族冗余（桶内跨源 ρ≈0.9）并入该族、**族权重在成员间平分**（不新开槽位=不重复
+  计权）；数学上是入分项的函数、或样本量的函数者**拒收**并写明恒等式
+  （χ²=RMSE²、RSS=n×χ²、BIAS=POD/(1−FAR)、漏报率=100−POD，且 {ETS,POD,FAR} 撑满
+  列联表的 3 个自由度 → acc/ts/POFD 全是它们的函数）。
+  方法论与逐项结论见 docs/metric_coverage.md 与 TEMP/PRECIP_SCORE_PARTS 注释。
   POD 权重低于 FAR+BIAS 之和，评分不奖励"多报占便宜"。
 - 换算斜率 λ 是标定值，不是拍脑袋（第一性原理审查 P1-1/P1-2 的落地）：
   实际话语权 = 权重 × 换算斜率 × 数据离散度，三者耦合——只声明前两个，第三个
@@ -688,7 +691,7 @@ def temp_metrics(obs_vals, fcst_vals, limits, min_sample, *,
     out = {"n": n, "n_eff": n_eff,
            "rmse": None, "mae": None, "mbe": None, "rss": None,
            "chi2": None, "r": None, "slope": None,
-           "r_pooled": None, "slope_pooled": None,
+           "r_pooled": None, "slope_pooled": None, "mbe_bdisp": None,
            **{f"acc{lim}": None for lim in limits}}
     if n < min_sample or n == 0 or (n_eff is not None and n_eff < min_sample):
         return out
@@ -708,6 +711,7 @@ def temp_metrics(obs_vals, fcst_vals, limits, min_sample, *,
     r, slope = r_pooled, slope_pooled
     if groups and len(groups) >= 1:
         rs, ns, ss = [], [], []
+        gn_all, ge_all = [], []
         for go, gf in groups:
             goa = np.asarray(go, dtype=float)
             gfa = np.asarray(gf, dtype=float)
@@ -718,10 +722,20 @@ def temp_metrics(obs_vals, fcst_vals, limits, min_sample, *,
             rs.append(rg)
             ns.append(gn)
             ss.append(sg)
+            # 站间一致性：逐站的 (样本量, 误差和) 是可加充分统计量，交给
+            # between_station_mbe_sd 与 bootstrap 的聚合表走**同一个函数**
+            gm = ~np.isnan(goa) & ~np.isnan(gfa)
+            gn_all.append(float(gm.sum()))
+            ge_all.append(float((gfa[gm] - goa[gm]).sum()))
         r_c = _stats.fisher_z_combine(rs, ns)
         s_c = _stats.weighted_mean_combine(ss, ns)
         r = r_c if r_c is not None else r_pooled
         slope = s_c if s_c is not None else slope_pooled
+        if len(gn_all) >= _stats.MIN_STATIONS_BDISP:
+            v = _stats.between_station_mbe_sd(np.asarray(gn_all), np.asarray(ge_all))
+            v = float(np.asarray(v).reshape(()))
+            if math.isfinite(v):
+                out["mbe_bdisp"] = _r(v)
     out["r"] = r
     out["slope"] = slope
     return out
@@ -824,7 +838,8 @@ def precip_metrics(obs_vals, fcst_vals, threshold, min_sample,
 
 
 def precip_binary_metrics(obs_vals, fcst_vals, threshold, min_sample,
-                          n_eff: int | None = None) -> dict:
+                          n_eff: int | None = None,
+                          gbounds: tuple[tuple[float, float], ...] = ()) -> dict:
     """评分轨道专用的按天晴雨二分类指标（阈值 rain_daily_threshold_mm）。
 
     纯 numpy 列联计数（stats.binary_counts / binary_metrics_from_counts），与
@@ -832,19 +847,91 @@ def precip_binary_metrics(obs_vals, fcst_vals, threshold, min_sample,
     由测试锁定）。相对 cyeva 全量构造省掉 pint 单位换算开销——评分轨道需要对
     每个天桶 × 每个模型各算一遍，cyeva 全量在该量级下构成构建热点。
     ts/ets 为 0~1 比值，acc/pod/far 为百分数，bias 为比值（与评分换算函数约定一致）。
+
+    gbounds：传入雨强档位区间则额外产出 `grade_ets`（雨强分辨力，2026-10 入分）。
+    分档计数用**同一份样本**的同一个 NaN 掩膜，与晴雨/雨量维绝不分家。
     """
     obs = np.asarray(obs_vals, dtype=float)
     fcst = np.asarray(fcst_vals, dtype=float)
     m = ~np.isnan(obs) & ~np.isnan(fcst)
     n = int(m.sum())
     out = {"n": n, "n_eff": n_eff, "acc": None, "pod": None, "far": None,
-           "ts": None, "ets": None, "bias": None}
+           "ts": None, "ets": None, "bias": None, "grade_ets": None}
     if n < min_sample or n == 0 or (n_eff is not None and n_eff < min_sample):
         return out
     h, fa, mi, c = binary_counts(obs[m], fcst[m], threshold)
     bm = binary_metrics_from_counts(h, fa, mi, c)
     for k in ("acc", "pod", "far", "ts", "ets", "bias"):
         out[k] = _r(bm[k])
+    if gbounds:
+        g = _stats.grade_ets_point(_stats.grade_counts(obs[m], fcst[m], gbounds),
+                                   n, min_sample)
+        out["grade_ets"] = _r(g) if g is not None else None
+    return out
+
+
+def _precip_score_cell(obs_vals, fcst_vals, threshold, min_sample,
+                       n_eff: int | None = None,
+                       gbounds: tuple[tuple[float, float], ...] = ()) -> dict:
+    """评分轨道一个 (模型, 天桶) 格子的全部入分指标 = 晴雨二分类 + 雨量精度
+    + 雨强分辨力。
+
+    三者必须走**同一份样本**（同一 NaN 掩膜、同一个 n_eff 门槛）；分三次算只是
+    因为口径不同（阈值二值化 vs 连续量求和 vs 雨强分档），不是三批数据。
+    """
+    out = precip_binary_metrics(obs_vals, fcst_vals, threshold, min_sample,
+                                n_eff=n_eff, gbounds=gbounds)
+    out.update(precip_amount_metrics(obs_vals, fcst_vals, min_sample,
+                                     n_eff=n_eff))
+    return out
+
+
+def precip_amount_metrics(obs_vals, fcst_vals, min_sample,
+                          n_eff: int | None = None) -> dict:
+    """评分轨道专用的**雨量精度**指标（2026-10 新增；与二分类**同一份样本**）。
+
+    为什么要有这一维：晴雨二分类只回答"下没下"，累计雨量到底报得准不准是完全
+    另一件事。冗余审计（scripts/audit_metric_redundancy.py）实测雨量误差对
+    ETS/POD/FAR/BIAS 四项的 1−R² = 0.93~0.99、跨源相关 ≤0.2——它是评分轨上
+    **唯一一块真正的新信息**；而 acc/ts/漏报率/空报频率与它们同源同一张 2×2
+    列联表，反而是零新信息（见 PRECIP_SCORE_PARTS 的拒收注释）。
+
+    为什么必须是**相对口径**而不是 mm：雨量误差的量纲随桶与轨剧烈变化（实测
+    桶内跨源 sd：逐小时 0.07mm、按天 1.35mm，相差约 20 倍）。一个全局换算斜率
+    λ 无法同时标定两轨——裸 mm 入分等于让"按天桶"独占该维度的话语权（λ 反解后
+    小时轨子分 sd 只剩 0.5，日轨 10.2）。故取两个无量纲量：
+
+      amt_mae  = Σ|预报−实况| / Σ实况    相对雨量量级误差（用 MAE；dev 族）
+      amt_bias = Σ预报 / Σ实况           雨量总量比（用 MBE；log 族，超/欠对称）
+
+    两者在桶内跨源空间的实测相关 ≈ 0.00：一个量"逐次差多少"、一个量"总量偏
+    多少"，互补而非重复。换算族与 BIAS/斜率同纪律（log₂ 对称）。
+
+    可加性（硬约束）：两者都只由可加充分统计量 Σo / Σf / Σ|f−o| 构成，因此按天
+    分块 bootstrap 能**逐位重算同一把尺子**（stats._rain_scores_from_aggregate）。
+    任何不可加的口径（例如"相对气候平均的技巧分" 1−MAE/mean|o−mean o|）都不能
+    入分——它的参考量在重采样日集合上无法分解，bootstrap 只会静默地用另一把尺子。
+
+    退化处置（第一性原理，绝不静默）：
+      * Σ实况 = 0（该桶根本没有降水）→ 相对口径无定义 → None（缺项，按剩余权重
+        归一）。这不是 0 分（那会冤枉"实况没雨、预报也没雨"的完美格），也不是满分。
+      * Σ预报 = 0 而 Σ实况 > 0（整桶的雨一滴没报）→ 总量比 = 0 → log 族换算记
+        **0 分**：这是该维度的最大错误，绝不借"非有限 → 缺项"通道洗白（与 BIAS、
+        回归斜率同纪律）。比值本身有限，故不会出现 −inf 污染 JSON/JS。
+    """
+    obs = np.asarray(obs_vals, dtype=float)
+    fcst = np.asarray(fcst_vals, dtype=float)
+    m = ~np.isnan(obs) & ~np.isnan(fcst)
+    n = int(m.sum())
+    out = {"n": n, "n_eff": n_eff, "amt_mae": None, "amt_bias": None}
+    if n < min_sample or n == 0 or (n_eff is not None and n_eff < min_sample):
+        return out
+    o, f = obs[m], fcst[m]
+    so = float(o.sum())
+    if so <= 0:                       # 实况无降水：相对口径无定义
+        return out
+    out["amt_mae"] = _r(float(np.abs(f - o).sum()) / so)
+    out["amt_bias"] = _r(float(f.sum()) / so)
     return out
 
 
@@ -869,22 +956,60 @@ def precip_binary_metrics(obs_vals, fcst_vals, threshold, min_sample,
 #       是同一量级的错误（|log₂k| 相等），惩罚必须对称；旧 BIAS 线性式超报 2 倍
 #       即 0 分、欠报一半却得 50 分，既不对称又把日轨 57% 的格子压进饱和区。
 #
-# 温度（4 个维度、5 项入分；2026-10-05 去冗余）：
-#   报准比例 acc2 · 误差幅度 RMSE · 起伏节奏 r · 系统偏差 |MBE| · 幅度校准 slope。
-#   不入分：acc1（与 acc2 桶内相关 0.95）、mae（与 rmse 0.96——保留对大误差更严的
-#   RMSE）、RSS 与 χ²（χ²=RMSE²、RSS=n×χ²，是样本量的函数而非预报技巧）。
-# 降水（4 个维度、4 项入分；2026-10-05 去冗余）：
-#   晴雨综合技巧 ETS（首位）· 命中 POD · 空报 FAR · 频率无偏 BIAS。
-#   不入分：TS（与 ETS 桶内相关 0.84——ETS 就是 TS 的基率校正版，两者同时加权
-#   等于把基率敏感性请回来）、晴雨准确率 acc（主要由气候基率决定：无雨日 70%+，
-#   全答无雨即得高分；ETS 已含基率校正）、漏报率（=100−POD，纯冗余）、空报频率
-#   POFD（与 FAR 同族仅分母不同）、雨量 RMSE/MAE/MBE（连续雨量误差由个别强降水
-#   时段主导、随样本期气候波动大，跨源横向比较不公平）。
-#   POD 权重（0.20）仍低于 FAR+BIAS（0.20+0.133=0.333）：评分不奖励"多报占便宜"
-#   （旧权重下超报 15 倍的源反而高于克制源）。
-# 权重口径：温度在旧 7 项配比下去掉 acc1/mae 后归一（0.25/0.25/0.15/0.10/0.05
-# ÷ 0.80），降水去掉 ts 后归一（0.35/0.15/0.15/0.10 ÷ 0.75）——只做减法不改配比，
-# 原设计意图（ETS 首位、抑制超报）原样保留。
+# **"全部指标都入分"是怎么落的（2026-10-06 全指标审计，见
+#   scripts/audit_metric_redundancy.py 与 docs/metric_coverage.md）**
+#   "把评测的每个指标都塞进加权和"是最诱人也最站不住的做法：加权和的每一项都
+#   被当作一份独立证据，而多数指标并不是。审计把每个指标判成三类：
+#     A 真信息 —— 带"已有入分项"之外的信息 → 自己开一个权重槽位；
+#     B 同族冗余 —— 与已有项高度相关但并非同一量（桶内跨源 ρ≈0.9）→ **并入该
+#       族、族权重在成员间平分**。族内等权与"族内先平均再按族权重入分"严格等价，
+#       且天然继承了"缺项按剩余权重归一"的纪律——不新开槽位，就不重复计权；
+#     C 拒收 —— 数学上是已有入分项的确定性函数，或是样本量的函数 → 入分即
+#       重复计权 / 把覆盖度当技巧，只能留在明细表并写明恒等式。
+#
+# 温度（6 族、8 项入分；2026-10-06 第二轮 +mbe_bdisp，r 让权）：
+#   A/B 命中轮廓 {acc2, acc1} · 误差幅度 {rmse, mae} · 起伏节奏 {r} ·
+#      系统偏差 {mbe} · 幅度校准 {slope} · **空间一致性 {mbe_bdisp}**
+#   * mbe_bdisp（新，A）：各站系统偏差的样本量加权离散度。池化口径的 |mbe| 会让
+#     方向相反的站间偏差**互相抵消**——实测它与 |池化 MBE| 的跨源相关仅 0.115、
+#     跨源区分度 7 倍："各站都稳定偏 2°C"与"两站分别偏 +2/−2"是两种错误，后者
+#     无法用单一订正量修好。可加统计量（Σ E_s²/n_s、ΣE_s、Σn_s）全部可加，
+#     bootstrap 逐位重算；达标站 <3 判缺项。r 0.1875→0.125 让出槽位（r 与 slope
+#     本就测同一件事的两个侧面）——**新的价值判断，记录于 docs/metric_inclusion_v2.md**。
+#   * acc1（B）：±1°C 与 ±2°C 命中率是误差分布 |e| 的 CDF 上两个点，
+#     桶内跨源 ρ=0.92、对已入分项的 1−R²=0.12——acc2 只取一个点，acc1 补的是
+#     "误差是挤在 1°C 以内还是摊在 1~2°C"这一份真信息，两者同为"命中轮廓"族。
+#   * mae（B）：与 rmse 桶内 ρ=0.88、1−R²=0.036。MAE 对少数大误差不敏感，
+#     与 RMSE 合起来才把"误差幅度"这一族量全（幅度 + 尾部），族内各半。
+#   C 拒收：χ² 与 RSS。**χ² = RMSE²（cyeva 定义：Σ(f−o)²/n），RSS = n×χ²**——
+#     两者都是 RMSE 的确定性函数（χ² 更是严格单调等价，桶内斯皮尔曼 ρ=1.00），
+#     入分等于把同一份证据按平方刻度再算一遍；RSS 还额外乘了样本量 n，而 n 是
+#     覆盖度不是技巧（覆盖另有 n_eff 门槛与格子权重管）。实测恒等式残差 ≤2e−3
+#     （全部来自指标的 3~4 位小数舍入）。第二轮把"强行写进公式"的两条路实测堵死：
+#     残差当子分（dev 族）会把总分抬高 4.39 分（"残差=0"被读成满分）；残差当零
+#     中心修正则逐格偏移 ≤0.157 分（等于恒等 0，写进公式只是记账）。
+# 降水（7 项入分：晴雨判别 4 + 雨量精度 2 + 雨强分辨力 1；2026-10-06 第二轮）：
+#   晴雨综合技巧 ETS（首位）· 命中 POD · 空报 FAR · 频率无偏 BIAS ·
+#   雨量量级 amt_mae · 雨量总量 amt_bias · **雨强分辨力 grade_ets（新）**
+#   * grade_ets（新，A）：中雨/大雨两档（1h：2~4.9、5~9.9 mm/h；24h：≥10、≥25 mm，
+#     阈值经 stats.grade_bounds 从 cyeva 配置单点读取）各自的 ETS 按事件数加权。
+#     实测与晴雨 ETS 的桶内相关仅 0.03~0.21、对晴雨四项的 1−R² = 0.79~0.82——
+#     "下不下雨"和"下多大"是两种独立能力，此前完全没测。λ 反解后子分 sd=8.00、
+#     P90/P10 = 5.0/2.9（优于最差的 r 5.7 与 BIAS 5.3）。原 6 项 ×0.9 等比缩放
+#     让出槽位，原配比不做二次改动。1 级/小雨档不入分（与晴雨判定 ρ 0.93/0.98，
+#     同一件事换个说法）；4 级以上该窗口 ETS 中位归零（样本太稀，Q3 不达标）。
+#   * 雨量二维（A，真新信息）：对晴雨四项的 1−R² = 0.93~0.99、跨源 |ρ| ≤0.27，
+#     且两维之间 ρ≈0.00（一个量"逐次差多少"、一个量"总量偏多少"）。
+#   C 拒收：TS、晴雨准确率 acc、漏报率、空报频率 POFD。**这四个与 ETS/POD/FAR
+#     同源于同一张 2×2 列联表（h, fa, mi, c）**：给定 n，列联表只有 3 个自由度，
+#     而 {ETS, POD, FAR} 恰好撑满它——审计用 (ETS,POD,FAR,n) 反解列联表重建
+#     acc/ts，中位相对误差 8e−4 / 1.3e−3（全是舍入）。附带的两条恒等式：
+#     **BIAS = POD/(1−FAR)**（实测残差 ≤3e−3）、**漏报率 = 100 − POD**（精确）。
+#     所以再往里加 acc/ts/POFD 不增加任何信息，只会把基率污染请回来（acc 在
+#     无雨日占 70%+ 的气候下"全答无雨"即得高分；ts 是未做基率校正的 ETS）。
+#   * 雨量 RMSE（C 拒收）：与 mae 桶内 ρ=0.97~0.98（同族），且平方刻度让跨桶
+#     尺度离散度比 mae 翻一倍（实测 sd 的 P90/P10：8.2 vs 3.8），由 mae 代表更稳。
+#   POD 权重（0.135）仍低于 FAR+BIAS（0.135+0.09=0.225）：评分不奖励"多报占便宜"。
 
 # 换算说明模板：{lam}=当期斜率、{per}=每扣 1 分的偏差量、{sat}=记 0 分的饱和线。
 # 数字在渲染期由 score_map_text() 按 SCORE_SLOPES 填入——同一份表驱动评分、
@@ -895,11 +1020,20 @@ SCORE_MAP_TEMPLATES: dict[str, str] = {
     "r": "r×{lam}（同步程度 −1~1 线性入分，负值记 0 分）",
     "mbe": "100 − |MBE|×{lam}（每差 {per}°C 扣 1 分，≥{sat}°C 记 0 分）",
     "slope": "100 − |log₂斜率|×{lam}（幅度每偏 2 倍（log₂ 刻度）扣 {lam} 分，超/欠对称；偏差 ≥{satx} 倍才记 0 分）",
+    "acc1": "百分比×{lam}（±1°C 命中率每差 {per} 个百分点扣 1 分）",
+    "mae": "100 − MAE×{lam}（每差 {per}°C 扣 1 分，≥{sat}°C 记 0 分）",
     "ets": "ETS×{lam}（晴雨技巧 0~1 线性入分，负值记 0 分）",
     "pod": "POD×{lam}（命中率每差 {per} 个百分点扣 1 分）",
     "far": "100 − FAR×{lam}（空报率每高 {per} 个百分点扣 1 分）",
     "bias": "100 − |log₂BIAS|×{lam}（报雨频率每偏 2 倍（log₂ 刻度）扣 {lam} 分，"
                    "超/欠报对称；偏差 ≥{satx} 倍才记 0 分）",
+    "amt_mae": "100 − 相对雨量误差×{lam}（雨量 MAE 每达实况平均雨量的 {per} 倍"
+               "扣 1 分，≥{sat} 倍记 0 分）",
+    "amt_bias": "100 − |log₂(预报总雨量/实况总雨量)|×{lam}（总量每偏 2 倍（log₂ 刻度）"
+                "扣 {lam} 分，超/欠报对称；偏差 ≥{satx} 倍才记 0 分）",
+    "grade_ets": "中雨/大雨档 ETS×{lam}（雨强分辨力 0~1 线性入分，负值记 0 分）",
+    "mbe_bdisp": "100 − 站间偏差离散度×{lam}（各站系统偏差每差 {per}°C 扣 1 分，"
+                 "≥{sat}°C 记 0 分）",
 }
 
 # 斜率的**代码内缺省值** = 2026-09 全月分桶数据标定的冻结值（28 源、两轨、
@@ -942,11 +1076,12 @@ def score_map_text(key: str, template: str | None = None) -> str:
     if lam is None:
         return tpl
     ctx = {"lam": _sig(lam, 3)}
-    if key in ("acc2", "rmse", "r", "mbe", "ets", "pod", "far"):
+    if key in ("acc1", "acc2", "rmse", "mae", "r", "mbe", "ets", "pod", "far",
+               "amt_mae", "mbe_bdisp"):
         ctx["per"] = _sig(1.0 / lam)          # 每扣 1 分的偏差量
-    if key in ("rmse", "mbe", "far"):
+    if key in ("rmse", "mae", "mbe", "far", "amt_mae", "mbe_bdisp"):
         ctx["sat"] = _sig(100.0 / lam)        # 幅度式记 0 分的饱和线
-    if key in ("slope", "bias"):
+    if key in ("slope", "bias", "amt_bias"):
         ctx["satx"] = _sig(2.0 ** (100.0 / lam))   # 倍率式记 0 分的偏差倍数
     try:
         return tpl.format(**ctx)
@@ -987,18 +1122,46 @@ def _conv_log(key: str):
     return conv
 
 
+# 族内等权 = 把族权重在成员间平分（等价证明见上"全部指标都入分"注释的 B 类）：
+#   加权和里两条 0.15625 的 acc1/acc2 = 0.3125 × 两者子分的均值；且任一项缺失时
+#   现有的"缺项按剩余权重归一"自动变成"族内按剩余成员归一"。不引入族对象，
+#   评分表结构（键/权重/标签/说明/换算）与所有下游消费者保持不变。
 TEMP_SCORE_PARTS = (
-    ("acc2", 0.3125, "±2°C 准确率", SCORE_MAP_TEMPLATES["acc2"], _conv_pct("acc2")),
-    ("rmse", 0.3125, "RMSE 误差换算分", SCORE_MAP_TEMPLATES["rmse"], _conv_dev("rmse")),
-    ("r", 0.1875, "相关系数 r", SCORE_MAP_TEMPLATES["r"], _conv_pct("r")),
+    ("acc2", 0.15625, "±2°C 准确率（命中轮廓族）",
+     SCORE_MAP_TEMPLATES["acc2"], _conv_pct("acc2")),
+    ("acc1", 0.15625, "±1°C 准确率（命中轮廓族）",
+     SCORE_MAP_TEMPLATES["acc1"], _conv_pct("acc1")),
+    ("rmse", 0.15625, "RMSE 误差换算分（误差幅度族）",
+     SCORE_MAP_TEMPLATES["rmse"], _conv_dev("rmse")),
+    ("mae", 0.15625, "MAE 误差换算分（误差幅度族）",
+     SCORE_MAP_TEMPLATES["mae"], _conv_dev("mae")),
+    # r 从 0.1875 → 0.125：让出的 0.0625 给新族「站间一致性」。理由不是"r 不重要"，
+    # 而是 r 与 slope 本就测同一件事的两个侧面、占着第二大权重，而站间一致性补的
+    # 正是 r 看不到的维度（实测与 |mbe| 相关仅 0.115）。**这是新的价值判断**，
+    # 记进 CHANGELOG；权重和仍为 1.00。
+    ("r", 0.125, "相关系数 r", SCORE_MAP_TEMPLATES["r"], _conv_pct("r")),
     ("mbe", 0.125, "偏差换算分", SCORE_MAP_TEMPLATES["mbe"], _conv_dev("mbe")),
     ("slope", 0.0625, "回归斜率换算分", SCORE_MAP_TEMPLATES["slope"], _conv_log("slope")),
+    ("mbe_bdisp", 0.0625, "站间一致性换算分（空间一致性族）",
+     SCORE_MAP_TEMPLATES["mbe_bdisp"], _conv_dev("mbe_bdisp")),
 )
+# 2026-10-06「雨强分辨力」入分（w=0.10）：原 6 项 ×0.9 **等比缩放**保持既有配比
+# （ETS 首位、晴雨 vs 雨量的相对话语权都不动），新开的槽位由缩放出来的空间承担。
+# 为什么是 0.10：对拍实测 Spearman 0.988、冠军换人 2/30、平均名次位移 0.57 位，
+# 与上一次扩表（2026-10-06 温度 5→7、降水 4→6）的扰动同量级；加到 0.20 时冠军
+# 换人跳到 6/30、最低 Spearman 掉到 0.82，越过"扰动可接受"的线。
 PRECIP_SCORE_PARTS = (
-    ("ets", 0.35 / 0.75, "晴雨 ETS 评分", SCORE_MAP_TEMPLATES["ets"], _conv_pct("ets")),
-    ("pod", 0.15 / 0.75, "命中率 POD", SCORE_MAP_TEMPLATES["pod"], _conv_pct("pod")),
-    ("far", 0.15 / 0.75, "空报率换算分", SCORE_MAP_TEMPLATES["far"], _conv_dev("far")),
-    ("bias", 0.10 / 0.75, "频率偏差换算分", SCORE_MAP_TEMPLATES["bias"], _conv_log("bias")),
+    ("ets", 0.315, "晴雨 ETS 评分", SCORE_MAP_TEMPLATES["ets"], _conv_pct("ets")),
+    ("pod", 0.135, "命中率 POD", SCORE_MAP_TEMPLATES["pod"], _conv_pct("pod")),
+    ("far", 0.135, "空报率换算分", SCORE_MAP_TEMPLATES["far"], _conv_dev("far")),
+    # （表内按权重降序排列：ETS 首位是原设计意图，测试锁 "list(w) == 权重降序"）
+    ("amt_mae", 0.135, "雨量量级误差换算分",
+     SCORE_MAP_TEMPLATES["amt_mae"], _conv_dev("amt_mae")),
+    ("grade_ets", 0.10, "雨强分辨力换算分（中雨/大雨档 ETS）",
+     SCORE_MAP_TEMPLATES["grade_ets"], _conv_pct("grade_ets")),
+    ("bias", 0.09, "频率偏差换算分", SCORE_MAP_TEMPLATES["bias"], _conv_log("bias")),
+    ("amt_bias", 0.09, "雨量总量偏差换算分",
+     SCORE_MAP_TEMPLATES["amt_bias"], _conv_log("amt_bias")),
 )
 
 
@@ -1458,6 +1621,10 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     # 阈值提到 1mm/h 后基率回到同一水平（5.66% vs 4.64%，BIAS 1.26），ETS 中位数
     # 也最高——分数这才开始测技巧（标定见 scripts/calibrate_hourly_threshold.py）。
     precip_hourly_score: dict[str, dict] = {}
+    # 雨强档位区间：小时轨走 1h 口径（中雨 2~4.9 mm/h、大雨 5~9.9 mm/h），
+    # 日轨走 24h 累计口径（中雨 ≥10 mm、大雨 ≥25 mm）。阈值只此一处且取自
+    # cyeva 的配置模块（stats.grade_bounds），不手工同步第二份表。
+    gb_hourly, gb_daily = _stats.grade_bounds("1h"), _stats.grade_bounds("24h")
     for mi, m in enumerate(models):
         by_bucket: dict[int, list] = defaultdict(list)
         for r in by_model[m]:
@@ -1469,8 +1636,8 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
             icell = pt.hourly_cell(mi, b) if pt is not None else None
             ne_r = (_n_eff_rain_columnar(pt, icell, thr_hourly) if icell is not None
                     else _n_eff_rain(recs, thr_hourly, "valid_iso", "lead"))
-            precip_hourly_score[m][f"{b}d"] = precip_binary_metrics(
-                ro, rf, thr_hourly, min_sample, n_eff=ne_r)
+            precip_hourly_score[m][f"{b}d"] = _precip_score_cell(
+                ro, rf, thr_hourly, min_sample, ne_r, gb_hourly)
 
     # ---- 降水的评分轨道：按天累计（24h）+ rain_daily_threshold_mm 阈值 ----
     # 每模型每日偏移一份二分类指标（P0-3），入分的同时披露 acc 供明细。
@@ -1490,8 +1657,8 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
             ne_r = (_n_eff_rain_columnar(pt, dcell, thr_daily, daily=True)
                     if dcell is not None
                     else _n_eff_rain(recs, thr_daily, "valid_day", "offset"))
-            precip_score_daily[m][f"{off}d"] = precip_binary_metrics(
-                ro, rf, thr_daily, min_sample, n_eff=ne_r)
+            precip_score_daily[m][f"{off}d"] = _precip_score_cell(
+                ro, rf, thr_daily, min_sample, ne_r, gb_daily)
 
     # ---- 逐小时逐时效曲线（1..72h）温度 RMSE / ±2°C 准确率（轻量路径）----
     temp_lead_curve: dict[str, dict] = {m: {} for m in models}
@@ -1666,6 +1833,7 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     all_win = difficulty_window.get("all", {})
     weight_sensitivity = {
         "runs": sensitivity_runs,
+        "n_parts": len(TEMP_SCORE_PARTS) + len(PRECIP_SCORE_PARTS),
         "macro_weight_range": [float(macro_w[0]), float(macro_w[1])],
         "champions": _weight_sensitivity_champions(
             models, track_sources, hourly_lead_days, daily_max_offset,
