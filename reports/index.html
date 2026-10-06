@@ -1113,7 +1113,7 @@
             data-ts="0.185"
             data-lead="16">
           <td class="c-rk num">25</td>
-          <td class="l c-name"><i class="dot" style="background:#ef4444"></i><b>和风天气</b><sup class="dagger" title="与第一名的差距经 Holm–Bonferroni 校正后仍不显著：前后名次更多是抽样运气">†</sup><span class="warn-badge" title="同一源混用多种起报锚点语义：时间轴首点（产品的起始时刻）×108、请求时刻下取整（≈抓取时刻）×104">⚠️</span><span class="mid">qweather_v1</span>
+          <td class="l c-name"><i class="dot" style="background:#ef4444"></i><b>和风天气</b><sup class="dagger" title="与第一名的差距经 Holm–Bonferroni 校正后仍不显著：前后名次更多是抽样运气">†</sup><span class="warn-badge" title="同一源混用多种起报锚点语义：时间轴首点（产品的起始时刻）×108、请求时刻下取整（≈抓取时刻）×108">⚠️</span><span class="mid">qweather_v1</span>
           </td>
           <td class="c-score"><div class="cell">
               <div class="thermo sm">
@@ -1385,7 +1385,7 @@
             <tr>
               <td class="l" data-label="预报源"><b>和风天气</b></td>
               <td class="l" data-label="起报锚点语义">时间轴首点（产品的起始时刻）<br><span class="sub">未声明存档 308</span></td>
-              <td class="l warn-cell" data-label="口径存疑">⚠️ 同一源混用多种起报锚点语义：时间轴首点（产品的起始时刻）×108、请求时刻下取整（≈抓取时刻）×104</td>
+              <td class="l warn-cell" data-label="口径存疑">⚠️ 同一源混用多种起报锚点语义：时间轴首点（产品的起始时刻）×108、请求时刻下取整（≈抓取时刻）×108</td>
             </tr>
             <tr>
               <td class="l" data-label="预报源"><b>风乌 GHR-9km</b></td>
@@ -1639,11 +1639,11 @@
 MSN天气 8 份）。⑧
           <b>实况自 2026-08-25 起接入</b>，覆盖率按各站实际有实况的时段计算。</p>
         <h3>存档完整性（可自行核验）</h3>
-        <p class="why">本轮 7175 份存档内容的哈希被聚合成一个 Merkle 根：
-          <code style="word-break:break-all">4735449feb9b8bdbaa070a6b80a30f28628c592267ade63680dd6728e2aa072e</code>。
+        <p class="why">本轮 7183 份存档内容的哈希被聚合成一个 Merkle 根：
+          <code style="word-break:break-all">2cb2f1c4e15cbee5a4432dd0d27c47100abb601dacf5fe92555132316335be4b</code>。
           任何人克隆仓库后运行 <code>python -m weather_eval verify</code> 即可重算比对。
           <b>能力的边界要一并说清</b>：校验会比对"重算的内容哈希"与"封存时盖下的
-          内嵌哈希"（3080 份带内嵌哈希），
+          内嵌哈希"（3088 份带内嵌哈希），
           因此误操作编辑、git 冲突残留、工具链自动格式化都能被抓到；
           但"改内容 + 正确重算哈希 + 重跑报告刷新清单"这条完整攻击链<b>抓不到</b>——
           堵住它需要仓库之外的不可变锚点（根另行留档或签名），本项目目前没有做。</p>
@@ -1968,11 +1968,11 @@ MSN天气 8 份）。⑧
 </div>
 
 <footer>
-  生成时间：2026-10-06 10:02（北京时）｜ 预报源：Open-Meteo（多模型）· 彩云天气 · 和风天气 · 中科天机 · 伏羲 · 风乌 ·
+  生成时间：2026-10-06 10:09（北京时）｜ 预报源：Open-Meteo（多模型）· 彩云天气 · 和风天气 · 中科天机 · 伏羲 · 风乌 ·
   中科星图 · AccuWeather ｜ 实况：环境气象数据服务平台 eia-data.com<br>
   本页由 GitHub Actions 自动生成，每天 3 次更新；仅供学习参考，出行请以官方气象部门预报为准。
-<div class="merkle">Merkle root 4735449feb9b8bdbaa070a6b80a30f28628c592267ade63680dd6728e2aa072e</div>  <div class="merkle">
-    复现凭据：code a7b79c39bfa9    ｜ 依赖锁 uv.lock#c14f57bf92903d95    ｜ bootstrap 种子 20260906 ｜ Python 3.12.6
+<div class="merkle">Merkle root 2cb2f1c4e15cbee5a4432dd0d27c47100abb601dacf5fe92555132316335be4b</div>  <div class="merkle">
+    复现凭据：code 89a2abb0b3e2    ｜ 依赖锁 uv.lock#c14f57bf92903d95    ｜ bootstrap 种子 20260906 ｜ Python 3.12.6
     ｜ numpy 2.1.2 · pandas 2.3.3 · cyeva 0.2.3
   </div>
 </footer>
