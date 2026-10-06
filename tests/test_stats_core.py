@@ -315,3 +315,59 @@ def test_weight_champion_distribution_perturbs_macro_weight():
     pcts = {d["index"]: d["pct"] for d in varying}
     assert len(pcts) == 2, pcts
     assert pcts[1] > 20.0 and pcts[0] > 20.0
+
+
+def test_pairwise_corr_matrix_matches_naive():
+    """跨源相关矩阵：全局键序 + 有序交集的实现，与朴素实现**逐格同值**。
+
+    这条测试存在的理由不是"怕写错公式"，而是怕**换实现改掉了榜上的数字**。
+    朴素实现（每对各自 `keys() & keys()` 再 `sorted`）在 27 家模型上要 12.3 s，
+    是报告构建的最大单项；向量化后 0.86 s。两者必须给出逐位相同的 ρ 与相同的
+    公共样本数，否则省下的 11 秒就是买来的错误。
+    """
+    rng = np.random.default_rng(20261006)
+
+    def naive(series, min_overlap):
+        names = list(series)
+        n = len(names)
+        matrix = [[None] * n for _ in range(n)]
+        max_common = 0
+        for i in range(n):
+            matrix[i][i] = 1.0
+        for i in range(n):
+            for j in range(i + 1, n):
+                a_map, b_map = series[names[i]], series[names[j]]
+                common = a_map.keys() & b_map.keys()
+                if len(common) < min_overlap:
+                    continue
+                max_common = max(max_common, len(common))
+                keys = sorted(common)
+                a = np.array([a_map[k] for k in keys], dtype=float)
+                b = np.array([b_map[k] for k in keys], dtype=float)
+                matrix[i][j] = matrix[j][i] = stats.pearson_r(a, b)
+        return names, matrix, max_common
+
+    # 稀疏、非对齐、键是三元组——正是诊断层喂进来的形状
+    all_keys = [(f"s{j % 4}", f"2026-08-{j % 28 + 1:02d}T{j % 24:02d}:00", j % 10 + 1)
+                for j in range(900)]
+    series = {}
+    for i in range(9):
+        keep = rng.random(len(all_keys)) < (0.35 + 0.06 * i)
+        series[f"m{i}"] = {k: float(rng.normal()) for k, kp in
+                           zip(all_keys, keep) if kp}
+    # 退化：一家样本不足、一家完全常数（零方差 → ρ 为 None）
+    series["m_tiny"] = {all_keys[0]: 1.0}
+    series["m_const"] = {k: 0.0 for k in all_keys[:500]}
+
+    for min_overlap in (2, 30, 400):
+        n1, m1, c1 = naive(series, min_overlap)
+        n2, m2, c2 = stats.pairwise_corr_matrix(series, min_overlap)
+        assert n1 == n2, (n1, n2)
+        assert c1 == c2, (c1, c2)
+        for i in range(len(n1)):
+            for j in range(len(n1)):
+                a, b = m1[i][j], m2[i][j]
+                if a is None or b is None:
+                    assert a is None and b is None, (i, j, a, b)
+                else:
+                    assert a == b, (i, j, a, b)

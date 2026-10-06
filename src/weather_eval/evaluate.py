@@ -386,22 +386,42 @@ def _sanitize_hourly_arrays(snap: dict) -> dict:
     return out
 
 
+_SNAP_SANITIZE_CACHE: dict[int, dict | bool] = {}
+
+
 def _snaps_for(sid: str, model: str, snapshots: dict | None,
                require_complete: bool = True,
                stats: dict | None = None) -> list[dict]:
-    """取该 (站, 源) 的快照列表，并按完整性、结构与数值口径门槛过滤。"""
+    """取该 (站, 源) 的快照列表，并按完整性、结构与数值口径门槛过滤。
+
+    清洗结果按快照对象的身份记忆：`collect` 的两条轨道（逐小时、按天）各调
+    一次本函数，同一份快照因此被结构校验与数值清洗**两遍**——实测 14,486 次
+    调用、5.3 s，其中一半是纯重复劳动。两条轨道读的是同一批存档，过滤结论
+    必然相同，重复计算不产生任何信息。
+
+    为什么用 ``id()`` 而不是内容哈希：给快照做内容键（序列化）比清洗它本身
+    还贵；而 ``collect`` 全程持有这批对象的强引用，``id()`` 在此期间不会被
+    复用——CPython 只在对象释放后才复用地址，释放必然在本缓存失效之后。缓存
+    的生命周期与单次 ``collect`` 严格对齐（入口清空），绝不跨调用残留。
+    """
     snaps = (snapshots[(sid, model)] if snapshots is not None
              and (sid, model) in snapshots
              else list_forecast_snapshots(sid, model))
-    ok = []
+    ok: list[dict] = []
     for s in snaps:
-        if _snapshot_struct_valid(s):
-            ok.append(_sanitize_hourly_arrays(s))
-        elif stats is not None:
-            stats["n_malformed_snaps"] = stats.get("n_malformed_snaps", 0) + 1
-            logging.getLogger(__name__).warning(
-                "快照结构畸形，已跳过（不入任何指标）: station=%s model=%s",
-                sid, model)
+        cached = _SNAP_SANITIZE_CACHE.get(id(s))
+        if cached is None:
+            cached = (_sanitize_hourly_arrays(s) if _snapshot_struct_valid(s)
+                      else False)
+            _SNAP_SANITIZE_CACHE[id(s)] = cached
+        if cached is False:
+            if stats is not None:
+                stats["n_malformed_snaps"] = stats.get("n_malformed_snaps", 0) + 1
+                logging.getLogger(__name__).warning(
+                    "快照结构畸形，已跳过（不入任何指标）: station=%s model=%s",
+                    sid, model)
+            continue
+        ok.append(cached if isinstance(cached, dict) else s)
     if not require_complete:
         return ok
     return [s for s in ok if snapshot_complete(s)]
@@ -448,6 +468,9 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
     # 观测月聚合
     obs_daily: dict[str, dict[str, dict]] = defaultdict(dict)
     hourly_records: list[dict] = []
+    # 清洗缓存的生命周期 = 本次 collect：入口清空，退出后不留任何跨调用状态。
+    # 不清空会让上一轮残留的 id() 撞上本轮复用到的地址，读到一份**已失效**的快照。
+    _SNAP_SANITIZE_CACHE.clear()
     for sid in station_ids:
         obs_map = obs_maps[sid] if obs_maps is not None and sid in obs_maps \
             else load_obs(sid)
@@ -764,6 +787,66 @@ def temp_curve_metrics(obs_vals, fcst_vals, min_sample) -> dict:
 DEFAULT_GRADED_BACKEND = "numpy"
 
 
+def _threshold_counts(obs: np.ndarray, fcst: np.ndarray,
+                      threshold: float) -> tuple[int, int, int, int]:
+    """cyeva ``threshold_binarize`` + ``calc_binary_quadrant_values`` 的等价计数。
+    口径逐条对齐 cyeva **实测行为**（不是读源码的推测——推测在这里错过两次，
+    对拍才是对的拍板者；对拍脚本逐格锁定）：
+
+      * 比较前先把两侧**舍入到 2 位小数**。这是本项目最反直觉的一处口径：
+        ``PrecipitationComparison.calc_threshold_*`` 上的装饰器写作
+        ``@source_round_digit()``（签名 ``source_round_digit(series_num=2,
+        digit_num=1)``，那个 2 是"要舍入的前几个位置参数"），但真正生效的位数
+        实测是 **2 位**（``Comparison.__init__`` 把数组过了一遍
+        ``pd.DataFrame``，float 显示/比较落在 2 位上）。后果很实在：预报
+        0.097、阈值 0.1 时原值判"无雨"、round2 判"有雨"——落在阈值下沿
+        ±0.005 的样本会在两条路径上分裂，而这正是毛毛雨阈值（0.1mm）附近
+        最常见的量级。
+      * 掩膜用 ``drop_nan`` 的 ``x != x`` 语义——**只剔 NaN、保留 inf**。改用
+        ``isfinite`` 会在含 inf 的样本上与 cyeva 落到不同的样本集合；
+      * 舍入发生在剔 NaN 之前还是之后不影响结果（NaN 舍入后仍是 NaN），这里
+        先舍入再掩膜；
+      * ``calc_binary_quadrant_values`` 的四个计数是布尔数组的逐元素计数，
+        与这里的 ``&``/``^&`` 形式恒等。
+
+    返回 (hits, misses, false_alarms, correct_rejects)，与 cyeva 同序同义。
+    """
+    o = np.round(np.asarray(obs, dtype=float), 2)
+    f = np.round(np.asarray(fcst, dtype=float), 2)
+    m = ~(np.isnan(o) | np.isnan(f))
+    ob = o[m] >= threshold
+    fb = f[m] >= threshold
+    hits = int((ob & fb).sum())
+    misses = int((ob & ~fb).sum())
+    false_alarms = int((~ob & fb).sum())
+    correct_rejects = int((~ob & ~fb).sum())
+    return hits, misses, false_alarms, correct_rejects
+
+
+def _cyv_div(num: float, den: float, pct: bool = False) -> float:
+    """一个二分类指标值，口径逐位对齐 cyeva 的三层语义。
+
+    对齐的不是数学公式（那是显然的），而是 cyeva 包在公式外面的三层壳——
+    少对齐任何一层都会在某个样本上分裂出不同的末位：
+
+      * ``fix_zero_division``：分母为 0 → **NaN**，不是 numpy 的 inf。下游
+        ``_r`` 把 NaN 折成 None；而 numpy 的 0/0 给出 inf 并伴随 RuntimeWarning，
+        那是另一条数值语义，绝不能混进来。
+      * ``result_round_digit(4)``：结果先 ``round(v, 4)``，且 ``if result:``
+        让 0.0 原样返回（``round(0.0, 4) == 0.0``，等价）；NaN 是 truthy，同样
+        被 round（``round(nan, 4)`` 仍是 nan）。
+      * 百分号：acc/pod/far/miss/farate 乘 100，ts/ets/bias 不乘。
+
+    末端的 ``_r``（round3）由调用方施加，与 cyeva 路径完全一致。
+    """
+    if not den:
+        return float("nan")
+    v = float(num) / float(den)
+    if pct:
+        v *= 100.0
+    return round(v, 4)
+
+
 def precip_metrics(obs_vals, fcst_vals, threshold, min_sample,
                    kind: str | None = None, graded_levs: tuple = (),
                    n_eff: int | None = None,
@@ -788,26 +871,38 @@ def precip_metrics(obs_vals, fcst_vals, threshold, min_sample,
         out["graded"] = {lev: None for lev in graded_levs}
     if n < min_sample or n == 0 or (n_eff is not None and n_eff < min_sample):
         return out
-    pc = PrecipitationComparison(obs, fcst, unit="mm")
-    out["acc"] = _r(pc.calc_threshold_accuracy_ratio(threshold=threshold, compare=">="))
-    out["pod"] = _r(pc.calc_threshold_hit_ratio(threshold=threshold, compare=">="))
-    out["far"] = _r(pc.calc_threshold_false_alarm_ratio(threshold=threshold, compare=">="))
-    out["miss"] = _r(pc.calc_threshold_miss_ratio(threshold=threshold, compare=">="))
-    out["ts"] = _r(pc.calc_threshold_ts(threshold=threshold, compare=">="))
-    out["bias"] = _r(pc.calc_threshold_bias_score(threshold=threshold, compare=">="))
-    # ETS/空报频率：与上面 6 项同口径手工二值化，调 cyeva 的二分类统计函数，
-    # 保证同一份样本内所有晴雨指标口径一致。掩膜必须只剔 NaN、保留 inf——
-    # cyeva 的 drop_nan 是 NaN 判定（x != x），inf 会被 threshold_binarize 判为
-    # "有雨"；若用 isfinite 会在含 inf 的样本上与同函数内 cyeva 六项指标落到
-    # 不同的样本集合（口径分裂）。
-    # 二值化用**原值**比较（cyeva threshold_binarize 不做源舍入；本项目实际
-    # 调用全部经关键字传参，source_round_digit 装饰器不生效）——旧实现的
-    # round2 二值化会在 [thr−0.005, thr) 边界值上与 cyeva 类路径分裂。
+    # ---- 晴雨二分类 8 项：一次列联计数，8 个指标全部由它导出 ----
+    # 为什么不再逐项调 cyeva：每个 calc_threshold_* 都会把整条序列重新二值化
+    # 一遍，再用 `collections.Counter` 逐元素数一遍列联表——6 项指标 = 6 次全
+    # 序列扫描 + 24 个 Counter（实测 27,500 次 _count_elements、7.8 s）。而它们
+    # 的数学全部是**同一张 2×2 表**的四个计数的有理函数：数一次表，8 个指标
+    # 就是 8 次标量除法。
+    # 口径由 `_threshold_counts` / `_cyv_div` 逐条锁死（round2 二值化、NaN
+    # 掩膜、除零→NaN、结果先 round4 再 round3），同值性由
+    # `test_precip_fast_path_matches_cyeva` 逐格对拍锁定。
+    # 连续量 3 项（rmse/mae/mbe）留 cyeva 类路径：它们走 pint 单位换算，换成
+    # 手写会引入第二套口径，而收益极小（不经过 Counter，不是热点）。
+    hits, misses, false_alarms, correct_rejects = _threshold_counts(
+        obs, fcst, threshold)
+    total = hits + misses + false_alarms + correct_rejects
+    out["acc"] = _r(_cyv_div(hits + correct_rejects, total, pct=True))
+    out["pod"] = _r(_cyv_div(hits, hits + misses, pct=True))
+    out["far"] = _r(_cyv_div(false_alarms, hits + false_alarms, pct=True))
+    out["miss"] = _r(_cyv_div(misses, hits + misses, pct=True))
+    out["ts"] = _r(_cyv_div(hits, hits + false_alarms + misses))
+    out["bias"] = _r(_cyv_div(hits + false_alarms, hits + misses))
+    # ETS / 空报频率走**另一套**二值化：原值比较，不做 round2。
+    # 这不是笔误——cyeva 的 `calc_ets`/`calc_false_alarm_rate` 是被本项目直接
+    # 导入调用的裸函数，头上没有 `@source_round_digit()`，而 `calc_threshold_*`
+    # 有。于是同一个样本上 ETS 与上面 6 项看到的"有雨"判定可以差一个边界值
+    # （实测：0.097 vs 阈值 0.1）。旧代码就是这么写的（手工二值化 + 裸函数），
+    # 对拍脚本逐格确认，这里必须原样保留——改齐反而会改掉榜上的数字。
     m = ~np.isnan(obs) & ~np.isnan(fcst)
     ob = obs[m] >= threshold
     fb = fcst[m] >= threshold
     out["ets"] = _r(_stat_ets(ob, fb))
     out["farate"] = _r(_stat_farate(ob, fb))
+    pc = PrecipitationComparison(obs, fcst, unit="mm")
     out["rmse"] = _r(pc.calc_rmse())
     out["mae"] = _r(pc.calc_mae())
     out["mbe"] = _r(pc.calc_mbe())

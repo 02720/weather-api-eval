@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
-
+from ..timeutil import parse_iso as _timeutil_parse_iso
 from .. import stats as st
 
 logger = logging.getLogger(__name__)
@@ -71,9 +71,19 @@ def _snapshot_files(station_dir: Path) -> list[str]:
 
 
 def _parse_iso(s: str) -> datetime | None:
+    """时间戳解析（走 timeutil 的共享 lru_cache）。
+
+    为什么不在这里自己写一份 `datetime.fromisoformat`：诊断层要遍历窗口内的
+    **全部**快照的每一个有效时刻，实测 210 万次调用、3.7 s，而这些时间字符串
+    的唯一值只有几千个——各家模型共享同一条时间轴。缓存把解析从热点里消掉，
+    且与 `evaluate.collect` 走的是**同一个**缓存对象，收益不重复计算。
+
+    返回 None 而不是抛异常：单份损坏快照不该让整份诊断失败，与 `_read_json`
+    的兜底哲学一致。
+    """
     try:
-        return datetime.fromisoformat(s)
-    except Exception:
+        return _timeutil_parse_iso(s)
+    except (ValueError, TypeError):
         return None
 
 

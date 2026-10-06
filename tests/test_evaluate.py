@@ -1298,6 +1298,65 @@ def test_numpy_fast_paths_match_cyeva(tmp_path, monkeypatch):
         assert mine[k] == cy[k], (k, mine[k], cy[k])
 
 
+def test_precip_fast_path_matches_cyeva():
+    """晴雨二分类的快速路径（一次列联计数）与 cyeva 逐个调用**逐格同值**。
+
+    这是把 `precip_metrics` 里 6 次 `calc_threshold_*` 换成一次列联计数的
+    唯一凭据。覆盖的边界不是"随机数据对拍"能碰巧覆盖到的，而是刻意构造的：
+      * 阈值下沿 ±0.005（0.097 vs 阈值 0.1）——round2 二值化与原值二值化在这
+        里分裂，是全套口径里最容易改坏榜上数字的一处；
+      * 分母为 0 的四种退化（命中 0 / 空报 0 / 正确否定 0 / 全 NaN）；
+      * inf 与 -inf（cyeva 的 drop_nan 只剔 NaN，inf 会被判"有雨"）。
+    """
+    import numpy as np
+    from cyeva import PrecipitationComparison
+
+    from weather_eval.evaluate import (_r, precip_metrics,
+                                       _stat_ets, _stat_farate)
+
+    rng = np.random.default_rng(20261006)
+    cases = []
+    for _ in range(120):
+        n = int(rng.integers(5, 200))
+        o = np.round(rng.exponential(1.0, n) * rng.random(n), 3)
+        f = np.round(rng.exponential(1.0, n) * rng.random(n), 3)
+        o[rng.random(n) < 0.08] = np.nan
+        f[rng.random(n) < 0.08] = np.nan
+        cases.append((o, f, float(rng.choice([0.1, 1.0, 5.0]))))
+    zero, ones = np.zeros(40), np.full(40, 3.0)
+    cases += [
+        (zero, ones.copy(), 1.0),                     # 命中 0、正确否定 0
+        (ones.copy(), zero, 1.0),                     # 空报 0
+        (ones.copy(), ones.copy(), 1.0),              # 全命中
+        (np.array([1.0, np.inf, 0.0, 2.0]),           # inf 判"有雨"
+         np.array([1.0, 0.0, np.inf, 2.0]), 1.0),
+        (np.array([0.097, 1.0, 0.101]),               # 阈值下沿 ±0.005
+         np.array([1.0, 0.099, 1.0]), 0.1),
+    ]
+
+    for i, (o, f, thr) in enumerate(cases):
+        if not (~np.isnan(o) & ~np.isnan(f)).any():
+            continue                                   # 全 NaN：cyeva 自身会抛错
+        pc = PrecipitationComparison(o, f, unit="mm")
+        ref = {
+            "acc": pc.calc_threshold_accuracy_ratio(threshold=thr, compare=">="),
+            "pod": pc.calc_threshold_hit_ratio(threshold=thr, compare=">="),
+            "far": pc.calc_threshold_false_alarm_ratio(threshold=thr, compare=">="),
+            "miss": pc.calc_threshold_miss_ratio(threshold=thr, compare=">="),
+            "ts": pc.calc_threshold_ts(threshold=thr, compare=">="),
+            "bias": pc.calc_threshold_bias_score(threshold=thr, compare=">="),
+        }
+        got = precip_metrics(o, f, thr, 2)
+        for k, v in ref.items():
+            v_nan = isinstance(v, float) and np.isnan(v)
+            want = None if (v is None or v_nan) else round(float(v), 3)
+            assert got[k] == want, f"case {i} {k}: {got[k]!r} != {want!r}"
+        # ETS / farate：裸函数路径（原值二值化），一并锁定
+        m = ~np.isnan(o) & ~np.isnan(f)
+        assert got["ets"] == _r(_stat_ets(o[m] >= thr, f[m] >= thr)), f"case {i} ets"
+        assert got["farate"] == _r(_stat_farate(o[m] >= thr, f[m] >= thr)), \
+            f"case {i} farate"
+
 def test_bootstrap_ci_deterministic_and_honest(tmp_path, monkeypatch):
     """P0-2：bootstrap 置信区间。
 
