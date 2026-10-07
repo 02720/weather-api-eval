@@ -68,7 +68,7 @@ from typing import Any
 import requests
 
 from .base import ForecastProvider
-from .http import DEFAULT_UA, TimeBudget, request_with_retries
+from .http import DEFAULT_TIMEOUT, DEFAULT_UA, TimeBudget, request_with_retries
 from ..timeutil import BEIJING
 
 logger = logging.getLogger(__name__)
@@ -263,7 +263,7 @@ class QWeatherProvider(ForecastProvider):
         host: str | None = None,
         name: str = DEFAULT_NAME,
         hours: int = DEFAULT_HOURS,
-        timeout: int = 60,
+        timeout: int | tuple = DEFAULT_TIMEOUT,
         retries: int = 3,
         session: requests.Session | None = None,
     ):

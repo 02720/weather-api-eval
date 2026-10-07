@@ -62,6 +62,29 @@ def test_records_from_wd_floors_non_hour_times():
     assert _NonHourCounter().seen == 0
 
 
+def test_records_from_wd_plausible_range_guard():
+    """物理值域守卫必须真的接在主源解析路径上。
+
+    此前 `plausible(out_key, rec.get(out_key))` 的结果被下一行无条件覆盖，
+    守卫在主观测源上是死代码——风向不明码 999017、占位 999.9 会原样落库
+    （cma_data 通道早已拦截，eia_data 通道一直裸奔）。"""
+    wd = {
+        "time": ["2026-08-26 20:00", "2026-08-26 19:00", "2026-08-26 18:00"],
+        "temp": [27.6, 999017.0, -80.0],          # 后两个越界
+        "rain": [0.1, 999.9, 600.0],              # 后两个越界
+        "wind_dir": [20, 999017, 400.0],
+        "humidity": [91, 150.0, 60.0],
+    }
+    recs = _records_from_wd(wd, _NonHourCounter())
+    assert recs[0]["temp"] == 27.6 and recs[0]["rain"] == 0.1
+    assert recs[1]["temp"] is None and recs[1]["rain"] is None
+    assert recs[2]["temp"] is None and recs[2]["rain"] is None
+    assert recs[1]["wind_dir"] is None and recs[2]["wind_dir"] is None
+    assert recs[1]["humidity"] is None and recs[2]["humidity"] == 60.0
+    # "缺测绝不伪装成数值"：越界是置 None，不是折算成边界值
+    assert all(r["temp"] != -60.0 and r["temp"] != 60.0 for r in recs)
+
+
 def _wd_page(times):
     import json as _json
     return "const wd = " + _json.dumps({

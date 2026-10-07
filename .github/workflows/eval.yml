@@ -262,6 +262,19 @@ jobs:
             exit $rc
           fi
 
+      - name: 校验当轮快照的哈希链（可审计性）
+        # §7.1：把"预报在实况之前封存且事后未被修改"从自我声明变成可机器核验的
+        # 性质。重算全部快照的 Merkle 根并与报告 meta 里记录的值比对——任何对
+        # 存档的事后改写都会让这一步变红。
+        # 必须在提交**之前**：校验失败时违规数据不应先一步进入 main（原顺序是
+        # 先提交后校验，等于把审计结论钉在既成事实上）。快照不可追补的顾虑不受
+        # 影响：正常轮次 verify 与提交同数据同源，只有存档真的被改写/代码算错
+        # 哈希才会红——那时该拦的恰恰是这次提交。
+        if: always()
+        env:
+          TZ: Asia/Shanghai
+        run: python -m weather_eval verify
+
       - name: 提交数据与新报告
         # if: always()：`all` 步骤任一站失败会以非零退出，但此前已成功抓取的
         # 预报快照不可追补（观测可下轮回看补抓，预报快照错过即永久缺失），
@@ -274,15 +287,6 @@ jobs:
           commit_user_name: weather-eval-bot
           commit_user_email: bot@weather-eval.local
           commit_author: weather-eval-bot <bot@weather-eval.local>
-
-      - name: 校验当轮快照的哈希链（可审计性）
-        # §7.1：把"预报在实况之前封存且事后未被修改"从自我声明变成可机器核验的
-        # 性质。重算全部快照的 Merkle 根并与报告 meta 里记录的值比对——任何对
-        # 存档的事后改写都会让这一步变红。
-        if: always()
-        env:
-          TZ: Asia/Shanghai
-        run: python -m weather_eval verify
 
       - name: 仓库体量看门狗（体积失控告警）
         # 体积治理按月生效，而一次意外写入（源疯狂重试、分片爆炸、误提交大文件）

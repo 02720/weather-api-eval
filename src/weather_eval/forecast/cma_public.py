@@ -376,12 +376,17 @@ def derive_issue(points: list[tuple[datetime, dict]], publish_raw: str | None,
             meta_notes.append(
                 f"publishTime={_fmt(published)} 晚于序列首点，不能作锚点")
 
-    # 第四轮 P2-6：走到这里说明 ranked[0] 已因"晚于序列首点"被判不可用
-    # （hour 语义变号的失效形态），再退回去会让整份快照 lead 全负——
-    # 评估侧静默丢弃全部样本，报告照常生成、该源样本数为 0。退回首点并留痕。
+    # 第四轮 P2-6：走到这里说明 ranked[0] 已不可用（晚于序列首点，或并列无多数
+    # 的失效形态），再退回去会让整份快照 lead 全负——评估侧静默丢弃全部样本，
+    # 报告照常生成、该源样本数为 0。退回首点并按真实原因留痕。
     if ranked:
-        meta_notes.append(
-            f"hour 反解的多数基准 {_fmt(ranked[0][0])} 晚于序列首点，不可用；退回首点")
+        if ranked[0][0] > first_valid:
+            meta_notes.append(
+                f"hour 反解的多数基准 {_fmt(ranked[0][0])} 晚于序列首点，不可用；退回首点")
+        else:
+            meta_notes.append(
+                "hour 反解出 %d 个并列基准且无多数（%s/%s 各 %d 次），无法判定；退回首点"
+                % (len(ranked), _fmt(ranked[0][0]), _fmt(ranked[1][0]), ranked[0][1]))
         return first_valid, "first_point"
 
     meta_notes.append("缺 hour 与可用 publishTime，起报锚点退化为序列首点")

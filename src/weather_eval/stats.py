@@ -1701,15 +1701,6 @@ def _summarize_bootstrap(macro: np.ndarray, models: list[str],
             ci = [round(float(lo), 2), round(float(hi), 2)]
         out[m] = {"ci90": ci, "champion_pct": 0.0, "sig_vs_top": None,
                   "sig_vs_top_raw": None, "p_vs_top": None}
-    for mi, m in enumerate(models):
-        scores = macro[:, mi]
-        finite = scores[np.isfinite(scores)]
-        ci = None
-        if finite.size >= max(5, macro.shape[0] // 10):
-            lo, hi = np.percentile(finite, [5, 95])
-            ci = [round(float(lo), 2), round(float(hi), 2)]
-        out[m] = {"ci90": ci, "champion_pct": 0.0, "sig_vs_top": None,
-                  "sig_vs_top_raw": None, "p_vs_top": None}
         if not eligible[mi] or ci is None:
             continue
         fallback_candidates.append((float(np.nanmean(scores)), mi))

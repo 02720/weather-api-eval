@@ -293,17 +293,21 @@ def cmd_fetch_forecast(args):
                 # 中科天机：各模式最新可用起报可能不同步，提供方直接返回按模型独立的快照列表
                 # （每份各自 issue_iso 与时间轴），保证时效（lead）分组不被跨模式错位污染。
                 subs = list(snap)
+            saved = 0
             for sub in subs:
                 # 日产品评测范围必须**显式**随调用传入：save 路径虽有缺省回退
                 # （读默认配置），但本 CLI 支持 --config 覆盖——缺省回退只认
                 # 仓库默认配置，会让自定义配置的评测范围与入库截断口径分裂
-                save_forecast_snapshot(
-                    st.id, sub["models"][0], sub,
-                    daily_max_offset_days=int(cfg.eval.get(
-                        "daily_max_offset_days",
-                        DEFAULT_EVAL["daily_max_offset_days"])))
-            log.info("站点 %s 起报已存档 %d 份（模型 %s）",
-                     st.id, len(subs), [s["models"][0] for s in subs])
+                if save_forecast_snapshot(
+                        st.id, sub["models"][0], sub,
+                        daily_max_offset_days=int(cfg.eval.get(
+                            "daily_max_offset_days",
+                            DEFAULT_EVAL["daily_max_offset_days"]))):
+                    saved += 1
+            # 幂等跳过是常态（Open-Meteo 按当日 00:00、MSN 按整点），把跳过
+            # 一并说成"已存档"会让运维误判"这源今天有没有更新"——分开计数
+            log.info("站点 %s 起报新存档 %d 份，幂等跳过 %d 份（模型 %s）",
+                     st.id, saved, len(subs) - saved, [s["models"][0] for s in subs])
         except Exception as e:  # noqa: BLE001
             failures += 1
             log.error("站点 %s 预报抓取失败: %s", st.id, e)

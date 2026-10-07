@@ -17,9 +17,11 @@ jobs:
   # ---- 快层：PR 必跑。纯逻辑 + 契约 + 快速路径对拍，不碰真实数据 ----
   fast:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0      # "口径对拍强制"步骤需要与 PR base 做 git diff
 
       - name: 安装 Python 3.12
         uses: actions/setup-python@v5
@@ -40,9 +42,28 @@ jobs:
       - name: 快层测试
         run: python -m pytest -m "not golden and not slow" -n auto -q
 
+      - name: 口径对拍强制（评分路径变更时在 PR 上必跑 golden）
+        # 静默缺口（2026-10 补）：golden 对拍此前靠"作者记得打 golden 标签"触发，
+        # 标签不打、对拍就不存在——改评分数学/口径的 PR 可以完全绕过本仓库最核心
+        # 的不变量而 CI 全绿。这里按变更路径强制：evaluate/stats/graded/评分配置/
+        # 基线任何一处变了，就在本作业里把 golden 跑掉（不想跑只能显式 commit
+        # 消息标注，没有静默通道）。
+        if: github.event_name == 'pull_request'
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          if git diff --name-only "$BASE"...HEAD \
+              | grep -qE '(^|/)(src/weather_eval/(evaluate|stats|graded)\.py|config/stations\.yaml|tests/baseline/|scripts/calibrate_)'; then
+            echo "评分/口径路径有变更 → 强制运行 golden 对拍"
+            python -m pytest -m "golden" -q
+          else
+            echo "评分/口径路径无变更 → 跳过（可打 golden 标签手动触发）"
+          fi
+
   # ---- 慢层：golden 对拍与性能预算。定时跑 + PR 上可选触发 ----
   # 为什么不塞进 fast：一次真实数据全量构建约 1 分钟，PR 上每次都跑会把反馈
   # 周期拉长一倍；而它保护的是"口径有没有变"，那是按天盯就够的不变量。
+  # 评分/口径路径的 PR 由 fast 作业的"口径对拍强制"步骤兜底（见下）——
+  # "改口径的 PR 只要忘打 golden 标签就能绕过对拍"这一静默缺口已补上。
   golden:
     runs-on: ubuntu-latest
     timeout-minutes: 30

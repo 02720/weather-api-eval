@@ -1,5 +1,5 @@
 {
- "end_dt": "2026-10-02T23:00",
+ "end_dt": "2026-10-04T23:00",
  "hourly_board_days": 16,
  "models": [
   "ecmwf_ifs",
@@ -31,10 +31,10 @@
   "fengqing_ai",
   "cma_public_v1"
  ],
- "n_boot_days": 38,
- "newest_obs_at_freeze": "2026-10-05T19:00",
+ "n_boot_days": 40,
+ "newest_obs_at_freeze": "2026-10-07T08:00",
  "note": "eval_days 由 hourly/daily 记录的天并集决定，day_block_weights 的形状依赖 n_days；对拍必须同轴。end_dt 取的是已沉降终点（最新观测 − settle_hours，再对齐整点日界）：观测会被后续轮次回改，窗口压在回改窗口里，基线从写下起就会腐烂",
- "period_label": "2026-08-01 ~ 2026-10-02",
+ "period_label": "2026-08-01 ~ 2026-10-04",
  "settle_hours": 48,
  "settled": true,
  "start_dt": "2026-08-01T00:00",

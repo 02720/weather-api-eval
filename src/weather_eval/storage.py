@@ -96,6 +96,15 @@ def _exclusive_lock(path: Path):
             yield
         finally:
             fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+            # 释放即删除：锁文件只是临界区句柄，留着会随快照数线性堆积（每天
+            # ~170 个孤儿文件，data_footprint 的 rglob 还要逐个 stat）。经典三
+            # 进程 unlink 竞态（A 持锁、B 排队、C 在 unlink 后新建同名文件）确实
+            # 存在，但其后果恰是 docstring 已接受的"退化为无锁的丢更新"——
+            # 原子 rename 保证无论锁是否失效都不会产生半文件。
+            try:
+                lock_path.unlink()
+            except OSError:
+                pass
 
 
 def _load_json(path: Path) -> Any | None:
@@ -773,9 +782,9 @@ def reports_footprint(root: Path | None = None) -> dict:
             continue
         rel = p.relative_to(base)
         top = rel.parts[0] if rel.parts else ""
-        if rel.parts[0] == "monthly" or (len(rel.parts) > 1 and rel.parts[0] == "monthly"):
+        if top == "monthly":
             key = "monthly"
-        elif top == "data" or (len(rel.parts) > 1 and rel.parts[0] == "data"):
+        elif top == "data":
             key = "data"
         elif top == "assets":
             key = "assets"

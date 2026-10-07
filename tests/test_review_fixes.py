@@ -197,7 +197,7 @@ def test_disclosure_block_is_complete(tmp_path, monkeypatch):
                         start + timedelta(hours=95), "2026-08")
     dw = data["meta"]["difficulty_window"]["all"]
     for key in ("variance", "rank_stability", "rank_sensitivity", "cell_weights",
-                "min_cell_neff", "cell_weighting", "gate_relaxed",
+                "min_cell_neff", "cell_weighting", "gate_relaxed", "row_relaxed",
                 "dropped_thin_cells"):
         assert key in dw, key
     vd = dw["variance"]

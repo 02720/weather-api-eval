@@ -11,10 +11,12 @@
 - 按天：北京时自然日聚合日最高/最低气温、日降水量；按"有效日 − 起报日"的日偏移
   1..16 天分组。温度最高/最低全套指标；降水晴雨 + 连续量 + 24h 累计分级
   （≥0.1/≥10/≥25/≥50/≥100/≥250mm，即小雨..特大暴雨以上）每级 7 项指标。
-  覆盖门槛（第一性原理：缺测绝不伪装成数值）：日聚合同时记录非缺测小时数，
-  观测与预报任一侧的日覆盖不足 daily_min_hours（默认 20/24）时，该天该要素
-  不参与按天评估——降水全缺测日若折算成 0.0 会伪装成"预报无雨"，部分覆盖日的
-  日累计系统性偏低会伪装成"漏报"，两者都是把缺测当技巧。
+  覆盖门槛（第一性原理：缺测绝不伪装成数值）：逐小时聚合路径在**观测与预报共同
+  有值的小时集合**上做日聚合（两侧同集合，缺测小时对两侧同时消失），共同小时数
+  不足 daily_min_hours（默认 20/24）时该天该要素不参与按天评估——降水全缺测日若
+  折算成 0.0 会伪装成"预报无雨"，各自独立聚合则让"预报缺的恰好是最热/最雨的小时"
+  伪装成技巧或失误，两者都是把缺测当数值。源自带日产品的补位路径无小时集可对齐
+  （日产品覆盖 00–24），观测侧用全天聚合并沿用原门槛，~1h 窗口边界差异属既有披露。
 
 评分轨道（2026-09-06 重构，对抗式审查 P0-1/P0-3 的落地）：
 - **降水入分轨道 = 24h 累计 ≥ rain_daily_threshold_mm（默认 1mm）**。
@@ -607,10 +609,27 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                     arr_p = snap["data"][m]["precipitation"]
                     fd: dict[str, dict] = {}
                     fd_frozen: dict[str, dict] = {}
+                    # 共同小时集合上的双测聚合（预报侧与观测侧同一批小时）：按天
+                    # 轨道此前的两侧聚合基于**各自**的非缺测小时集合——观测 24h
+                    # 全在、预报缺的恰好是最热/最雨的 4 小时时，日累计与日极值
+                    # 的"误差"里混进了纯缺测分量（预报侧缺测越多日累计越低、
+                    # 日极值越极端），缺测被伪装成技巧/失误。逐小时轨道天然在
+                    # "两侧同时非缺测"的配对样本上算，两条轨道的缺测哲学必须
+                    # 一致：只有两侧同一小时都有值，该小时才进入按天聚合。
+                    fc: dict[str, dict] = {}
 
                     def _day_bucket(store, day_key):
                         return store.setdefault(day_key, {"max_temp": -math.inf, "min_temp": math.inf,
                                                           "sum_rain": 0.0, "n_temp": 0, "n_rain": 0})
+
+                    def _common_bucket(store, day_key):
+                        # n_temp/n_rain 为两侧共同有值的小时数；obs_* 是同一批
+                        # 小时上的观测聚合（与预报侧逐位同集合）
+                        return store.setdefault(day_key, {
+                            "max_temp": -math.inf, "min_temp": math.inf,
+                            "sum_rain": 0.0, "n_temp": 0, "n_rain": 0,
+                            "obs_max_temp": -math.inf, "obs_min_temp": math.inf,
+                            "obs_sum_rain": 0.0})
 
                     for i in range(d_lo, d_hi):
                         tstr = times[i]
@@ -625,7 +644,27 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                             by_m[m] = by_m.get(m, 0) + 1
                             stats["n_daily_unfrozen_hours"] = stats.get("n_daily_unfrozen_hours", 0) + 1
                         df = None if unfrozen and require_frozen else _day_bucket(fd_frozen, day)
-                        if i < len(arr_t) and arr_t[i] is not None:
+                        rec_o = obs_map.get(tstr)
+                        ot = rec_o.get("temp") if rec_o else None
+                        op = rec_o.get("rain") if rec_o else None
+                        has_t = i < len(arr_t) and arr_t[i] is not None
+                        has_p = i < len(arr_p) and arr_p[i] is not None
+                        # 该小时是否进入共同集合：两侧都有值，且在封存门槛内
+                        # （df is None ⟺ require_frozen 且该小时未封存）
+                        common = df is not None
+                        if common and has_t and ot is not None:
+                            c = _common_bucket(fc, day)
+                            c["max_temp"] = max(c["max_temp"], arr_t[i])
+                            c["min_temp"] = min(c["min_temp"], arr_t[i])
+                            c["obs_max_temp"] = max(c["obs_max_temp"], ot)
+                            c["obs_min_temp"] = min(c["obs_min_temp"], ot)
+                            c["n_temp"] += 1
+                        if common and has_p and op is not None:
+                            c = _common_bucket(fc, day)
+                            c["sum_rain"] += arr_p[i]
+                            c["obs_sum_rain"] += op
+                            c["n_rain"] += 1
+                        if has_t:
                             d["max_temp"] = max(d["max_temp"], arr_t[i])
                             d["min_temp"] = min(d["min_temp"], arr_t[i])
                             d["n_temp"] += 1
@@ -633,7 +672,7 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                                 df["max_temp"] = max(df["max_temp"], arr_t[i])
                                 df["min_temp"] = min(df["min_temp"], arr_t[i])
                                 df["n_temp"] += 1
-                        if i < len(arr_p) and arr_p[i] is not None:
+                        if has_p:
                             d["sum_rain"] += arr_p[i]
                             d["n_rain"] += 1
                             if df is not None:
@@ -652,31 +691,38 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                         if offset <= 0 or offset > daily_max_offset_days:
                             continue
                         oday = obs_daily[sid][day]
-                        # 覆盖门槛：观测与预报任一侧日覆盖不足（缺测多/模式时效边界）
-                        # 时该天该要素不入样——缺测折算成 0.0 或部分日累计都会伪装成技巧
-                        o_temp = (oday["max_temp"] if oday["n_temp"] >= daily_min_hours
-                                  and oday["max_temp"] > -math.inf else None)
-                        o_min = (oday["min_temp"] if oday["n_temp"] >= daily_min_hours
-                                 and oday["min_temp"] < math.inf else None)
-                        o_rain = (oday["sum_rain"]
-                                  if oday["n_rain"] >= max(daily_min_hours, 1) else None)
                         # ---- 预报侧双轨：逐小时聚合优先，覆盖不足才用源自带日产品 ----
-                        d = fd_use.get(day)
-                        h_temp_ok = bool(d and d["n_temp"] >= daily_min_hours
-                                         and d["max_temp"] > -math.inf
-                                         and d["min_temp"] < math.inf)
-                        h_rain_ok = bool(d and d["n_rain"] >= max(daily_min_hours, 1))
+                        # 逐小时聚合路径在**两侧共同有值的小时集合**上取值（含观测
+                        # 侧），门槛是共同小时数——两侧口径逐位一致，缺测小时对两侧
+                        # 同时消失；日产品路径无小时集可对齐（日产品覆盖 00–24），
+                        # 观测侧退回全天聚合（≥daily_min_hours 门槛），其固有的
+                        # ~1h 窗口边界差异沿用既有披露，不修正、不隐藏。
+                        cday = fc.get(day)
+                        h_temp_ok = bool(cday and cday["n_temp"] >= daily_min_hours
+                                         and cday["max_temp"] > -math.inf
+                                         and cday["min_temp"] < math.inf)
+                        h_rain_ok = bool(cday and cday["n_rain"] >= max(daily_min_hours, 1))
                         db = dblock.get(day) or {}
+                        o_temp_fd = (oday["max_temp"] if oday["n_temp"] >= daily_min_hours
+                                     and oday["max_temp"] > -math.inf else None)
+                        o_min_fd = (oday["min_temp"] if oday["n_temp"] >= daily_min_hours
+                                    and oday["min_temp"] < math.inf else None)
+                        o_rain_fd = (oday["sum_rain"]
+                                     if oday["n_rain"] >= max(daily_min_hours, 1) else None)
                         if h_temp_ok:
-                            f_temp, f_min, temp_src = d["max_temp"], d["min_temp"], "hourly"
+                            f_temp, f_min, temp_src = cday["max_temp"], cday["min_temp"], "hourly"
+                            o_temp, o_min = cday["obs_max_temp"], cday["obs_min_temp"]
                         else:
                             f_temp, f_min = db.get("temp_max"), db.get("temp_min")
                             temp_src = "daily" if (f_temp is not None or f_min is not None) else None
+                            o_temp, o_min = o_temp_fd, o_min_fd
                         if h_rain_ok:
-                            f_rain, rain_src = d["sum_rain"], "hourly"
+                            f_rain, rain_src = cday["sum_rain"], "hourly"
+                            o_rain = cday["obs_sum_rain"]
                         else:
                             f_rain = db.get("precipitation")
                             rain_src = "daily" if f_rain is not None else None
+                            o_rain = o_rain_fd
                         if o_temp is None and o_min is None and o_rain is None \
                                 and f_temp is None and f_min is None and f_rain is None:
                             continue  # 该天无任何可用日聚合，不入样
@@ -2982,18 +3028,38 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
                                                  cell_weighting, min_cell_neff)
         n_with = int(np.isfinite(S).any(axis=1).sum())
         min_col = max(2, min(_stats.MIN_MODELS_PER_BUCKET, n_with)) if n_with else 1
-        adj = _stats.two_way_adjust(S, min_col=min_col, min_row=1, weights=W_cell,
+        # min_row 的第一尝试用 stats 模块的默认 2（MIN_BUCKETS_PER_MODEL）：只在
+        # 1 个桶有分的行，其 α_m 与那一桶的 β_b 在数学上完全混淆（design_mask
+        # docstring 的可识别性论证），把它放进设计等于让"没被考的科目自动满分"。
+        # 旧值 1 是双轨道重构时从旧榜原样带来的，不是决策。
+        # 回退是**梯度**而非一步到底：数据太薄时先退 min_row（权重门槛仍守住），
+        # 设计仍空才放弃格子权重门槛——反过来的顺序会让 min_row=2 的空设计
+        # 触发 gate_relaxed、把薄格子成批放回设计（实测：跨站 ρ̄≈1 的合成数据里
+        # 权重门槛本已把 n_eff≈1 的格子剔掉，一步放弃门槛等于整个失守）。
+        adj = _stats.two_way_adjust(S, min_col=min_col, min_row=2, weights=W_cell,
                                     min_cell_weight=cell_min_w,
                                     min_col_frac=min_col_frac, ridge=ridge,
                                     segment_sizes=spec["segments"])
         gate_relaxed = False
-        if cell_min_w > 0 and not (adj["row_keep"].any() and adj["col_keep"].any()):
+        row_relaxed = False
+
+        def _design_ok(a):
+            return bool(a["row_keep"].any() and a["col_keep"].any())
+
+        if cell_min_w > 0 and not _design_ok(adj):
+            adj = _stats.two_way_adjust(S, min_col=min_col, min_row=1,
+                                        weights=W_cell, min_cell_weight=cell_min_w,
+                                        min_col_frac=min_col_frac, ridge=ridge,
+                                        segment_sizes=spec["segments"])
+            row_relaxed = True
+        if cell_min_w > 0 and not _design_ok(adj):
             adj = _stats.two_way_adjust(S, min_col=min_col, min_row=1,
                                         weights=W_cell, min_cell_weight=0.0,
                                         min_col_frac=min_col_frac, ridge=ridge,
                                         segment_sizes=spec["segments"])
             gate_relaxed = True
-        degraded = not (adj["row_keep"].any() and adj["col_keep"].any())
+            row_relaxed = False
+        degraded = not _design_ok(adj)
         if degraded:
             # 降级 = 可用格子凑不出可比较的设计（典型：只接了一个源）。此时放宽
             # 同台/相对门槛是唯一诚实的出路，但**赛段门槛不能跟着放宽**——
@@ -3012,6 +3078,7 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
                                             min_col_frac=0.0, ridge=ridge)
         designs[name] = {"spec": spec, "adj": adj, "W_cell": W_cell,
                          "gate_relaxed": gate_relaxed, "degraded": degraded,
+                         "row_relaxed": row_relaxed,
                          # 总榜的列是 [hourly H | daily D]，行级样本计数要按半截分开
                          "n_hourly": H, "n_daily": D,
                          # 劈分口径（披露用：读者要能核对这一榜用了什么门槛）
@@ -3463,6 +3530,7 @@ def _board_window(models, name, design, spec, H, long_tail_board) -> dict:
         "models": int(row_keep.sum()),
         "degraded": bool(design["degraded"]),
         "gate_relaxed": bool(design["gate_relaxed"]),
+        "row_relaxed": bool(design.get("row_relaxed", False)),
         "difficulty": {_col_label(c, name, H): (_fin(cols[c], 2) if np.isfinite(cols[c]) else None)
                        for c in range(days)},
         "coverage": {_col_label(c, name, H): int((np.isfinite(S[:, c]) & row_keep).sum())

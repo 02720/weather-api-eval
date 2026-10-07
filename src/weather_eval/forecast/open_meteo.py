@@ -48,7 +48,7 @@ from typing import Any
 import requests
 
 from .base import ForecastProvider
-from .http import DEFAULT_UA, TimeBudget, request_with_retries
+from .http import DEFAULT_TIMEOUT, DEFAULT_UA, TimeBudget, request_with_retries
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,8 @@ def _model_key(units: dict, base: str, model: str, allow_bare: bool = True) -> s
 
 
 class OpenMeteoProvider(ForecastProvider):
-    def __init__(self, timeout: int = 60, retries: int = 3, session: requests.Session | None = None):
+    def __init__(self, timeout: int | tuple = DEFAULT_TIMEOUT,
+                 retries: int = 3, session: requests.Session | None = None):
         self.timeout = timeout
         self.retries = retries
         self.session = session or requests.Session()
@@ -191,6 +192,23 @@ def _parse_daily(payload: dict, models: list[str], allow_bare: bool,
                        "本次快照不带逐日预报块，按天评估将只用逐小时聚合", station_id)
         return None
     units = payload.get("daily_units") or {}
+    # 第四轮 P2-7：日轴必须升序、去重、合法 ISO 日期（base 契约）。畸形值
+    # （None→"None"）此前会变成垃圾日键、重复日后者在评估侧静默覆盖前者。
+    # 过滤/去重必须同步作用于数值数组：否则轴与数组按索引错位，评估侧按
+    # 错误日期配对且无任何告警（contract：三数组与 daily_time 等长对齐）
+    from datetime import date as _date
+    seen: set[str] = set()
+    axis: list[str] = []
+    keep_idx: list[int] = []
+    for i, t in enumerate(dtimes):
+        try:
+            key = _date.fromisoformat(str(t)[:10]).isoformat()
+        except (ValueError, TypeError):
+            continue
+        if key not in seen:
+            seen.add(key)
+            axis.append(key)
+            keep_idx.append(i)
     data: dict[str, dict] = {}
     for model in models:
         resolved: list[tuple[str, str]] = []   # [(响应键, 输出名)]
@@ -208,23 +226,19 @@ def _parse_daily(payload: dict, models: list[str], allow_bare: bool,
                                "写入逐日块", model, key)
         if not resolved:
             continue
-        data[model] = {out: (daily.get(resp) if isinstance(daily.get(resp), list) else None)
-                       for resp, out in resolved}
+        data[model] = {}
+        for resp, out in resolved:
+            arr = daily.get(resp)
+            if not isinstance(arr, list):
+                data[model][out] = None
+            elif len(arr) == len(keep_idx) == len(axis):
+                data[model][out] = arr
+            else:
+                # 轴被过滤/去重过，或数组短于原始日轴：按保留索引裁剪对齐，
+                # 越界位置按缺测写入，绝不前移对齐、绝不造值
+                data[model][out] = [arr[i] if i < len(arr) else None for i in keep_idx]
     if not data:
         logger.warning("Open-Meteo 站点 %s 的 daily 组未解析出任何模型，"
                        "本次快照不带逐日预报块", station_id)
         return None
-    # 第四轮 P2-7：日轴必须升序、去重、合法 ISO 日期（base 契约）。畸形值
-    # （None→"None"）此前会变成垃圾日键、重复日后者在评估侧静默覆盖前者
-    from datetime import date as _date
-    seen: set[str] = set()
-    axis: list[str] = []
-    for t in dtimes:
-        try:
-            key = _date.fromisoformat(str(t)[:10]).isoformat()
-        except (ValueError, TypeError):
-            continue
-        if key not in seen:
-            seen.add(key)
-            axis.append(key)
     return {"time": axis, "data": data}

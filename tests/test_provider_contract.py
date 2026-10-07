@@ -45,6 +45,13 @@ def test_provider_uses_unified_timeout(path):
     # 不允许再出现硬编码的 tuple 超时字面量
     assert not re.search(r"timeout[^=\n]*=\s*\(\s*\d+\s*,\s*\d+\s*\)", src), \
         f"{path.stem} 仍在硬编码连接/读取超时"
+    # 标量默认值同样被禁：requests 把标量视作 (connect, read) 同值——
+    # 连接超时被放大到 60s，慢源可多占 50s × 重试次数 × 站数
+    assert not re.search(r"timeout[^=\n]*=\s*\d+", src), \
+        f"{path.stem} 仍在硬编码标量超时（应引用 http.DEFAULT_TIMEOUT）"
+    # 带超时参数的模块必须真正引用统一常量
+    assert "DEFAULT_TIMEOUT" in src, \
+        f"{path.stem} 有超时参数但未引用 http.DEFAULT_TIMEOUT"
 
 
 def test_time_budget_semantics():

@@ -137,8 +137,8 @@ def _records_from_wd(wd: dict, cnt: _NonHourCounter) -> list[dict]:
         rec = {"time": iso(dt), "source": "wd"}
         for src_key, out_key in NUMERIC_KEYS.items():
             arr = wd.get(src_key)
-            rec[out_key] = plausible(out_key, rec.get(out_key))
-            rec[out_key] = _to_float(arr[i]) if (arr and i < len(arr)) else None
+            rec[out_key] = plausible(
+                out_key, _to_float(arr[i]) if (arr and i < len(arr)) else None)
         out.append(rec)
     return out
 
@@ -192,7 +192,9 @@ def _records_from_table(html: str, cnt: _NonHourCounter) -> list[dict]:
         for out_key, idx in col.items():
             if out_key == "time":
                 continue
-            rec[out_key] = _to_float(tds[idx].get_text(strip=True)) if idx < len(tds) else None
+            rec[out_key] = plausible(
+                out_key,
+                _to_float(tds[idx].get_text(strip=True)) if idx < len(tds) else None)
         out.append(rec)
     return out
 

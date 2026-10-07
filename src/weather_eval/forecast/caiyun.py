@@ -253,9 +253,9 @@ class CaiyunProvider(ForecastProvider):
         # 此时评估会静默丢失样本——显式告警以暴露降级。
         if len(hourly_time) < MAX_HOURLY_STEPS // 2:
             logger.warning(
-                "彩云站点 %s 仅返回 %d 个逐小时点（请求 %d，约 %dh）。长时效可能被 Token/User-Agent 限制截断，"
+                "彩云站点 %s 仅返回 %d 个逐小时点（请求 %d 点，约 %dh）。长时效可能被 Token/User-Agent 限制截断，"
                 "评估仅覆盖约 %dh；若预期为完整 16 天，请检查 User-Agent 与 Token 权限。",
-                station.id, len(hourly_time), MAX_HOURLY_STEPS, len(hourly_time), len(hourly_time),
+                station.id, len(hourly_time), MAX_HOURLY_STEPS, MAX_HOURLY_STEPS, len(hourly_time),
             )
 
         # 以响应 location[lon,lat] 为实际格点（彩云不做吸附，通常等于请求坐标）

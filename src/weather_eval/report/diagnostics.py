@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
-from ..timeutil import parse_iso as _timeutil_parse_iso, lower_split, upper_split
+from ..timeutil import parse_iso as _timeutil_parse_iso, lower_split, upper_split, minute_index
 from .. import stats as st
 
 logger = logging.getLogger(__name__)
@@ -108,11 +108,16 @@ def iter_error_samples(forecasts_root: Path, obs_by_station: dict[str, dict],
                        months: list[str], start: str | None = None,
                        end: str | None = None,
                        snapshots: dict[tuple[str, str], list[dict]] | None = None,
+                       with_rain: bool = False,
                        ) -> tuple[dict[str, dict[tuple, float]],
                                    dict[str, dict[tuple, float]]]:
     """遍历全部冻结快照，重建"逐样本误差"。
 
     返回 ``(temp_err, rain_err)``，结构均为 ``{model: {(station, valid_time, lead_day): error}}``。
+    ``with_rain=False``（默认）时 rain_err 恒为空 dict：当前的三个消费者
+    （cross_source_correlation / station_rho / Holm k_eff）全部只吃温度误差，
+    降水分支算完即弃（实测白占诊断层内层循环约一半工作量）。需要降水分列的
+    未来诊断显式传 ``with_rain=True``。
 
     键为什么是三元组：跨源相关必须在**同一个物理样本**上比。同一有效时刻、同一
     提前天数、同一站点的两家预报，面对的是同一批天气与同一个锚点误差——这才是
@@ -161,10 +166,16 @@ def iter_error_samples(forecasts_root: Path, obs_by_station: dict[str, dict],
         if not obs:
             continue
         t_map = temp_err.setdefault(model, {})
-        r_map = rain_err.setdefault(model, {})
-        issue = _parse_iso(snap.get("issue_iso") or "")
+        r_map = rain_err.setdefault(model, {}) if with_rain else None
+        issue_iso = snap.get("issue_iso") or ""
+        issue = _parse_iso(issue_iso)
         if issue is None:
             continue
+        # 分钟序号快路径（与 collect 同源，timeutil 已论证逐位等价）：issue 与
+        # 有效时刻都是分钟分辨率时，(im差) // 1440 即逐点 timedelta 整除的
+        # lead_days；任一侧不符合该格式（None）必须回退 datetime 路径——
+        # 绝不把"解析不了"当成 0
+        issue_im = minute_index(issue_iso)
         # ---- 三段剪枝（2026-10 性能轮）：把逐点判定换成"下标区间" ----
         # 本函数原本对窗口内**每一个**有效时刻都做一次 datetime 解析 + 两次
         # datetime 比较 + 一次 timedelta 整除（实测 210 万次调用、独占 6.2 s），而
@@ -174,8 +185,8 @@ def iter_error_samples(forecasts_root: Path, obs_by_station: dict[str, dict],
         #   · 该时刻必须有观测（obs 查表，无法剪枝）。
         # 存档时间轴是分钟分辨率的定长 ISO 且升序（212 万点实测），故字典序 ==
         # 时间序，两个区间都能一次二分定界（定界函数与 collect 共用 timeutil，
-        # 含"边界带秒"的等价处理）。lead_days 仍按原口径逐点计算——剪枝只跳过
-        # **注定被丢弃**的点，不改动任何判定。
+        # 含"边界带秒"的等价处理）。lead_days 走 minute_index 的整数快路径
+        # （与 collect 同源、逐位等价），issue/时刻不符合分钟格式时回退 datetime。
         # 剪枝要求时间轴是**升序 list**（bisect 的前提）。类型不符就整份跳过：
         # 原实现用 enumerate 容忍任何可迭代对象，但那只会产出无意义的键。处置
         # 纪律与 collect 的 _snapshot_struct_valid 一致——畸形存档降级为不入样，
@@ -202,22 +213,27 @@ def iter_error_samples(forecasts_root: Path, obs_by_station: dict[str, dict],
             temps = series.get("temperature_2m") or []
             rains = series.get("precipitation") or []
             tg = t_map if key_model == model else temp_err.setdefault(key_model, {})
-            rg = r_map if key_model == model else rain_err.setdefault(key_model, {})
+            rg = (r_map if key_model == model else rain_err.setdefault(key_model, {})) \
+                if with_rain else None
             for idx in range(lo_i, hi_i):
                 t_iso = times[idx]
                 rec = obs.get(t_iso)
                 if not rec:
                     continue
-                vt = _parse_iso(t_iso)
-                if vt is None:
-                    continue
-                lead_days = int((vt - issue) // timedelta(days=1))
+                t_im = minute_index(t_iso)
+                if t_im is not None and issue_im is not None:
+                    lead_days = (t_im - issue_im) // 1440
+                else:
+                    vt = _parse_iso(t_iso)
+                    if vt is None:
+                        continue
+                    lead_days = int((vt - issue) // timedelta(days=1))
                 key = (station, t_iso, lead_days)
                 if idx < len(temps) and rec.get("temp") is not None:
                     fv = temps[idx]
                     if isinstance(fv, (int, float)) and abs(float(fv)) < 900:
                         tg[key] = float(fv) - float(rec["temp"])
-                if idx < len(rains) and rec.get("rain") is not None:
+                if r_map is not None and idx < len(rains) and rec.get("rain") is not None:
                     fv = rains[idx]
                     if isinstance(fv, (int, float)) and float(fv) >= 0:
                         # 降水用"有无"的偏离（观测 −0.5/预报 +0.5 会互相抵消）

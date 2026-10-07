@@ -115,6 +115,64 @@ def test_daily_block_multimodel_uses_own_column():
     assert snap["daily"]["ncep_gfs_global"]["precipitation"] == [1.0]
 
 
+def test_daily_block_axis_filter_syncs_arrays():
+    payload = {
+        "latitude": 23.5, "longitude": 111.3, "elevation": 100,
+        "hourly": {"time": ["2026-08-24T00:00"],
+                   "temperature_2m_ecmwf_ifs": [20.0], "precipitation_ecmwf_ifs": [0.0]},
+        "hourly_units": {"temperature_2m_ecmwf_ifs": "°C", "precipitation_ecmwf_ifs": "mm"},
+        "daily": {"time": ["2026-08-24", "2026-08-24", "BAD", "2026-08-25"],
+                  "temperature_2m_max_ecmwf_ifs": [30.0, 31.0, 99.0, 28.0],
+                  "temperature_2m_min_ecmwf_ifs": [20.0, 21.0, 50.0, 18.0],
+                  "precipitation_sum_ecmwf_ifs": [0.0, 0.5, 9.9, 5.5]},
+        "daily_units": {"temperature_2m_max_ecmwf_ifs": "°C",
+                        "temperature_2m_min_ecmwf_ifs": "°C",
+                        "precipitation_sum_ecmwf_ifs": "mm"},
+    }
+    src = OpenMeteoProvider(session=FakeSession(json.dumps(payload)))
+
+    class S:
+        id = "s1"
+        lat = 23.5
+        lon = 111.3
+
+    snap = src.fetch_snapshot(S(), ["ecmwf_ifs"])
+    # 回归：日轴去重/过滤畸形条目后，数值数组必须同步裁剪——否则轴与数组按
+    # 索引错位，2026-08-25 会读到重复日 31.0（真值 28.0）且无任何告警
+    assert snap["daily_time"] == ["2026-08-24", "2026-08-25"]
+    assert snap["daily"]["ecmwf_ifs"]["temp_max"] == [30.0, 28.0]
+    assert snap["daily"]["ecmwf_ifs"]["temp_min"] == [20.0, 18.0]
+    assert snap["daily"]["ecmwf_ifs"]["precipitation"] == [0.0, 5.5]
+
+
+def test_daily_block_short_array_pads_missing():
+    """数组短于原始日轴：越界位置按缺测写入，绝不前移对齐、绝不造值。"""
+    payload = {
+        "latitude": 23.5, "longitude": 111.3, "elevation": 100,
+        "hourly": {"time": ["2026-08-24T00:00"],
+                   "temperature_2m_ecmwf_ifs": [20.0], "precipitation_ecmwf_ifs": [0.0]},
+        "hourly_units": {"temperature_2m_ecmwf_ifs": "°C", "precipitation_ecmwf_ifs": "mm"},
+        "daily": {"time": ["2026-08-24", "2026-08-25", "2026-08-26"],
+                  "temperature_2m_max_ecmwf_ifs": [30.0, 31.0],
+                  "temperature_2m_min_ecmwf_ifs": [20.0, 21.0, 22.0],
+                  "precipitation_sum_ecmwf_ifs": [0.0, 0.5, 1.0]},
+        "daily_units": {"temperature_2m_max_ecmwf_ifs": "°C",
+                        "temperature_2m_min_ecmwf_ifs": "°C",
+                        "precipitation_sum_ecmwf_ifs": "mm"},
+    }
+    src = OpenMeteoProvider(session=FakeSession(json.dumps(payload)))
+
+    class S:
+        id = "s1"
+        lat = 23.5
+        lon = 111.3
+
+    snap = src.fetch_snapshot(S(), ["ecmwf_ifs"])
+    assert snap["daily_time"] == ["2026-08-24", "2026-08-25", "2026-08-26"]
+    assert snap["daily"]["ecmwf_ifs"]["temp_max"] == [30.0, 31.0, None]
+    assert snap["daily"]["ecmwf_ifs"]["temp_min"] == [20.0, 21.0, 22.0]
+
+
 def test_fetch_snapshot_multi_model():
     payload = {
         "latitude": 23.5, "longitude": 111.3, "elevation": 100,

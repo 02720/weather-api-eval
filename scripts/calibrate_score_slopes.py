@@ -47,6 +47,11 @@ import numpy as np
 
 SD_TARGET = 8.0            # 每个子分的目标桶内跨源 sd（分）
 MIN_MODELS_PER_BUCKET = 3  # 同审查报告：桶内 ≥3 家才参与离散度估计
+# 标定验收阈值（2026-10 复核新增）：任一维的子分超过该比例落在 [95,100] 或 [0,5]
+# 饱和带上即判定标定失败。λ 标定只等化"桶内跨源离散度"，不等化"水平"——大片
+# 格子贴边意味着该维在 0~100 尺上没有可用梯度：要么给所有源发同一个常数、要么
+# 给出一片悬崖，名义权重形同虚设。重标或换族后重新体检，通过才允许冻结。
+SATURATION_FAIL_SHARE = 0.30
 
 # 温度/降水各项 → (维度轨道源, 换算族, 梯度区判据)。换算族必须与
 # evaluate.py 的 _conv_pct/_conv_dev/_conv_log 一一对应（脚本直接调生产函数核验，
@@ -60,12 +65,14 @@ ITEMS = (
     ("r", "temp", "pct", False),
     ("mbe", "temp", "dev", False),
     ("slope", "temp", "log", True),
+    ("mbe_bdisp", "temp", "dev", False),   # 站间一致性（2026-10-06 入分，空间一致性族）
     ("ets", "precip", "pct", False),
     ("pod", "precip", "pct", False),
     ("far", "precip", "dev", False),
     ("bias", "precip", "log", True),
     ("amt_mae", "precip", "dev", False),   # 雨量量级（相对口径）
     ("amt_bias", "precip", "log", True),   # 雨量总量比（log 对称）
+    ("grade_ets", "precip", "pct", False), # 雨强分辨力（2026-10-06 入分）
 )
 
 
@@ -355,6 +362,8 @@ def main():
     ap.add_argument("--live-days", type=int, default=30)
     ap.add_argument("--target", type=float, default=SD_TARGET,
                     help=f"每个子分的目标桶内跨源 sd（默认 {SD_TARGET} 分）")
+    ap.add_argument("--strict", action="store_true",
+                    help="标定验收（§1.5）发现饱和带超标时以非零退出（默认只告警）")
     args = ap.parse_args()
 
     ts = load_track_sources(args)
@@ -386,6 +395,45 @@ def main():
             per = f"{1 / lam:.2f}"
         print(f"{key:7s} {family:4s} {s1:8.3f} {lam:9.4f} {per:>9s} {sat:>8s}"
               f" {n_used:6d} {deg:5d}")
+
+    # ---- 1.5) 标定验收：子分水平体检 ----
+    # 反解只保证"桶内跨源 sd = 8"，不保证水平可用。用候选 λ 逐项体检子分的
+    # 水平分布：>SATURATION_FAIL_SHARE 的格子落在 [95,100] 或 [0,5] 即告警。
+    # 默认只告警不失败：log 族指标（slope/amt_bias 类）的"贴上沿"常是数据本性
+    # （多数源在该维确实接近完美），换 λ 无从 cure，硬失败会让重标定永远跑不完；
+    # 需要把体检当门禁（重标定 CI 化时）加 --strict。体检用**未中心化**的子分
+    # ——水平问题恰恰在中心化时被抹掉，那是旧流程看不见它的原因。
+    print(f"\n=== 1.5) 标定验收：子分水平体检（>{SATURATION_FAIL_SHARE:.0%} 落"
+          f" [95,100]/[0,5]{' 即失败' if args.strict else '（告警）'}） ===")
+    print(f"{'项':7s} {'均值':>7s} {'P10':>7s} {'P90':>7s} {'∈[95,100]':>9s} {'∈[0,5]':>7s}")
+    sat_fail: list[str] = []
+    for key, dim, family, grad in ITEMS:
+        cells = collect_cells(ts, key, dim)
+        lam = lambdas.get(key)
+        if lam is None or not cells:
+            continue
+        mk = _sub_factory(family)
+        subs = [mk(lam)(v) for bu in cells.values()
+                for v in bu.values() if not (grad and v <= 0)]
+        if len(subs) < 30:
+            continue
+        a = np.clip(np.asarray(subs, dtype=float), 0.0, 100.0)
+        hi = float(np.mean(a >= 95.0))
+        lo = float(np.mean(a <= 5.0))
+        print(f"{key:7s} {a.mean():7.2f} {np.percentile(a, 10):7.2f} "
+              f"{np.percentile(a, 90):7.2f} {hi:9.1%} {lo:7.1%}")
+        if hi > SATURATION_FAIL_SHARE or lo > SATURATION_FAIL_SHARE:
+            sat_fail.append(key)
+    if sat_fail:
+        msg = (f"{', '.join(sat_fail)} 的子分超 {SATURATION_FAIL_SHARE:.0%} 落在饱和带"
+               "——检查该维是否有可用梯度；log 族贴上沿若属数据本性可豁免，"
+               "换族/调锚点需连带重估权重。")
+        if args.strict:
+            print(f"\n✗ 标定验收失败（--strict）：{msg}")
+            sys.exit(1)
+        print(f"\n⚠ 标定验收告警：{msg}")
+    else:
+        print("✓ 标定验收通过：所有维度的饱和占比均在阈值内")
 
     # ---- 2) 核验（生产评分函数 + 冻结值）----
     print("\n=== 2) 核验：生产评分函数下的逐项影响力占比（应 ≈ 名义权重） ===")
@@ -465,7 +513,9 @@ def main():
             "far": "空报率每高 %.2f 个百分点扣 1 分",
             "bias": "报雨频率每偏 %.2f 倍扣 1 分（超/欠报对称，±%.0f 倍记 0 分）",
             "amt_mae": "相对雨量误差每高 %.3f 扣 1 分（≥%.1f 倍记 0 分）",
-            "amt_bias": "雨量总量每偏 %.2f 倍扣 1 分（超/欠报对称，±%.0f 倍记 0 分）"}
+            "amt_bias": "雨量总量每偏 %.2f 倍扣 1 分（超/欠报对称，±%.0f 倍记 0 分）",
+            "mbe_bdisp": "站间偏差离散度每差 %.3f°C 扣 1 分（≥%.1f°C 记 0 分）",
+            "grade_ets": "雨强分辨力（中雨/大雨档 ETS 加权）每差 %.3f 扣 1 分"}
     for key, _dim, fam, _g in ITEMS:
         if key not in lambdas:
             continue
@@ -473,7 +523,7 @@ def main():
         v = vern[key]
         if fam == "log":
             txt = v % (1 / lam, 2 ** (100 / lam))
-        elif key in ("rmse", "mae", "mbe", "amt_mae"):
+        elif key in ("rmse", "mae", "mbe", "amt_mae", "mbe_bdisp"):
             txt = v % (1 / lam, 100 / lam)
         else:
             txt = v % (1 / lam)

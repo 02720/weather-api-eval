@@ -216,7 +216,10 @@ def _slim_report(report_data: dict) -> dict:
     order = [r["m"] for r in board] or [r["model"] for r in heat_rows]
     dates = sorted({r["date"] for r in heat_rows})
     heat_idx = {(r["model"], r["date"]): r for r in heat_rows}
-    heat_models = [r for r in order if any(x["model"] == r for x in heat_rows)]
+    # 热力行只保留"在热力图里有数据"的模型：先建集合再求交，避免
+    # O(len(order) × len(heat_rows)) 的逐对字符串比较（热力图扩到一年时会放大）
+    heat_model_set = {r["model"] for r in heat_rows}
+    heat_models = [r for r in order if r in heat_model_set]
     heat_mats: dict[str, list] = {k: [] for k in ("acc", "acc1", "rmse", "mae",
                                                   "mbe", "ts", "ets", "accr",
                                                   "pod", "far", "n", "nr")}
@@ -429,6 +432,14 @@ def _atomic_write_text(path: Path, text: str) -> None:
             f.write(text)
         os.chmod(tmp, 0o644)   # mkstemp 默认 0600，恢复常规读权限
         os.replace(tmp, path)
+    except BaseException:
+        # os.fdopen 抛错时它还没接管 fd，描述符会就此泄漏（与
+        # storage._atomic_write_json 同一教训：长跑进程最终撞 ulimit）
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)

@@ -711,6 +711,50 @@ def test_daily_partial_coverage_day_gated(tmp_path, monkeypatch):
     assert data["temp_daily"]["ecmwf_ifs"]["2d"]["max"]["n"] == 1   # 完整天保留
 
 
+def test_daily_aggregation_on_common_hours(tmp_path, monkeypatch):
+    """按天聚合必须在两侧共同有值的小时集合上进行（口径对齐）。
+
+    此前两侧各自独立聚合：观测 24h 全在、预报缺的恰好是最热/最雨的 4 个小时
+    （仍有 20h 达门槛）时，日最高"误差"里混进了纯缺测分量——观测侧 max=30
+    （含缺测时段），预报侧 max=21（不含），把 9°C 的假误差当成模式失误。
+    共同小时口径下，缺测小时对两侧同时消失，误差回归真实水平。"""
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    start = datetime(2026, 8, 24, 0, 0)
+    # 观测 3 天完整：offset 1 当天 12–15 时出现 30°C 高温，其余 20°C；雨只在 13 时 10mm
+    obs = []
+    for h in range(24 * 3):
+        t = start + timedelta(hours=h)
+        hot = (24 <= h < 48) and (12 <= h - 24 <= 15)
+        obs.append({"time": iso(t),
+                    "temp": 30.0 if hot else 20.0,
+                    "rain": 10.0 if h == 24 + 13 else 0.0})
+    storage.save_obs("s1", obs)
+
+    # 预报 offset 1 当天恰好缺 12–15 时（20/24 小时，仍过旧的小时数门槛）
+    def temps(off, h):
+        if off != 1:
+            return None if off == 0 else 21.0
+        return None if 12 <= h <= 15 else 21.0
+    def precs(off, h):
+        if off != 1:
+            return 0.0
+        return None if 12 <= h <= 15 else 0.0
+    _save_day_snapshot("s1", "ecmwf_ifs", start, [(0, 24), (1, 24), (2, 24)],
+                       temps, precs)
+
+    cfg = dict(CFG, min_sample=1)   # 单配对日也要出指标（本测试只关心口径对齐）
+    data = build_report(["s1"], ["ecmwf_ifs"], cfg, start,
+                        start + timedelta(hours=71), "2026-08")
+    t1 = data["temp_daily"]["ecmwf_ifs"]["1d"]
+    # 共同小时 = 20（12–15 时两侧同时消失）：两侧 max 都是各自 20h 上的 21/20
+    assert t1["max"]["n"] == 1
+    assert t1["max"]["rmse"] == 1.0      # 21 − 20（共同小时上），而非旧口径的 9
+    # 降水同理：13 时（10mm）不在共同集合，两侧日累计同为 0 → 无假"漏报"
+    p1 = data["precip_daily"]["ecmwf_ifs"]["1d"]
+    assert p1["n"] == 1
+    assert p1["pod"] is None or p1["pod"] == 0.0   # 无雨日无命中可言，不产生漏报
+
+
 def test_daily_multi_model_snapshot_attributed_separately(tmp_path, monkeypatch):
     """M5 回归：多模型共享时间轴的存档，按天聚合必须按模型分别展开，
     不能把所有模型混算后全部记到最后一个模型名下。"""
