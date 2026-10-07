@@ -166,9 +166,9 @@
      指标"收进一个列组，同一时刻只展开一族，默认概览保持总榜的原有宽度。
      实现是 radio + 兄弟选择器（.lb-scroll 必须是 input 的后续兄弟），不依赖
      JS——服务端渲染的榜单在无 JS 环境里页签照常可切、榜单照常可读。 */
-  .lb-dims { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px;
+  .lb-dims { display:flex; flex-wrap:wrap; align-items:center; gap:8px 0;
              margin:2px 0 12px; position:relative; }
-  .lb-dims > .controls { margin:0; flex:1 1 auto; }
+  .lb-dims > .controls { margin:0 0 0 16px; flex:1 1 auto; }
   .lb-dims > .lb-scroll { flex:1 0 100%; }
   /* 隐藏 radio 必须显式钉在本容器左上角（= 页签行）：零尺寸 abspos 元素的
      static position 在 flex 容器里会被 Chrome 解析到离谱的远处（实测在表格
@@ -180,10 +180,13 @@
             padding:6px 14px; cursor:pointer; user-select:none; white-space:nowrap; }
   .lb-tab:hover { color:var(--blue-deep); border-color:var(--blue); z-index:1;
                   position:relative; }
-  /* 零宽 radio 夹在标签中间，段式（.seg）外观用首尾圆角拼出来 */
+  /* 零宽 radio 夹在标签中间，段式（.seg）外观用首尾圆角拼出来；相邻页签
+     -1px 外边距拼边（共边只画 1px），悬停/选中态的整圈边框靠 hover 规则
+     已有的 position:relative + z-index 压在邻格之上。页签行内不能有列间
+     距——容器 gap 的列分量必须为 0，与页签的间距交给 .controls 左边距。 */
   .lb-tab:first-of-type { border-radius:9px 0 0 9px; }
   .lb-tab:last-of-type { border-radius:0 9px 9px 0; }
-  .lb-tab:not(:first-of-type) { border-left-width:0; }
+  .lb-tab:not(:first-of-type) { margin-left:-1px; }
   #lbdim-ov:checked + label, #lbdim-temp:checked + label,
   #lbdim-rain:checked + label { background:var(--ink); color:#fff;
                                 border-color:var(--ink); }
