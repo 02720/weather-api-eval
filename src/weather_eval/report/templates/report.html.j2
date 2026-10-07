@@ -12,6 +12,13 @@
     服务端渲染（无 JS 可读的硬约束不破），切到某个「提前 N 天」后由前端把
     服务端排好序的行填进同一张表（前端只搬运、不重算名次）。分时效的直接
     对照也可在 §02 衰减曲线上读。
+  - 2026-10 指标页签：两维全部已评测指标（温度 8 项 / 降水 9 项）收进
+    「概览 / 🌡️ 温度 / 🌧️ 降水」列组——radio + 兄弟选择器纯 CSS 切换，无 JS 时
+    页签照常可切；默认「概览」只看总分，横排不因指标扩表而拉长。页签在分时效
+    榜同样可用：总榜的单项与综合分走同一张劈分设计，分榜是同档直接对照的原始
+    口径（slim 行数组按下标携带全指标，与 JS LB_METRIC_COLS 三处同步）。
+    隐藏 radio 必须显式钉在页签行内：零尺寸 abspos 元素的 static position 在
+    flex 容器里会被 Chrome 解析到表格中部，聚焦即页面下跳（实测教训，CSS 有注）。
   - 榜单表格、得分走势线（SVG）、Hero 实况曲线都在 Python 侧生成：无 JS 也能
     读到完整榜单，"前端异常 → 榜单静默消失"这类事故失去载体。
   - 内联 JSON 只含图表用字段（render._slim_report），页面从 1.9MB 降到数百 KB；
@@ -157,7 +164,12 @@
   .dot { display:inline-block; width:9px; height:9px; border-radius:50%;
          margin-right:8px; vertical-align:0; }
   .lb-table .c-name b { color:var(--ink); font-size:13.5px; }
-  .lb-table .c-name .mid { color:#9aa8bd; font-size:10.5px; margin-left:6px; }
+  .lb-table .c-name .mid { color:#9aa8bd; font-size:10.5px; margin-left:6px;
+      /* 模型 id 是次要信息：限宽省略（悬停 title 看全名）。列的 min-content
+         由「最长显示名 + id」决定，id 不限宽时一行 449px，概览 8 列也会被
+         顶出横滚；92px 让短 id（msn_v1、tj_t2）完整、长 id 省略。 */
+      display:inline-block; max-width:92px; overflow:hidden;
+      text-overflow:ellipsis; white-space:nowrap; vertical-align:bottom; }
   .dagger { color:var(--muted); font-weight:700; cursor:help; margin-left:2px; }
   .warn-badge { cursor:help; }
   tr.is-top td { background:#fdfaf1; }
@@ -178,6 +190,47 @@
   .c-spark svg { display:block; }
   .c-spark { min-width:110px; }
   .ci-cell { color:var(--muted); font-size:12px; }
+
+  /* ===== §01 指标列页签：概览 / 温度 / 降水（纯 CSS，无 JS 也能用） =====
+     15 项已评测指标全铺成列会把横排拉到两千像素开外；页签把"这一维的全部
+     指标"收进一个列组，同一时刻只展开一族，默认概览保持总榜的原有宽度。
+     实现是 radio + 兄弟选择器（.lb-scroll 必须是 input 的后续兄弟），不依赖
+     JS——服务端渲染的榜单在无 JS 环境里页签照常可切、榜单照常可读。 */
+  .lb-dims { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px;
+             margin:2px 0 12px; position:relative; }
+  .lb-dims > .controls { margin:0; flex:1 1 auto; }
+  .lb-dims > .lb-scroll { flex:1 0 100%; }
+  /* 隐藏 radio 必须显式钉在本容器左上角（= 页签行）：零尺寸 abspos 元素的
+     static position 在 flex 容器里会被 Chrome 解析到离谱的远处（实测在表格
+     中部、页签下方 ~700px），点击 label 聚焦 radio 时浏览器把焦点元素滚入
+     视野 → 页面自动下跳。显式 top/left 后焦点目标就在页签行内，永不滚动。 */
+  .lb-dims input { position:absolute; top:0; left:0; opacity:0; width:0; height:0; }
+  .lb-tab { display:inline-flex; align-items:center; border:1px solid var(--line);
+            background:#fff; color:#42536e; font-size:12.5px; font-weight:600;
+            padding:6px 14px; cursor:pointer; user-select:none; white-space:nowrap; }
+  .lb-tab:hover { color:var(--blue-deep); border-color:var(--blue); z-index:1;
+                  position:relative; }
+  /* 零宽 radio 夹在标签中间，段式（.seg）外观用首尾圆角拼出来 */
+  .lb-tab:first-of-type { border-radius:9px 0 0 9px; }
+  .lb-tab:last-of-type { border-radius:0 9px 9px 0; }
+  .lb-tab:not(:first-of-type) { border-left-width:0; }
+  #lbdim-ov:checked + label, #lbdim-temp:checked + label,
+  #lbdim-rain:checked + label { background:var(--ink); color:#fff;
+                                border-color:var(--ink); }
+  .lb-dims input:focus-visible + label { outline:2px solid var(--blue);
+      outline-offset:1px; z-index:2; position:relative; }
+  /* 列组显隐：列分两类——共享列（sh-*：概览与对应族页签都出现）与族专属列
+     （t-only / r-only：只在温度/降水页签展开）。概览 = 4 个共享列（总榜原有
+     视图）；温度/降水页签 = 该维共享列 + 全部族专属指标。 */
+  #lbdim-ov:checked ~ .lb-scroll .t-only,
+  #lbdim-ov:checked ~ .lb-scroll .r-only,
+  #lbdim-temp:checked ~ .lb-scroll .sh-rain,
+  #lbdim-temp:checked ~ .lb-scroll .r-only,
+  #lbdim-rain:checked ~ .lb-scroll .sh-temp,
+  #lbdim-rain:checked ~ .lb-scroll .t-only { display:none; }
+  /* 指标列按族归组：蓝顶线 = 温度族，绿顶线 = 降水族，任何页签下都在 */
+  .lb-table th.h-temp { box-shadow:inset 0 3px 0 var(--blue); }
+  .lb-table th.h-rain { box-shadow:inset 0 3px 0 var(--good); }
 
   /* ================= 折叠区（方法论 / 词典 / 机制） ================= */
   .fold { border:1px solid var(--line); border-radius:12px; background:#fbfcfe;
@@ -328,10 +381,10 @@
     .only-mobile { display:inline; }
 
     /* ---- 触控目标：下拉/分段/复选框抬到 36px 以上，指头点得中 ---- */
-    select, .seg button, .picker-btn { min-height:36px; }
+    select, .seg button, .picker-btn, .lb-tab { min-height:36px; }
     .controls { gap:8px; }
     .controls select { max-width:none; flex:1 1 140px; }
-    .seg button { padding:7px 12px; }
+    .seg button, .lb-tab { padding:7px 12px; }
 
     /* ---- 选源面板：贴底浮层（固定在视口内，与按钮位置无关） ---- */
     .picker-panel { position:fixed; left:0; right:0; bottom:0; top:auto;
@@ -505,26 +558,48 @@
   <section class="card" id="board">
     <p class="eyebrow">§01 · 证据</p>
     <h2>预报源总榜</h2>
-    <p class="desc">「综合分」由温度 5 项 + 降水 4 项指标加权而成，并且先把每一档提前量的
-      难度统一扣掉再比——能报 3 天的和能报 15 天的同榜也公平。<span class="only-wide">点任意列名可重新排序；
+    <p class="desc">「综合分」由温度 {{ score_temp_parts|length }} 项 + 降水 {{ score_precip_parts|length }} 项指标加权而成，先把每一档提前量的
+      难度统一扣掉再比——能报 3 天的和能报 15 天的同榜也公平。单项指标收在<b>指标页签</b>里：
+      「🌡️ 温度」「🌧️ 降水」展开该维的全部分数与指标，默认「概览」只看总分；页签在<b>所有榜单</b>下可用——
+      总榜的单项与综合分同一批格子、同一套难度对齐，分时效榜则是该档的原始口径。
+      <span class="only-wide">点任意列名可重新排序；
       「得分走势」是综合分随提前天数（1~16 天，小时口径）的衰减，<b>谁在右边还站得高，谁的长期预报就更可靠</b>。</span><span class="only-mobile">每个源一张卡片：大字是综合分，
-      下面一行是它的分项。</span>
-      想看某个具体提前量的排名，用下面的<b>榜单下拉</b>切到「提前 N 天」分榜——同一档内直接对照、不经难度对齐。</p>
-    <div class="controls">
-      <label for="lbBoard">榜单</label>
-      <select id="lbBoard" aria-label="选择榜单"></select>
-      <span class="metric-note" id="lbNote"></span>
-    </div>
-    <div class="lb-scroll">
+      下面一行是当前页签的分项。</span>
+      想看某个具体提前量的排名，用<b>榜单下拉</b>切到「提前 N 天」分榜——同一档内直接对照、不经难度对齐。</p>
+    <div class="lb-dims" id="lbDims">
+      <input type="radio" name="lbdim" id="lbdim-ov" checked><label class="lb-tab" for="lbdim-ov">概览</label>
+      <input type="radio" name="lbdim" id="lbdim-temp"><label class="lb-tab" for="lbdim-temp">🌡️ 温度</label>
+      <input type="radio" name="lbdim" id="lbdim-rain"><label class="lb-tab" for="lbdim-rain">🌧️ 降水</label>
+      <div class="controls">
+        <label for="lbBoard">榜单</label>
+        <select id="lbBoard" aria-label="选择榜单"></select>
+        <span class="metric-note" id="lbNote"></span>
+      </div>
+      <div class="lb-scroll">
       <table class="lb-table" id="lbTable">
         <thead><tr>
           <th class="c-rk">#</th>
           <th class="l c-name">预报源</th>
           <th data-key="score" data-type="num" data-dir="desc">综合分<span class="ind">▼</span></th>
-          <th data-key="temp" data-type="num">温度分</th>
-          <th data-key="precip" data-type="num">降水分</th>
-          <th data-key="acc2" data-type="num">±2°C 准确率</th>
-          <th data-key="ts" data-type="num" id="lbTsHead">晴雨 TS（两轨对齐）</th>
+          <th class="sh-temp h-temp" data-key="temp" data-type="num">温度分</th>
+          <th class="sh-rain h-rain" data-key="precip" data-type="num">降水分</th>
+          <th class="t-only h-temp" data-key="acc2" data-type="num" title="预报与实况相差不超过 2°C 的样本占比，越高越好">±2°C</th>
+          <th class="r-only h-rain" data-key="ts" data-type="num" id="lbTsHead" title="命中 ÷（命中 + 空报 + 漏报），越高越好；总榜为两轨拼接的对齐值，分榜为该档原始口径">晴雨 TS</th>
+          <th class="t-only h-temp" data-key="acc1" data-type="num" title="相差不超过 1°C 的样本占比（更严的一档），越高越好">±1°C</th>
+          <th class="t-only h-temp" data-key="rmse" data-type="num" title="均方根误差（°C），对偶发大误差惩罚更重，越低越好">RMSE</th>
+          <th class="t-only h-temp" data-key="mae" data-type="num" title="平均绝对误差（°C），最朴素的「平均差多少度」，越低越好">MAE</th>
+          <th class="t-only h-temp" data-key="mbe" data-type="num" title="系统偏差（°C）：正 = 习惯性报偏高，负 = 报偏低，越接近 0 越好">MBE</th>
+          <th class="t-only h-temp" data-key="r" data-type="num" title="与实况起伏的同步程度（站内合并口径），越接近 1 越好">相关 r</th>
+          <th class="t-only h-temp" data-key="slope" data-type="num" title="回归斜率：&gt;1 = 起伏幅度偏小（该热不热），&lt;1 = 反应过激，越接近 1 越好">斜率</th>
+          <th class="t-only h-temp" data-key="bdisp" data-type="num" title="各站系统偏差的离散度（°C），越低 = 在不同站点表现越一致">站间偏差</th>
+          <th class="r-only h-rain" data-key="accr" data-type="num" title="报对「下没下雨」的比例，越高越好（与 TS/POD/FAR 同一张列联表）">晴雨准确率</th>
+          <th class="r-only h-rain" data-key="ets" data-type="num" title="对「瞎蒙也能蒙对」做过随机命中校正的晴雨技巧分（0~1），越高越好">ETS</th>
+          <th class="r-only h-rain" data-key="pod" data-type="num" title="真下雨的次数里预报也报出的比例（命中率），越高越好">POD</th>
+          <th class="r-only h-rain" data-key="far" data-type="num" title="报了雨却没下的比例（「狼来了」），越低越好">FAR</th>
+          <th class="r-only h-rain" data-key="bias" data-type="num" title="报雨次数 ÷ 实际下雨次数：=1 频率正好，&gt;1 爱报雨，&lt;1 不爱报雨">BIAS</th>
+          <th class="r-only h-rain" data-key="amt_mae" data-type="num" title="相对雨量量级误差（Σ|预报−实况| ÷ Σ实况），越低越好">雨量误差</th>
+          <th class="r-only h-rain" data-key="amt_bias" data-type="num" title="预报总雨量 ÷ 实况总雨量：=1 总量正好，&gt;1 偏多，&lt;1 偏少">雨量比</th>
+          <th class="r-only h-rain" data-key="grade_ets" data-type="num" title="中雨/大雨档（1h：2~4.9、5~9.9 mm/h；24h：≥10、≥25 mm）的 ETS，衡量对雨强分档的分辨力，越高越好">雨强ETS</th>
           <th data-key="lead" data-type="num">覆盖时效</th>
           <th>90% 置信区间</th>
           <th class="l">得分走势</th>
@@ -540,21 +615,51 @@
             data-precip="{{ r.get('precip_score') if r.get('precip_score') is not none else '' }}"
             data-acc2="{{ r.get('acc2') if r.get('acc2') is not none else '' }}"
             data-ts="{{ r.get('ts') if r.get('ts') is not none else '' }}"
+            data-acc1="{{ r.get('acc1') if r.get('acc1') is not none else '' }}"
+            data-rmse="{{ r.get('rmse') if r.get('rmse') is not none else '' }}"
+            data-mae="{{ r.get('mae') if r.get('mae') is not none else '' }}"
+            data-mbe="{{ r.get('mbe') if r.get('mbe') is not none else '' }}"
+            data-r="{{ r.get('r') if r.get('r') is not none else '' }}"
+            data-slope="{{ r.get('slope') if r.get('slope') is not none else '' }}"
+            data-bdisp="{{ r.get('mbe_bdisp') if r.get('mbe_bdisp') is not none else '' }}"
+            data-accr="{{ r.get('accr') if r.get('accr') is not none else '' }}"
+            data-ets="{{ r.get('ets') if r.get('ets') is not none else '' }}"
+            data-pod="{{ r.get('pod') if r.get('pod') is not none else '' }}"
+            data-far="{{ r.get('far') if r.get('far') is not none else '' }}"
+            data-bias="{{ r.get('bias') if r.get('bias') is not none else '' }}"
+            data-amt_mae="{{ r.get('amt_mae') if r.get('amt_mae') is not none else '' }}"
+            data-amt_bias="{{ r.get('amt_bias') if r.get('amt_bias') is not none else '' }}"
+            data-grade_ets="{{ r.get('grade_ets') if r.get('grade_ets') is not none else '' }}"
             data-lead="{{ r.get('lead_days') if r.get('lead_days') else '' }}">
           <td class="c-rk num">{{ loop.index }}</td>
           <td class="l c-name"><i class="dot" style="background:{{ c }}"></i><b>{{ model_labels.get(r.model, r.model) }}</b>
             {%- if r.get('sig_vs_top') is sameas false %}<sup class="dagger" title="与第一名的差距经 Holm–Bonferroni 校正后仍不显著：前后名次更多是抽样运气">†</sup>{% endif -%}
             {%- if r.get('disputed') %}<span class="warn-badge" title="{{ (r.get('disputed_reasons') or [])|join('；') }}">⚠️</span>{% endif -%}
-            <span class="mid">{{ r.model }}</span>
+            <span class="mid" title="{{ r.model }}">{{ r.model }}</span>
             {% if not r.get('qualified') %}<span class="mid">· 样本积累中</span>{% endif %}
           </td>
           <td class="c-score"><div class="cell">
             {{ thermo(r.get('score'), r.get('ci90'), 'sm') }}
             <b class="score-num">{{ num(r.get('score')) }}</b></div></td>
-          <td data-label="温度">{{ num(r.get('temp_score')) }}</td>
-          <td data-label="降水">{{ num(r.get('precip_score')) }}</td>
-          <td data-label="±2°C">{{ pct(r.get('acc2')) }}</td>
-          <td data-label="晴雨TS">{{ num(r.get('ts'), 2) }}</td>
+          <td class="sh-temp" data-label="温度分">{{ num(r.get('temp_score')) }}</td>
+          <td class="sh-rain" data-label="降水分">{{ num(r.get('precip_score')) }}</td>
+          <td class="t-only" data-label="±2°C">{{ pct(r.get('acc2')) }}</td>
+          <td class="r-only" data-label="晴雨TS">{{ num(r.get('ts'), 2) }}</td>
+          <td class="t-only" data-label="±1°C">{{ pct(r.get('acc1')) }}</td>
+          <td class="t-only" data-label="RMSE">{{ num(r.get('rmse'), 2) }}</td>
+          <td class="t-only" data-label="MAE">{{ num(r.get('mae'), 2) }}</td>
+          <td class="t-only" data-label="MBE">{{ num(r.get('mbe'), 2) }}</td>
+          <td class="t-only" data-label="相关r">{{ num(r.get('r'), 2) }}</td>
+          <td class="t-only" data-label="斜率">{{ num(r.get('slope'), 2) }}</td>
+          <td class="t-only" data-label="站间偏差">{{ num(r.get('mbe_bdisp'), 2) }}</td>
+          <td class="r-only" data-label="晴雨准确率">{{ pct(r.get('accr')) }}</td>
+          <td class="r-only" data-label="ETS">{{ num(r.get('ets'), 2) }}</td>
+          <td class="r-only" data-label="POD">{{ pct(r.get('pod')) }}</td>
+          <td class="r-only" data-label="FAR">{{ pct(r.get('far')) }}</td>
+          <td class="r-only" data-label="BIAS">{{ num(r.get('bias'), 2) }}</td>
+          <td class="r-only" data-label="雨量误差">{{ num(r.get('amt_mae'), 2) }}</td>
+          <td class="r-only" data-label="雨量比">{{ num(r.get('amt_bias'), 2) }}</td>
+          <td class="r-only" data-label="雨强ETS">{{ num(r.get('grade_ets'), 2) }}</td>
           <td data-label="覆盖">{% if r.get('lead_days') %}{{ r.lead_days }} 天{% if r.get('lead_temp_days') and r.get('lead_rain_days') and r.lead_temp_days != r.lead_rain_days %}<span class="mid" title="覆盖时效按维核计：温度维最远 {{ r.lead_temp_days }} 天、降水维 {{ r.lead_rain_days }} 天（两维不等时，数字取两维最远）">温{{ r.lead_temp_days }}·雨{{ r.lead_rain_days }}</span>{% endif %}{% else %}—{% endif %}</td>
           <td class="ci-cell" data-label="90%CI">{% if r.get('ci90') %}{{ num(r.get('ci90')[0]) }}~{{ num(r.get('ci90')[1]) }}{% else %}—{% endif %}</td>
           <td class="l c-spark">{{ spark_svg.get(r.model, '') | safe }}</td>
@@ -562,12 +667,17 @@
         {% endfor %}
         </tbody>
       </table>
+      </div>
     </div>
     <p class="hint">💡 <b>怎么看：</b>综合分的<b>金色须线</b>是 90% 置信区间——须线重叠的两家，
-      先后在统计上还说不清；名字带 <b>†</b> 同理。<b>覆盖时效</b>是这家实际参与计算的样本最远覆盖到的提前量；
+      先后在统计上还说不清；名字带 <b>†</b> 同理。单项指标怎么读：准确率 / 相关 r / POD / TS / ETS / 雨强ETS
+      <b>越高越好</b>，RMSE / MAE / 空报率 / 站间偏差 / 雨量误差 <b>越低越好</b>，
+      MBE 越接近 0、斜率 / BIAS / 雨量比 越接近 1 越好（悬停列名有逐项说明）。
+      总榜的降水单项是小时（≥1mm/h）与日累计（≥{{ report.meta.rain_daily_threshold_mm }}mm/24h）两轨拼接的对齐值，
+      分榜为该档原始口径；降水比温度难报得多，TS 到 0.3~0.5 已属正常水平，请按列内相对高低读。
+      <b>覆盖时效</b>是这家实际参与计算的样本最远覆盖到的提前量；
       温度维与降水维分别核计，两维不等时数字后括注（如「温16·雨5」：逐日预报产品把温度维带到 16 天，
-      降水维仍止于逐小时的 5 天）——该行综合分的桶覆盖范围见下方「难度对齐」折叠区。
-      残缺的误差类指标（RMSE 等）越低越好。</p>
+      降水维仍止于逐小时的 5 天）——该行综合分的桶覆盖范围见下方「难度对齐」折叠区。</p>
 
     {% set dw = ((report.meta.get('difficulty_window') or {}).get('all') or {}) %}
     {% if report.meta.model_caveats %}
@@ -1021,6 +1131,9 @@
           <div><dt>命中率（POD）/ 空报率（FAR）</dt><dd>POD：真下雨的次数里预报也报出的比例（越高越好）；FAR：报了雨却没下的比例（"狼来了"次数，越低越好）。</dd></div>
           <div><dt>TS / ETS 评分</dt><dd>命中 ÷（命中 + 空报 + 漏报），0~1，同时奖励报中、惩罚误报；ETS 对"瞎蒙也能蒙对"做过随机命中校正，更公平。</dd></div>
           <div><dt>频率偏差（BIAS）</dt><dd>报雨次数 ÷ 实际下雨次数。=1 频率正好；&gt;1 爱报雨；&lt;1 不爱报雨。</dd></div>
+          <div><dt>雨量误差 / 雨量比（amt_mae / amt_bias）</dt><dd>相对口径的雨量精度：量级误差 = Σ|预报−实况| ÷ Σ实况（越低越好）；总量比 = 预报总雨量 ÷ 实况总雨量（=1 正好，&gt;1 总量偏多）。相对口径让小时轨与日轨可用同一把尺比较。</dd></div>
+          <div><dt>雨强分辨力（雨强 ETS）</dt><dd>中雨/大雨档（1h：2~4.9、5~9.9 mm/h；24h：≥10、≥25 mm）的 ETS——晴雨报对之外，雨下到没到量级也报得出来才算高分。</dd></div>
+          <div><dt>站间偏差（mbe_bdisp）</dt><dd>各站系统偏差的离散度（°C）：越小 = 这家在同一场天气的不同站点表现越一致；池化的 |MBE| 会把站间差异平均掉，这一项专门暴露它。</dd></div>
           <div><dt>日雨评分（TS/ETS）</dt><dd>降水分的口径是北京时自然日 24h 累计雨量 ≥{{ report.meta.rain_daily_threshold_mm }}mm 记"有效降水日"（业务惯用口径）；24h 累计让毛毛雨超报在求和中自然抵消。</dd></div>
           <div><dt>观测覆盖率</dt><dd>评估窗口内成功抓到实况的小时占比（实况接入前的时段不算缺失）；本窗口实况自 {{ report.coverage.first_obs[:10] if report.coverage.first_obs else '—' }} 起。</dd></div>
         </dl>
@@ -1641,7 +1754,7 @@ const LB_TS_LABEL = {all: "两轨TS", hourly: "时雨TS", daily: "日雨TS"};
 function lbDesc(mode) {
   if (mode === "all") {
     return "难度对齐总榜：先把每一档提前量的难度统一扣掉再比（原理见下方折叠区）；" +
-      "置信区间与覆盖时效只有总榜有。";
+      "置信区间与覆盖时效只有总榜有，单项指标与综合分同一批格子、同一套难度对齐。";
   }
   const [track, day] = mode.split(":");
   if (track === "all") {
@@ -1656,27 +1769,55 @@ function lbDesc(mode) {
     "同一档内的直接对照，不经难度对齐。综合分缺任一维即空（缺一即缺），" +
     "只有单维的源仍在该列显示它那一维的分数。";
 }
-function leadRow(m, rk, s, t, p, a2, ts) {
+/* 分榜行与服务端总榜行共用同一份列定义：[列组类, 移动端标签, 排序键,
+ * 行数组下标, 格式]，顺序与表头一一对应——新增列时服务端 thead/tbody 与
+ * 这里（及 _slim_report 的行数组）三处同步。 */
+const LB_METRIC_COLS = [
+  ["sh-temp", "温度分", "temp", 2, "n1"],
+  ["sh-rain", "降水分", "precip", 3, "n1"],
+  ["t-only", "±2°C", "acc2", 4, "pct"],
+  ["r-only", null, "ts", 5, "n2"],       // 标签随轨道变（时雨/日雨/两轨）
+  ["t-only", "±1°C", "acc1", 6, "pct"],
+  ["t-only", "RMSE", "rmse", 7, "n2"],
+  ["t-only", "MAE", "mae", 8, "n2"],
+  ["t-only", "MBE", "mbe", 9, "n2"],
+  ["t-only", "相关r", "r", 10, "n2"],
+  ["t-only", "斜率", "slope", 11, "n2"],
+  ["t-only", "站间偏差", "bdisp", 12, "n2"],
+  ["r-only", "晴雨准确率", "accr", 13, "pct"],
+  ["r-only", "ETS", "ets", 14, "n2"],
+  ["r-only", "POD", "pod", 15, "pct"],
+  ["r-only", "FAR", "far", 16, "pct"],
+  ["r-only", "BIAS", "bias", 17, "n2"],
+  ["r-only", "雨量误差", "amt_mae", 18, "n2"],
+  ["r-only", "雨量比", "amt_bias", 19, "n2"],
+  ["r-only", "雨强ETS", "grade_ets", 20, "n2"],
+];
+function leadRow(m, rk, a) {
+  const s = a[1];
   const weak = (s === null || s === undefined);
   const c = colorOf(m);
   const v = Math.max(0, Math.min(100, Number(s) || 0));
   const cls = (rk === 1 && !weak ? "is-top " : "") + (weak ? "is-weak" : "");
   // data-label 与服务端总榜行一一对应：移动端卡片没有表头，少了它
-  // 六个指标会连成一串裸数字（分榜曾在手机上这样坏了）。
+  // 指标会连成一串裸数字（分榜曾在手机上这样坏了）。
   const tsLab = LB_TS_LABEL[(lbMode.split(":")[0])] || "晴雨TS";
+  const fmtCell = (kind, x) => x == null ? "—"
+    : (kind === "pct" ? fmt(x, 1) + "%" : fmt(x, kind === "n1" ? 1 : 2));
+  const dataAttrs = LB_METRIC_COLS.map(([, , key, i]) =>
+    ` data-${key}="${a[i] ?? ""}"`).join("");
+  const metricCells = LB_METRIC_COLS.map(([col, lab, , i, kind]) =>
+    `<td class="${col}" data-label="${lab || tsLab}">${fmtCell(kind, a[i])}</td>`).join("");
   return `<tr class="${cls}" data-m="${escHtml(m)}" data-rk="${rk}"` +
-    ` data-score="${s ?? ""}" data-temp="${t ?? ""}" data-precip="${p ?? ""}"` +
-    ` data-acc2="${a2 ?? ""}" data-ts="${ts ?? ""}" data-lead="">` +
+    ` data-score="${s ?? ""}"${dataAttrs} data-lead="">` +
     `<td class="c-rk num">${rk}</td>` +
     `<td class="l c-name"><i class="dot" style="background:${c}"></i>` +
     `<b>${escHtml(labelOf(m))}</b>${weak ? '<span class="mid">· 样本积累中</span>' : ""}` +
-    `<span class="mid">${escHtml(m)}</span></td>` +
+    `<span class="mid" title="${escHtml(m)}">${escHtml(m)}</span></td>` +
     `<td class="c-score"><div class="cell">` +
     `<div class="thermo sm"><span class="tube"><b style="--v:${v}%"></b></span></div>` +
     `<b class="score-num">${weak ? "—" : fmt(s)}</b></div></td>` +
-    `<td data-label="温度">${fmt(t)}</td><td data-label="降水">${fmt(p)}</td>` +
-    `<td data-label="±2°C">${a2 == null ? "—" : fmt(a2) + "%"}</td>` +
-    `<td data-label="${tsLab}">${fmt(ts, 2)}</td>` +
+    metricCells +
     `<td data-label="覆盖">—</td><td class="ci-cell" data-label="90%CI">—</td>` +
     `<td class="l c-spark">${SPARK_SVG[m] || ""}</td></tr>`;
 }
@@ -1689,13 +1830,14 @@ function renderBoard() {
     const [track, day] = lbMode.split(":");
     const rows = ((R.lb || {})[track] || {})[day] || [];
     tbody.innerHTML = rows.map((r, i) =>
-      leadRow(RANKED[r[0]] || "", i + 1, r[1], r[2], r[3], r[4], r[5])).join("");
+      leadRow(RANKED[r[0]] || "", i + 1, r)).join("");
   }
   const tsHead = document.getElementById("lbTsHead");
   if (tsHead) {
-    // 第四轮 P1-3：总榜的 ts 列是小时 TS 与日 TS 拼接后经难度对齐的行效应，
-    // 不是"日雨 TS"——同一家在总榜 0.21、日口径 0.61 曾被并排展示而无解释
-    tsHead.textContent = lbMode === "all" ? "晴雨 TS（两轨对齐）"
+    // 第四轮 P1-3 的教训：总榜与分榜的 ts 数值不同源，列名必须随轨道区分
+    // （总榜 0.21 与日口径 0.61 曾被并排误读）。「两轨对齐」的口径说明由
+    // th 的 title 与下方 hint 承担，表头只留短名。
+    tsHead.textContent = lbMode === "all" ? "晴雨 TS"
       : lbMode.startsWith("all:") ? "两轨 TS"
       : (LB_TS_HEAD[lbMode.split(":")[0]] || "晴雨 TS");
   }

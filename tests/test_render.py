@@ -230,6 +230,66 @@ def test_sparkline_svg_server_rendered(tmp_path, monkeypatch):
     assert "sparkSVG" not in html
 
 
+def test_board_metric_dimension_tabs(tmp_path, monkeypatch):
+    """§01 指标列页签（2026-10）：总榜呈现全部已评测指标，横排不拉长。
+
+    15 项已评测指标全铺成列会把横排拉到两千像素开外；页签把温度/降水两维各收成
+    一个列组（radio + 兄弟选择器，纯 CSS，无 JS 也可切换），默认「概览」只看总分。
+    单项指标与综合分走同一张劈分设计（_build_board_rows 的 _aligned），行内
+    data-* 供列排序使用；分时效榜经 slim 行数组携带同列指标（页签全榜可用）。"""
+    _populate(tmp_path, monkeypatch)
+    start = datetime(2026, 8, 1, 0, 0)
+    end = datetime(2026, 8, 30, 23, 0)
+    cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
+           "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 5}
+    data = build_report(["s1"], ["ecmwf_ifs"], cfg, start, end, "2026-08")
+    html = render_report_html(data, title="指标页签")
+
+    # 页签结构：三个 radio + label（概览默认选中），共享列/族专属列成对出现
+    assert 'id="lbdim-ov" checked' in html
+    assert 'id="lbdim-temp"' in html and 'id="lbdim-rain"' in html
+    assert 'class="sh-temp h-temp"' in html and 'class="sh-rain h-rain"' in html
+    assert 'class="t-only h-temp"' in html and 'class="r-only h-rain"' in html
+    # 概览只有总分两列：±2°C 与晴雨 TS 归入各自族页签（t-only / r-only）
+    assert '<td class="sh-temp" data-label="±2°C">' not in html
+    assert '<td class="sh-rain" data-label="晴雨TS">' not in html
+    assert '<td class="t-only" data-label="±2°C">' in html
+    assert '<td class="r-only" data-label="晴雨TS">' in html
+    # 表头瘦身：长括注不再进表头（口径说明由 title/hint 承担；冠军卡上的
+    # 内联标签不是表头，保留完整措辞）
+    assert ">晴雨 TS（两轨对齐）</th>" not in html and ">晴雨 TS</th>" in html
+    assert ">±2°C</th>" in html and ">±1°C</th>" in html
+    # 全部已评测指标都在表头（数据通路锁点：_board_row 透传 + 对齐矩阵）
+    for key in ("acc1", "rmse", "mae", "mbe", 'data-key="r"', "slope",
+                "accr", "ets", "pod", "far", "bias", "amt_mae", "amt_bias",
+                "grade_ets"):
+        assert key in html, f"表头缺指标列 {key}"
+    # 行内 data-* 与页签列一一对应（列排序的数据源）
+    assert 'data-grade_ets="' in html and 'data-bdisp="' in html
+    # 隐藏 radio 显式钉在页签行（top:0/left:0）——零尺寸 abspos 的 static
+    # position 在 flex 容器里会被 Chrome 解析到远处，聚焦即页面下跳（实测回归）
+    assert ".lb-dims input { position:absolute; top:0; left:0;" in html
+    # 单项指标与综合分同一张设计：总榜行带对齐后的指标键（单模型 fixture 走
+    # 降级路径、数值可为 None，但键缺失 = 数据通路断了）
+    row = data["leaderboards"]["all"][0]
+    for key in ("acc1", "mae", "mbe", "r", "slope", "mbe_bdisp",
+                "accr", "pod", "far", "bias", "amt_mae", "amt_bias", "grade_ets"):
+        assert key in row, f"总榜行缺指标键 {key}"
+    # accr 与 pod 出自同一张 2×2 列联表，缺有必须一致——锁 _board_row 的
+    # 改名约定（p 里传原始键 acc，_build_board_rows 曾传 accr 导致整列 None）
+    assert (row["accr"] is None) == (row["pod"] is None)
+    row_h = data["leaderboards"]["hourly:1d"][0]
+    assert "acc1" in row_h and (row_h["accr"] is None) == (row_h["pod"] is None)
+    # 分榜 slim 行数组与 LB_METRIC_COLS 的下标约定同步：21 槽全指标
+    from weather_eval.report.render import _slim_report
+    slim = _slim_report(data)
+    bad = [(tk, d, len(r)) for tk, days in slim["lb"].items()
+           for d, rows in days.items() for r in rows if len(r) != 21]
+    assert slim["lb"] and not bad, f"slim lb 行数组应为 21 槽，异常：{bad[:5]}"
+    # 切到分榜时页签不再隐藏（页签在所有榜单下可用）
+    assert 'id="lbDims"' in html and ".lb-dims.sub" not in html
+
+
 def test_issue_anchor_rows_puts_flags_first_then_groups():
     """起报锚点披露重排（2026-10 呈现重构）：例外优先、其余按语义归组。
 

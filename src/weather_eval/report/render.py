@@ -243,9 +243,12 @@ def _slim_report(report_data: dict) -> dict:
     heat = {"dates": [d[5:] for d in dates], "models": heat_models, **heat_mats}
 
     # 分时效榜（"hourly:Nd" / "daily:Nd" / "all:Nd"，服务端已按综合分排好序）：
-    # 行压缩成 [总榜名次索引, 综合分, 温度分, 降水分, ±2°C, 雨 TS] —— 键名只出现
-    # 一次、模型只传索引；置信区间/覆盖时效只在总榜有意义（分榜不做 bootstrap）。
-    # 无任何得分的榜不进内联（空榜没有读者）。
+    # 行压缩成 [总榜名次索引, 综合分, 温度分, 降水分, ±2°C, 晴雨TS, acc1, RMSE,
+    # MAE, MBE, r, 斜率, 站间偏差, 晴雨准确率, ETS, POD, FAR, BIAS, 雨量误差,
+    # 雨量比, 雨强ETS] —— 键名只出现一次、模型只传索引；下标即模板 JS 侧
+    # LB_METRIC_COLS 的行数组下标，两处必须同步。置信区间/覆盖时效只在总榜
+    # 有意义（分榜不做 bootstrap）。单项指标值是分榜行自带的同档原始口径
+    # （_board_row 透传），页面页签直接渲染。无任何得分的榜不进内联（空榜没有读者）。
     rank_idx = {r["m"]: i for i, r in enumerate(board)}
     lb: dict[str, dict] = {}
     for key, rows in lbs.items():
@@ -260,7 +263,13 @@ def _slim_report(report_data: dict) -> dict:
         lb.setdefault(track, {})[day_n] = [
             [rank_idx[r["model"]], _r(r.get("score")), _r(r.get("temp_score")),
              _r(r.get("precip_score")), _r(r.get("acc2"), 1),
-             None if r.get("ts") is None else round(r["ts"], 2)]
+             None if r.get("ts") is None else round(r["ts"], 2),
+             _r(r.get("acc1"), 1), _r(r.get("rmse"), 2), _r(r.get("mae"), 2),
+             _r(r.get("mbe"), 2), _r(r.get("r"), 2), _r(r.get("slope"), 2),
+             _r(r.get("mbe_bdisp"), 2), _r(r.get("accr"), 1), _r(r.get("ets"), 2),
+             _r(r.get("pod"), 1), _r(r.get("far"), 1), _r(r.get("bias"), 2),
+             _r(r.get("amt_mae"), 2), _r(r.get("amt_bias"), 2),
+             _r(r.get("grade_ets"), 2)]
             for r in rows if r["model"] in rank_idx
         ]
 

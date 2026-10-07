@@ -1354,18 +1354,26 @@ def daily_temp_score(md: dict) -> float | None:
     return round((hi + lo) / 2, 2)
 
 
+# 日温度维的显示指标集：日最高/最低是两个独立交付量，各算一份全量指标，
+# 显示时逐项取均值（纪律见 daily_temp_view）。总榜的单项指标列与 acc2/rmse
+# 走同一条路，新增指标时这里与 _track_matrices 同步扩。
+_DAILY_TEMP_VIEW_KEYS = ("acc2", "acc1", "rmse", "mae", "mbe", "r",
+                         "slope", "mbe_bdisp")
+
+
 def daily_temp_view(md: dict) -> dict:
-    """日温度维的显示视图（±2°C / RMSE 取两量的均值，样本数取同源的一侧）。
+    """日温度维的显示视图（各指标取日最高/最低两量的均值，样本数取同源的一侧）。
 
     指标列与 daily_temp_score 同纪律（第四轮 P2-7）：max/min **缺一即缺**——
     旧实现用"缺项取剩余"，一行可以 temp_score=None（判死）而同一行 acc2 有值，
-    给"半截证据"留了展示位。
+    给"半截证据"留了展示位。2026-10 起视图扩到温度全部已评测指标（总榜的
+    单项指标列与 acc2/rmse 同一张设计），均值纪律逐项不变。
     """
     mx = (md or {}).get("max") or {}
     mn = (md or {}).get("min") or {}
-    return {"acc2": _mean2(mx.get("acc2"), mn.get("acc2")),
-            "rmse": _mean2(mx.get("rmse"), mn.get("rmse")),
-            "n": mx.get("n") or mn.get("n") or 0}
+    out = {k: _mean2(mx.get(k), mn.get(k)) for k in _DAILY_TEMP_VIEW_KEYS}
+    out["n"] = mx.get("n") or mn.get("n") or 0
+    return out
 
 
 def precip_score(p: dict) -> float | None:
@@ -2586,14 +2594,25 @@ def _model_caveats(station_ids, models, *, snapshots=None) -> dict[str, str]:
 
 def _board_row(m: str, t: dict, p: dict, **extra) -> dict:
     """榜单行：得分（与趋势图同一套公式，榜单与曲线永不分叉）
-    + 榜面直接可读的关键指标（±2°C 准确率 / RMSE / TS / ETS / 样本数）。"""
+    + 榜面直接可读的关键指标（±2°C 准确率 / RMSE / TS / ETS / 样本数）。
+
+    2026-10 起关键指标扩到两维全部已评测指标（总榜 §01 的温度/降水页签）：
+    传入的 t/p 里有什么就透传什么，缺的键为 None（页面显示 —）—— hourly/daily
+    分榜的行来自原始桶字典（全量指标自动带上），all:Nd 综合天榜的行来自
+    两轨 _mean2 的合成视图（见 _combined_day_boards）。
+    """
     row = {
         "model": m,
         "score": overall_score(t, p),
         "temp_score": temp_score(t),
         "precip_score": precip_score(p),
         "acc2": t.get("acc2"), "rmse": t.get("rmse"),
+        "acc1": t.get("acc1"), "mae": t.get("mae"), "mbe": t.get("mbe"),
+        "r": t.get("r"), "slope": t.get("slope"), "mbe_bdisp": t.get("mbe_bdisp"),
         "ts": p.get("ts"), "ets": p.get("ets"),
+        "accr": p.get("acc"), "pod": p.get("pod"), "far": p.get("far"),
+        "bias": p.get("bias"), "amt_mae": p.get("amt_mae"),
+        "amt_bias": p.get("amt_bias"), "grade_ets": p.get("grade_ets"),
         "n": t.get("n", 0), "n_precip": p.get("n", 0),
     }
     row.update(extra)
@@ -2668,7 +2687,7 @@ def _combined_day_boards(models, track_sources, days: int) -> dict[str, list[dic
       * **等权平均**——这正是总榜走势线（页面 TREND_OV）已在用的口径，榜单
         与走势图永不分叉。名次上它与"先扣列效应再平均"严格等价：同一批列的
         列效应是全体模型共享的常数，不改变名次，故无需为单天榜重跑劈分。
-    行内诊断列（±2°C/RMSE/TS/ETS）同样两轨各取均值、缺一即缺——与综合分
+    行内诊断列（两维全部已评测指标）同样两轨各取均值、缺一即缺——与综合分
     同一条纪律，不给"半截证据"留展示位。完备性判定分层：**综合分**是格子级
     （两轨两维四方齐备）；**维度分/诊断列**是维度级（该维度两轨齐备即可）——
     日轨温度缺失只判死温度维与综合分，不该让两轨齐备的降水维陪葬。
@@ -2695,14 +2714,16 @@ def _combined_day_boards(models, track_sources, days: int) -> dict[str, list[dic
             t_s = _mean2(ts_h, ts_d)
             p_s = _mean2(ps_h, ps_d)
             v_d = daily_temp_view(t_d)
+            # 诊断列（全部已评测指标）同样两轨各取均值、缺一即缺——与综合分
+            # 同一条纪律（_DAILY_TEMP_VIEW_KEYS 与降水键集即"行内诊断列"的口径清单）。
+            t_row = {k: _mean2(t_h.get(k), v_d.get(k)) for k in _DAILY_TEMP_VIEW_KEYS}
+            t_row["n"] = (t_h.get("n") or 0)
+            p_row = {k: _mean2(p_h.get(k), p_d.get(k))
+                     for k in ("ts", "ets", "acc", "pod", "far", "bias",
+                               "amt_mae", "amt_bias", "grade_ets")}
+            p_row["n"] = (p_d.get("n") or 0)
             rows.append(_board_row(
-                m,
-                {"acc2": _mean2(t_h.get("acc2"), v_d.get("acc2")),
-                 "rmse": _mean2(t_h.get("rmse"), v_d.get("rmse")),
-                 "n": (t_h.get("n") or 0)},
-                {"ts": _mean2(p_h.get("ts"), p_d.get("ts")),
-                 "ets": _mean2(p_h.get("ets"), p_d.get("ets")),
-                 "n": (p_d.get("n") or 0)},
+                m, t_row, p_row,
                 score=score, temp_score=t_s, precip_score=p_s,
                 qualified=(score is not None)))
         boards[f"all:{bk}"] = _rank_rows(rows)
@@ -2765,7 +2786,10 @@ def _track_matrices(models: list[str], days: int, track: str,
 
     出给劈分用的：composite / temp_score / precip_score（没得小数点后的列，
     全部走同一张设计归总，见 stats.difficulty_adjusted 的 valid= 参数）；
-    出给页面显示用的：acc2 / rmse / ts / ets / 两维样本量与有效样本量。
+    出给页面显示用的：两维全部已评测指标（acc2/rmse 之外，2026-10 起补齐
+    acc1/mae/mbe/r/slope/mbe_bdisp 与 acc/pod/far/bias/amt_mae/amt_bias/
+    grade_ets——总榜 §01 的温度/降水页签逐列渲染，劈分时与综合分走**同一张
+    设计**，见 _build_board_rows 的 _aligned）+ 两维样本量与有效样本量。
     """
     temp_src, precip_src = src["temp"], src["precip"]
     is_daily = track == "daily"
@@ -2778,16 +2802,34 @@ def _track_matrices(models: list[str], days: int, track: str,
         return lambda m, bk: track_cells(
             track, temp_src[m].get(bk) or {}, precip_src[m].get(bk) or {})[idx]
 
+    def _t_metric(key):
+        return _metric_matrix(models, days, lambda m, bk: t_view(m, bk).get(key))
+
+    def _p_metric(key):
+        return _metric_matrix(models, days,
+                              lambda m, bk: (precip_src[m].get(bk) or {}).get(key))
+
     return {
         "composite": _metric_matrix(models, days, _take(0)),
         "temp_score": _metric_matrix(models, days, _take(1)),
         "precip_score": _metric_matrix(models, days, _take(2)),
-        "acc2": _metric_matrix(models, days, lambda m, bk: t_view(m, bk).get("acc2")),
-        "rmse": _metric_matrix(models, days, lambda m, bk: t_view(m, bk).get("rmse")),
-        "ts": _metric_matrix(models, days,
-                             lambda m, bk: (precip_src[m].get(bk) or {}).get("ts")),
-        "ets": _metric_matrix(models, days,
-                              lambda m, bk: (precip_src[m].get(bk) or {}).get("ets")),
+        "acc2": _t_metric("acc2"),
+        "rmse": _t_metric("rmse"),
+        "acc1": _t_metric("acc1"),
+        "mae": _t_metric("mae"),
+        "mbe": _t_metric("mbe"),
+        "r": _t_metric("r"),
+        "slope": _t_metric("slope"),
+        "mbe_bdisp": _t_metric("mbe_bdisp"),
+        "ts": _p_metric("ts"),
+        "ets": _p_metric("ets"),
+        "accr": _p_metric("acc"),
+        "pod": _p_metric("pod"),
+        "far": _p_metric("far"),
+        "bias": _p_metric("bias"),
+        "amt_mae": _p_metric("amt_mae"),
+        "amt_bias": _p_metric("amt_bias"),
+        "grade_ets": _p_metric("grade_ets"),
         "n_temp": _metric_matrix(models, days, lambda m, bk: t_view(m, bk).get("n")),
         "n_rain": _metric_matrix(models, days,
                                  lambda m, bk: (precip_src[m].get(bk) or {}).get("n")),
@@ -2919,7 +2961,10 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
     # 总榜的合成矩阵：hourly 列在前、daily 列在后（列号 k 与 H+k 同属"提前第 k 天"）
     combined: dict[str, np.ndarray] = {}
     for key in ("composite", "temp_score", "precip_score", "acc2", "rmse",
-                "ts", "ets", "neff_t", "neff_r", "n_temp", "n_rain"):
+                "acc1", "mae", "mbe", "r", "slope", "mbe_bdisp",
+                "ts", "ets", "accr", "pod", "far", "bias",
+                "amt_mae", "amt_bias", "grade_ets",
+                "neff_t", "neff_r", "n_temp", "n_rain"):
         combined[key] = np.hstack([mats["hourly"][key], mats["daily"][key]])
 
     # ---- 每条榜各自的 Board：条款矩阵与设计 ----
@@ -3282,8 +3327,14 @@ def _build_board_rows(models, name, design, *, by_model,
             ridge=float(design["gate_params"]["ridge"]),
             valid=cell_valid[None, ...])[0]
 
-    aligned = {k: _aligned(mat[k]) for k in ("temp_score", "precip_score",
-                                             "acc2", "rmse", "ts", "ets")}
+    # 榜面显示列与综合分走**同一张设计**（同一批格子、同一组权重、同一收缩）：
+    # P1-3 的口径纪律从 4 列扩到两维全部已评测指标——页面上任何两列都不允许
+    # 来自两批不同的格子。
+    _ALIGNED_KEYS = ("temp_score", "precip_score",
+                     "acc2", "rmse", "acc1", "mae", "mbe", "r", "slope",
+                     "mbe_bdisp", "ts", "ets", "accr", "pod", "far", "bias",
+                     "amt_mae", "amt_bias", "grade_ets")
+    aligned = {k: _aligned(mat[k]) for k in _ALIGNED_KEYS}
     rows: list[dict] = []
     for i, m in enumerate(models):
         # 行级派生量的跨榜共享（性能轮）：下面这批计数、验证日集合与按维覆盖时效
@@ -3335,8 +3386,18 @@ def _build_board_rows(models, name, design, *, by_model,
         row = _board_row(
             m,
             {"acc2": _fin(aligned["acc2"][i]), "rmse": _fin(aligned["rmse"][i], 3),
+             "acc1": _fin(aligned["acc1"][i]), "mae": _fin(aligned["mae"][i], 3),
+             "mbe": _fin(aligned["mbe"][i], 3), "r": _fin(aligned["r"][i], 3),
+             "slope": _fin(aligned["slope"][i], 3),
+             "mbe_bdisp": _fin(aligned["mbe_bdisp"][i], 3),
              "n": n_temp},
             {"ts": _fin(aligned["ts"][i], 3), "ets": _fin(aligned["ets"][i], 3),
+             # _board_row 按原始桶键取数并自行改名（acc → accr），这里传原始键
+             "acc": _fin(aligned["accr"][i]), "pod": _fin(aligned["pod"][i]),
+             "far": _fin(aligned["far"][i]), "bias": _fin(aligned["bias"][i], 3),
+             "amt_mae": _fin(aligned["amt_mae"][i], 3),
+             "amt_bias": _fin(aligned["amt_bias"][i], 3),
+             "grade_ets": _fin(aligned["grade_ets"][i], 3),
              "n": n_rain},
             score=score, temp_score=t_score, precip_score=p_score,
             n=n_temp, n_precip=n_rain, n_eff=neff, n_eff_rain=neff_rain,
