@@ -46,6 +46,7 @@ EVAL_TARGETS = (
 )
 STATS_TARGETS = (
     "build_day_stat_tables", "aggregate_day_stats", "track_bucket_scores",
+    "bucket_components",
     "day_block_bootstrap", "difficulty_adjusted", "two_way_adjust",
 )
 

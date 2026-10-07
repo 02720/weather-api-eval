@@ -173,7 +173,8 @@ from .stats import (
     two_way_adjust,
     weight_champion_distribution,
 )
-from .timeutil import parse_iso, floor_to_hour
+from .timeutil import (parse_iso, floor_to_hour, lower_split, upper_split,
+                       unfrozen_split, minute_index, clear_minute_index)
 from .snapshot_meta import (ISSUE_SOURCE_LABELS, SUSPECT_ISSUE_SOURCES,
                              integrity_summary, snapshot_complete)
 from .storage import load_obs, list_forecast_snapshots
@@ -189,6 +190,17 @@ GRADED_KEYS = ("acc", "pod", "far", "miss", "ts", "ets", "bias")
 BOOTSTRAP_SEED = 20260906
 
 logger = logging.getLogger(__name__)
+
+
+def _days_between(day_a: str, day_b: str) -> int:
+    """两个 'YYYY-MM-DD' 之间相差的自然日数（b − a）。
+
+    collect 的天桶对齐要算"有效日 − 起报日"。原本走 `(vt.date() - issue.date()).days`：
+    对每一个有效时刻都构造两个 date 对象再相减，在百万级循环里是一笔纯粹的
+    对象开销。日期是定长的，用 date.fromisoformat 算出的序数差与之逐点等价
+    （有测试锁定），但省掉了 datetime.date() 的两层属性访问。
+    """
+    return date.fromisoformat(day_b).toordinal() - date.fromisoformat(day_a).toordinal()
 
 
 def _r(v: float) -> float | None:
@@ -471,36 +483,51 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
     # 清洗缓存的生命周期 = 本次 collect：入口清空，退出后不留任何跨调用状态。
     # 不清空会让上一轮残留的 id() 撞上本轮复用到的地址，读到一份**已失效**的快照。
     _SNAP_SANITIZE_CACHE.clear()
+    clear_minute_index()
     for sid in station_ids:
         obs_map = obs_maps[sid] if obs_maps is not None and sid in obs_maps \
             else load_obs(sid)
         # 逐小时配对
+        # 时间轴剪枝（2026-10 性能轮）：窗口过滤与封存门槛都只依赖"时间先后"，而
+        # 存档时间轴是分钟分辨率的定长 ISO 且升序（实测 212 万点全部 16 字符），
+        # 于是这两段逐点比较可以各用一次二分定界，把 datetime 解析与减法从内层
+        # 循环里整体拿掉。定界规则见 timeutil.lower_split / upper_split /
+        # unfrozen_split：与逐点 datetime 比较**逐位等价**（含"抓取时刻带秒、
+        # 正好落在某个有效时刻那一分钟"的边界情形，实测 134 例）。
         for model in models:
             for snap in _snaps_for(sid, model, snapshots, require_complete, stats):
                 issue = parse_iso(snap["issue_iso"])
+                # 起报时刻的分钟序号；None = 起报串不是分钟分辨率 → 本快照整体
+                # 回退 datetime 路径（口径不变，只是不再走整数快路径）
+                issue_im = minute_index(snap["issue_iso"])
+                issue_day_s = snap["issue_iso"][:10]
                 times = snap["hourly_time"]
-                # 封存判定的基准时刻（每份快照只解析一次，不放在内层循环里）
-                fetched = parse_iso(snap.get("fetched_at_bj")) \
-                    if snap.get("fetched_at_bj") else None
+                n_lo = lower_split(times, start_dt)
+                n_hi = upper_split(times, end_dt)
+                # 封存判定的基准时刻：一次定界 + 一次解析，绝不进内层循环
+                frozen_lo, fetched_dt = unfrozen_split(times, snap.get("fetched_at_bj"))
                 for m in snap["data"]:
                     arr_t = snap["data"][m]["temperature_2m"]
                     arr_p = snap["data"][m]["precipitation"]
-                    for i, tstr in enumerate(times):
-                        vt = parse_iso(tstr)
-                        if vt < start_dt or vt > end_dt:
-                            continue
+                    for i in range(n_lo, n_hi):
+                        tstr = times[i]
                         rec = obs_map.get(tstr)
                         if rec is None:
                             continue
-                        lead = int((vt - issue).total_seconds() // 3600)
+                        im = minute_index(tstr) if issue_im is not None else None
+                        if im is not None:
+                            lead = (im - issue_im) // 60
+                        else:
+                            lead = int((parse_iso(tstr) - issue).total_seconds() // 3600)
                         if lead <= 0 or lead > hourly_lead_days * 24:
                             continue
                         # ---- 封存时点门槛（审查 P1-4）----
                         # 有效时刻已经过去之后才抓回来的"预报值"不进任何榜：它可能
                         # 是修订值甚至实况值。无 fetched_at 的历史存档无从判定，
                         # 按已封存处理（新契约是纯增量，绝不凭空抹掉历史样本）。
-                        if fetched is not None and vt < fetched:
-                            _note_unfrozen(stats, m, (fetched - vt).total_seconds() / 3600.0,
+                        if fetched_dt is not None and i < frozen_lo:
+                            _note_unfrozen(stats, m,
+                                           (fetched_dt - parse_iso(tstr)).total_seconds() / 3600.0,
                                            frozen_excluded=require_frozen)
                             if require_frozen:
                                 continue
@@ -518,7 +545,10 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                         # 仍然保留，供"固定时效窗"诊断口径（scorecard 的 24h/72h 池、
                         # 逐时效曲线）使用——那是另一套合法且已披露的口径，不该被
                         # 天桶对齐连带删掉，否则等于用一次口径修正把诊断视图掏空。
-                        days_off = (vt.date() - issue.date()).days
+                        if im is not None:
+                            days_off = im // 1440 - issue_im // 1440
+                        else:
+                            days_off = _days_between(issue_day_s, tstr[:10])
                         if days_off < 0 or days_off > hourly_lead_days:
                             continue
                         # 数组越界按缺测处理（与按天聚合同防护）：畸形存档降级为
@@ -566,8 +596,12 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                 # 轨道于是不是同一批样本，且 seal_lag 披露对按天侧完全失明。现在
                 # 与逐小时循环同门槛：统计双桶（fd=全部小时，fd_frozen=仅封存小时），
                 # require_frozen 时用 fd_frozen 判覆盖与取值。
-                fetched_d = parse_iso(snap.get("fetched_at_bj")) \
-                    if snap.get("fetched_at_bj") else None
+                # 窗口与未封存段各一次二分定界（与逐点 datetime 比较逐位等价，
+                # 见 timeutil.lower_split / unfrozen_split）。定界只依赖时间轴，
+                # 与模型无关，故放在 `for m` 之外，一份快照只算一次。
+                d_lo = lower_split(times, start_dt)
+                d_hi = upper_split(times, end_dt)
+                d_frozen_lo, fetched_dt = unfrozen_split(times, snap.get("fetched_at_bj"))
                 for m in snap["data"]:
                     arr_t = snap["data"][m]["temperature_2m"]
                     arr_p = snap["data"][m]["precipitation"]
@@ -578,13 +612,11 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                         return store.setdefault(day_key, {"max_temp": -math.inf, "min_temp": math.inf,
                                                           "sum_rain": 0.0, "n_temp": 0, "n_rain": 0})
 
-                    for i, tstr in enumerate(times):
-                        vt = parse_iso(tstr)
-                        if vt < start_dt or vt > end_dt:
-                            continue
+                    for i in range(d_lo, d_hi):
+                        tstr = times[i]
                         day = tstr[:10]
                         d = _day_bucket(fd, day)
-                        unfrozen = fetched_d is not None and vt < fetched_d
+                        unfrozen = fetched_dt is not None and i < d_frozen_lo
                         if unfrozen and stats is not None:
                             # 按天侧单独计数（第四轮 P1-1）：与逐小时轨道的
                             # seal_lag 样本单位不同（天-小时 vs 小时记录），
@@ -3007,6 +3039,8 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
             gates = gates[2:]
         return all(v is not None and v >= thr for v, thr in gates)
 
+    # 三张榜共用一份行级派生量缓存（键 = 模型）：同一批记录只扫一遍
+    row_facts: dict[str, dict] = {}
     rows_by_board: dict[str, list[dict]] = {}
     point_champs: dict[str, str | None] = {}
     for name in _BOARD_ORDER:
@@ -3014,7 +3048,8 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
             models, name, designs[name],
             by_model=by_model, daily_by_model=daily_by_model,
             neff_pair=board_neff[name], neff_detail=neff_detail,
-            qualified_of=_qualified, model_issue=model_issue)
+            qualified_of=_qualified, model_issue=model_issue,
+            facts_cache=row_facts)
         ranks = _rank_rows(rows_by_board[name], keys=("score",))
         point_champs[name] = next((r["model"] for r in ranks
                                    if r.get("qualified") and r.get("score") is not None),
@@ -3182,9 +3217,46 @@ _BOARD_DESC = {
 _TRACK_QUESTION = {"hourly": "逐小时", "daily": "逐日"}
 
 
+
+
+def _build_row_facts(scored: list[dict], all_recs: list[dict],
+                     daily_recs: list[dict]) -> dict:
+    """按模型计算三张榜共用的样本量、验证日和覆盖时效。
+
+    同一模型的记录只扫描一次；榜单各自选择小时或日计数，统计口径不变。
+    缓存由 _resolution_boards 局部持有，独立调用 _build_board_rows 时仍可重建。
+    """
+    n_temp_h = sum(1 for r in scored
+                   if r["temp_obs"] is not None and r["temp_fcst"] is not None)
+    n_rain_h = sum(1 for r in scored
+                   if r["rain_obs"] is not None and r["rain_fcst"] is not None)
+    n_temp_d = sum(1 for r in daily_recs
+                   if r["temp_max_obs"] is not None and r["temp_max_fcst"] is not None)
+    n_rain_d = sum(1 for r in daily_recs
+                   if r["rain_obs"] is not None and r["rain_fcst"] is not None)
+    # 全 lead 的配对数（含起报当日 bucket=0）：明细口径核对用，不参与名次
+    n_all_leads = sum(1 for r in all_recs
+                      if r["temp_obs"] is not None and r["temp_fcst"] is not None)
+    days_temp = {r["valid_iso"][:10] for r in scored
+                 if r["temp_obs"] is not None and r["temp_fcst"] is not None}
+    days_rain = {r["valid_day"] for r in daily_recs
+                 if r["rain_obs"] is not None and r["rain_fcst"] is not None}
+    return {
+        "n_temp_h": n_temp_h, "n_rain_h": n_rain_h,
+        "n_temp_d": n_temp_d, "n_rain_d": n_rain_d,
+        "n_all_leads": n_all_leads,
+        "n_issues": len({r.get("issue_iso") for r in all_recs if r.get("issue_iso")}),
+        "days_temp": days_temp, "days_rain": days_rain,
+        "h_temp": _valid_lead_days(scored, "temp_obs", "temp_fcst"),
+        "h_rain": _valid_lead_days(scored, "rain_obs", "rain_fcst"),
+        "d_temp": _valid_daily_temp_days(daily_recs),
+        "d_rain": _valid_rain_days(daily_recs),
+    }
+
+
 def _build_board_rows(models, name, design, *, by_model,
                       daily_by_model, neff_pair, neff_detail,
-                      qualified_of, model_issue) -> list[dict]:
+                      qualified_of, model_issue, facts_cache: dict | None = None) -> list[dict]:
     """按一张劈分设计生成该榜的行（含派生列与样本充分性字段）。"""
     adj = design["adj"]
     spec = design["spec"]
@@ -3214,43 +3286,33 @@ def _build_board_rows(models, name, design, *, by_model,
                                              "acc2", "rmse", "ts", "ets")}
     rows: list[dict] = []
     for i, m in enumerate(models):
-        # 本榜实际用到的记录：两榜共用。caption 的"证据有多厚"必须按**本榜**
-        # 参与比较的格子算——总榜用逐小时的样例量给日榜背书是虚报。
-        scored = [r for r in by_model[m] if r.get("bucket", 0) >= 1]
-
-        # 行级样本数保持既有语义：本榜那批"两侧值同时非缺测"的配对样本数，
-        # 与"是否留在劈分设计里"无关（设计内家数不足的桶照样是这家被验证过的
-        # 样本，n 回答的是"这份分数有多厚的底子"，comparable 才回答"能不能横比"）。
+        # 行级派生量的跨榜共享（性能轮）：下面这批计数、验证日集合与按维覆盖时效
+        # 只依赖**模型自己的记录**，与"此刻正在生成哪张榜"无关；三张榜各调一次
+        # 本函数时原本要把同一批 155 万条记录扫三遍。facts_cache 由
+        # _resolution_boards 传入（按模型记忆化），榜单只在**取数**时按自己的口径
+        # 挑小时侧或日侧的那一份——统计口径一字未改，只是不再算三遍。
+        f = facts_cache.get(m) if facts_cache is not None else None
+        if f is None:
+            f = _build_row_facts(
+                [r for r in by_model[m] if r.get("bucket", 0) >= 1],
+                by_model[m], daily_by_model[m])
+            if facts_cache is not None:
+                facts_cache[m] = f
+        # 行级样本数保持既有语义：本榜那批"两侧值同时非缺测"的配对样本数，与
+        # "是否留在劈分设计里"无关（设计内家数不足的桶照样是这家被验证过的样本，
+        # n 回答的是"这份分数有多厚的底子"，comparable 才回答"能不能横比"）。
         # 两条轨道的计数单位不同（小时对 vs 天对），总榜沿用历史约定：
         #   n = 逐小时温度对，n_precip = 日累计降水对；日最高/最低对另存 n_daily_days。
         if name == "daily":
-            n_temp = sum(1 for r in daily_by_model[m]
-                         if r["temp_max_obs"] is not None
-                         and r["temp_max_fcst"] is not None)
-            n_rain = sum(1 for r in daily_by_model[m]
-                         if r["rain_obs"] is not None and r["rain_fcst"] is not None)
-            n_daily = n_temp
+            n_temp, n_rain, n_daily = f["n_temp_d"], f["n_rain_d"], f["n_temp_d"]
         elif name == "hourly":
-            n_temp = sum(1 for r in scored
-                         if r["temp_obs"] is not None and r["temp_fcst"] is not None)
-            n_rain = sum(1 for r in scored
-                         if r["rain_obs"] is not None and r["rain_fcst"] is not None)
-            n_daily = None
+            n_temp, n_rain, n_daily = f["n_temp_h"], f["n_rain_h"], None
         else:
-            n_temp = sum(1 for r in scored
-                         if r["temp_obs"] is not None and r["temp_fcst"] is not None)
-            n_rain = sum(1 for r in daily_by_model[m]
-                         if r["rain_obs"] is not None and r["rain_fcst"] is not None)
-            n_daily = sum(1 for r in daily_by_model[m]
-                          if r["temp_max_obs"] is not None
-                          and r["temp_max_fcst"] is not None)
-        # 全 lead 的配对数（含起报当日 bucket=0）：明细口径核对用，不参与名次
-        n_all_leads = sum(1 for r in by_model[m]
-                          if r["temp_obs"] is not None and r["temp_fcst"] is not None)
-        days_temp = {r["valid_iso"][:10] for r in scored
-                     if r["temp_obs"] is not None and r["temp_fcst"] is not None}
-        days_rain = {r["valid_day"] for r in daily_by_model[m]
-                     if r["rain_obs"] is not None and r["rain_fcst"] is not None}
+            n_temp, n_rain, n_daily = f["n_temp_h"], f["n_rain_d"], f["n_temp_d"]
+        n_all_leads, n_issues = f["n_all_leads"], f["n_issues"]
+        days_temp, days_rain = f["days_temp"], f["days_rain"]
+        h_temp, h_rain, d_temp, d_rain = (f["h_temp"], f["h_rain"],
+                                          f["d_temp"], f["d_rain"])
         neff, neff_rain = neff_t_map.get(m), neff_r_map.get(m)
         score = _fin(scores[i], 2)
         t_score = _fin(aligned["temp_score"][i], 2)
@@ -3263,10 +3325,6 @@ def _build_board_rows(models, name, design, *, by_model,
         # lead_temp_days / lead_rain_days / rain_days 逐维披露，页面在两维不一致
         # 时括注。旧口径的日榜 lead_days 实际数的是**降水**天（与 rain_days 重复），
         # 温度维的延伸完全不可见——读者看到"15 天逐日源只显示覆盖 5 天"的根源。
-        h_temp = _valid_lead_days(scored, "temp_obs", "temp_fcst")
-        h_rain = _valid_lead_days(scored, "rain_obs", "rain_fcst")
-        d_temp = _valid_daily_temp_days(daily_by_model[m])
-        d_rain = _valid_rain_days(daily_by_model[m])
         if name == "hourly":
             lead_temp, lead_rain = h_temp, h_rain
         elif name == "daily":
@@ -3295,7 +3353,7 @@ def _build_board_rows(models, name, design, *, by_model,
             # 降水维单独的验证日数（前端"验证日数"列的括号注）：日累计降水的
             # 样本日与逐小时温度的样本日可能不同（补位/覆盖差异），分开披露
             n_days_rain=len(days_rain),
-            n_issues=len({r.get("issue_iso") for r in by_model[m] if r.get("issue_iso")}),
+            n_issues=n_issues,
             comparable=bool(row_keep[i]),
             qualified=qualified_of(name, i, m, score, t_score, p_score,
                                    bool(row_keep[i])),

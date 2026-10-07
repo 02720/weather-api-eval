@@ -1056,6 +1056,9 @@ def day_block_bootstrap(
                                             top_model=top_model, m_eff=m_eff)}
     # 每张榜用自己的设计把**同一批重采样**归总成行分；表只建一次、只聚合一次
     agg = {k: aggregate_day_stats(W, v) for k, v in tables.items()}
+    # 四分量分数（小时温度/小时晴雨/日温度/日累计晴雨）只依赖聚合表，与在看哪张
+    # 榜无关；各榜不同的只是格子掩膜与取列。算一次传三次，见 bucket_components。
+    comps = bucket_components(agg, temp_parts, precip_parts, min_sample)
     out: dict[str, dict[str, Any]] = {}
     for name, spec in boards.items():
         cols = spec.get("columns")
@@ -1070,7 +1073,8 @@ def day_block_bootstrap(
         buckets = track_bucket_scores(
             agg, temp_parts, precip_parts, min_sample,
             temp_point_valid=temp_point_valid, rain_point_valid=rain_point_valid,
-            bucket_valid=spec.get("bucket_valid", bucket_valid))
+            bucket_valid=spec.get("bucket_valid", bucket_valid),
+            components=comps)
         if cols is not None:
             buckets = buckets[:, :, cols]
         if b_row is None or b_col is None:
@@ -1793,25 +1797,21 @@ def _nanmean_stack(arrs: list[np.ndarray]) -> np.ndarray:
         return np.nanmean(np.stack(arrs), axis=0)
 
 
-def track_bucket_scores(tables: dict[str, np.ndarray],
-                        temp_parts, precip_parts, min_sample: int,
-                        temp_point_valid: np.ndarray | None = None,
-                        rain_point_valid: np.ndarray | None = None,
-                        bucket_valid: np.ndarray | None = None,
-                        ) -> np.ndarray:
-    """证据表 (run?, m, b, s, k) → 跨分辨率拼接的桶综合分 (run?, m, 2·b)。
+def bucket_components(tables: dict[str, np.ndarray],
+                      temp_parts, precip_parts, min_sample: int,
+                      ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """证据表 → 四分量分数 `(t_h, r_h, daily_t, r_d)`（跨榜共用的那半段）。
 
-    列布局是这次重构的关键约定：**前 b 列是小时榜的天桶、后 b 列是日榜的天桶**
-    （第 k 列与第 b+k 列指同一个"提前第 k 天"，只是时间分辨率不同）。拼成一条
-    横轴后，(天桶 × 分辨率) 就是"难度"的一个自然笛卡尔积，总榜直接把这
-    2b 列塞进同一个加法模型——每小时/每日各自的难度由各自的列效应吸收，
-    行效应则是"跨两种分辨率、所有被验证过的难度"的综合技巧。
+    **为什么单独成函数**：`track_bucket_scores` 在 bootstrap 里被三张榜各调一次
+    （总榜/小时榜/日榜），而它前半段把五张充分统计量表换算成分数、再按
+    `min_sample` 判薄格、再合成日温度维——这一整段只依赖聚合表本身，与"在看
+    哪张榜"完全无关（各榜不同的只有后面的格子掩膜与取列）。原本同样的
+    数组运算要做三遍（实测 `track_bucket_scores` 4.4 s，三遍都在）。
+    拆出来让调用方算一次、传三次，是纯重复计算消除：数值、形状、NaN 位置
+    都不受影响。
 
-    三处缺项口径与点估计逐格对齐：
-    · 样本非零但 < min_sample 的维度在该次重采样里为缺；
-    · 点估计判缺的格子恒为缺（点估计还看 n_eff，重采样只能算 n，两者互补）；
-    · 日榜温度维要求日最高与日最低**两个量都有结论**——日预报承诺的是这两个
-      数，只凭其中一个给分等于把半个证据当整个用（源可以靠容易的那一半刷分）。
+    日最高/日最低**各自用自己的样本数**判薄：两边都薄时"相加凑够样本"会把两个
+    都不足门槛的量伪装成一个够样本的维度。
     """
     t_h = _temp_scores_from_aggregate(tables["temp_hourly"], temp_parts)
     r_h = _rain_scores_from_aggregate(tables["rain_hourly"], precip_parts,
@@ -1822,8 +1822,6 @@ def track_bucket_scores(tables: dict[str, np.ndarray],
                                       min_sample)
     # 各维的有效成对样本数：沿站维求和后是 (run?, m, b)，与各自的计分函数内部
     # 用的 N 同口径（_temp_scores_from_aggregate 里 N = n.sum(-1)）。
-    # 日最高/日最低**各自用自己的样本数**判定：两边都薄时"相加凑够样本"会把两个
-    # 都不足门槛的量伪装成一个够样本的维度。
     n_th = tables["temp_hourly"][..., 0].sum(axis=-1)
     # 只取前 4 列（列联计数）：2026-10 起雨量表多了 Σo/Σf/Σ|f−o| 三列，
     # 整表求和会把雨量毫米数混进"样本数"
@@ -1841,6 +1839,37 @@ def track_bucket_scores(tables: dict[str, np.ndarray],
     # 日温度维：最高与最低必须两两齐全
     daily_t = np.where(np.isfinite(t_max) & np.isfinite(t_min),
                        _nanmean_stack([t_max, t_min]), np.nan)
+    return t_h, r_h, daily_t, r_d
+
+
+def track_bucket_scores(tables: dict[str, np.ndarray],
+                        temp_parts, precip_parts, min_sample: int,
+                        temp_point_valid: np.ndarray | None = None,
+                        rain_point_valid: np.ndarray | None = None,
+                        bucket_valid: np.ndarray | None = None,
+                        components: tuple | None = None,
+                        ) -> np.ndarray:
+    """证据表 (run?, m, b, s, k) → 跨分辨率拼接的桶综合分 (run?, m, 2·b)。
+
+    列布局是这次重构的关键约定：**前 b 列是小时榜的天桶、后 b 列是日榜的天桶**
+    （第 k 列与第 b+k 列指同一个"提前第 k 天"，只是时间分辨率不同）。拼成一条
+    横轴后，(天桶 × 分辨率) 就是"难度"的一个自然笛卡尔积，总榜直接把这
+    2b 列塞进同一个加法模型——每小时/每日各自的难度由各自的列效应吸收，
+    行效应则是"跨两种分辨率、所有被验证过的难度"的综合技巧。
+
+    三处缺项口径与点估计逐格对齐：
+    · 样本非零但 < min_sample 的维度在该次重采样里为缺；
+    · 点估计判缺的格子恒为缺（点估计还看 n_eff，重采样只能算 n，两者互补）；
+    · 日榜温度维要求日最高与日最低**两个量都有结论**——日预报承诺的是这两个
+      数，只凭其中一个给分等于把半个证据当整个用（源可以靠容易的那一半刷分）。
+
+    components：预先算好的四分量分数（见 `bucket_components`）。多榜共用同一批
+    聚合表时传进来，避免把同一段数组运算算三遍；缺省时行为与本函数拆分前完全
+    一致（旧调用点与测试不受影响）。
+    """
+    if components is None:
+        components = bucket_components(tables, temp_parts, precip_parts, min_sample)
+    t_h, r_h, daily_t, r_d = components
 
     has_run = t_h.ndim == 3
     if not has_run:

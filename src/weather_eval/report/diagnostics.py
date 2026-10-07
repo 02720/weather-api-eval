@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
-from ..timeutil import parse_iso as _timeutil_parse_iso
+from ..timeutil import parse_iso as _timeutil_parse_iso, lower_split, upper_split
 from .. import stats as st
 
 logger = logging.getLogger(__name__)
@@ -165,9 +165,34 @@ def iter_error_samples(forecasts_root: Path, obs_by_station: dict[str, dict],
         issue = _parse_iso(snap.get("issue_iso") or "")
         if issue is None:
             continue
-        times = snap.get("hourly_time") or []
+        # ---- 三段剪枝（2026-10 性能轮）：把逐点判定换成"下标区间" ----
+        # 本函数原本对窗口内**每一个**有效时刻都做一次 datetime 解析 + 两次
+        # datetime 比较 + 一次 timedelta 整除（实测 210 万次调用、独占 6.2 s），而
+        # 三段过滤的判据全是"时间先后"：
+        #   · 评估窗口 [start, end]；
+        #   · 提前天数窗口 [lo, hi] ⇒ 有效时刻落在 [issue+lo 天, issue+(hi+1) 天)；
+        #   · 该时刻必须有观测（obs 查表，无法剪枝）。
+        # 存档时间轴是分钟分辨率的定长 ISO 且升序（212 万点实测），故字典序 ==
+        # 时间序，两个区间都能一次二分定界（定界函数与 collect 共用 timeutil，
+        # 含"边界带秒"的等价处理）。lead_days 仍按原口径逐点计算——剪枝只跳过
+        # **注定被丢弃**的点，不改动任何判定。
+        # 剪枝要求时间轴是**升序 list**（bisect 的前提）。类型不符就整份跳过：
+        # 原实现用 enumerate 容忍任何可迭代对象，但那只会产出无意义的键。处置
+        # 纪律与 collect 的 _snapshot_struct_valid 一致——畸形存档降级为不入样，
+        # 绝不拖垮整段诊断。
+        times = snap.get("hourly_time")
+        if not isinstance(times, list) or not times:
+            continue
         data = snap.get("data") or {}
         if not isinstance(data, dict) or not times:
+            continue
+        lo_i = lower_split(times, t_start) if t_start is not None else 0
+        hi_i = upper_split(times, t_end) if t_end is not None else len(times)
+        # 提前天数窗口：lead_days = (vt − issue) // 1天，故 [lo, hi] 对应
+        # 半开区间 [issue + lo 天, issue + (hi+1) 天)
+        lo_i = max(lo_i, lower_split(times, issue + timedelta(days=lo)))
+        hi_i = min(hi_i, lower_split(times, issue + timedelta(days=hi + 1)))
+        if lo_i >= hi_i:
             continue
         # 一份快照可能同时封装多个模型（Open-Meteo 批量接口）
         for mid, series in data.items():
@@ -178,20 +203,15 @@ def iter_error_samples(forecasts_root: Path, obs_by_station: dict[str, dict],
             rains = series.get("precipitation") or []
             tg = t_map if key_model == model else temp_err.setdefault(key_model, {})
             rg = r_map if key_model == model else rain_err.setdefault(key_model, {})
-            for idx, t_iso in enumerate(times):
-                vt = _parse_iso(t_iso)
-                if vt is None:
-                    continue
-                if t_start and vt < t_start:
-                    continue
-                if t_end and vt > t_end:
-                    continue
-                lead_days = int((vt - issue) // timedelta(days=1))
-                if lead_days < lo or lead_days > hi:
-                    continue
+            for idx in range(lo_i, hi_i):
+                t_iso = times[idx]
                 rec = obs.get(t_iso)
                 if not rec:
                     continue
+                vt = _parse_iso(t_iso)
+                if vt is None:
+                    continue
+                lead_days = int((vt - issue) // timedelta(days=1))
                 key = (station, t_iso, lead_days)
                 if idx < len(temps) and rec.get("temp") is not None:
                     fv = temps[idx]
