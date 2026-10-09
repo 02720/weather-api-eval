@@ -2240,5 +2240,115 @@
     "wind_speed": 0.3,
     "wind_dir": 104.0,
     "visibility": null
+  },
+  "2026-10-09T19:00": {
+    "time": "2026-10-09T19:00",
+    "source": "wd",
+    "temp": 23.3,
+    "pressure": 1009.8,
+    "humidity": 98.0,
+    "rain": 6.2,
+    "wind_speed": 0.9,
+    "wind_dir": 345.0,
+    "visibility": null
+  },
+  "2026-10-09T18:00": {
+    "time": "2026-10-09T18:00",
+    "source": "wd",
+    "temp": 23.5,
+    "pressure": 1009.7,
+    "humidity": 98.0,
+    "rain": 22.7,
+    "wind_speed": 1.4,
+    "wind_dir": 15.0,
+    "visibility": null
+  },
+  "2026-10-09T17:00": {
+    "time": "2026-10-09T17:00",
+    "source": "wd",
+    "temp": 24.1,
+    "pressure": 1009.1,
+    "humidity": 98.0,
+    "rain": 30.6,
+    "wind_speed": 1.1,
+    "wind_dir": 81.0,
+    "visibility": null
+  },
+  "2026-10-09T16:00": {
+    "time": "2026-10-09T16:00",
+    "source": "wd",
+    "temp": 24.1,
+    "pressure": 1008.5,
+    "humidity": 98.0,
+    "rain": 14.6,
+    "wind_speed": 2.9,
+    "wind_dir": 69.0,
+    "visibility": null
+  },
+  "2026-10-09T15:00": {
+    "time": "2026-10-09T15:00",
+    "source": "wd",
+    "temp": 24.2,
+    "pressure": 1007.8,
+    "humidity": 96.0,
+    "rain": 2.8,
+    "wind_speed": 1.2,
+    "wind_dir": 333.0,
+    "visibility": null
+  },
+  "2026-10-09T14:00": {
+    "time": "2026-10-09T14:00",
+    "source": "wd",
+    "temp": 24.7,
+    "pressure": 1008.3,
+    "humidity": 97.0,
+    "rain": 14.9,
+    "wind_speed": 3.1,
+    "wind_dir": 120.0,
+    "visibility": null
+  },
+  "2026-10-09T13:00": {
+    "time": "2026-10-09T13:00",
+    "source": "wd",
+    "temp": 24.6,
+    "pressure": 1008.9,
+    "humidity": 98.0,
+    "rain": 5.5,
+    "wind_speed": 0.7,
+    "wind_dir": 2.0,
+    "visibility": null
+  },
+  "2026-10-09T12:00": {
+    "time": "2026-10-09T12:00",
+    "source": "wd",
+    "temp": 25.1,
+    "pressure": 1009.9,
+    "humidity": 98.0,
+    "rain": 12.3,
+    "wind_speed": 3.1,
+    "wind_dir": 24.0,
+    "visibility": null
+  },
+  "2026-10-09T11:00": {
+    "time": "2026-10-09T11:00",
+    "source": "wd",
+    "temp": 24.4,
+    "pressure": 1010.5,
+    "humidity": 98.0,
+    "rain": 5.2,
+    "wind_speed": 1.9,
+    "wind_dir": 349.0,
+    "visibility": null
+  },
+  "2026-10-09T10:00": {
+    "time": "2026-10-09T10:00",
+    "source": "wd",
+    "temp": 24.2,
+    "pressure": 1010.2,
+    "humidity": 98.0,
+    "rain": 13.3,
+    "wind_speed": 1.3,
+    "wind_dir": 331.0,
+    "visibility": null
   }
 }
