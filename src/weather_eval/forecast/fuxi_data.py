@@ -268,6 +268,9 @@ class FuxiDetProvider(ForecastProvider):
         self._avail_cache: dict[str, list[str] | None] = {}
 
     def fetch_snapshot(self, station: Any, models: list[str] | None = None) -> dict:
+        # 预算是**每站各自**的额度：本实例被 CLI 在所有站点间复用，
+        # 不重置会让第 1 站耗尽预算后，后续站全部零重试。
+        self._budget.reset()
         init_time = self._resolve_init_time()      # "YYYY-MM-DD HH:00:00"（UTC）
         issue_utc = datetime.strptime(init_time, "%Y-%m-%d %H:%M:%S")
         issue_iso = (issue_utc + timedelta(hours=8)).strftime("%Y-%m-%dT%H:00")

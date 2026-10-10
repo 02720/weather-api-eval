@@ -201,6 +201,9 @@ class CaiyunProvider(ForecastProvider):
         self._budget = TimeBudget()  # 单源单轮总预算（第四轮 P1-7）
 
     def fetch_snapshot(self, station: Any, models: list[str] | None = None) -> dict:
+        # 预算是**每站各自**的额度：本实例被 CLI 在所有站点间复用，
+        # 不重置会让第 1 站耗尽预算后，后续站全部零重试。
+        self._budget.reset()
         lonlat = f"{station.lon},{station.lat}"
         url = ENDPOINT.format(token=self.token, lonlat=lonlat)
         params = {
@@ -229,9 +232,12 @@ class CaiyunProvider(ForecastProvider):
         # 以温度序列时间为基准时间轴；降水按（下取整后）时间对齐，缺失补 None
         p_by_dt: dict[datetime, Any] = {}
         for p in precip_series:
+            # TypeError 必须一起兜：`p` 是字符串/None 之类的非 dict 条目时，
+            # `p["datetime"]` 抛的是 TypeError 而不是 KeyError——漏掉它，一个脏
+            # 条目就会从**逐条跳过**升级成整站抓取中断（契约漂移的常见形态）。
             try:
                 p_by_dt[_parse_caiyun_dt(p["datetime"])] = p.get("value")
-            except (KeyError, ValueError):
+            except (KeyError, ValueError, TypeError, AttributeError):
                 continue
 
         hourly_time: list[str] = []
@@ -240,7 +246,7 @@ class CaiyunProvider(ForecastProvider):
         for t in temp_series:
             try:
                 dt = _parse_caiyun_dt(t["datetime"])
-            except (KeyError, ValueError):
+            except (KeyError, ValueError, TypeError, AttributeError):
                 continue
             hourly_time.append(dt.strftime("%Y-%m-%dT%H:%M"))
             temps.append(_num(t.get("value")))

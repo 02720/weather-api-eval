@@ -294,6 +294,9 @@ class Ew4allProvider(ForecastProvider):
 
     # ------------------------------------------------------------------ 对外
     def fetch_snapshot(self, station: Any, models: list[str] | None = None) -> list[dict]:
+        # 预算是**每站各自**的额度：本实例被 CLI 在所有站点间复用，
+        # 不重置会让第 1 站耗尽预算后，后续站全部零重试。
+        self._budget.reset()
         wanted = list(models) if models else list(MODEL_SPECS)
         unknown = [m for m in wanted if m not in MODEL_SPECS]
         if unknown:
@@ -455,7 +458,7 @@ class Ew4allProvider(ForecastProvider):
             # 第四轮 P2-3：完整性看**有效值**不看行数——契约漂移返回行数正常、
             # 值全 null 的序列时，按行数判 complete 会让残缺快照以完整身份进榜
             "complete": _has_values(one) or not spec.precip_1h_element,
-            "missing_shards": ([] if (one or not spec.precip_1h_element)
+            "missing_shards": ([] if (_has_values(one) or not spec.precip_1h_element)
                                else [str(spec.precip_1h_element)]),
             "station_id": station.id,
             "source": SOURCE,

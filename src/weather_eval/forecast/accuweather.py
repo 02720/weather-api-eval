@@ -475,6 +475,9 @@ class AccuWeatherProvider(ForecastProvider):
 
     # ------------------------------------------------------------------ 对外
     def fetch_snapshot(self, station: Any, models: list[str] | None = None) -> dict:
+        # 预算是**每站各自**的额度：本实例被 CLI 在所有站点间复用，
+        # 不重置会让第 1 站耗尽预算后，后续站全部零重试。
+        self._budget.reset()
         if self._quota_suspect:
             # 同一次运行内配额失败已确认（409 直判 / 503 退避穷尽）：
             # 后续站点快速失败，不烧配额与时间

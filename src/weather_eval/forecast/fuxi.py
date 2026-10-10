@@ -139,6 +139,9 @@ class FuxiC88Provider(ForecastProvider):
         self._tile_cache: str | None = None  # tile 锚点为产品级属性，跨站点复用
 
     def fetch_snapshot(self, station: Any, models: list[str] | None = None) -> dict:
+        # 预算是**每站各自**的额度：本实例被 CLI 在所有站点间复用，
+        # 不重置会让第 1 站耗尽预算后，后续站全部零重试。
+        self._budget.reset()
         start_utc = self._tile_cache
         if start_utc is None:
             payload = self._request(TILE_URL, method="GET")

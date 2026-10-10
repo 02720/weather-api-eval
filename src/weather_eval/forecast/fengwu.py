@@ -162,6 +162,9 @@ class FengWuProvider(ForecastProvider):
         self._issue_cache: datetime | None = None  # 最新可查起报（产品级，跨站点复用）
 
     def fetch_snapshot(self, station: Any, models: list[str] | None = None) -> dict:
+        # 预算是**每站各自**的额度：本实例被 CLI 在所有站点间复用，
+        # 不重置会让第 1 站耗尽预算后，后续站全部零重试。
+        self._budget.reset()
         issue_utc = self._resolve_issue()
         payload = self._query(station, issue_utc)
         return self._build_snapshot(station, payload)

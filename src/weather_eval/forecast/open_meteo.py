@@ -83,6 +83,9 @@ class OpenMeteoProvider(ForecastProvider):
         self._budget = TimeBudget()  # 单源单轮总预算（第四轮 P1-7）
 
     def fetch_snapshot(self, station: Any, models: list[str]) -> dict:
+        # 预算是**每站各自**的额度：本实例被 CLI 在所有站点间复用，
+        # 不重置会让第 1 站耗尽预算后，后续站全部零重试。
+        self._budget.reset()
         params = {
             "latitude": station.lat,
             "longitude": station.lon,
@@ -230,7 +233,10 @@ def _parse_daily(payload: dict, models: list[str], allow_bare: bool,
         for resp, out in resolved:
             arr = daily.get(resp)
             if not isinstance(arr, list):
-                data[model][out] = None
+                # 契约要求三条数组与 daily_time **等长**（缺测一律 null）；写标量
+                # None 会让下游 `_at(entry, key, i)` 的按位取值为该元素 fell back
+                # 到整条 None，静默丢掉同模型其余变量。全缺测必须是等长的 null 数组。
+                data[model][out] = [None] * len(axis)
             elif len(arr) == len(keep_idx) == len(axis):
                 data[model][out] = arr
             else:

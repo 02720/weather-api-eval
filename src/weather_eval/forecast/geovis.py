@@ -202,8 +202,17 @@ class GevisProvider(ForecastProvider):
         self._day_tier_cache: str | None = None  # 逐日产品可用档位（账号级，同上）
 
     def fetch_snapshot(self, station: Any, models: list[str] | None = None) -> dict:
+        # 预算是**每站各自**的额度：本实例被 CLI 在所有站点间复用，
+        # 不重置会让第 1 站耗尽预算后，后续站全部零重试。
+        self._budget.reset()
         # 档位在首次成功（含解析成功）后固定（权限是账号级属性，跨站点复用）
         parsed, tier = self._query_any_tier(station)
+        # 空时间轴必须**在花掉日产品的 1~3 次请求之前**就判掉：这句 raise 原本排在
+        # 快照构造之后，`_fetch_daily_block` 已经为一个注定被拒绝入库的快照白白
+        # 打过一轮接口（且失败成本按站计）。先验时间轴，再做任何后续抓取。
+        if not parsed["time"]:
+            # 空时间轴快照一旦入库会被同 issue 幂等锁死，正常数据永远进不来
+            raise RuntimeError("星图响应无可解析的 fc_time 条目（疑似契约漂移），拒绝入库")
         daily_block = self._fetch_daily_block(station)
         if parsed["temperature_2m"] and all(v is None for v in parsed["temperature_2m"]):
             logger.warning("星图站点 %s 温度序列全部缺测，服务端契约可能已变化", station.id)
@@ -236,9 +245,6 @@ class GevisProvider(ForecastProvider):
         if daily_block:
             snapshot["daily_time"] = daily_block["time"]
             snapshot["daily"] = daily_block["data"]
-        if not parsed["time"]:
-            # 空时间轴快照一旦入库会被同 issue 幂等锁死，正常数据永远进不来
-            raise RuntimeError("星图响应无可解析的 fc_time 条目（疑似契约漂移），拒绝入库")
         logger.info("站点 %s 已抓取星图逐小时预报（档位 %s）起报 %s，时间点数 %d，日产品 %d 天",
                     station.id, tier, parsed["issue_iso"], len(parsed["time"]),
                     len(daily_block["time"]) if daily_block else 0)

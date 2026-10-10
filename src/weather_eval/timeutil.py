@@ -141,6 +141,9 @@ def unfrozen_split(times: list[str], fetched_at_bj: str | None
 _EPOCH_ORD = date(1970, 1, 1).toordinal()
 _MINUTE_INDEX: dict[str, int | None] = {}
 _MISSING = object()
+# 容量上界：见 minute_index 的说明。正常路径靠 clear_minute_index() 维护，
+# 这一条只为"从没被清理的调用路径"（诊断层、worker 进程）兜住单调增长。
+_MINUTE_INDEX_MAX = 40_000
 
 
 def minute_index(s: str) -> int | None:
@@ -161,8 +164,14 @@ def minute_index(s: str) -> int | None:
     **返回 None 时调用方必须回退 datetime 路径**——绝不把"解析不了"当成 0，
     那是把缺测伪装成数值的同一种错误。
 
-    缓存生命周期 = 单次 collect（入口 `clear_minute_index()`）：键空间是存档中出现
-    过的所有小时（13 个月约 9,600 项），长生命周期进程里不能让它无限驻留。
+    缓存的生命周期：调用方（collect）在入口 `clear_minute_index()`；但**并非所有
+    调用路径都会清**（诊断层的 iter_error_samples、并行 worker 都会填这张表）。
+    因此额外加一道容量上界：满了就整表丢弃重建，而不是让它单调增长。上界取
+    单次运行实测键数（约 9,600）的 4 倍——正常路径永远撞不到，只有"确实没人
+    清理"时才兜底，且丢弃只是重算一次 strptime，不产生错误结果。
+
+    **返回 None 时调用方必须回退 datetime 路径**——绝不把"解析不了"当成 0，
+    那是把缺测伪装成数值的同一种错误。
     """
     v = _MINUTE_INDEX.get(s, _MISSING)
     if v is not _MISSING:
@@ -173,6 +182,8 @@ def minute_index(s: str) -> int | None:
         v = None
     else:
         v = (dt.toordinal() - _EPOCH_ORD) * 1440 + dt.hour * 60 + dt.minute
+    if len(_MINUTE_INDEX) >= _MINUTE_INDEX_MAX:
+        _MINUTE_INDEX.clear()
     _MINUTE_INDEX[s] = v
     return v
 

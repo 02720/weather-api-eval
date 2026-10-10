@@ -59,7 +59,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .timeutil import now_beijing, ym
+from .timeutil import BEIJING, now_beijing, ym
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +137,17 @@ def _atomic_write_json(path: Path, obj: Any) -> None:
             os.fsync(f.fileno())   # 断电/panic 后"名字对、内容全零"比半截更毒
         os.chmod(tmp, 0o644)   # mkstemp 默认 0600，恢复常规读权限（部署/他人可读）
         os.replace(tmp, path)
+        # 目录项也要 fsync：只同步文件内容时，断电后可能出现"文件内容已落盘、
+        # 但它挂到目录上的那一步没落盘"——文件整个消失。rename 对**进程崩溃**
+        # 是原子的，对**机器掉电**不是；这里补的正是后者那一步。
+        try:
+            dir_fd = os.open(str(path.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass          # 某些文件系统不支持同步目录；不因它让整次写入失败
     except BaseException:
         # os.fdopen 抛错时它还没接管 fd，描述符会就此泄漏——每天三次的长跑
         # 进程里，这种"一次泄漏一个 fd"最终会撞到 ulimit（审查 P2-2）。
@@ -347,10 +358,16 @@ def save_forecast_snapshot(station_id: str, model: str, snapshot: dict, *,
             daily_max_offset_days if daily_max_offset_days is not None
             else _eval_daily_max_offset())
         now = _stamp_now()
+        # ⚠️ `now` 是**无时区的北京墙钟**（timeutil 的设计约定）。对它直接调
+        # `.astimezone(utc)` 会被 Python 当作"系统本地时"来换算——只有在
+        # TZ=Asia/Shanghai 的机器/CI 上才碰巧正确，换台机器就差 8 小时。
+        # 而 fetched_at_utc 参与 payload_sha256（snapshot_meta 已把它纳入哈希），
+        # 错位会让 `verify` 对一份完好存档报红。故先显式钉回北京时区再换算。
+        now_utc = now.replace(tzinfo=BEIJING).astimezone(timezone.utc)
         stamp_snapshot(
             snapshot,
             fetched_bj=now.strftime("%Y-%m-%dT%H:%M:%S"),
-            fetched_utc=now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            fetched_utc=now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
         )
         _atomic_write_json(path, snapshot)
     return True
@@ -496,8 +513,15 @@ def _snapshot_files_iter(forecasts_root: Path):
 
 # ------------------------------------------------------- 月度 bundle（体积治理）
 def _looks_like_month(s: str) -> bool:
-    """'2026-08' 形态的月份串（用于从文件名安全地区分月份与起报时刻）。"""
-    return (len(s) == 7 and s[4] == "-" and s[:4].isdigit() and s[5:].isdigit())
+    """'2026-08' 形态的月份串（用于从文件名安全地区分月份与起报时刻）。
+
+    月序必须校验：只判"两位数字"会让 '2026-99'、'2026-00' 通过，而本函数的
+    结论会流进 `available_months` → 总榜窗口起点 → 一整轮的样本集合。一个拼错的
+    目录名因此能静默改变评测窗口，且全程不会有任何报错。
+    """
+    if not (len(s) == 7 and s[4] == "-" and s[:4].isdigit() and s[5:].isdigit()):
+        return False
+    return 1 <= int(s[5:]) <= 12
 
 
 def shift_month(period: str, delta: int) -> str:

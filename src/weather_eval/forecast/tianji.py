@@ -176,6 +176,9 @@ class TianjiProvider(ForecastProvider):
 
     # ------------------------------------------------------------------ 对外
     def fetch_snapshot(self, station: Any, models: list[str] | None = None) -> list[dict]:
+        # 预算是**每站各自**的额度：本实例被 CLI 在所有站点间复用，
+        # 不重置会让第 1 站耗尽预算后，后续站全部零重试。
+        self._budget.reset()
         wanted = [m for m in (models or list(MODEL_SPECS)) if m in MODEL_SPECS]
         if not wanted:
             raise RuntimeError(f"中科天机无可识别的模型: {models}")

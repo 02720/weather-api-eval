@@ -334,6 +334,9 @@ class MsnProvider(ForecastProvider):
 
     # ------------------------------------------------------------------ 对外
     def fetch_snapshot(self, station: Any, models: list[str] | None = None) -> dict:
+        # 预算是**每站各自**的额度：本实例被 CLI 在所有站点间复用，
+        # 不重置会让第 1 站耗尽预算后，后续站全部零重试。
+        self._budget.reset()
         merged: dict[datetime, dict] = {}
         base_lu: str | None = None
         state0: dict | None = None
@@ -505,8 +508,14 @@ class MsnProvider(ForecastProvider):
             # WARNING。评估侧无从判断"这份快照少了一半时效"，于是残缺样本与完整
             # 样本同权进榜。现在缺失分片显式落盘，评估层默认排除（可配置）。
             "complete": fetched >= self.max_day,
-            "missing_shards": list(dropped) + [f"day={d}" for d in range(fetched + 1,
-                                                                        self.max_day + 1)],
+            # 缺失分片以**循环中断点** `day` 为准，而不是 `fetched+1`：
+            # * 旧写法 `range(fetched+1, ...)` 在版本重抓后与真实缺失片不对应
+            #   （merged/fetched 被整体重置过），且会与 dropped 里已经写过的
+            #   "day=6: <原因>" 重复产出一份 "day=6" —— 同一片两条、格式还不同。
+            # * 循环正常跑完时 day == max_day+1，range 自然为空；任一条 break
+            #   分支退出时 day 就是第一个没抓到的分片。两种情形一个表达式覆盖。
+            # dropped 保留**带原因**的描述串供审计，missing_shards 只列片号。
+            "missing_shards": [f"day={d}" for d in range(day, self.max_day + 1)],
             "drift_history": drift_history,  # 版本漂移史（重抓成功时快照并不残缺）
             "version_restarts": restarts,    # 整体重抓次数
             "precip_alignment": (

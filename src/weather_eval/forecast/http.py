@@ -104,6 +104,17 @@ class TimeBudget:
         r = self.remaining()
         return r is not None and r <= 0.0
 
+    def reset(self) -> None:
+        """把预算的计时原点挪到"此刻"，即重新获得全额预算。
+
+        为什么必须有这个方法：预算语义是**单源单轮**，而同一个 provider 实例会被
+        CLI 在所有站点之间复用（cmd_fetch_forecast 里 `prov` 只构造一次）。
+        `_t0` 若只在 `__init__` 里落一次，第 1 个站耗尽 900 s 之后，后续所有站
+        的 `remaining()` 恒为 0——重试全部跳过、`_get` 直接返回空，表现为"后面
+        几个站莫名其妙抓不到数据"。预算是每站各自的额度，故入口必须重置。
+        """
+        self._t0 = time.monotonic()
+
     def describe(self) -> str:
         r = self.remaining()
         return "不限" if r is None else f"剩余 {r:.0f}s（总预算 {self.total:.0f}s）"

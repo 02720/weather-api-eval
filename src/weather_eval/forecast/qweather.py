@@ -299,6 +299,9 @@ class QWeatherProvider(ForecastProvider):
 
     # ------------------------------------------------------------------ 对外
     def fetch_snapshot(self, station: Any, models: list[str] | None = None) -> dict:
+        # 预算是**每站各自**的额度：本实例被 CLI 在所有站点间复用，
+        # 不重置会让第 1 站耗尽预算后，后续站全部零重试。
+        self._budget.reset()
         r_lat = round(float(station.lat), 2)   # 和风坐标契约：小数不超过 2 位
         r_lon = round(float(station.lon), 2)
 

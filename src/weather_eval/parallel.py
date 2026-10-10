@@ -24,11 +24,17 @@ from __future__ import annotations
 
 import logging
 import os
+import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
 
 logger = logging.getLogger(__name__)
 
 WORKERS_ENV = "WEATHER_EVAL_METRIC_WORKERS"
+# 进程的启动方式：**显式锁定 fork**。本模块的 RSS 闸门与"fork 的写时复制成本"
+# 整条论证都以 fork 为前提；Python 3.14 起默认 start method 在 Linux 上改为
+# forkserver，若跟着版本漂移，闸门的含义与实测结论都会失效而不报错。
+# 不支持 fork 的平台（Windows/macOS spawn）由 get_context 自行回退。
+_MP_CONTEXT = "fork"
 # 低于这个批量就串行：进程池的固定开销（fork + cyeva/pint 初始化）不划算
 MIN_PARALLEL_JOBS = 32
 MAX_DEFAULT_WORKERS = 4
@@ -42,13 +48,37 @@ MAX_DEFAULT_WORKERS = 4
 # 也就是说：分级指标向量化之后，cyeva 只剩约 17 s 可并行，而 fork 的代价约 22 s，
 # 净亏。等到事实层不再把全量配对驻留内存（增量 IO 落地）或数据量涨到 13 个月
 # （cyeva 工作量 ∝ 样本量，届时约 100 s 可并行）时，这条闸门会自然放行。
+#
+# 闸门量的是**当前** RSS 而不是峰值：写时复制的成本取决于此刻驻留了多少页，
+# 用峰值会让"曾经高过一次"变成永久禁令（见 _parent_rss_mb 的说明）。
 FORK_RSS_LIMIT_MB = 1200.0
-
+# `ex.map` 的等待上界（秒）：超时即整批退回串行。缺省的无限等待会让"worker
+# 挂死 → 退回串行"这条兜底永远触发不了，整轮构建挂起而不是降级跑完。
+MAP_TIMEOUT_S = 1200.0
 
 def _parent_rss_mb() -> float:
+    """**当前** RSS（MB）——fork 的写时复制成本只取决于此刻驻留了多少页。
+
+    ⚠️ 此前用 `resource.getrusage().ru_maxrss`，那是**历史峰值**而非当前值：
+    峰值一旦在早期被抬高（例如一次性读完 13 个月观测），此后即使 RSS 回落、
+    fork 其实很便宜，`worker_count()` 也会永久判定"父进程太大"并退回串行——
+    并行化在长生命周期进程（`all` 一次跑完全流程）里等于被一次性永久关闭。
+
+    取值顺序：Linux 的 /proc/self/statm 最准且零依赖；取不到再退回 ru_maxrss
+    （此时按"未知"处理更好，但保留旧行为以免在无 /proc 的环境里突然全开并行）。
+    """
+    try:
+        with open("/proc/self/statm", "r", encoding="utf-8") as f:
+            # 第二字段 = 驻留页数；页长用 os.sysconf 取，不硬编码 4096
+            pages = int(f.read().split()[1])
+        return pages * (os.sysconf("SC_PAGE_SIZE") / (1024.0 * 1024.0))
+    except (OSError, ValueError, IndexError):
+        pass
     try:
         import resource
-        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        # Linux 上报 KB；macOS 上报字节（数值量级差 1000 倍，按阈值判别）
+        return rss / 1024.0 if rss > 100_000 else rss / (1024.0 * 1024.0)
     except Exception:                            # noqa: BLE001  取不到就按不限制处理
         return 0.0
 
@@ -108,8 +138,18 @@ def map_metric_calls(fn_name: str, jobs: list[tuple[tuple, dict]]) -> list:
     payload = [(fn_name, a, k) for a, k in jobs]
     chunksize = max(1, len(payload) // (n * 4))
     try:
-        with ProcessPoolExecutor(max_workers=n, initializer=_init_worker) as ex:
-            return list(ex.map(_run_one, payload, chunksize=chunksize))
+        # 显式锁定 start method，不让 Python 版本替我们决定：3.12 默认 fork（父进程
+        # 2 GB + requests.Session 会被整体映射），3.14 起默认改成 forkserver，语义与
+        # 开销都变了。本模块的整条论证（包括 RSS 闸门）都建立在 fork 之上。
+        ctx = multiprocessing.get_context(_MP_CONTEXT)
+        with ProcessPoolExecutor(max_workers=n, mp_context=ctx,
+                                 initializer=_init_worker) as ex:
+            # timeout 是"整批退回串行"这条兜底的**触发条件**：`ex.map` 缺省无限
+            # except 永远等不到，docstring 承诺的退回就成了空话——整轮报告构建
+            # 会挂在原地而不是降级跑完。上界按串行耗时的宽松倍数给（串行约 17 s，
+            # 这里给 20 分钟），宁可偶尔白跑一遍串行，也不无限期挂起。
+            return list(ex.map(_run_one, payload, chunksize=chunksize,
+                               timeout=MAP_TIMEOUT_S))
     except Exception as exc:                    # noqa: BLE001  任何失败都整批退回串行
         logger.warning("指标并行失败（%s: %s），整批退回串行路径",
                        type(exc).__name__, exc)

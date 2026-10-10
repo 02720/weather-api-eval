@@ -405,7 +405,9 @@ def cmd_health(args):
     if n_stale:
         log.error("有 %d 个源超过 %d 小时未成功抓取（详见 reports/health.html）",
                   n_stale, args.stale_hours)
-        return n_stale
+        # 退出码只表示"有/无"，不表示条数：Linux 把 exit code 截断到 8 位，
+        # 返回陈旧源个数会让 256 个陈旧源"变回" 0（= 成功），CI 因此看不见失败。
+        return 1
     log.info("全部源健康（阈值 %d 小时）", args.stale_hours)
     return 0
 
@@ -530,12 +532,27 @@ def cmd_archive(args):
         if n > 10:
             log.info("  … 及另外 %d 份", n - 10)
         return 0
-    total_in = sum(p.stat().st_size for p in candidates)
-    archive_old_snapshots(args.days, apply=True)
-    gz_sizes = [p.with_name(p.name + ".gz").stat().st_size for p in candidates]
+    # ⚠️ TOCTOU：此前先 dry-run 拿 candidates、再**重新扫描**执行一次 apply，
+    # 然后按旧的 candidates 逐个 `.gz.stat()`。两次扫描之间文件可能被并发的
+    # compact 干掉（或单份压缩失败），此时 `.stat()` 抛 FileNotFoundError，
+    # 把已经压缩成功的所有份数留在半途、命令整体炸掉。apply=True 的返回值
+    # 就是**真正处理过**的列表，直接用它，逐份容错。
+    total_in = sum(p.stat().st_size for p in candidates if p.exists())
+    done = archive_old_snapshots(args.days, apply=True)
+    gz_sizes = []
+    n_failed = 0
+    for p in done:
+        gz = p.with_name(p.name + ".gz")
+        try:
+            gz_sizes.append(gz.stat().st_size)
+        except OSError:
+            n_failed += 1
     log.info("已归档 %d 份旧快照（%.1f MB -> %.1f MB，%.1f×）",
-             n, total_in / 1e6, sum(gz_sizes) / 1e6,
+             len(done) - n_failed, total_in / 1e6, sum(gz_sizes) / 1e6,
              (total_in / sum(gz_sizes)) if sum(gz_sizes) else 0.0)
+    if n_failed:
+        log.error("%d 份压缩后未找到 .gz 产物，请复查上述清单", n_failed)
+        return 1
     return 0
 
 
@@ -640,7 +657,9 @@ def cmd_compact(args):
     if rep["errors"]:
         for e in rep["errors"][:10]:
             log.error("治理错误：%s", e)
-        return len(rep["errors"])
+        # 退出码只能是 0/1：Linux 把 exit code 截断到 8 位，返回错误条数
+        # 会让 256 个错误"变回" 0（= 成功），CI 因此看不见失败。
+        return 1
     return 0
 
 
