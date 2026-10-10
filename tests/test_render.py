@@ -73,6 +73,50 @@ def test_render_monthly_html_nonempty(tmp_path, monkeypatch):
     assert '"board"' in html and '"scorecard"' not in html
 
 
+def test_read_board_note_always_includes_sitting_champion(tmp_path, monkeypatch):
+    """读榜须知与冠军横幅必须自洽：权重敏感性只列前二时不得丢掉现榜冠军。
+
+    回归（2026-10-10 实测）：冠军伏羲中期在 500 次权重扰动中夺冠 25.0%、排第三，
+    旧模板截断前二（MSN 48.4% / ECMWF 26.6%）且标题写作"冠军归属"，同一张卡片
+    上下两处各说各话。披露的宾语是"现榜冠军有多稳"，故展示集合 = 频率前二 ∪
+    现榜冠军——冠军一次未夺冠（不在列表里）时频率记 0% 也不得省略。
+    """
+    _populate(tmp_path, monkeypatch)
+    start = datetime(2026, 8, 1, 0, 0)
+    end = datetime(2026, 8, 30, 23, 0)
+    cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
+           "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 5,
+           "sensitivity_runs": 100}
+    data = build_report(["s1"], ["ecmwf_ifs"], cfg, start, end, "2026-08")
+    assert data["leaderboards"]["all"][0]["model"] == "ecmwf_ifs"
+
+    def note_of(html):
+        return html.split("读榜须知", 1)[1].split("看完整榜单", 1)[0]
+
+    # 情形 1：冠军有夺冠频率但不在前二（排第三）→ 必须补进且标注"现榜冠军"
+    data["meta"]["weight_sensitivity"]["champions"] = [
+        {"model": "msn_v1", "pct": 48.4},
+        {"model": "ecmwf_aifs025_single", "pct": 26.6},
+        {"model": "ecmwf_ifs", "pct": 25.0}]
+    note = note_of(render_report_html(data))
+    assert "ECMWF IFS HRES 9km 25.0%" in note and "现榜冠军" in note
+
+    # 情形 2：冠军一次未夺冠（敏感性列表里没有它）→ 频率记 0%，不得省略
+    data["meta"]["weight_sensitivity"]["champions"] = [
+        {"model": "msn_v1", "pct": 48.4},
+        {"model": "ecmwf_aifs025_single", "pct": 26.6}]
+    note = note_of(render_report_html(data))
+    assert "ECMWF IFS HRES 9km 0%（一次未夺冠）" in note and "现榜冠军" in note
+
+    # 情形 3：冠军就在前二（常见情形）→ 不重复追加，总数仍为两条
+    data["meta"]["weight_sensitivity"]["champions"] = [
+        {"model": "ecmwf_ifs", "pct": 51.4},
+        {"model": "msn_v1", "pct": 33.0}]
+    note = note_of(render_report_html(data))
+    assert "现榜冠军 ECMWF IFS HRES 9km 51.4%" in note
+    assert note.count("ECMWF IFS HRES 9km") == 1
+
+
 def test_inline_json_is_slim(tmp_path, monkeypatch):
     """2026-09 体积守卫：内联 JSON ∝ 页面画的东西，而不是 ∝ 评估算过的东西。
 

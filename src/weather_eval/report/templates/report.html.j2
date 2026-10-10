@@ -563,8 +563,21 @@
           {{ report.meta.bootstrap_runs }} 次的 90% 置信区间中位宽
           <b>{{ '%.1f'|format(cw_sorted[cw_sorted|length // 2]) if cw_sorted else '—' }} 分</b>{% if ns2.tied > 1 %}，
           与第一名<b>统计上并列</b>的有 {{ ns2.tied - 1 }} 家——前后名次未必是一分高下{% endif %}；
-          {% if ws.get('champions') %}把全部 {{ ws.n_parts }} 项子分权重随机扰动 ±40% 重复 {{ ws.runs }} 次，
-          冠军归属：<b>{% for c in ws.champions[:2] %}{{ model_labels.get(c.model, c.model) }} {{ c.pct }}%{% if not loop.last %} / {% endif %}{% endfor %}</b>；
+          {# 权重敏感性的展示集合 = 夺冠频率前二 ∪ 现榜冠军（含 0% 情形）。
+             这一行披露的宾语是"现榜冠军有多稳"，不是"谁才是冠军"：旧实现截断前二后，
+             冠军排第三时整行完全不提它，与上方横幅自相矛盾（2026-10-10 实测：伏羲中期
+             25.0% 排第三，披露里只剩 MSN/ECMWF，读者读不出两处说的是同一件事）。 #}
+          {% set nsc = namespace(items=[]) %}
+          {% if ws.get('champions') %}
+          {% for c in ws.champions[:2] %}{% set _ = nsc.items.append(c) %}{% endfor %}
+          {% if champ %}
+          {% set cm_list = ws.champions | selectattr('model', 'equalto', champ.model) | list %}
+          {% if not (nsc.items | selectattr('model', 'equalto', champ.model) | list) %}
+          {% set _ = nsc.items.append({'model': champ.model, 'pct': (cm_list[0].pct if cm_list else 0)}) %}
+          {% endif %}
+          {% endif %}
+          把全部 {{ ws.n_parts }} 项子分权重随机扰动 ±40% 重复 {{ ws.runs }} 次，
+          权重扰动下的夺冠频率：<b>{% for c in nsc.items %}{% if champ and c.model == champ.model %}现榜冠军 {% endif %}{{ model_labels.get(c.model, c.model) }} {{ c.pct }}%{% if not c.pct %}（一次未夺冠）{% endif %}{% if not loop.last %} / {% endif %}{% endfor %}</b>；
           {% endif %}名字带 † = 差距在统计上还分不开。<a href="#board" style="color:#9fc3e8">看完整榜单 →</a>
         </div>
       </div>
