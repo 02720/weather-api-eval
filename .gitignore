@@ -15,3 +15,5 @@ data/**/*.lock
 reports/.baseline/
 # 浏览器工具的本地截图留档（对拍报告版面用），不是项目产物
 .openchamber/
+# Trae IDE 的 HTML 分享产物（把 reports/*.html 打成 zip），不是项目产物
+.trae-html-share-packages/
