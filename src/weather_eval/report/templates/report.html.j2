@@ -181,8 +181,8 @@
   .lb-table tr.is-top:hover td { background:#faf3dd; }
   tr.is-weak:hover td { background:#f4f8fc !important; }
   /* 温度计得分条（表格版） */
-  .thermo.sm { height:18px; min-width:116px; }
-  .c-score { min-width:168px; }
+  .thermo.sm { height:18px; min-width:96px; }
+  .c-score { min-width:150px; }
   .c-score .cell { display:flex; align-items:center; gap:8px; }
   .c-score .cell .thermo { flex:1; }
   .score-num { font-weight:700; color:var(--ink); min-width:30px; text-align:right; }
@@ -222,15 +222,32 @@
                                 border-color:var(--ink); }
   .lb-dims input:focus-visible + label { outline:2px solid var(--blue);
       outline-offset:1px; z-index:2; position:relative; }
-  /* 列组显隐：列分两类——共享列（sh-*：概览与对应族页签都出现）与族专属列
-     （t-only / r-only：只在温度/降水页签展开）。概览 = 4 个共享列（总榜原有
-     视图）；温度/降水页签 = 该维共享列 + 全部族专属指标。 */
+  /* 列组显隐：列分三类——共享列（sh-*：概览与对应族页签都出现）、族专属列
+     （t-only / r-only：只在温度/降水页签展开）与概览专属列（ov-only：综合分，
+     只在概览出现）。维度页签= 排序口径：选了哪一维就按哪一维的分排（JS 重排），
+     不属于当前维的总综合分立除——子项视图里混进总综合分，会让读者按总分的
+     高低去读一个按子项排的序。概览 = 全部共享列 + 综合分（总榜原有视图）；
+     温度/降水页签 = 该维共享列 + 全部族专属指标。 */
   #lbdim-ov:checked ~ .lb-scroll .t-only,
   #lbdim-ov:checked ~ .lb-scroll .r-only,
   #lbdim-temp:checked ~ .lb-scroll .sh-rain,
   #lbdim-temp:checked ~ .lb-scroll .r-only,
+  #lbdim-temp:checked ~ .lb-scroll .ov-only,
   #lbdim-rain:checked ~ .lb-scroll .sh-temp,
-  #lbdim-rain:checked ~ .lb-scroll .t-only { display:none; }
+  #lbdim-rain:checked ~ .lb-scroll .t-only,
+  #lbdim-rain:checked ~ .lb-scroll .ov-only { display:none; }
+  /* 得分条只挂在**当前视图的排序键**上，不做全列铺陈：概览的排序键是总综合分
+     （条 + 90% 须线），温度/降水分在概览里是纯数字参考值——三条得分条并排是
+     噪声（同屏三个"主分"互相抢注意力，且两维量纲不同、条长不可直接比）；
+     切到「🌡️ 温度」/「🌧️ 降水」页签时该维分数成为排序键，它的条随之出现。
+     条包在 .score-bar 里，故概览下这两格与其它指标列逐像素同款。 */
+  .score-bar { display:none; }
+  #lbdim-temp:checked ~ .lb-scroll .sh-temp .score-bar,
+  #lbdim-rain:checked ~ .lb-scroll .sh-rain .score-bar { display:inline-block;
+      width:96px; margin-right:8px; vertical-align:middle; }
+  #lbdim-ov:checked ~ .lb-scroll .sh-temp .score-num,
+  #lbdim-ov:checked ~ .lb-scroll .sh-rain .score-num { font-weight:inherit;
+      color:inherit; }
   /* 指标列按族归组：蓝顶线 = 温度族，绿顶线 = 降水族，任何页签下都在 */
   .lb-table th.h-temp { box-shadow:inset 0 3px 0 var(--blue); }
   .lb-table th.h-rain { box-shadow:inset 0 3px 0 var(--good); }
@@ -426,6 +443,17 @@
     .lb-table td[data-label] { display:inline-block; white-space:nowrap;
                                margin-right:12px; font-size:12.5px; color:var(--slate); }
     .lb-table td[data-label]::before { content:attr(data-label) " "; color:var(--muted); }
+    /* 总综合分 = 卡片里的主分：标签在上、条与数字在下行（其余指标与子项分折成
+       ::before 小字 chips）。此规则特异性高于上面的通用 chips 规则，故 c-score
+       格保持块级排布。.score-bar 在窄屏恒隐藏（得分条是宽屏的横向对比工具，
+       卡片里 281px 宽放三条 96px 的条只剩噪声）——由上方全局规则兜住。 */
+    .lb-table td.c-score[data-label] { display:block; margin:10px 0 7px; }
+    .lb-table td.c-score[data-label]::before { content:attr(data-label);
+      display:block; font-size:12px; color:var(--muted); margin-bottom:2px; }
+    /* 子项分的得分条在窄屏恒隐藏：与上面的 id 选择器同特异性、位置更靠后，
+       覆盖"子项页签显示条"的宽屏规则（媒体查询不降低特异性，靠顺序决胜）。 */
+    #lbdim-temp:checked ~ .lb-scroll .sh-temp .score-bar,
+    #lbdim-rain:checked ~ .lb-scroll .sh-rain .score-bar { display:none; }
 
     /* ---- 折叠区：诊断类长表格在手机上改为可横向滚动。body 是 overflow-x:clip，
          7 列的表（如「名义 vs 实际」）会顶出卡片、最后一列被裁掉且无法滚到，
@@ -562,9 +590,9 @@
     <p class="eyebrow">§01 · 证据</p>
     <h2>预报源总榜</h2>
     <p class="desc">「综合分」由温度 {{ score_temp_parts|length }} 项 + 降水 {{ score_precip_parts|length }} 项指标加权而成，先把每一档提前量的
-      难度统一扣掉再比——能报 3 天的和能报 15 天的同榜也公平。单项指标收在<b>指标页签</b>里：
-      「🌡️ 温度」「🌧️ 降水」展开该维的全部分数与指标，默认「概览」只看总分；页签在<b>所有榜单</b>下可用——
-      总榜的单项与综合分同一批格子、同一套难度对齐，分时效榜则是该档的原始口径。
+      难度统一扣掉再比——能报 3 天的和能报 15 天的同榜也公平。<b>指标页签即排序口径</b>：
+      「🌡️ 温度」「🌧️ 降水」展开该维的全部分数与指标，并改按该维分数排序（总综合分只在「概览」显示）；
+      页签在<b>所有榜单</b>下可用——总榜的单项与综合分同一批格子、同一套难度对齐，分时效榜则是该档的原始口径。
       <span class="only-wide">点任意列名可重新排序；
       「得分走势」是综合分随提前天数（1~16 天，小时口径）的衰减，<b>谁在右边还站得高，谁的长期预报就更可靠</b>。</span><span class="only-mobile">每个源一张卡片：大字是综合分，
       下面一行是当前页签的分项。</span>
@@ -583,9 +611,9 @@
         <thead><tr>
           <th class="c-rk">#</th>
           <th class="l c-name">预报源</th>
-          <th data-key="score" data-type="num" data-dir="desc">综合分<span class="ind">▼</span></th>
-          <th class="sh-temp h-temp" data-key="temp" data-type="num">温度分</th>
-          <th class="sh-rain h-rain" data-key="precip" data-type="num">降水分</th>
+          <th class="ov-only" data-key="score" data-type="num" data-dir="desc">综合分<span class="ind">▼</span></th>
+          <th class="sh-temp h-temp" data-key="temp" data-type="num">温度分<span class="ind"></span></th>
+          <th class="sh-rain h-rain" data-key="precip" data-type="num">降水分<span class="ind"></span></th>
           <th class="t-only h-temp" data-key="acc2" data-type="num" title="预报与实况相差不超过 2°C 的样本占比，越高越好">±2°C</th>
           <th class="r-only h-rain" data-key="ts" data-type="num" id="lbTsHead" title="命中 ÷（命中 + 空报 + 漏报），越高越好；总榜为两轨拼接的对齐值，分榜为该档原始口径">晴雨 TS</th>
           <th class="t-only h-temp" data-key="acc1" data-type="num" title="相差不超过 1°C 的样本占比（更严的一档），越高越好">±1°C</th>
@@ -641,11 +669,11 @@
             <span class="mid" title="{{ r.model }}">{{ r.model }}</span>
             {% if not r.get('qualified') %}<span class="mid">· 样本积累中</span>{% endif %}
           </td>
-          <td class="c-score"><div class="cell">
+          <td class="c-score ov-only" data-label="综合分"><div class="cell">
             {{ thermo(r.get('score'), r.get('ci90'), 'sm') }}
             <b class="score-num">{{ num(r.get('score')) }}</b></div></td>
-          <td class="sh-temp" data-label="温度分">{{ num(r.get('temp_score')) }}</td>
-          <td class="sh-rain" data-label="降水分">{{ num(r.get('precip_score')) }}</td>
+          <td class="sh-temp" data-label="温度分"><div class="score-bar">{{ thermo(r.get('temp_score'), None, 'sm') }}</div><b class="score-num">{{ num(r.get('temp_score')) }}</b></td>
+          <td class="sh-rain" data-label="降水分"><div class="score-bar">{{ thermo(r.get('precip_score'), None, 'sm') }}</div><b class="score-num">{{ num(r.get('precip_score')) }}</b></td>
           <td class="t-only" data-label="±2°C">{{ pct(r.get('acc2')) }}</td>
           <td class="r-only" data-label="晴雨TS">{{ num(r.get('ts'), 2) }}</td>
           <td class="t-only" data-label="±1°C">{{ pct(r.get('acc1')) }}</td>
@@ -1743,9 +1771,12 @@ function renderStation() {
 
 /* ---------------- 榜单切换（总榜 ⇄ 分时效榜，渐进增强） ----------------
  * 总榜是服务端渲染的（无 JS 可读是硬约束）；切到「提前 N 天」分榜后，把服务端
- * 已按综合分排好序的行数组（R.lb[track][day]）填进同一张表——前端只搬运，
- * 不重算名次与分数，榜单与趋势图同源的性质不破。 */
-let lbMode = "all";
+ * 已按综合分排好序的行数组（R.lb[track][day]）填进同一张表——分数不重算，
+ * 榜单与趋势图同源的性质不破。榜单（哪个提前量）与维度（哪一维）是两个
+ * 正交的轴：任一轴切换都重建行序，再按当前维度的排序键重排（lbApplyOrder）。 */
+let lbMode = "all";            // 榜单轴：all | hourly:Nd | daily:Nd | all:Nd
+let lbDim = "ov";              // 维度轴即排序口径：ov=综合分 temp=温度分 rain=降水分
+const LB_DIM_KEY = {ov: "score", temp: "temp", rain: "precip"};
 const LB_BODY_SERVER = () => document.getElementById("lbBody").innerHTML;
 let lbBodyServer = null;      // 首次切换前快照，切回总榜时原样恢复
 const SPARK_SVG = {};         // 服务端走势线：从总榜行里收集，分榜行复用
@@ -1754,30 +1785,40 @@ const LB_TS_HEAD = {all: "日雨 TS", hourly: "时雨 TS", daily: "日雨 TS"};
    分榜的 TS 列沿用桌面的分轨命名（第四轮 P1-3 的教训：总榜与日口径的 TS
    数值不同源，共用一个名字曾被并排误读）。 */
 const LB_TS_LABEL = {all: "两轨TS", hourly: "时雨TS", daily: "日雨TS"};
-function lbDesc(mode) {
+/* 维度页签改了排序键，说明文字必须把"当前按什么排、总分去哪了"说清——
+   否则读者拿着综合分的高低去读一个按子项排的序。 */
+const LB_DIM_DESC = {
+  ov: "当前按难度对齐综合分降序排列；切到「温度」「降水」页签即改按该维分数排序，届时不再显示总综合分。",
+  temp: "当前按「温度分」降序排列——该维分数即排序键；总综合分在「概览」页签。",
+  rain: "当前按「降水分」降序排列——该维分数即排序键；总综合分在「概览」页签。",
+};
+function lbDesc(mode, dim) {
+  const head = LB_DIM_DESC[dim || "ov"] + " ";
   if (mode === "all") {
-    return "难度对齐总榜：先把每一档提前量的难度统一扣掉再比（原理见下方折叠区）；" +
+    return head +
+      "难度对齐总榜：先把每一档提前量的难度统一扣掉再比（原理见下方折叠区）；" +
       "置信区间与覆盖时效只有总榜有，单项指标与综合分同一批格子、同一套难度对齐。";
   }
   const [track, day] = mode.split(":");
   if (track === "all") {
-    return `综合 · 提前 ${day} 天：小时口径与日口径的分数各半合成（两轨缺一即缺）；` +
+    return head + `综合 · 提前 ${day} 天：小时口径与日口径的分数各半合成（两轨缺一即缺）；` +
       "同一天桶内各家面对同一批天气，直接对照、无覆盖偏差。";
   }
   if (track === "hourly") {
-    return `小时口径 · 提前 ${day} 天：逐小时温度 + 该小时 ≥1mm 晴雨；` +
+    return head + `小时口径 · 提前 ${day} 天：逐小时温度 + 该小时 ≥1mm 晴雨；` +
       "同一档内的直接对照，不经难度对齐。";
   }
-  return `日口径 · 提前 ${day} 天：日最高/最低温度 + 24h 累计 ≥1mm 晴雨；` +
+  return head + `日口径 · 提前 ${day} 天：日最高/最低温度 + 24h 累计 ≥1mm 晴雨；` +
     "同一档内的直接对照，不经难度对齐。综合分缺任一维即空（缺一即缺），" +
     "只有单维的源仍在该列显示它那一维的分数。";
 }
 /* 分榜行与服务端总榜行共用同一份列定义：[列组类, 移动端标签, 排序键,
  * 行数组下标, 格式]，顺序与表头一一对应——新增列时服务端 thead/tbody 与
- * 这里（及 _slim_report 的行数组）三处同步。 */
+ * 这里（及 _slim_report 的行数组）三处同步。格式 "thermo" = 带得分条的分数
+ * （条在 .score-bar 里：概览隐藏、子项页签显示，与总榜行同款）。 */
 const LB_METRIC_COLS = [
-  ["sh-temp", "温度分", "temp", 2, "n1"],
-  ["sh-rain", "降水分", "precip", 3, "n1"],
+  ["sh-temp", "温度分", "temp", 2, "thermo"],
+  ["sh-rain", "降水分", "precip", 3, "thermo"],
   ["t-only", "±2°C", "acc2", 4, "pct"],
   ["r-only", null, "ts", 5, "n2"],       // 标签随轨道变（时雨/日雨/两轨）
   ["t-only", "±1°C", "acc1", 6, "pct"],
@@ -1807,22 +1848,73 @@ function leadRow(m, rk, a) {
   const tsLab = LB_TS_LABEL[(lbMode.split(":")[0])] || "晴雨TS";
   const fmtCell = (kind, x) => x == null ? "—"
     : (kind === "pct" ? fmt(x, 1) + "%" : fmt(x, kind === "n1" ? 1 : 2));
+  // 得分条：与 thermo 宏同款裁剪（None → 空条，数字位置显 "—"）
+  const thermoV = x => x == null ? 0 : Math.max(0, Math.min(100, Number(x) || 0));
   const dataAttrs = LB_METRIC_COLS.map(([, , key, i]) =>
     ` data-${key}="${a[i] ?? ""}"`).join("");
   const metricCells = LB_METRIC_COLS.map(([col, lab, , i, kind]) =>
-    `<td class="${col}" data-label="${lab || tsLab}">${fmtCell(kind, a[i])}</td>`).join("");
+    kind === "thermo"
+      ? `<td class="${col}" data-label="${lab}">` +
+        `<div class="score-bar"><div class="thermo sm">` +
+        `<span class="tube"><b style="--v:${thermoV(a[i])}%"></b></span></div></div>` +
+        `<b class="score-num">${fmtCell("n1", a[i])}</b></td>`
+      : `<td class="${col}" data-label="${lab || tsLab}">${fmtCell(kind, a[i])}</td>`).join("");
   return `<tr class="${cls}" data-m="${escHtml(m)}" data-rk="${rk}"` +
     ` data-score="${s ?? ""}"${dataAttrs} data-lead="">` +
     `<td class="c-rk num">${rk}</td>` +
     `<td class="l c-name"><i class="dot" style="background:${c}"></i>` +
     `<b>${escHtml(labelOf(m))}</b>${weak ? '<span class="mid">· 样本积累中</span>' : ""}` +
     `<span class="mid" title="${escHtml(m)}">${escHtml(m)}</span></td>` +
-    `<td class="c-score"><div class="cell">` +
+    `<td class="c-score ov-only" data-label="综合分"><div class="cell">` +
     `<div class="thermo sm"><span class="tube"><b style="--v:${v}%"></b></span></div>` +
     `<b class="score-num">${weak ? "—" : fmt(s)}</b></div></td>` +
     metricCells +
     `<td data-label="覆盖">—</td><td class="ci-cell" data-label="90%CI">—</td>` +
     `<td class="l c-spark">${SPARK_SVG[m] || ""}</td></tr>`;
+}
+/* 名次列 = 当前视图的第几名。渲染、维度重排、列头排序三条写路径之后都调它，
+ * 统一刷新 # 列、data-rk 与榜首高亮——否则"行序按 A 排、名次还是按 B 的号"
+ * 会并排出现（维度页签引入第二条排序键后，这个不变式必须显式维持）。
+ * key 决定"榜首"的判定值：维度重排传该维分数，列头排序传被点列。 */
+function lbRefreshRanks(tbody, key = "score") {
+  Array.from(tbody.rows).forEach((tr, i) => {
+    const rk = i + 1;
+    tr.dataset.rk = rk;
+    const cell = tr.querySelector(".c-rk");
+    if (cell) cell.textContent = rk;
+    const v = tr.dataset[key];
+    tr.classList.toggle("is-top", rk === 1 && v !== "" && v !== undefined);
+  });
+}
+/* 维度页签 = 排序口径（第一性原则：选了哪一维，就按哪一维的分数排，而不是
+ * 永远按总综合分排）。ov 维不重排：renderBoard 交回来的就是服务端综合分序，
+ * 含"未达标者沉后"的榜单语义（_rank_rows 的 (qualified, -score) 双关键字），
+ * 客户端只按分数重排会把这个语义抹平。表头箭头随当前排序键走。 */
+function lbApplyOrder() {
+  const tbody = document.getElementById("lbBody");
+  if (!tbody) return;
+  const key = LB_DIM_KEY[lbDim] || "score";
+  if (lbDim !== "ov") {
+    const rows = Array.from(tbody.rows)
+      .map((tr, i) => ({tr, i,
+        v: tr.dataset[key] === "" || tr.dataset[key] === undefined
+           ? null : Number(tr.dataset[key])}))
+      .sort((a, b) =>
+        (a.v === null) - (b.v === null) ||       // 缺值永远垫底（与 bindSort 同）
+        (a.v === null ? 0 : b.v - a.v) ||        // 有值：降序
+        (a.i - b.i));                            // 稳定：同分保持原相对序
+    rows.forEach(d => tbody.appendChild(d.tr));
+  }
+  lbRefreshRanks(tbody, key);
+  const ths = document.querySelectorAll("#lbTable th[data-key]");
+  ths.forEach(x => { x.dataset.dir = ""; const i = x.querySelector(".ind");
+    if (i) i.textContent = ""; });
+  const th = document.querySelector(`#lbTable th[data-key="${key}"]`);
+  if (th) {
+    th.dataset.dir = "desc";
+    const ind = th.querySelector(".ind");
+    if (ind) ind.textContent = "▼";
+  }
 }
 function renderBoard() {
   const tbody = document.getElementById("lbBody");
@@ -1835,6 +1927,9 @@ function renderBoard() {
     tbody.innerHTML = rows.map((r, i) =>
       leadRow(RANKED[r[0]] || "", i + 1, r)).join("");
   }
+  // 两轴正交：任一轴切换都先回到服务端综合分序，再按当前维度重排（ov 维
+  // 只刷新名次与箭头）——「提前 N 天」分榜 ×「温度/降水」的读者读同一张表。
+  lbApplyOrder();
   const tsHead = document.getElementById("lbTsHead");
   if (tsHead) {
     // 第四轮 P1-3 的教训：总榜与分榜的 ts 数值不同源，列名必须随轨道区分
@@ -1845,7 +1940,7 @@ function renderBoard() {
       : (LB_TS_HEAD[lbMode.split(":")[0]] || "晴雨 TS");
   }
   const note = document.getElementById("lbNote");
-  if (note) note.textContent = lbDesc(lbMode);
+  if (note) note.textContent = lbDesc(lbMode, lbDim);
 }
 function bindBoardSwitch() {
   const sel = document.getElementById("lbBoard");
@@ -1867,6 +1962,20 @@ function bindBoardSwitch() {
   sel.addEventListener("change", e => {
     lbMode = e.target.value;
     renderBoard();
+  });
+  // 首屏即点亮口径说明与排序箭头（默认概览 = 综合分序；此前 note 为空，
+  // 读者无从知道页签会改排序口径）
+  renderBoard();
+}
+/* 维度页签绑定：列的显隐是纯 CSS（无 JS 也可用），排序口径在这里补上——
+ * 切页签 = 换排序键 + 回到服务端综合分序后按该维重排。 */
+function bindDimTabs() {
+  document.querySelectorAll('input[name="lbdim"]').forEach(input => {
+    input.addEventListener("change", () => {
+      if (!input.checked) return;
+      lbDim = input.id.replace("lbdim-", "");   // ov / temp / rain
+      renderBoard();
+    });
   });
 }
 
@@ -1892,6 +2001,7 @@ function bindSort() {
       return cur === "desc" ? vb - va : va - vb;
     });
     rows.forEach(r => tbody.appendChild(r));
+    lbRefreshRanks(tbody, key);   // 名次列跟着新行序走（与维度重排同一不变式）
   }));
 }
 
@@ -1902,6 +2012,7 @@ document.addEventListener("DOMContentLoaded", () => {
   decayPicker = makePicker("decayPicker", () => renderDecay());
   wxPicker = makePicker("wxPicker", () => renderWx());
   bindBoardSwitch();
+  bindDimTabs();
   renderDecay(); renderWx(); renderHeat(); renderTs(); renderStation();
   bindSeg("segTrack", v => { decayTrack = v; renderDecay(); });
   bindSeg("segDim", v => { decayDim = v; renderDecay(); });

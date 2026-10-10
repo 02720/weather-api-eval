@@ -235,6 +235,7 @@ def test_board_metric_dimension_tabs(tmp_path, monkeypatch):
 
     15 项已评测指标全铺成列会把横排拉到两千像素开外；页签把温度/降水两维各收成
     一个列组（radio + 兄弟选择器，纯 CSS，无 JS 也可切换），默认「概览」只看总分。
+    「选了哪一维就按哪一维排」的排序语义见 test_board_dimension_tab_is_sort_order。
     单项指标与综合分走同一张劈分设计（_build_board_rows 的 _aligned），行内
     data-* 供列排序使用；分时效榜经 slim 行数组携带同列指标（页签全榜可用）。"""
     _populate(tmp_path, monkeypatch)
@@ -289,6 +290,77 @@ def test_board_metric_dimension_tabs(tmp_path, monkeypatch):
     # 切到分榜时页签不再隐藏（页签在所有榜单下可用）
     assert 'id="lbDims"' in html and ".lb-dims.sub" not in html
 
+
+def test_board_dimension_tab_is_sort_order(tmp_path, monkeypatch):
+    """§01 维度页签 = 排序口径（2026-10）：选了温度/降水就该按该维分数排。
+
+    第一性原则：榜单的排序键是视图的属性，不是永远固定的——读者把页签切到
+    「🌡️ 温度」，意图就是"按温度分看谁强"。旧版维度页签只做列过滤（纯 CSS），
+    行序与服务端渲染一样恒按综合分，且综合分列仍挂在表上：读者拿着总分的
+    高低去读一个声称"温度视图"的序。本测试锁住新行为的三个部件：
+
+      * 列：综合分列标 ov-only（概览专属），温度/降水页签 CSS 隐藏；
+      * 序：LB_DIM_KEY 把页签映射到排序键，lbApplyOrder 按该键重排并
+        重算名次（# 列 = 当前视图第几名），表头箭头随排序键走；
+      * 说明：lbDesc 逐页签写明"当前按什么排、总分去哪了"。
+    """
+    _populate(tmp_path, monkeypatch)
+    start = datetime(2026, 8, 1, 0, 0)
+    end = datetime(2026, 8, 30, 23, 0)
+    cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
+           "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 5}
+    data = build_report(["s1"], ["ecmwf_ifs"], cfg, start, end, "2026-08")
+    html = render_report_html(data, title="维度即排序")
+
+    # ---- 列：综合分 = 概览专属（ov-only），子项页签下隐去 ----
+    assert '<th class="ov-only" data-key="score"' in html
+    assert '<td class="c-score ov-only" data-label="综合分">' in html
+    assert "#lbdim-temp:checked ~ .lb-scroll .ov-only" in html
+    assert "#lbdim-rain:checked ~ .lb-scroll .ov-only" in html
+    # 温度分/降水分列在子项页签是共享列（留在表上），但不是概览专属
+    assert 'class="sh-temp h-temp"' in html and 'class="sh-rain h-rain"' in html
+    # ---- 得分条只给"当前视图的排序键"（2026-10 用户口径：概览只要综合分的条）----
+    # 三个"分"列同构：格内是 .score-bar（条，默认隐藏）+ .score-num（数字）
+    assert '<td class="sh-temp" data-label="温度分"><div class="score-bar">' in html
+    assert '<td class="sh-rain" data-label="降水分"><div class="score-bar">' in html
+    # 分榜行：LB_METRIC_COLS 的 thermo 格式生成同款格（条 + 数字）
+    assert '["sh-temp", "温度分", "temp", 2, "thermo"]' in html
+    assert '["sh-rain", "降水分", "precip", 3, "thermo"]' in html
+    assert 'kind === "thermo"' in html and 'const thermoV =' in html
+    assert '<div class="score-bar">' in html and '<b class="score-num">' in html
+    # 条默认隐藏（概览：三个分列并排是噪声，且两维量纲不同条长不可直接比）；
+    # 只在该维页签显示该维的条（CSS 随页签切换，无 JS 同样成立）
+    assert ".score-bar { display:none; }" in html
+    assert "#lbdim-temp:checked ~ .lb-scroll .sh-temp .score-bar," in html
+    assert "#lbdim-rain:checked ~ .lb-scroll .sh-rain .score-bar { display:inline-block;" in html
+    # 概览下子项分退回普通数字（不跟总综合分抢"主分"的分量）
+    assert "#lbdim-ov:checked ~ .lb-scroll .sh-temp .score-num," in html
+    assert "color:inherit; }" in html
+    # 移动端：总综合分是卡片主分（标签 + 条 + 大字），子项分仍折成小字 chips
+    assert ".lb-table td.c-score[data-label] { display:block" in html
+    assert ".lb-table td.c-score[data-label]::before { content:attr(data-label)" in html
+
+    # ---- 序：页签 → 排序键，重排 + 名次重算 + 箭头 ----
+    assert 'LB_DIM_KEY = {ov: "score", temp: "temp", rain: "precip"}' in html
+    assert "function lbApplyOrder()" in html
+    assert "function lbRefreshRanks(tbody, key" in html
+    # 重排读 data-temp / data-precip（分榜行由 LB_METRIC_COLS 生成同款属性）
+    assert "tr.dataset[key]" in html
+    # 三条写路径（维度重排 / 分榜渲染 / 列头排序）之后都刷新名次
+    assert html.count("lbRefreshRanks(") >= 3
+    # 表头箭头能落到温度/降水分列（.ind 占位）+ 页签 change 触发重排
+    assert '<th class="sh-temp h-temp" data-key="temp" data-type="num">温度分<span class="ind"></span></th>' in html
+    assert '<th class="sh-rain h-rain" data-key="precip" data-type="num">降水分<span class="ind"></span></th>' in html
+    assert "function bindDimTabs()" in html and "bindDimTabs();" in html
+    assert 'input[name="lbdim"]' in html
+    # renderBoard 渲染后必须重排（分榜 × 维度两轴正交）
+    assert "lbApplyOrder();" in html and html.count("lbApplyOrder()") >= 2
+
+    # ---- 说明：口径说明逐维度写明排序键与总分去向 ----
+    assert "当前按难度对齐综合分降序排列" in html
+    assert "当前按「温度分」降序排列" in html
+    assert "当前按「降水分」降序排列" in html
+    assert "lbDesc(lbMode, lbDim)" in html
 
 def test_issue_anchor_rows_puts_flags_first_then_groups():
     """起报锚点披露重排（2026-10 呈现重构）：例外优先、其余按语义归组。
