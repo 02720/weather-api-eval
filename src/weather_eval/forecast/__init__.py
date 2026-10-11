@@ -11,10 +11,11 @@ from .accuweather import AccuWeatherProvider
 from .msn import MsnProvider
 from .ew4all import Ew4allProvider
 from .cma_public import CmaPublicProvider
+from .cma_gowfs import CmaGowfsProvider
 
 __all__ = [
     "ForecastProvider", "OpenMeteoProvider", "CaiyunProvider", "QWeatherProvider",
     "TianjiProvider", "FuxiC88Provider", "FuxiDetProvider", "FengWuProvider",
     "GevisProvider", "AccuWeatherProvider", "MsnProvider", "Ew4allProvider",
-    "CmaPublicProvider",
+    "CmaPublicProvider", "CmaGowfsProvider",
 ]

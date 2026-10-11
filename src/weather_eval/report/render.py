@@ -78,6 +78,7 @@ MODEL_LABELS = {
     "cma_ndfs": "CMA-NDFS",
     "fengqing_ai": "风清AI模式",
     "cma_public_v1": "中国气象局公众网",
+    "cma_gowfs_v1": "中国气象数据网",
 }
 
 # 模型家族分组（选源器按此分组展示）。源多了以后，读者按"这家是什么来头"找源，
@@ -103,7 +104,7 @@ MODEL_FAMILIES = [
         "fuxi_c88", "fuxi_det", "fengwu_ghr_9km", "geovis_v1",
     ]},
     {"icon": "🇨🇳", "name": "中国气象局（CMA）", "models": [
-        "cma_ndfs", "fengqing_ai", "cma_public_v1",
+        "cma_ndfs", "fengqing_ai", "cma_public_v1", "cma_gowfs_v1",
     ]},
 ]
 
@@ -137,6 +138,7 @@ MODEL_COLORS = {
     "cma_ndfs": "#1e3a8a",       # 深海军蓝（明显暗于既有各蓝）
     "fengqing_ai": "#c026d3",    # 洋红（与亮紫/品红拉开明度）
     "cma_public_v1": "#0e7490",  # 深青（CMA 家族色：与 cma_ndfs 深海军蓝同族；与 #06b6d4/#14b8a6 靠明度拉开）
+    "cma_gowfs_v1": "#7c2d12",   # 深赭（CMA 家族第三色：与深海军蓝/深青拉开色相，暗于既有棕橙 #b45309）
 }
 
 

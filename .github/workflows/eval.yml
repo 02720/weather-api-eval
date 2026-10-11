@@ -182,6 +182,21 @@ jobs:
           TZ: Asia/Shanghai
         run: python -m weather_eval fetch-forecast --source cma_public
 
+      - name: 抓取中国气象数据网智能网格预报（公开格点接口，无需凭据）
+        # 抓取 data.cma.cn/rest/gowfs/{hour,day}?lat=..&lon=..（按经纬度寻址，
+        # 契约与口径见 src/weather_eval/forecast/cma_gowfs.py docstring，标定脚本
+        # scripts/calibrate_cma_gowfs.py 可复现）。单模型、每站 2 次请求（hour+day），
+        # 4 站 8 次/轮。三个易踩点：①网格分段（前 24h 逐小时、其后 3h），降水近场
+        # 1h 透传/远场 3h 累计平摊，错一倍即污染全部降水样本；②起报锚点取逐日端点
+        # 自述 pt（pt==首点−1h==末点−240h），逐日端点失败时按同一结构恒等式兜底、
+        # lead 分布不变；③坐标非法返回 HTTP 417（确定性失败、立即熔断），域外坐标
+        # 返回 200+空 body（响亮失败，绝不建空快照）。与 cma_public 同按 UA 反爬名单
+        # 拒绝 python-requests/curl。失败只影响该源，不阻断主流程。
+        continue-on-error: true
+        env:
+          TZ: Asia/Shanghai
+        run: python -m weather_eval fetch-forecast --source cma_gowfs
+
       - name: 抓取观测 + 预报快照 + 更新主报告（本月累计，覆盖写 index.html）
         # 观测走多源编排（obs/chain.py）：主源 eia-data 可用时不惊动备用源；
         # 主源失败，或抓通了但数据陈旧/窗口截断时，自动降级到中国气象数据网

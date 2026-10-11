@@ -753,6 +753,30 @@
     "temp_score": null,
     "track_gap": null,
     "ts": null
+   },
+   {
+    "acc2": null,
+    "champion_pct": 0.0,
+    "ci90": null,
+    "comparable": false,
+    "daily_score": null,
+    "ets": null,
+    "hourly_score": null,
+    "lead_days": null,
+    "model": "cma_gowfs_v1",
+    "n": 0.0,
+    "n_days": 0.0,
+    "n_eff": null,
+    "n_eff_rain": null,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "sig_vs_top": null,
+    "temp_score": null,
+    "track_gap": null,
+    "ts": null
    }
   ],
   "all:10d": [
@@ -1111,6 +1135,19 @@
     "acc2": null,
     "ets": null,
     "model": "cma_public_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -1485,6 +1522,19 @@
     "score": null,
     "temp_score": null,
     "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    }
   ],
   "all:12d": [
@@ -1843,6 +1893,19 @@
     "acc2": null,
     "ets": null,
     "model": "cma_public_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -2217,6 +2280,19 @@
     "score": null,
     "temp_score": null,
     "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    }
   ],
   "all:14d": [
@@ -2575,6 +2651,19 @@
     "acc2": null,
     "ets": null,
     "model": "cma_public_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -2949,6 +3038,19 @@
     "score": null,
     "temp_score": null,
     "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    }
   ],
   "all:16d": [
@@ -3307,6 +3409,19 @@
     "acc2": null,
     "ets": null,
     "model": "cma_public_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -3681,6 +3796,19 @@
     "score": null,
     "temp_score": null,
     "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    }
   ],
   "all:2d": [
@@ -4039,6 +4167,19 @@
     "acc2": null,
     "ets": null,
     "model": "fuxi_det",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -4413,6 +4554,19 @@
     "score": null,
     "temp_score": null,
     "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    }
   ],
   "all:4d": [
@@ -4771,6 +4925,19 @@
     "acc2": null,
     "ets": null,
     "model": "fuxi_det",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -5145,6 +5312,19 @@
     "score": null,
     "temp_score": null,
     "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    }
   ],
   "all:6d": [
@@ -5503,6 +5683,19 @@
     "acc2": null,
     "ets": null,
     "model": "geovis_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -5877,6 +6070,19 @@
     "score": null,
     "temp_score": null,
     "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    }
   ],
   "all:8d": [
@@ -6243,6 +6449,19 @@
     "score": null,
     "temp_score": null,
     "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    }
   ],
   "all:9d": [
@@ -6601,6 +6820,19 @@
     "acc2": null,
     "ets": null,
     "model": "cma_public_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -7280,6 +7512,27 @@
     "sig_vs_top": null,
     "temp_score": null,
     "ts": null
+   },
+   {
+    "acc2": null,
+    "champion_pct": 0.0,
+    "ci90": null,
+    "comparable": false,
+    "ets": null,
+    "lead_days": null,
+    "model": "cma_gowfs_v1",
+    "n": 0.0,
+    "n_days": 0.0,
+    "n_eff": null,
+    "n_eff_rain": null,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "sig_vs_top": null,
+    "temp_score": null,
+    "ts": null
    }
   ],
   "daily:10d": [
@@ -7638,6 +7891,19 @@
     "acc2": null,
     "ets": null,
     "model": "cma_public_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -8012,6 +8278,19 @@
     "score": null,
     "temp_score": null,
     "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    }
   ],
   "daily:12d": [
@@ -8370,6 +8649,19 @@
     "acc2": null,
     "ets": null,
     "model": "cma_public_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -8744,6 +9036,19 @@
     "score": null,
     "temp_score": null,
     "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    }
   ],
   "daily:14d": [
@@ -9102,6 +9407,19 @@
     "acc2": null,
     "ets": null,
     "model": "cma_public_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -9476,6 +9794,19 @@
     "score": null,
     "temp_score": null,
     "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    }
   ],
   "daily:16d": [
@@ -9834,6 +10165,19 @@
     "acc2": null,
     "ets": null,
     "model": "cma_public_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -10208,6 +10552,19 @@
     "score": null,
     "temp_score": null,
     "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    }
   ],
   "daily:2d": [
@@ -10566,6 +10923,19 @@
     "acc2": null,
     "ets": null,
     "model": "fuxi_det",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -10940,6 +11310,19 @@
     "score": null,
     "temp_score": null,
     "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    }
   ],
   "daily:4d": [
@@ -11298,6 +11681,19 @@
     "acc2": null,
     "ets": null,
     "model": "fuxi_det",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -11672,6 +12068,19 @@
     "score": null,
     "temp_score": null,
     "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    }
   ],
   "daily:6d": [
@@ -12038,6 +12447,19 @@
     "score": null,
     "temp_score": 59.58,
     "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    }
   ],
   "daily:7d": [
@@ -12396,6 +12818,19 @@
     "acc2": null,
     "ets": null,
     "model": "cma_public_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -12770,6 +13205,19 @@
     "score": null,
     "temp_score": null,
     "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    }
   ],
   "daily:9d": [
@@ -13128,6 +13576,19 @@
     "acc2": null,
     "ets": null,
     "model": "cma_public_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -13807,6 +14268,27 @@
     "sig_vs_top": null,
     "temp_score": null,
     "ts": null
+   },
+   {
+    "acc2": null,
+    "champion_pct": 0.0,
+    "ci90": null,
+    "comparable": false,
+    "ets": null,
+    "lead_days": null,
+    "model": "cma_gowfs_v1",
+    "n": 0.0,
+    "n_days": 0.0,
+    "n_eff": null,
+    "n_eff_rain": null,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "sig_vs_top": null,
+    "temp_score": null,
+    "ts": null
    }
   ],
   "hourly:10d": [
@@ -14165,6 +14647,19 @@
     "acc2": null,
     "ets": null,
     "model": "cma_public_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -14539,6 +15034,19 @@
     "score": null,
     "temp_score": null,
     "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    }
   ],
   "hourly:12d": [
@@ -14897,6 +15405,19 @@
     "acc2": null,
     "ets": null,
     "model": "cma_public_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -15271,6 +15792,19 @@
     "score": null,
     "temp_score": null,
     "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    }
   ],
   "hourly:14d": [
@@ -15629,6 +16163,19 @@
     "acc2": null,
     "ets": null,
     "model": "cma_public_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -16003,6 +16550,19 @@
     "score": null,
     "temp_score": null,
     "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    }
   ],
   "hourly:16d": [
@@ -16361,6 +16921,19 @@
     "acc2": null,
     "ets": null,
     "model": "cma_public_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -16735,6 +17308,19 @@
     "score": null,
     "temp_score": null,
     "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    }
   ],
   "hourly:2d": [
@@ -17093,6 +17679,19 @@
     "acc2": null,
     "ets": null,
     "model": "fuxi_det",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -17467,6 +18066,19 @@
     "score": null,
     "temp_score": null,
     "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    }
   ],
   "hourly:4d": [
@@ -17825,6 +18437,19 @@
     "acc2": null,
     "ets": null,
     "model": "fuxi_det",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -18199,6 +18824,19 @@
     "score": null,
     "temp_score": null,
     "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    }
   ],
   "hourly:6d": [
@@ -18557,6 +19195,19 @@
     "acc2": null,
     "ets": null,
     "model": "geovis_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -18931,6 +19582,19 @@
     "score": null,
     "temp_score": null,
     "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    }
   ],
   "hourly:8d": [
@@ -19289,6 +19953,19 @@
     "acc2": null,
     "ets": null,
     "model": "cma_public_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -19663,6 +20340,19 @@
     "score": null,
     "temp_score": null,
     "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "cma_gowfs_v1",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    }
   ]
  },
@@ -19671,7 +20361,7 @@
   "expected_hours": 3848,
   "first_obs": "2026-08-25T22:00",
   "got_hours": 3848,
-  "last_obs": "2026-10-07T08:00"
+  "last_obs": "2026-10-11T16:00"
  },
  "inputs": {
   "obs": {
@@ -20118,7 +20808,7 @@
   "daily_source_fallback": true,
   "diagnostics": {
    "_debug": {
-    "models_with_series": 27,
+    "models_with_series": 28,
     "samples": 694570
    },
    "available": true,
@@ -20470,10 +21160,9 @@
     "note": "降水阈值 / daily_min_hours / 逐格权重门槛走廊需重跑全量评估或导出逐格 n_eff，由 scripts/sensitivity_corridors.py 离线产出"
    },
    "fingerprint": {
-    "checked_snapshots": 7375,
+    "checked_snapshots": 8131,
     "drifted": [
      "cma_ndfs",
-     "cma_public_v1",
      "fengqing_ai",
      "msn_v1"
     ],
@@ -20492,7 +21181,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 495
+      "snapshots": 543
      },
      "best_match": {
       "actual_hours_early": null,
@@ -20500,7 +21189,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 168
+      "snapshots": 184
      },
      "caiyun_v2_6": {
       "actual_hours_early": null,
@@ -20508,7 +21197,15 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 544
+      "snapshots": 592
+     },
+     "cma_gowfs_v1": {
+      "actual_hours_early": 240,
+      "actual_hours_late": 240,
+      "changes": [],
+      "drift": false,
+      "incomplete_pct_recent": 0.0,
+      "snapshots": 4
      },
      "cma_grapes_global": {
       "actual_hours_early": null,
@@ -20516,7 +21213,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 168
+      "snapshots": 184
      },
      "cma_ndfs": {
       "actual_hours_early": 240,
@@ -20530,21 +21227,15 @@
       ],
       "drift": true,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 196
+      "snapshots": 220
      },
      "cma_public_v1": {
       "actual_hours_early": 163,
       "actual_hours_late": 163,
-      "changes": [
-       {
-        "early": "hour_offset",
-        "field": "issue_source",
-        "late": "model_run"
-       }
-      ],
-      "drift": true,
+      "changes": [],
+      "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 196
+      "snapshots": 228
      },
      "cmc_gem_gdps": {
       "actual_hours_early": null,
@@ -20552,7 +21243,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 168
+      "snapshots": 184
      },
      "dwd_icon_global": {
       "actual_hours_early": null,
@@ -20560,7 +21251,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 172
+      "snapshots": 188
      },
      "ecmwf_aifs025_single": {
       "actual_hours_early": null,
@@ -20568,7 +21259,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 168
+      "snapshots": 184
      },
      "ecmwf_ifs": {
       "actual_hours_early": null,
@@ -20576,7 +21267,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 172
+      "snapshots": 188
      },
      "ecmwf_ifs025": {
       "actual_hours_early": null,
@@ -20584,7 +21275,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 168
+      "snapshots": 184
      },
      "fengqing_ai": {
       "actual_hours_early": 355,
@@ -20598,7 +21289,7 @@
       ],
       "drift": true,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 192
+      "snapshots": 216
      },
      "fengwu_ghr_9km": {
       "actual_hours_early": null,
@@ -20606,7 +21297,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 480
+      "snapshots": 528
      },
      "fuxi_c88": {
       "actual_hours_early": null,
@@ -20614,7 +21305,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 324
+      "snapshots": 356
      },
      "geovis_v1": {
       "actual_hours_early": null,
@@ -20622,7 +21313,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 516
+      "snapshots": 564
      },
      "jma_gsm": {
       "actual_hours_early": null,
@@ -20630,21 +21321,21 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 168
+      "snapshots": 184
      },
      "msn_v1": {
       "actual_hours_early": 217,
-      "actual_hours_late": 232,
+      "actual_hours_late": 231,
       "changes": [
        {
         "early": 217,
         "field": "actual_hours",
-        "late": 232
+        "late": 231
        }
       ],
       "drift": true,
-      "incomplete_pct_recent": 5.0,
-      "snapshots": 400
+      "incomplete_pct_recent": 3.6,
+      "snapshots": 448
      },
      "ncep_aigfs025": {
       "actual_hours_early": null,
@@ -20652,7 +21343,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 168
+      "snapshots": 184
      },
      "ncep_gfs_global": {
       "actual_hours_early": null,
@@ -20660,7 +21351,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 172
+      "snapshots": 188
      },
      "ncep_hgefs025_ensemble_mean": {
       "actual_hours_early": null,
@@ -20668,7 +21359,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 168
+      "snapshots": 184
      },
      "qweather_v1": {
       "actual_hours_early": null,
@@ -20676,7 +21367,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 536
+      "snapshots": 584
      },
      "tj_km_fusion": {
       "actual_hours_early": null,
@@ -20684,7 +21375,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 296
+      "snapshots": 328
      },
      "tj_t1": {
       "actual_hours_early": null,
@@ -20692,7 +21383,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 296
+      "snapshots": 328
      },
      "tj_t1h_ai": {
       "actual_hours_early": null,
@@ -20700,7 +21391,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 292
+      "snapshots": 324
      },
      "tj_t2": {
       "actual_hours_early": null,
@@ -20708,7 +21399,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 296
+      "snapshots": 328
      },
      "tj_t2_early": {
       "actual_hours_early": null,
@@ -20716,7 +21407,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 288
+      "snapshots": 320
      },
      "ukmo_global_deterministic_10km": {
       "actual_hours_early": null,
@@ -20724,10 +21415,10 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 168
+      "snapshots": 184
      }
     },
-    "n_models": 27
+    "n_models": 28
    },
    "generated_from": "data/ 冻结快照 + 已算好的分桶榜单",
    "slope_influence": {
@@ -21277,7 +21968,9 @@
       "ncep_gfs_global"
      ]
     ],
-    "excluded_small": [],
+    "excluded_small": [
+     "cma_gowfs_v1"
+    ],
     "k_eff": 1.6,
     "k_families": 6.0,
     "matrix": [
@@ -23187,6 +23880,40 @@
       false,
       false,
       false
+     ],
+     [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
      ]
     ],
     "cell_weighting": "neff",
@@ -23304,6 +24031,7 @@
      "accuweather_v1": 51.09,
      "best_match": 53.05,
      "caiyun_v2_6": 53.77,
+     "cma_gowfs_v1": null,
      "cma_grapes_global": 51.49,
      "cma_ndfs": 50.79,
      "cma_public_v1": 50.77,
@@ -23379,6 +24107,7 @@
       "accuweather_v1": 40.1,
       "best_match": 43.07,
       "caiyun_v2_6": 43.28,
+      "cma_gowfs_v1": null,
       "cma_grapes_global": null,
       "cma_ndfs": null,
       "cma_public_v1": null,
@@ -24655,7 +25384,8 @@
      true,
      true,
      true,
-     true
+     true,
+     false
     ],
     "row_relaxed": false,
     "track_gap_max": 6.7,
@@ -25205,6 +25935,24 @@
       false,
       false,
       false
+     ],
+     [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
      ]
     ],
     "cell_weighting": "neff",
@@ -25274,6 +26022,7 @@
      "accuweather_v1": 51.7,
      "best_match": 54.34,
      "caiyun_v2_6": 55.82,
+     "cma_gowfs_v1": null,
      "cma_grapes_global": 53.07,
      "cma_ndfs": 52.98,
      "cma_public_v1": 54.49,
@@ -25331,6 +26080,7 @@
       "accuweather_v1": 39.94,
       "best_match": 42.71,
       "caiyun_v2_6": 42.32,
+      "cma_gowfs_v1": null,
       "cma_grapes_global": null,
       "cma_ndfs": null,
       "cma_public_v1": null,
@@ -25737,7 +26487,8 @@
      true,
      true,
      true,
-     true
+     true,
+     false
     ],
     "row_relaxed": false,
     "variance": {
@@ -26281,6 +27032,24 @@
       false,
       false,
       false
+     ],
+     [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
      ]
     ],
     "cell_weighting": "neff",
@@ -26350,6 +27119,7 @@
      "accuweather_v1": 50.48,
      "best_match": 51.76,
      "caiyun_v2_6": 51.72,
+     "cma_gowfs_v1": null,
      "cma_grapes_global": 49.89,
      "cma_ndfs": 48.6,
      "cma_public_v1": 47.34,
@@ -26407,6 +27177,7 @@
       "accuweather_v1": null,
       "best_match": 43.46,
       "caiyun_v2_6": 44.19,
+      "cma_gowfs_v1": null,
       "cma_grapes_global": null,
       "cma_ndfs": null,
       "cma_public_v1": null,
@@ -26813,7 +27584,8 @@
      true,
      true,
      true,
-     true
+     true,
+     false
     ],
     "row_relaxed": false,
     "variance": {
@@ -26830,7 +27602,7 @@
   },
   "end": "2026-10-04 23:00",
   "excluded_incomplete": {
-   "msn_v1": 11
+   "msn_v1": 12
   },
   "generated_at": "2026-10-04 23:00",
   "holm": {
@@ -26840,7 +27612,7 @@
     "hourly": 26
    },
    "k_eff": 1.6,
-   "m": 28,
+   "m": 29,
    "mean_rho": 0.6111,
    "mode": "m",
    "note": "默认走保守口径 m",
@@ -26849,13 +27621,13 @@
   "hourly_lead_days": 16,
   "integrity": {
    "fetched_first": "2026-09-19T21:50:42",
-   "fetched_last": "2026-10-07T09:16:46",
+   "fetched_last": "2026-10-11T17:11:04",
    "hash_mismatches": [],
-   "merkle_root": "5713a27d5fffe37d6b910ed289968116a5cc5c24bec451772c4792acaf27f415",
+   "merkle_root": "1b3aa54f27a0b174f1f28b540d0fb1058fad45695bdc577c5ac44e22357a72e0",
    "n_hash_mismatch": 0,
    "n_legacy_hash": 0,
-   "n_snapshots": 7375,
-   "n_with_embedded_hash": 3280,
+   "n_snapshots": 8131,
+   "n_with_embedded_hash": 4036,
    "n_without_fetched_at": 4095
   },
   "is_monthly": false,
@@ -26865,14 +27637,14 @@
     "disputed_reasons": [
      "起报锚点语义为「请求时刻下取整（≈抓取时刻）」，声明时效可能系统性长于实际时效",
      "最近城市吸附（平均 3.5 km，代表城市而非站点）",
-     "同一源混用多种起报锚点语义：时间轴首点（产品的起始时刻）×108、请求时刻下取整（≈抓取时刻）×116"
+     "同一源混用多种起报锚点语义：时间轴首点（产品的起始时刻）×108、请求时刻下取整（≈抓取时刻）×164"
     ],
     "issue_source": "mixed",
     "issue_source_counts": {
      "axis_start": 108,
-     "request_floor": 116
+     "request_floor": 164
     },
-    "issue_source_declared": 224,
+    "issue_source_declared": 272,
     "issue_source_label": "请求时刻下取整（≈抓取时刻）",
     "issue_source_note": "仍有 271 份快照未声明锚点语义",
     "issue_source_undeclared": 271
@@ -26882,9 +27654,9 @@
     "disputed_reasons": [],
     "issue_source": "axis_start",
     "issue_source_counts": {
-     "axis_start": 72
+     "axis_start": 88
     },
-    "issue_source_declared": 72,
+    "issue_source_declared": 88,
     "issue_source_label": "时间轴首点（产品的起始时刻）",
     "issue_source_note": "仍有 96 份快照未声明锚点语义",
     "issue_source_undeclared": 96
@@ -26896,21 +27668,33 @@
     ],
     "issue_source": "request_floor",
     "issue_source_counts": {
-     "request_floor": 228
+     "request_floor": 276
     },
-    "issue_source_declared": 228,
+    "issue_source_declared": 276,
     "issue_source_label": "请求时刻下取整（≈抓取时刻）",
     "issue_source_note": "仍有 316 份快照未声明锚点语义",
     "issue_source_undeclared": 316
+   },
+   "cma_gowfs_v1": {
+    "disputed": false,
+    "disputed_reasons": [],
+    "issue_source": "model_run",
+    "issue_source_counts": {
+     "model_run": 4
+    },
+    "issue_source_declared": 4,
+    "issue_source_label": "模式轮次（真实起报时次）",
+    "issue_source_note": null,
+    "issue_source_undeclared": 0
    },
    "cma_grapes_global": {
     "disputed": false,
     "disputed_reasons": [],
     "issue_source": "axis_start",
     "issue_source_counts": {
-     "axis_start": 72
+     "axis_start": 88
     },
-    "issue_source_declared": 72,
+    "issue_source_declared": 88,
     "issue_source_label": "时间轴首点（产品的起始时刻）",
     "issue_source_note": "仍有 96 份快照未声明锚点语义",
     "issue_source_undeclared": 96
@@ -26920,9 +27704,9 @@
     "disputed_reasons": [],
     "issue_source": "model_run",
     "issue_source_counts": {
-     "model_run": 136
+     "model_run": 160
     },
-    "issue_source_declared": 136,
+    "issue_source_declared": 160,
     "issue_source_label": "模式轮次（真实起报时次）",
     "issue_source_note": "仍有 60 份快照未声明锚点语义",
     "issue_source_undeclared": 60
@@ -26932,9 +27716,9 @@
     "disputed_reasons": [],
     "issue_source": "model_run",
     "issue_source_counts": {
-     "model_run": 140
+     "model_run": 172
     },
-    "issue_source_declared": 140,
+    "issue_source_declared": 172,
     "issue_source_label": "模式轮次（真实起报时次）",
     "issue_source_note": "仍有 56 份快照未声明锚点语义",
     "issue_source_undeclared": 56
@@ -26944,9 +27728,9 @@
     "disputed_reasons": [],
     "issue_source": "axis_start",
     "issue_source_counts": {
-     "axis_start": 72
+     "axis_start": 88
     },
-    "issue_source_declared": 72,
+    "issue_source_declared": 88,
     "issue_source_label": "时间轴首点（产品的起始时刻）",
     "issue_source_note": "仍有 96 份快照未声明锚点语义",
     "issue_source_undeclared": 96
@@ -26956,9 +27740,9 @@
     "disputed_reasons": [],
     "issue_source": "axis_start",
     "issue_source_counts": {
-     "axis_start": 72
+     "axis_start": 88
     },
-    "issue_source_declared": 72,
+    "issue_source_declared": 88,
     "issue_source_label": "时间轴首点（产品的起始时刻）",
     "issue_source_note": "仍有 100 份快照未声明锚点语义",
     "issue_source_undeclared": 100
@@ -26968,9 +27752,9 @@
     "disputed_reasons": [],
     "issue_source": "axis_start",
     "issue_source_counts": {
-     "axis_start": 72
+     "axis_start": 88
     },
-    "issue_source_declared": 72,
+    "issue_source_declared": 88,
     "issue_source_label": "时间轴首点（产品的起始时刻）",
     "issue_source_note": "仍有 96 份快照未声明锚点语义",
     "issue_source_undeclared": 96
@@ -26980,9 +27764,9 @@
     "disputed_reasons": [],
     "issue_source": "axis_start",
     "issue_source_counts": {
-     "axis_start": 72
+     "axis_start": 88
     },
-    "issue_source_declared": 72,
+    "issue_source_declared": 88,
     "issue_source_label": "时间轴首点（产品的起始时刻）",
     "issue_source_note": "仍有 100 份快照未声明锚点语义",
     "issue_source_undeclared": 100
@@ -26992,9 +27776,9 @@
     "disputed_reasons": [],
     "issue_source": "axis_start",
     "issue_source_counts": {
-     "axis_start": 72
+     "axis_start": 88
     },
-    "issue_source_declared": 72,
+    "issue_source_declared": 88,
     "issue_source_label": "时间轴首点（产品的起始时刻）",
     "issue_source_note": "仍有 96 份快照未声明锚点语义",
     "issue_source_undeclared": 96
@@ -27004,9 +27788,9 @@
     "disputed_reasons": [],
     "issue_source": "model_run",
     "issue_source_counts": {
-     "model_run": 132
+     "model_run": 156
     },
-    "issue_source_declared": 132,
+    "issue_source_declared": 156,
     "issue_source_label": "模式轮次（真实起报时次）",
     "issue_source_note": "仍有 60 份快照未声明锚点语义",
     "issue_source_undeclared": 60
@@ -27014,14 +27798,14 @@
    "fengwu_ghr_9km": {
     "disputed": true,
     "disputed_reasons": [
-     "同一源混用多种起报锚点语义：时间轴首点（产品的起始时刻）×100、模式轮次（真实起报时次）×112"
+     "同一源混用多种起报锚点语义：时间轴首点（产品的起始时刻）×100、模式轮次（真实起报时次）×160"
     ],
     "issue_source": "mixed",
     "issue_source_counts": {
      "axis_start": 100,
-     "model_run": 112
+     "model_run": 160
     },
-    "issue_source_declared": 212,
+    "issue_source_declared": 260,
     "issue_source_label": "模式轮次（真实起报时次）",
     "issue_source_note": "仍有 268 份快照未声明锚点语义",
     "issue_source_undeclared": 268
@@ -27031,9 +27815,9 @@
     "disputed_reasons": [],
     "issue_source": "model_run",
     "issue_source_counts": {
-     "model_run": 140
+     "model_run": 172
     },
-    "issue_source_declared": 140,
+    "issue_source_declared": 172,
     "issue_source_label": "模式轮次（真实起报时次）",
     "issue_source_note": "仍有 184 份快照未声明锚点语义",
     "issue_source_undeclared": 184
@@ -27050,14 +27834,14 @@
     "disputed": true,
     "disputed_reasons": [
      "起报锚点语义为「请求时刻下取整（≈抓取时刻）」，声明时效可能系统性长于实际时效",
-     "同一源混用多种起报锚点语义：时间轴首点（产品的起始时刻）×108、请求时刻下取整（≈抓取时刻）×116"
+     "同一源混用多种起报锚点语义：时间轴首点（产品的起始时刻）×108、请求时刻下取整（≈抓取时刻）×164"
     ],
     "issue_source": "mixed",
     "issue_source_counts": {
      "axis_start": 108,
-     "request_floor": 116
+     "request_floor": 164
     },
-    "issue_source_declared": 224,
+    "issue_source_declared": 272,
     "issue_source_label": "请求时刻下取整（≈抓取时刻）",
     "issue_source_note": "仍有 292 份快照未声明锚点语义",
     "issue_source_undeclared": 292
@@ -27067,9 +27851,9 @@
     "disputed_reasons": [],
     "issue_source": "axis_start",
     "issue_source_counts": {
-     "axis_start": 72
+     "axis_start": 88
     },
-    "issue_source_declared": 72,
+    "issue_source_declared": 88,
     "issue_source_label": "时间轴首点（产品的起始时刻）",
     "issue_source_note": "仍有 96 份快照未声明锚点语义",
     "issue_source_undeclared": 96
@@ -27078,27 +27862,27 @@
     "disputed": true,
     "disputed_reasons": [
      "起报锚点语义为「数据更新时间（≈抓取时刻）」，声明时效可能系统性长于实际时效",
-     "11 份快照残缺（分片未取全）",
+     "12 份快照残缺（分片未取全）",
      "最近城市吸附（平均 3.7 km，代表城市而非站点）",
      "温度被量化到整数摄氏度（自带 ±0.5°C 量化误差）"
     ],
     "issue_source": "data_updated",
     "issue_source_counts": {
-     "data_updated": 209
+     "data_updated": 256
     },
-    "issue_source_declared": 209,
+    "issue_source_declared": 256,
     "issue_source_label": "数据更新时间（≈抓取时刻）",
-    "issue_source_note": "仍有 191 份快照未声明锚点语义",
-    "issue_source_undeclared": 191
+    "issue_source_note": "仍有 192 份快照未声明锚点语义",
+    "issue_source_undeclared": 192
    },
    "ncep_aigfs025": {
     "disputed": false,
     "disputed_reasons": [],
     "issue_source": "axis_start",
     "issue_source_counts": {
-     "axis_start": 72
+     "axis_start": 88
     },
-    "issue_source_declared": 72,
+    "issue_source_declared": 88,
     "issue_source_label": "时间轴首点（产品的起始时刻）",
     "issue_source_note": "仍有 96 份快照未声明锚点语义",
     "issue_source_undeclared": 96
@@ -27108,9 +27892,9 @@
     "disputed_reasons": [],
     "issue_source": "axis_start",
     "issue_source_counts": {
-     "axis_start": 72
+     "axis_start": 88
     },
-    "issue_source_declared": 72,
+    "issue_source_declared": 88,
     "issue_source_label": "时间轴首点（产品的起始时刻）",
     "issue_source_note": "仍有 100 份快照未声明锚点语义",
     "issue_source_undeclared": 100
@@ -27120,9 +27904,9 @@
     "disputed_reasons": [],
     "issue_source": "axis_start",
     "issue_source_counts": {
-     "axis_start": 72
+     "axis_start": 88
     },
-    "issue_source_declared": 72,
+    "issue_source_declared": 88,
     "issue_source_label": "时间轴首点（产品的起始时刻）",
     "issue_source_note": "仍有 96 份快照未声明锚点语义",
     "issue_source_undeclared": 96
@@ -27131,14 +27915,14 @@
     "disputed": true,
     "disputed_reasons": [
      "起报锚点语义为「请求时刻下取整（≈抓取时刻）」，声明时效可能系统性长于实际时效",
-     "同一源混用多种起报锚点语义：时间轴首点（产品的起始时刻）×108、请求时刻下取整（≈抓取时刻）×120"
+     "同一源混用多种起报锚点语义：时间轴首点（产品的起始时刻）×108、请求时刻下取整（≈抓取时刻）×168"
     ],
     "issue_source": "mixed",
     "issue_source_counts": {
      "axis_start": 108,
-     "request_floor": 120
+     "request_floor": 168
     },
-    "issue_source_declared": 228,
+    "issue_source_declared": 276,
     "issue_source_label": "请求时刻下取整（≈抓取时刻）",
     "issue_source_note": "仍有 308 份快照未声明锚点语义",
     "issue_source_undeclared": 308
@@ -27148,9 +27932,9 @@
     "disputed_reasons": [],
     "issue_source": "model_run",
     "issue_source_counts": {
-     "model_run": 108
+     "model_run": 140
     },
-    "issue_source_declared": 108,
+    "issue_source_declared": 140,
     "issue_source_label": "模式轮次（真实起报时次）",
     "issue_source_note": "仍有 188 份快照未声明锚点语义",
     "issue_source_undeclared": 188
@@ -27160,9 +27944,9 @@
     "disputed_reasons": [],
     "issue_source": "model_run",
     "issue_source_counts": {
-     "model_run": 108
+     "model_run": 140
     },
-    "issue_source_declared": 108,
+    "issue_source_declared": 140,
     "issue_source_label": "模式轮次（真实起报时次）",
     "issue_source_note": "仍有 188 份快照未声明锚点语义",
     "issue_source_undeclared": 188
@@ -27172,9 +27956,9 @@
     "disputed_reasons": [],
     "issue_source": "model_run",
     "issue_source_counts": {
-     "model_run": 104
+     "model_run": 136
     },
-    "issue_source_declared": 104,
+    "issue_source_declared": 136,
     "issue_source_label": "模式轮次（真实起报时次）",
     "issue_source_note": "仍有 188 份快照未声明锚点语义",
     "issue_source_undeclared": 188
@@ -27184,9 +27968,9 @@
     "disputed_reasons": [],
     "issue_source": "model_run",
     "issue_source_counts": {
-     "model_run": 108
+     "model_run": 140
     },
-    "issue_source_declared": 108,
+    "issue_source_declared": 140,
     "issue_source_label": "模式轮次（真实起报时次）",
     "issue_source_note": "仍有 188 份快照未声明锚点语义",
     "issue_source_undeclared": 188
@@ -27196,9 +27980,9 @@
     "disputed_reasons": [],
     "issue_source": "model_run",
     "issue_source_counts": {
-     "model_run": 104
+     "model_run": 136
     },
-    "issue_source_declared": 104,
+    "issue_source_declared": 136,
     "issue_source_label": "模式轮次（真实起报时次）",
     "issue_source_note": "仍有 184 份快照未声明锚点语义",
     "issue_source_undeclared": 184
@@ -27208,9 +27992,9 @@
     "disputed_reasons": [],
     "issue_source": "axis_start",
     "issue_source_counts": {
-     "axis_start": 72
+     "axis_start": 88
     },
-    "issue_source_declared": 72,
+    "issue_source_declared": 88,
     "issue_source_label": "时间轴首点（产品的起始时刻）",
     "issue_source_note": "仍有 96 份快照未声明锚点语义",
     "issue_source_undeclared": 96
@@ -27233,6 +28017,7 @@
    "accuweather_v1": "ok",
    "best_match": "ok",
    "caiyun_v2_6": "ok",
+   "cma_gowfs_v1": "ok",
    "cma_grapes_global": "ok",
    "cma_ndfs": "ok",
    "cma_public_v1": "ok",
@@ -27287,14 +28072,15 @@
    "msn_v1",
    "cma_ndfs",
    "fengqing_ai",
-   "cma_public_v1"
+   "cma_public_v1",
+   "cma_gowfs_v1"
   ],
   "n_malformed_snaps": 0,
   "period_label": "2026-08-01 ~ 2026-10-04",
   "provenance": {
    "bootstrap_seed": 20260906,
    "code_dirty": true,
-   "code_sha": "9ad1f1527007",
+   "code_sha": "a701811c50d9",
    "deps": {
     "cyeva": "0.2.3",
     "numpy": "2.1.2",
@@ -27477,163 +28263,169 @@
    "accuweather_v1": {
     "median_len": 240,
     "min_len": 240,
-    "snapshots": 495,
+    "snapshots": 543,
     "truncated": 0
    },
    "best_match": {
     "median_len": 384,
     "min_len": 384,
-    "snapshots": 168,
+    "snapshots": 184,
     "truncated": 0
    },
    "caiyun_v2_6": {
     "median_len": 384,
     "min_len": 384,
-    "snapshots": 544,
+    "snapshots": 592,
+    "truncated": 0
+   },
+   "cma_gowfs_v1": {
+    "median_len": 240,
+    "min_len": 240,
+    "snapshots": 4,
     "truncated": 0
    },
    "cma_grapes_global": {
     "median_len": 384,
     "min_len": 384,
-    "snapshots": 168,
+    "snapshots": 184,
     "truncated": 0
    },
    "cma_ndfs": {
     "median_len": 240,
     "min_len": 240,
-    "snapshots": 196,
+    "snapshots": 220,
     "truncated": 0
    },
    "cma_public_v1": {
     "median_len": 157,
     "min_len": 151,
-    "snapshots": 196,
+    "snapshots": 228,
     "truncated": 0
    },
    "cmc_gem_gdps": {
     "median_len": 384,
     "min_len": 384,
-    "snapshots": 168,
+    "snapshots": 184,
     "truncated": 0
    },
    "dwd_icon_global": {
     "median_len": 384,
     "min_len": 384,
-    "snapshots": 172,
+    "snapshots": 188,
     "truncated": 0
    },
    "ecmwf_aifs025_single": {
     "median_len": 384,
     "min_len": 384,
-    "snapshots": 168,
+    "snapshots": 184,
     "truncated": 0
    },
    "ecmwf_ifs": {
     "median_len": 384,
     "min_len": 384,
-    "snapshots": 172,
+    "snapshots": 188,
     "truncated": 0
    },
    "ecmwf_ifs025": {
     "median_len": 384,
     "min_len": 384,
-    "snapshots": 168,
+    "snapshots": 184,
     "truncated": 0
    },
    "fengqing_ai": {
     "median_len": 355,
     "min_len": 343,
-    "snapshots": 192,
+    "snapshots": 216,
     "truncated": 0
    },
    "fengwu_ghr_9km": {
     "median_len": 166,
     "min_len": 166,
-    "snapshots": 480,
+    "snapshots": 528,
     "truncated": 0
    },
    "fuxi_c88": {
     "median_len": 360,
     "min_len": 360,
-    "snapshots": 324,
+    "snapshots": 356,
     "truncated": 0
    },
    "geovis_v1": {
     "median_len": 120,
     "min_len": 120,
-    "snapshots": 516,
+    "snapshots": 564,
     "truncated": 0
    },
    "jma_gsm": {
     "median_len": 384,
     "min_len": 384,
-    "snapshots": 168,
+    "snapshots": 184,
     "truncated": 0
    },
    "msn_v1": {
     "median_len": 231,
     "min_len": 25,
-    "snapshots": 400,
-    "truncated": 15
+    "snapshots": 448,
+    "truncated": 16
    },
    "ncep_aigfs025": {
     "median_len": 384,
     "min_len": 384,
-    "snapshots": 168,
+    "snapshots": 184,
     "truncated": 0
    },
    "ncep_gfs_global": {
     "median_len": 384,
     "min_len": 384,
-    "snapshots": 172,
+    "snapshots": 188,
     "truncated": 0
    },
    "ncep_hgefs025_ensemble_mean": {
     "median_len": 384,
     "min_len": 384,
-    "snapshots": 168,
+    "snapshots": 184,
     "truncated": 0
    },
    "qweather_v1": {
     "median_len": 240,
     "min_len": 240,
-    "snapshots": 536,
+    "snapshots": 584,
     "truncated": 0
    },
    "tj_km_fusion": {
     "median_len": 240,
     "min_len": 168,
-    "snapshots": 296,
+    "snapshots": 328,
     "truncated": 0
    },
    "tj_t1": {
     "median_len": 360,
     "min_len": 48,
-    "snapshots": 296,
+    "snapshots": 328,
     "truncated": 8
    },
    "tj_t1h_ai": {
     "median_len": 360,
     "min_len": 24,
-    "snapshots": 292,
-    "truncated": 12
+    "snapshots": 324,
+    "truncated": 20
    },
    "tj_t2": {
     "median_len": 240,
     "min_len": 24,
-    "snapshots": 296,
-    "truncated": 8
+    "snapshots": 328,
+    "truncated": 16
    },
    "tj_t2_early": {
     "median_len": 240,
     "min_len": 24,
-    "snapshots": 288,
-    "truncated": 48
+    "snapshots": 320,
+    "truncated": 56
    },
    "ukmo_global_deterministic_10km": {
     "median_len": 384,
     "min_len": 384,
-    "snapshots": 168,
+    "snapshots": 184,
     "truncated": 0
    }
   },
@@ -27899,6 +28691,80 @@
     "r": 0.7386621047003624,
     "rmse": 2.126,
     "slope": 0.828775
+   }
+  },
+  "cma_gowfs_v1": {
+   "precip_24h": {
+    "acc": null,
+    "bias": null,
+    "ets": null,
+    "far": null,
+    "mae": null,
+    "mbe": null,
+    "n": 0.0,
+    "n_eff": null,
+    "pod": null,
+    "rmse": null,
+    "ts": null
+   },
+   "precip_72h": {
+    "acc": null,
+    "bias": null,
+    "ets": null,
+    "far": null,
+    "mae": null,
+    "mbe": null,
+    "n": 0.0,
+    "n_eff": null,
+    "pod": null,
+    "rmse": null,
+    "ts": null
+   },
+   "precip_all": {
+    "acc": null,
+    "bias": null,
+    "ets": null,
+    "far": null,
+    "mae": null,
+    "mbe": null,
+    "n": 0.0,
+    "n_eff": null,
+    "pod": null,
+    "rmse": null,
+    "ts": null
+   },
+   "temp_24h": {
+    "acc1": null,
+    "acc2": null,
+    "mae": null,
+    "mbe": null,
+    "n": 0.0,
+    "n_eff": null,
+    "r": null,
+    "rmse": null,
+    "slope": null
+   },
+   "temp_72h": {
+    "acc1": null,
+    "acc2": null,
+    "mae": null,
+    "mbe": null,
+    "n": 0.0,
+    "n_eff": null,
+    "r": null,
+    "rmse": null,
+    "slope": null
+   },
+   "temp_all": {
+    "acc1": null,
+    "acc2": null,
+    "mae": null,
+    "mbe": null,
+    "n": 0.0,
+    "n_eff": null,
+    "r": null,
+    "rmse": null,
+    "slope": null
    }
   },
   "cma_grapes_global": {

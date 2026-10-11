@@ -50,6 +50,10 @@ models:
   # —— 中国气象局公众气象服务网（2026-09 新增独立源；公开 JSON 接口，无需凭据）——
   - cma_public_v1        # weather.cma.cn/api/hourly，按 WMO 站号取站；3 小时分辨率、覆盖约 7 天
                          # （--source cma_public；降水为后向 3 小时累计，见 forecast/cma_public.py）
+  # —— 中国气象数据网（2026-10 新增独立源；公开格点接口，无需凭据，按经纬度寻址）——
+  - cma_gowfs_v1          # data.cma.cn/rest/gowfs/{hour,day}；逐小时 10 天（前 24h 原生逐小时、
+                         # 其后 3h 后向累计均摊）+ 逐日 30 天（仅温度；日最低移一天取用）
+                         # （--source cma_gowfs；降水分段口径见 forecast/cma_gowfs.py）
 
 stations:
   - id: wuzhou
