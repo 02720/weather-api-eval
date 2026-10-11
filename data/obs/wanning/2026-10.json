@@ -2845,5 +2845,27 @@
     "wind_speed": 3.3,
     "wind_dir": 358.0,
     "visibility": null
+  },
+  "2026-10-11T18:00": {
+    "time": "2026-10-11T18:00",
+    "source": "wd",
+    "temp": 28.2,
+    "pressure": 1008.9,
+    "humidity": 77.0,
+    "rain": 0.0,
+    "wind_speed": 5.0,
+    "wind_dir": 47.0,
+    "visibility": null
+  },
+  "2026-10-11T17:00": {
+    "time": "2026-10-11T17:00",
+    "source": "wd",
+    "temp": 29.2,
+    "pressure": 1009.1,
+    "humidity": 75.0,
+    "rain": 0.0,
+    "wind_speed": 3.2,
+    "wind_dir": 46.0,
+    "visibility": null
   }
 }
