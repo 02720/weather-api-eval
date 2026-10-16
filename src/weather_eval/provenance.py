@@ -83,11 +83,18 @@ def code_sha() -> str:
     return "unknown"
 
 
-def code_dirty() -> bool:
-    """工作区是否有未提交的改动（含未跟踪的源码文件）。"""
+def code_dirty() -> bool | None:
+    """工作区是否有未提交的改动（含未跟踪的源码文件）。
+
+    ⚠️ **取不到时返回 None 而不是 False**（第五轮 P2-6）：本模块的前提是"脏
+    工作区的报告必须自认不可复现"。旧实现在 git 不可用（无 .git / 无 git 二进制
+    / 命令超时）时返回 False，于是报告里 `code_sha: "unknown"` 旁边写着
+    `code_dirty: false`——一份从未验证过、却自称干净的可复现性声明，正是本
+    模块立项要防的东西。None 表示"无从判定"，由渲染层显式标为未验证。
+    """
     out = _run(["git", "status", "--porcelain", "--", "src", "config"])
     if out is None:
-        return False          # 取不到就按干净处理，绝不因此把报告判成不可复现
+        return None
     return bool(out.strip())
 
 

@@ -32,11 +32,11 @@ Token 失效（401）、权限/参数错误（4xx）、配额超限这类失败�
 from __future__ import annotations
 
 import logging
+import math
 import ssl
 import time
 import warnings
 from typing import Any, Callable
-
 logger = logging.getLogger(__name__)
 
 # 默认分类下的确定性失败集合：4xx 一律不重试（429 限速例外——重试有意义）
@@ -120,6 +120,65 @@ class TimeBudget:
         return "不限" if r is None else f"剩余 {r:.0f}s（总预算 {self.total:.0f}s）"
 
 
+# 单次响应体的字节上界：接口异常（或恶意/故障端点）回吐超大 body 时，
+# `resp.text` / `resp.json()` 会把它整体读进内存。一个源因此 OOM，整轮作业
+# 连同其余 11 个源一起陪葬——把上限设在写路径，是最便宜的隔离。
+MAX_RESPONSE_BYTES = 32 * 1024 * 1024
+
+
+def _enforce_response_limit(resp: Any, source: str) -> None:
+    """响应体超限时**立即熔断**（不重试：重试一次还是这么大）。
+
+    只有声明了 Content-Length 时才拦；分块传输（无长度头）无法在读完之前判定，
+    故按"不知道就不猜"处理，交给下游解析。
+    """
+    raw = getattr(resp, "headers", None)
+    if not raw:
+        return
+    try:
+        n = int(raw.get("Content-Length", "") or 0)
+    except (TypeError, ValueError):
+        return
+    if n > MAX_RESPONSE_BYTES:
+        raise RuntimeError(
+            f"{source} 响应体 {n} 字节，超过上限 {MAX_RESPONSE_BYTES} 字节"
+            "（确定性失败，不重试）")
+
+
+def _retry_after_scale(resp: Any) -> float:
+    """按服务端 `Retry-After` 放大退避倍数（无该头 / 非法 → 1.0，走原退避）。
+
+    429 的本质是"服务端在告诉你等多久"。旧实现只看 attempt 数，于是服务端
+    要求等 120 s 时客户端 3 s 后又撞上去——既拿不到数据，又把自己推到更长的
+    封禁里。
+    """
+    raw = getattr(resp, "headers", None)
+    if not raw:
+        return 1.0
+    val = raw.get("Retry-After")
+    if val is None:
+        return 1.0
+    try:
+        secs = float(str(val).strip())
+    except (TypeError, ValueError):
+        return 1.0
+    if not math.isfinite(secs) or secs <= 0:
+        return 1.0
+    # 上限 5 分钟：再长就超出单轮作业能等的范围，宁可失败也不要挂住流水线
+    return max(1.0, min(secs / 3.0, 100.0))
+
+
+class _DeterministicError(RuntimeError):
+    """请求**根本没发出去**的确定性失败（重试一万次也不会改变结果）。
+
+    与 4xx / 网络错误区分开：后者走退避重试（网络抖动可能自愈），而这里
+    是调用方自己的问题——session 不支持该方法、params/json_body 类型不对。
+    旧实现把它们混在 `except Exception` 里一同重试，于是每次都白烧
+    3+6+12 s 退避才报错，且在日志里表现为"网络不稳"，把真正的 bug 藏起来
+    （第五轮 P2-5）。
+    """
+
+
 def _dispatch(session: Any, method: str, url: str, *, params: dict | None,
               json_body: dict | None, headers: dict | None, timeout: Any,
               verify: bool | None = None) -> Any:
@@ -137,7 +196,7 @@ def _dispatch(session: Any, method: str, url: str, *, params: dict | None,
         return session.request(method, url, **kwargs)
     sender = getattr(session, method.lower(), None)
     if sender is None:
-        raise RuntimeError(f"session 不支持 {method} 请求")
+        raise _DeterministicError(f"session 不支持 {method} 请求")
     return sender(url, **kwargs)
 
 
@@ -196,6 +255,10 @@ def request_with_retries(
     for attempt in range(retries + 1):
         try:
             resp = _send_with_tls_fallback()
+        except _DeterministicError:
+            # 调用方自己的编程错误（session 不支持该方法、params/json_body 类型
+            # 不对）重试一万次也不会变——原样穿透，绝不烧退避（第五轮 P2-5）。
+            raise
         except Exception as e:  # noqa: BLE001  网络类异常 → 可重试
             # 归一为脱敏后的 RuntimeError：底层异常消息（requests 常把完整 URL
             # 带进去，可能含凭据）不会绕过掩码外泄——最终 raise 挂 __cause__ 链
@@ -214,11 +277,15 @@ def request_with_retries(
         if classify is not None:
             action, value = classify(resp)
             if action == "return":
+                # 超限检查放在 classify 之后：classify 可能已把 body 消费掉并
+                # 只回传一个小结构体，此时再按 Content-Length 拦是误报
+                _enforce_response_limit(resp, source)
                 return value
             if action == "fatal":
                 raise value          # classify 判定的确定性失败：原样穿透
             last_err = RuntimeError(str(value))
         elif last_status == 200:
+            _enforce_response_limit(resp, source)
             return resp
         elif isinstance(last_status, int) and last_status in _DEFAULT_FATAL_STATUSES \
                 and last_status != 429:
@@ -231,7 +298,7 @@ def request_with_retries(
             logger.error("%s 总时间预算耗尽（%s），放弃本轮重试", source, budget.describe())
             break
         if attempt < retries:
-            time.sleep(min(30, 3 * 2 ** attempt))
+            time.sleep(min(30, 3 * 2 ** attempt) * _retry_after_scale(resp))
     if on_exhausted is not None:
         raise on_exhausted(last_status, last_err) from last_err
     raise RuntimeError(f"{source} 请求最终失败: {_mask(last_err)}") from last_err

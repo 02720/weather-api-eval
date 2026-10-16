@@ -1,6 +1,7 @@
 """配置加载：stations.yaml。"""
 from __future__ import annotations
 
+import copy
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -136,7 +137,13 @@ DEFAULT_EVAL = {
                                         # （例如强制"只看 2026-09 以后"做对照）；
                                         # 保留期出仓（compact_retain_months）是自动窗口
                                         # 的天然上界——更早的原始快照已删除，重算无米下锅。
+    # 源健康度看板的"陈旧"阈值（小时）：超过该时长未成功抓取即在 reports/health.html
+    # 标陈旧并由 CLI 告警。此前只在代码里以 `cfg.eval.get("source_stale_hours", 30)`
+    # 读取、DEFAULT_EVAL 里**没有**这一项——"这个阈值可以配、默认是多少"只存在于
+    # 调用点，配置者无从得知（第五轮 P3-c）。登记在此即为它的唯一声明处。
+    "source_stale_hours": 30,
 }
+
 
 
 class Station:
@@ -151,12 +158,45 @@ class Station:
         self.cma_id: str | None = str(data["cma_id"]) if data.get("cma_id") else None
 
 
+def _station(s: Any) -> Station:
+    """构造 Station，把缺字段的 KeyError 换成指明 stations.yaml 条目的错误。
+
+    原实现直接 `Station(s)`，一条缺 `lat`/`lon` 的站点配置会以裸 `KeyError: 'lat'`
+    崩在构造里——traceback 里既没有文件名也没有是哪一条站点，改 YAML 的人只能
+    逐条核对。这里补上上下文（第五轮 P3-a）。
+    """
+    if not isinstance(s, dict):
+        raise ValueError(
+            f"stations.yaml 的 stations 条目必须是映射，得到 {type(s).__name__}: {s!r}")
+    try:
+        return Station(s)
+    except KeyError as e:
+        raise ValueError(
+            f"stations.yaml 的站点条目缺字段 {e}：{s!r}"
+            "（id / lat / lon 为必填）") from e
+
+
 class Config:
     def __init__(self, data: dict):
+        # 空/非映射的 YAML（`yaml.safe_load` 对空文件返回 None）此前一路走到
+        # `data.get` 才以 AttributeError 崩掉，报错里既没有文件路径也没有"配置
+        # 为空"这个事实——改配置的人对着 traceback 猜不出自己写错了什么。
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"stations.yaml 解析结果不是映射（得到 {type(data).__name__}）："
+                "文件为空或顶层不是 key: value 结构")
         self.raw = data
         self.models: list[str] = list(data.get("models", []))
-        self.stations: list[Station] = [Station(s) for s in data.get("stations", [])]
-        self.eval: dict[str, Any] = {**DEFAULT_EVAL, **(data.get("eval") or {})}
+        self.stations: list[Station] = [_station(s) for s in data.get("stations", [])]
+        # ⚠️ **深拷贝** DEFAULT_EVAL 再合并（第五轮 P1-3）：`{**DEFAULT_EVAL, **user}`
+        # 是浅合并，嵌套容器（`score_slopes` 字典、`temp_accuracy_limits` /
+        # `macro_weight_range` 列表）会与模块级常量**共享同一个对象**。任何就地
+        # 改动（apply_score_slopes 的 `{**DEFAULT_SCORE_SLOPES, **(slopes or {})}` 是
+        # 新建、但别处对 `cfg.eval["score_slopes"][k] = v` 的写法不是）会永久污染
+        # DEFAULT_EVAL，让同进程后续每一次 load_config() 都读到被改过的默认值——
+        # 而 lru_cache(maxsize=1) 让这类污染在一次长跑里完全静默。
+        self.eval: dict[str, Any] = {**copy.deepcopy(DEFAULT_EVAL),
+                                     **(data.get("eval") or {})}
         # 观测源优先级（高 → 低）：主源在前，备用源在后。缺省与
         # obs/chain.py 的 OBS_SOURCE_PRIORITY 一致；在此可被配置覆盖，
         # 但**顺序语义**由编排层实现，配置只负责"登记哪些源、谁先谁后"。

@@ -223,7 +223,9 @@ class CaiyunProvider(ForecastProvider):
                 f"api_status={payload.get('api_status')!r} error={err!r}"
             )
 
-        hourly = payload.get("result", {}).get("hourly", {})
+        # `result` 显式为 null 时 `.get("hourly")` 会在 None 上炸出 AttributeError
+        # （"响应结构异常"被报成一个与网络无关的编程错误），故两处都按空兜底
+        hourly = (payload.get("result") or {}).get("hourly") or {}
         temp_series = hourly.get("temperature") or []
         precip_series = hourly.get("precipitation") or []
         if not temp_series:

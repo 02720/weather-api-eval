@@ -57,7 +57,10 @@ STALE_HOURS = 3.0
 
 
 def _to_float(v: Any) -> float | None:
-    if v is None:
+    # bool 必须先挡：**float(True) == 1.0**。观测是评估里唯一的真值来源，页面里
+    # 一个 `true` 会直接变成 1°C / 1mm 的实况并写进归档（forecast 侧的 _num
+    # 系列均已挡，本函数是观测侧漏网的一处，第五轮 P2-4）。
+    if v is None or isinstance(v, bool):
         return None
     if isinstance(v, str):
         s = v.strip()
@@ -214,6 +217,11 @@ class EiaDataObsSource(ObsSource):
         url = station.obs_url
         if not url:
             raise ValueError(f"站点 {station.id} 未配置 obs_url")
+        # 预算是**每站各自**的额度（与 forecast 侧各 provider 同纪律）：本类的实例
+        # 会被 CLI 在多个站点间复用，不重置会让第 1 个站耗尽预算后，后续站全部
+        # 零重试——抓取失败一次即放弃，表现为"后面几个站莫名其妙没数据"（第五轮
+        # P2-4）。
+        self._budget.reset()
         resp = request_with_retries(
             self.session, url, headers=HEADERS, timeout=self.timeout,
             retries=self.retries, source=f"观测站点 {station.id}",

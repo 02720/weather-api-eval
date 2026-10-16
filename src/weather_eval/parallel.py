@@ -92,7 +92,12 @@ def worker_count() -> int:
     raw = os.environ.get(WORKERS_ENV)
     if raw:
         try:
-            return max(1, int(raw))
+            # ⚠️ 显式值也要**夹到 MAX_DEFAULT_WORKERS**（第五轮 P1-2）：旧实现是
+            # 裸 `max(1, int(raw))`，一个手误（WEATHER_EVAL_METRIC_WORKERS=1000）
+            # 会从一个约 2 GB 的父进程上 fork 出一千个子进程——RSS 闸门正是为了
+            # 防这类失控而设的，却被显式环境变量整条绕过。显式值仍然优先于
+            # RSS 闸门（排障时就是要强制开），但不再允许超出实测的收益拐点。
+            return max(1, min(int(raw), MAX_DEFAULT_WORKERS))
         except ValueError:
             return 1
     if _parent_rss_mb() > FORK_RSS_LIMIT_MB:
@@ -142,14 +147,29 @@ def map_metric_calls(fn_name: str, jobs: list[tuple[tuple, dict]]) -> list:
         # 2 GB + requests.Session 会被整体映射），3.14 起默认改成 forkserver，语义与
         # 开销都变了。本模块的整条论证（包括 RSS 闸门）都建立在 fork 之上。
         ctx = multiprocessing.get_context(_MP_CONTEXT)
-        with ProcessPoolExecutor(max_workers=n, mp_context=ctx,
-                                 initializer=_init_worker) as ex:
+        ex = ProcessPoolExecutor(max_workers=n, mp_context=ctx,
+                                 initializer=_init_worker)
+        try:
             # timeout 是"整批退回串行"这条兜底的**触发条件**：`ex.map` 缺省无限
-            # except 永远等不到，docstring 承诺的退回就成了空话——整轮报告构建
-            # 会挂在原地而不是降级跑完。上界按串行耗时的宽松倍数给（串行约 17 s，
-            # 这里给 20 分钟），宁可偶尔白跑一遍串行，也不无限期挂起。
+            # 等待，docstring 承诺的退回就成了空话——整轮报告构建会挂在原地
+            # 而不是降级跑完。上界按串行耗时的宽松倍数给（串行约 17 s，这里给
+            # 20 分钟），宁可偶尔白跑一遍串行，也不无限期挂起。
             return list(ex.map(_run_one, payload, chunksize=chunksize,
                                timeout=MAP_TIMEOUT_S))
+        except BaseException:
+            # ⚠️ 失败路径必须 **wait=False + cancel_futures** 才能真的退回
+            # （第五轮 P1-1）：让 `with` 的 __exit__ 收拾残局会走
+            # `shutdown(wait=True)`，它要 join 排队中的 work item 并 `p.join()`
+            # 每一个 worker——一个陷在死循环里的 worker 会把父进程永久卡住，
+            # 恰好是 MAP_TIMEOUT_S 要防的那个挂起。先掐掉未开始的 futures、再
+            # 不等候地关池，把挂死的 worker 交给 shutdown 内部的 terminate。
+            ex.shutdown(wait=False, cancel_futures=True)
+            raise
+        finally:
+            # 成功路径也要关池：不关会留下一批空闲 worker 挂到解释器退出
+            # （atexit 的 join 会让整轮构建在最后一步卡住）。此刻所有任务已
+            # 回收，wait=True 不会阻塞；失败路径上面已关过，再关一次是幂等的。
+            ex.shutdown(wait=True)
     except Exception as exc:                    # noqa: BLE001  任何失败都整批退回串行
         logger.warning("指标并行失败（%s: %s），整批退回串行路径",
                        type(exc).__name__, exc)

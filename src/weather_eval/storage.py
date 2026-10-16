@@ -88,23 +88,20 @@ def _exclusive_lock(path: Path):
     仅覆盖"读最新 → 合并 → 写回"这一临界区；写入本身仍走原子 rename，
     因此即使锁意外失效也不会产生半文件，最多退化为丢更新（与无锁一致）。
     """
+    # ⚠️ **绝不 unlink 锁文件**（第五轮 P2-2）：A 释放并删除锁文件后，此前已在
+    # 该 inode 上排队的 B 拿到锁，而 C 打开的是**新建的同名文件**（另一个
+    # inode）于是立刻也拿到锁——B 与 C 同时进入读-改-写临界区，`save_obs` 的
+    # 合并更新会互相丢失。旧实现在 release 路径里 unlink，把三进程竞态从"理论
+    # 上存在"变成了"每天 ~170 次机会"，代价只是换来不堆积孤儿文件。
+    # 锁文件留在原处（空文件、不入 git，见 .gitignore），临界区安全性优先。
     lock_path = path.with_name(path.name + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_path, "w") as lf:
+    with open(lock_path, "a+") as lf:
         fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
         try:
             yield
         finally:
             fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
-            # 释放即删除：锁文件只是临界区句柄，留着会随快照数线性堆积（每天
-            # ~170 个孤儿文件，data_footprint 的 rglob 还要逐个 stat）。经典三
-            # 进程 unlink 竞态（A 持锁、B 排队、C 在 unlink 后新建同名文件）确实
-            # 存在，但其后果恰是 docstring 已接受的"退化为无锁的丢更新"——
-            # 原子 rename 保证无论锁是否失效都不会产生半文件。
-            try:
-                lock_path.unlink()
-            except OSError:
-                pass
 
 
 def _load_json(path: Path) -> Any | None:
@@ -127,6 +124,23 @@ def _read_gz(path: Path) -> Any:
         return json.load(f)
 
 
+def _fsync_dir(d: Path) -> None:
+    """同步目录项：rename 落盘后必须补的那一脚（对**机器掉电**而非进程崩溃）。
+
+    只同步文件内容时，断电后可能出现"文件内容已落盘、但它挂到目录上的那一步
+    没落盘"——文件整个消失。某些文件系统不支持同步目录，故一律吞掉 OSError：
+    绝不因它让整次写入失败。
+    """
+    try:
+        dir_fd = os.open(str(d), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        pass
+
+
 def _atomic_write_json(path: Path, obj: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
@@ -137,17 +151,7 @@ def _atomic_write_json(path: Path, obj: Any) -> None:
             os.fsync(f.fileno())   # 断电/panic 后"名字对、内容全零"比半截更毒
         os.chmod(tmp, 0o644)   # mkstemp 默认 0600，恢复常规读权限（部署/他人可读）
         os.replace(tmp, path)
-        # 目录项也要 fsync：只同步文件内容时，断电后可能出现"文件内容已落盘、
-        # 但它挂到目录上的那一步没落盘"——文件整个消失。rename 对**进程崩溃**
-        # 是原子的，对**机器掉电**不是；这里补的正是后者那一步。
-        try:
-            dir_fd = os.open(str(path.parent), os.O_RDONLY)
-            try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
-        except OSError:
-            pass          # 某些文件系统不支持同步目录；不因它让整次写入失败
+        _fsync_dir(path.parent)
     except BaseException:
         # os.fdopen 抛错时它还没接管 fd，描述符会就此泄漏——每天三次的长跑
         # 进程里，这种"一次泄漏一个 fd"最终会撞到 ulimit（审查 P2-2）。
@@ -496,8 +500,15 @@ def _atomic_gzip_replace(path: Path) -> None:
     try:
         with open(path, "rb") as src, gzip.open(tmp, "wb", compresslevel=9) as dst:
             dst.writelines(src)
+        # ⚠️ rename 之前必须 fsync 内容 + 目录项（第五轮 P1-3）：旧实现只靠
+        # rename 的原子性，而 rename 只对**进程崩溃**是原子的、对机器掉电不是。
+        # 未同步就改名会在掉电后留下一个内容全零的 .gz，紧接着下面又把源
+        # .json 删掉——正是本模块 docstring 声明"绝不允许"的那个不可恢复结局。
+        with open(tmp, "rb") as chk:
+            os.fsync(chk.fileno())
         os.chmod(tmp, 0o644)
         os.replace(tmp, gz_path)
+        _fsync_dir(gz_path.parent)
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
@@ -542,7 +553,6 @@ def compact_snapshots(*, grace_days: int = 2, retain_months: int = 13,
     分层规则（用自然月而不是"最近 N 天"，因此**幂等、可重放、结果与运行时刻无关**）：
 
         当月（及宽限期内）   逐份 .json，追加写入、随时可读 —— 支撑主报告/月度冻结/verify
-        已结束的自然月       一份 {YYYY-MM}.json.gz（冻结，永不重写）
         超过 retain_months   出仓（删除）—— 其结论已由冻结的月度报告与该月指标摘要固化
 
     **先固化、后删除**是这里的核心纪律：删除原始快照之前，调用方（CLI 的 `monthly`）
@@ -556,8 +566,11 @@ def compact_snapshots(*, grace_days: int = 2, retain_months: int = 13,
     # 满 grace_days 天的已结束月份才冻结：月初那几轮运行仍可能补上月末最后几小时的
     # 预报与观测，抢在那之前冻结会把它们挡在归档之外。
     freezable_before = ym(now - timedelta(days=grace_days))
-    expire_before = shift_month(ym(now), -abs(retain_months))
-
+    # ⚠️ 保留月数是**含当月**的（第五轮 P2-1）：retain_months=13 应当留下最近 13
+    # 个自然月（含当月）。旧式 `-abs(retain_months)` 配合下面的
+    # `month >= expire_before` 实际留下 14 个月——多留一个月意味着仓库永久多背一份
+    # 冷层 bundle，与"体积治理"这个立项目标直接相反。
+    expire_before = shift_month(ym(now), -(abs(int(retain_months)) - 1))
     report: dict[str, Any] = {
         "apply": bool(apply),
         "force": bool(force),
@@ -696,11 +709,17 @@ def _write_month_bundle(model_dir: Path, month: str, paths: list[Path], *,
             back = _read_gz(Path(tmp))
             if not isinstance(back, dict) or back.get("snapshots") != snaps:
                 raise RuntimeError(f"bundle 回读校验未通过（{target.name}），源文件保持不动")
+            # ⚠️ 与 _atomic_gzip_replace 同一条纪律（第五轮 P1-3）：改名与**删源
+            # 文件**之前必须先 fsync 内容与目录项。回读校验只证明"进程看来内容
+            # 对"，证明不了"已落盘"——掉电后这里同样会留下一个内容全零的 bundle
+            # 而源文件已被删除，是唯一不可恢复的失败。
+            with open(tmp, "rb") as chk:
+                os.fsync(chk.fileno())
             os.replace(tmp, target)
+            _fsync_dir(target.parent)
         finally:
             if os.path.exists(tmp):
                 os.remove(tmp)
-
     # bundle 已完整落盘且校验通过：此时才删除源文件
     removed = 0
     for p in paths:

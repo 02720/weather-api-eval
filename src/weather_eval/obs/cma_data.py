@@ -255,7 +255,10 @@ class CmaDataObsSource(ObsSource):
             raise ValueError(
                 f"站点 {station.id} 未配置 cma_id（WMO 站号），无法使用中国气象数据网实况源"
             )
-
+        # 预算是**每站各自**的额度（与 forecast 侧各 provider 同纪律）：本类的
+        # 实例会被 CLI 在多个站点间复用，不重置会让第 1 个站耗尽 900 s 后，
+        # 后续站全部零重试、请求一失败即放弃（第五轮 P2-4）。
+        self.budget.reset()
         now = now_beijing()
         hours = _target_hours(self.lookback_hours, now)
         revision_cutoff = now - timedelta(hours=self.revision_hours)

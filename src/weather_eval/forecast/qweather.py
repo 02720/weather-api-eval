@@ -100,7 +100,10 @@ def _to_float(v: Any) -> float | None:
     新版是 number 或 null；旧版 v7 是字符串（如 "28"、"0.0"），缺测为空串。
     无法解释的值一律归 None，绝不把缺测伪装成 0 参与评估。
     """
-    if v is None:
+    # bool 必须先挡：**float(True) == 1.0**——JSON 里一个 `true` 会被当成
+    # 1.0°C / 1.0mm 的真值。其余 provider 的 _num 系列都已挡这一条，
+    # 本函数此前是唯一漏网的一处（第五轮 P2-4）。
+    if v is None or isinstance(v, bool):
         return None
     try:
         f = float(v)

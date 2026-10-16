@@ -50,7 +50,7 @@ import logging
 import os
 import re
 import sys
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -218,7 +218,10 @@ def cmd_fetch_obs(args):
 
 def _save_obs_chain_report(reports: dict[str, dict]) -> None:
     """把本轮各站的编排留痕追加到 data/health/obs_chain/{date}.json。"""
-    from .storage import _atomic_write_json, _root
+    # 与 storage 里所有读-改-写窗口同一把锁（第五轮 P2-3）：这是**追加**写，
+    # 两个并发的 `all` 各自"读旧列表 → append 本轮 → 写回"会互相覆盖，丢掉的
+    # 正是"备用源已经独自支撑多久"这条追踪"静默死亡"的证据。
+    from .storage import _atomic_write_json, _exclusive_lock, _root
     from .timeutil import now_beijing
     date = now_beijing().strftime("%Y-%m-%d")
     path = _root() / "health" / "obs_chain" / f"{date}.json"
@@ -227,16 +230,18 @@ def _save_obs_chain_report(reports: dict[str, dict]) -> None:
         "at": now_beijing().strftime("%Y-%m-%dT%H:%M:%S"),
         "stations": reports,
     }
-    history: list = []
-    if path.exists():
-        try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(loaded, list):
-                history = loaded
-        except (json.JSONDecodeError, OSError) as e:
-            log.warning("观测编排留痕文件不可读，重新开始记录: %s (%s)", path, e)
-    history.append(entry)
-    _atomic_write_json(path, history[-96:])   # 每天 ≤3 轮 × 4 站，96 条封顶防膨胀
+    with _exclusive_lock(path):
+        history: list = []
+        if path.exists():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, list):
+                    history = loaded
+            except (json.JSONDecodeError, OSError) as e:
+                log.warning("观测编排留痕文件不可读，重新开始记录: %s (%s)", path, e)
+        history.append(entry)
+        # 每天 ≤3 轮 × 4 站，96 条封顶防膨胀
+        _atomic_write_json(path, history[-96:])
 
 
 def _build_provider(source: str, cfg):
@@ -344,7 +349,17 @@ def _live_window(cfg) -> tuple[datetime, datetime, str]:
         if _MONTH_RE.match(s):
             start = parse_iso(f"{s}-01T00:00")
         else:
-            start = parse_iso(f"{s[:10]}T00:00")
+            # ⚠️ 日期分支此前**零校验**（第五轮 P3-b）：只校验了 YYYY-MM，其余
+            # 一律 `parse_iso(f"{s[:10]}T00:00")`，于是 `2026/10/01`、
+            # `2026-13-45`、"下个月" 都以裸 ValueError traceback 崩在 `cmd_report`
+            # 里——报错里没有"哪个配置项写错了、期望什么格式"，改 YAML 的人只能
+            # 去读源码。显式校验并给出可操作的 SystemExit。
+            try:
+                start = parse_iso(f"{date.fromisoformat(s[:10]).isoformat()}T00:00")
+            except ValueError as e:
+                raise SystemExit(
+                    f"配置 eval.live_window_start 无效：{override!r}（{e}）。"
+                    "应为 \"YYYY-MM\" 或 \"YYYY-MM-DD\"") from e
     else:
         months = available_months()
         first = min(months) if months else ym(now)  # 尚无数据时退回当月（空窗口不崩）

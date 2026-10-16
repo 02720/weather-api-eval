@@ -1208,7 +1208,11 @@
      可被读者核对，而不是一句 README 里的承诺。脏工作区的报告自认不可复现。 #}
   {% if prov %}
   <div class="merkle">
-    复现凭据：code {{ prov.code_sha }}{% if prov.code_dirty %}（工作区有未提交改动，本轮结果不可复现）{% endif %}
+    复现凭据：code {{ prov.code_sha }}
+    {%- if prov.code_dirty is sameas false %}（工作区已核对为干净）
+    {%- elif prov.code_dirty %}（工作区有未提交改动，本轮结果不可复现）
+    {%- else %}（无法判定工作区是否干净：git 不可用，未验证）
+    {%- endif %}
     ｜ 依赖锁 {{ prov.lock_file or "无" }}{% if prov.lock_hash %}#{{ prov.lock_hash }}{% endif %}
     ｜ bootstrap 种子 {{ prov.bootstrap_seed }} ｜ Python {{ prov.python }}
     ｜ numpy {{ prov.deps.numpy }} · pandas {{ prov.deps.pandas }} · cyeva {{ prov.deps.cyeva }}

@@ -1654,7 +1654,13 @@ def holm_bonferroni(pvals: list[float], alpha: float = 0.10,
     # 非有限 p 与 None 同桶（第四轮 P2-8）：NaN 在排序比较器里不是全序
     # （nan<x 恒 False），会让极小有效 p 被排到 NaN 之后而漏判
     ps = [p if (p is not None and np.isfinite(p)) else None for p in pvals]
-    order = sorted(range(m), key=lambda i: (ps[i] is None, ps[i] or 1.0))
+    # ⚠️ 排序键**绝不能**写成 `ps[i] or 1.0`（第五轮 P1-4）：`0.0 or 1.0 == 1.0`，
+    # 于是最强的那个证据（p=0.0，配对 bootstrap 里 0 次跨到 0 另一侧）被排到
+    # 有效 p 的**最后一位**——Holm 是逐步降级的，排在后面的轮次阈值更松但
+    # `still` 已被前面判否的项关掉，于是 p=0.0 反而被判"不显著"，而 p=0.001
+    # 的邻居判显著。真值恒为 0 的项必须排在最前，故显式分支而不是靠真值测试。
+    order = sorted(range(m), key=lambda i: (ps[i] is None,
+                                            1.0 if ps[i] is None else ps[i]))
     out = [False] * m
     still = True
     for k, i in enumerate(order):

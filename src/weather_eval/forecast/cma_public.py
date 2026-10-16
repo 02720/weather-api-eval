@@ -164,7 +164,7 @@ from .base import ForecastProvider
 from .http import ( DEFAULT_UA,
 DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, TimeBudget,
                    request_with_retries)
-from .resample import interpolate_hourly, spread_accumulation
+from .resample import hourly_axis, interpolate_hourly, spread_accumulation
 from ..timeutil import floor_to_hour
 
 logger = logging.getLogger(__name__)
@@ -576,9 +576,15 @@ class CmaPublicProvider(ForecastProvider):
 
 
 def _hourly_axis(first: datetime, last: datetime) -> list[datetime]:
-    """[first, last] 的逐小时整点轴（含两端）。"""
-    n = int((last - first).total_seconds() // 3600)
-    return [first + timedelta(hours=i) for i in range(n + 1)]
+    """[first, last] 的逐小时整点轴（含两端），代理到重采样层的唯一实现。
+
+    为什么不本地再写一份：`interpolate_hourly` 的键会被地板到整点，轴必须用**同
+    一条地板规则**构造，否则 `temps.get(h)` 对每个 h 都落空 ⇒ **整列温度静默变
+    缺测**（只剩一条笼统的"温度全缺测"告警）。本源的时间串正则接受任意分钟，
+    契约漂移时会真的带上分钟余数。共用 `resample.hourly_axis` 是该口径的单点
+    （第五轮 P1-2）。
+    """
+    return hourly_axis([(first, None), (last, None)])
 
 
 def _hours_between(issue: datetime, publish_raw: str) -> int | None:

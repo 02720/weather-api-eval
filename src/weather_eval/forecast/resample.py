@@ -26,11 +26,37 @@ import logging
 from datetime import datetime, timedelta
 
 
+def floor_hour(t: datetime) -> datetime:
+    """把时刻向下地板到整点（`interpolate_hourly` 的键口径）。
+
+    逐小时轴的构造必须与插值产物的键**同一个地板规则**，否则 `temps.get(h)`
+    对每个 h 都落空——表现为整列温度静默缺测而不是报错（第五轮 P1-2）。
+    """
+    return t.replace(minute=0, second=0, microsecond=0)
+
+
+def hourly_axis(samples: list[tuple[datetime, float | None]]) -> list[datetime]:
+    """由采样点给出与 `interpolate_hourly` 键对齐的逐小时整点轴（含两端）。
+
+    与"直接用原始首末时刻逐小时累加"的区别只在采样落在非整点时：后者产出的
+    轴带着分钟余数，与插值产物（已地板）逐点错位。
+    """
+    if not samples:
+        return []
+    times = sorted(t for t, _v in samples)
+    first, last = floor_hour(times[0]), floor_hour(times[-1])
+    n = int((last - first).total_seconds() // 3600)
+    return [first + timedelta(hours=i) for i in range(n + 1)]
+
+
 def interpolate_hourly(samples: list[tuple[datetime, float | None]]) \
         -> list[tuple[datetime, float | None]]:
     """把按时间升序的采样点线性插值到逐小时（首末采样之间；不外推）。
 
-    端点缺测的区段（任一端为 None）不插值，产出 None；既有整点采样原样保留。
+    ⚠️ **返回的键一律是整点**（采样落在非整点时向下地板到整点），且本函数会
+    就地**排序** samples（与旧行为一致）。因此调用方拿它组装逐小时轴时，轴也
+    必须以**同一个地板规则**构造——否则 `temps.get(h)` 对每一个 h 都落空、整列
+    温度静默变成缺测。共用实现见 `hourly_axis`（第五轮 P1-2）。
     """
     if len(samples) < 2:
         return list(samples)
@@ -55,7 +81,7 @@ def interpolate_hourly(samples: list[tuple[datetime, float | None]]) \
     # 按小时取整并去重（采样可能落在非整点，先地板到整点）
     seen: dict[datetime, float | None] = {}
     for t, v in out:
-        th = t.replace(minute=0, second=0, microsecond=0)
+        th = floor_hour(t)
         seen.setdefault(th, v)
     return sorted(seen.items())
 

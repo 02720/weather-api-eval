@@ -302,8 +302,24 @@ class Ew4allProvider(ForecastProvider):
         if unknown:
             raise RuntimeError(
                 f"EW4ALL 未登记模型 {unknown}（可选：{sorted(MODEL_SPECS)}）")
-        return [self._build_snapshot(station, MODEL_SPECS[m], self._resolve_run(
-            MODEL_SPECS[m], station)) for m in wanted]
+        # **单模型失败只跳过该模型**（与天机同纪律）：列表推导里任何一个模型
+        # raise 都会把另一个已抓到的模型一起丢掉——预报快照错过起报即无法追补，
+        # 一次单模型的抖动不该放大成整轮双模型全缺。全部失败才上抛，让 CLI
+        # 看到"这个源这轮废了"而不是"成功了一半却只入库一半"。
+        out: list[dict] = []
+        failed: list[str] = []
+        for m in wanted:
+            spec = MODEL_SPECS[m]
+            try:
+                out.append(self._build_snapshot(station, spec,
+                                                self._resolve_run(spec, station)))
+            except Exception as e:                      # noqa: BLE001
+                failed.append(f"{m}: {e}")
+                logger.error("EW4ALL %s 站点 %s 抓取失败，跳过该模型: %s",
+                             m, station.id, e)
+        if not out and failed:
+            raise RuntimeError("EW4ALL 全部模型抓取失败（" + "；".join(failed) + "）")
+        return out
 
     # ------------------------------------------------------------------ 内部
     def _list_runs(self, spec: ModelSpec) -> list[datetime]:
@@ -457,9 +473,23 @@ class Ew4allProvider(ForecastProvider):
             # 1 小时降水缺供时整轮降水退化为摊薄值：成档但精度降级，如实标注
             # 第四轮 P2-3：完整性看**有效值**不看行数——契约漂移返回行数正常、
             # 值全 null 的序列时，按行数判 complete 会让残缺快照以完整身份进榜
-            "complete": _has_values(one) or not spec.precip_1h_element,
-            "missing_shards": ([] if (_has_values(one) or not spec.precip_1h_element)
-                               else [str(spec.precip_1h_element)]),
+            # ⚠️ 可选要素降级**不得**否决整份快照的完整性（第五轮 P1-1）：
+            # `complete` 在契约层是"这份快照的必需部分缺失"的裁决字段——
+            # evaluate 的 require_complete 门槛据此把快照**整份挡在所有榜外**，
+            # 比"某一维缺值"重得多。而 ONETPE 是 ModelSpec 明写的**可选**要素
+            # （"锦上添花而非必需…缺了不该否决整轮"，见 MODEL_SPECS 注释）：
+            # 它缺席只让短时效降水从"原生 1h"退化为"{window}h 摊薄"，温度与
+            # 降水两维都还在（由上面的 temps/precips 双空值检查把关），且
+            # _warn_health 已把这次降级按"降级不是错"逐条告警。
+            # 旧实现写 complete=False ⇒ 一次可选产品抖动让该站该起报的全部
+            # 样本从所有榜单消失，还与 MSN 的同名字段（"10 个分片只抓到部分"）
+            # 撞成两种互不等价的语义。故此处恒 True，降级另行披露。
+            "complete": True,
+            "missing_shards": [],
+            # 可选要素的降级标记：该模式**有**原生 1h 降水产品但本轮没取到有效值，
+            # 短时效降水已退化为 window 小时摊薄值（告警见 _warn_health）
+            "precip_1h_degraded": (bool(spec.precip_1h_element)
+                                   and not _has_values(one)),
             "station_id": station.id,
             "source": SOURCE,
             "models": [spec.model],

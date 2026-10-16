@@ -100,12 +100,62 @@ def add_days(dt: datetime, n: int) -> datetime:
 _ISO_MIN_FMT = "%Y-%m-%dT%H:%M"
 
 
+def axis_is_pruned_safe(times: list[str]) -> bool:
+    """二分定界的前提是否成立：定长 'YYYY-MM-DDTHH:MM'、严格升序、无重复。
+
+    `lower_split` / `upper_split` / `unfrozen_split` 的结论**只在**定长 ISO +
+    升序（字典序 == 时间序）下才与逐点 datetime 比较等价。而时间轴来自外部
+    provider 的响应，无人保证它排好序——某源一旦返回乱序或带秒的时间轴，
+    bisect 不会报错，只会给出一个**错误但自洽**的窗口边界：样本被静默截断，
+    且报告里看不出任何异常（正是本项目最不能接受的失败形态）。
+
+    代价是 O(n) 一趟比较，而它取代的是百万次 datetime 解析，仍然划算。
+    """
+    prev = ""
+    for t in times:
+        # 先做最便宜的一项（长度 + 两个分隔符），它否决绝大多数畸形输入
+        if type(t) is not str or len(t) != 16 or t[10] != "T" or t[13] != ":":
+            return False
+        if t <= prev:
+            return False
+        prev = t
+    return True
+
+
+def _scan_lower(times: list[str], dt: datetime) -> int:
+    """退化路径：逐点 datetime 比较（bisect 前提不成立时用）。"""
+    for i, t in enumerate(times):
+        try:
+            if parse_iso(t) >= dt:
+                return i
+        except (ValueError, TypeError):
+            continue
+    return len(times)
+
+
+def _scan_upper(times: list[str], dt: datetime) -> int:
+    """退化路径：逐点 datetime 比较，找第一个 `时刻 > dt` 的下标。"""
+    for i, t in enumerate(times):
+        try:
+            if parse_iso(t) > dt:
+                return i
+        except (ValueError, TypeError):
+            continue
+    return len(times)
+
+
 def lower_split(times: list[str], dt: datetime) -> int:
     """第一个满足 `时刻 >= dt` 的下标（它之前的都 < dt）。
 
     dt 带非零秒/微秒时，与 dt 同一分钟的时间轴点仍然**早于** dt，必须一起排除，
     故用 bisect_right；dt 无秒时同分钟即相等、应当保留，故用 bisect_left。
+
+    ⚠️ bisect 只在"定长 ISO + 严格升序"下成立（见 `axis_is_pruned_safe`）。
+    前提不成立时**退回线性扫描**而不是给一个错误的边界——乱序/带秒的时间轴
+    会让 bisect 静默截掉一段样本，而报告上看不出任何异常（第五轮 P2-7）。
     """
+    if not axis_is_pruned_safe(times):
+        return _scan_lower(times, dt)
     head = dt.strftime(_ISO_MIN_FMT)
     if dt.second or dt.microsecond:
         return bisect.bisect_right(times, head)
@@ -117,7 +167,11 @@ def upper_split(times: list[str], dt: datetime) -> int:
 
     时间轴点是分钟分辨率（秒恒为 0），故 `vt <= dt` 等价于 `分钟(vt) <= 分钟(dt)`，
     与 dt 带不带秒无关——带秒时同分钟的点照样 <= dt，bisect_right 正好覆盖它。
+
+    与 lower_split 同一条前提，破坏时同样退回逐点扫描（第五轮 P2-7）。
     """
+    if not axis_is_pruned_safe(times):
+        return _scan_upper(times, dt)
     return bisect.bisect_right(times, dt.strftime(_ISO_MIN_FMT))
 
 
@@ -133,6 +187,10 @@ def unfrozen_split(times: list[str], fetched_at_bj: str | None
         return 0, None
     dt = parse_iso(fetched_at_bj)
     head = dt.strftime(_ISO_MIN_FMT)
+    if not axis_is_pruned_safe(times):
+        # 与 lower_split 同一条退路：bisect 前提不成立时逐点判定，绝不给出
+        # 一个静默错误的边界（第五轮 P2-7）
+        return _scan_lower(times, dt), dt
     if dt.second or dt.microsecond:
         return bisect.bisect_right(times, head), dt
     return bisect.bisect_left(times, head), dt

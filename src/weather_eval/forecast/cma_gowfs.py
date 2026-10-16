@@ -174,7 +174,7 @@ import requests
 from .base import ForecastProvider
 from .http import (DEFAULT_UA, DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT,
                    TimeBudget, request_with_retries)
-from .resample import interpolate_hourly, spread_accumulation
+from .resample import floor_hour, interpolate_hourly, spread_accumulation
 
 logger = logging.getLogger(__name__)
 
@@ -336,27 +336,34 @@ def build_hourly_series(points: list[tuple[datetime, dict]], n_native: int
     `spread_accumulation(3)` 后向累计均摊。
     """
     stats: dict[str, int] = {}
+    # 轴与插值产物必须同地板规则：`interpolate_hourly` 的键是整点（非整点采样会
+    # 被地板），而本源的时间正则接受任意分钟（实测契约恒为整点，但契约漂移时会
+    # 出现 :30）。直接用原始首末时刻累加 ⇒ `temps.get(h)` 对每个 h 落空 ⇒
+    # **整列温度静默变缺测**。故轴/交接点比较/近场键一律用地板后的时刻，
+    # 远场（平铺相位由原始采样定义）仍用原始时刻，两侧各自自洽（第五轮 P1-2）。
     first, last = points[0][0], points[-1][0]
+    axis_first, axis_last = floor_hour(first), floor_hour(last)
     # 原生逐小时前缀至少 2 点才成立"前段是逐小时"这一判断；不足时按**全 3h 网格**
     # 处理（降级路径——绝不把 3h 累计误当 1h 累计透传）
     if n_native < 2:
         n_native = 0
     if n_native:
-        t_seam = points[n_native - 1][0]
-        near = [(t, _precip(e.get("total_rain"), stats))
+        # 交接点按**地板后的时刻**与轴对称轻柔比较（见上方同地板规则的注释）
+        t_seam = floor_hour(points[n_native - 1][0])
+        near = [(floor_hour(t), _precip(e.get("total_rain"), stats))
                 for t, e in points[:n_native]]
         # 远场以交接点为相位锚（tile_endpoints 以首个采样为相位）；交接点留在远场
         # 样本里是安全的——同一时刻的两种解释都覆盖 (t−3h, t]，而该小时由近场接管
         far = [(t, _precip(e.get("total_rain"), stats))
                for t, e in points[n_native - 1:]]
-        n_after = int((last - t_seam).total_seconds() // 3600)
+        n_after = int((axis_last - t_seam).total_seconds() // 3600)
         hours_after = [t_seam + timedelta(hours=i) for i in range(1, n_after + 1)]
     else:
         t_seam = None
         near = []
         far = [(t, _precip(e.get("total_rain"), stats)) for t, e in points]
-        n_axis = int((last - first).total_seconds() // 3600)
-        hours_after = [first + timedelta(hours=i) for i in range(n_axis + 1)]
+        n_axis = int((axis_last - axis_first).total_seconds() // 3600)
+        hours_after = [axis_first + timedelta(hours=i) for i in range(n_axis + 1)]
 
     temp_samples = [(t, _temp(e.get("temperature"), stats)) for t, e in points]
     temps = dict(interpolate_hourly(temp_samples))
@@ -365,9 +372,8 @@ def build_hourly_series(points: list[tuple[datetime, dict]], n_native: int
         if hours_after else []
     far_map = dict(zip(hours_after, far_col))
     near_map = dict(near)
-
-    axis_n = int((last - first).total_seconds() // 3600)
-    axis = [first + timedelta(hours=i) for i in range(axis_n + 1)]
+    axis_n = int((axis_last - axis_first).total_seconds() // 3600)
+    axis = [axis_first + timedelta(hours=i) for i in range(axis_n + 1)]
     temp_col = [temps.get(h) for h in axis]
     # 逐小时降水：交接点及以前用原生 1h 值透传，其后用 3h 后向累计均摊
     precip_col = [near_map[h] if (t_seam is not None and h <= t_seam)
@@ -489,9 +495,9 @@ def build_daily_block(payload: Any,
             prev = None
         temp_min.append(_temp(night_t.get(prev), stats) if prev else None)
     # 日降水来自逐小时聚合（daily_precip 为 None 时——如逐日端点不可用——全 null）
-    # 日降水来自逐小时聚合（daily_precip 为 None 时——如逐日端点不可用——全 null）
     precip_col_daily = [None if daily_precip is None else daily_precip.get(d)
                         for d in times]
+
     return {"time": times,
             "data": {MODEL_NAME: {"temp_max": temp_max, "temp_min": temp_min,
                                   "precipitation": precip_col_daily}}}

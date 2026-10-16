@@ -193,7 +193,7 @@ class FengWuProvider(ForecastProvider):
         """查询点位序列；该起报 400（尚未可查）时向过去回退最多 MAX_ISSUE_FALLBACK 轮。"""
         last_err: Exception | None = None
         issue = issue_utc
-        for _ in range(MAX_ISSUE_FALLBACK):
+        for attempt in range(MAX_ISSUE_FALLBACK):
             try:
                 payload = self._request(
                     QUERY_URL,
@@ -216,7 +216,11 @@ class FengWuProvider(ForecastProvider):
                 last_err = e
                 logger.warning("风乌起报 %s 查询失败: %s，尝试更早轮次",
                                issue.strftime("%Y-%m-%dT%H:%MZ"), e)
-                issue -= timedelta(hours=6)
+                # 只在**还有下一轮**时才退 6 小时：最后一轮之后的那次递减被
+                # 下面的 raise 丢弃，是纯死代码（读代码的人会以为它在为某个
+                # 后续分支准备状态）。
+                if attempt < MAX_ISSUE_FALLBACK - 1:
+                    issue -= timedelta(hours=6)
         raise RuntimeError(
             f"风乌最近 {MAX_ISSUE_FALLBACK} 个起报轮次均不可查: {last_err}")
 
