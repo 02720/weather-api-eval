@@ -287,6 +287,22 @@ python -m pytest -m "not golden and not slow" -n auto
 
 标定效果：各子分的实测影响力占比与名义权重之比从旧口径的 **0.25~2.7 倍**收敛到 **0.9~1.35 倍**（小时轨；日轨 0.73~2.27，残差来自"单一 λ 无法同时校准两条轨"——日轨的日极值天然更分散，逐轨实测占比在报告"🔬 这份名次有多结实？"一节逐项列出）。2026-10-06 的重标定（13 项、60 天窗口）留档见 [docs/score_slopes.md §八](docs/score_slopes.md)；同日第二轮新增两项（`grade_ets` 177.504、`mbe_bdisp` 36.098，两轨池化反解）留档 [docs/metric_inclusion_v2.md](docs/metric_inclusion_v2.md)。综合分方差中温度/降水的实际份额（小时轨 **23% / 68%**）同样在每份报告的"🧮 综合分怎么算"一节披露——**50:50 是名义权重，名次上的实际话语权由两维离散度决定**（温度:降水的宏观权重已在冠军频率敏感性里按 U(30%,70%) 扰动）。方法论、逐项 λ 白话与新旧名次对拍留档 [docs/score_slopes.md](docs/score_slopes.md)。
 
+#### 综合分是"技能指数"，带固定的区分度缩放（2026-10-18）
+
+15 个子分各自被标定到"桶内跨源 sd = 8 分"，但综合分是这些子分**权重合计为 1 的
+加权平均**——互不完全相关的子分一平均，离散度就收缩到 ≈ 8·√(Σw²) ≈ 2.8 分，于是
+全榜几乎挤在 ~10 分带里（"区分度不足"）。根因是**标定靶点打低了一层**：打在了子分
+上，而读者读的是综合分。修法是在**子分加权平均之后**施加一次**冻结的仿射缩放**
+`g(s) = 50 + gain·(s − 50)`（`stats.index_gain`，`gain` 冻结进 `config.eval.score_index_gain`），
+把综合分的桶内跨源 sd 拉回 **8 分**（与子分同名量纲）——总榜极差由 10.5 扩到 ~26。
+
+- **不是按当期 μ/σ 自适应**：`gain` 是固定常数；若某期各家真一样，分数就一样，
+  **不伪造区分度**。仿射且单调 ⇒ **名次与统计显著性判定不变**。
+- **代价必须说清**：CI90 宽度按同一因子放大，因此"数字拉开"是**显示层**的，真正
+  能分辨的仍只有第一梯队 vs 长尾（跨源 ρ̄=0.61，单源区间本就约占整榜极差的七成）。
+- `gain` 反解自冻结基线的桶内跨源 sd、季度随 `score_slopes` 一同复核；**变更视为
+  评分口径变更，前后名次不可直接对比**（留档 [tests/baseline/CHANGELOG.md](tests/baseline/CHANGELOG.md) 第七次重冻结）。
+
 分数的绝对值只用于排序，**不可跨榜、跨期解读**（两维量表不同，且难度对齐分被列效应平移过）；名次口径变更前后的报告不可直接对比。
 
 权重表是 `evaluate.py` 的 `TEMP_SCORE_PARTS` / `PRECIP_SCORE_PARTS`——评分、页面"评分构成"表与本文档三处的单一数据源；换算斜率的代码内缺省即配置冻结值（`config.py` 的 `DEFAULT_EVAL["score_slopes"]`），运行时由 `stations.yaml` 的 `eval.score_slopes` 覆盖。χ² / RSS / TS / 晴雨准确率 / 漏报率 / 空报频率 / 雨量 RMSE / 分级 1 级照算、明细表照列、但不入分——理由不是"相关性高"这类软判断，而是**恒等式**（见 [docs/metric_coverage.md](docs/metric_coverage.md) 与 [docs/metric_inclusion_v2.md](docs/metric_inclusion_v2.md)，并由 `tests/test_evaluate.py::test_score_parts_contract` 锁死）。

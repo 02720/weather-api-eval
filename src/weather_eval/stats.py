@@ -730,6 +730,51 @@ def build_day_stat_tables_columnar(pt, models: list[str],
     return days, tables
 
 
+# ------------------------------------------------- 综合分"技能指数"缩放（2026-10-18）
+# 见 config.eval.score_index_gain 与 evaluate._weighted_score（同一把尺子）。
+# 子分各自标定到"桶内跨源 sd = 8 分"，但综合分是权重合计为 1 的加权平均 → 互不
+# 完全相关的子分一平均，sd 收缩到 ≈ 8·√(Σw²)·ρ修正 ≈ 2.8，整榜被压进 ~10 分带。
+# 这里在**子分加权平均之后**施加一次仿射缩放 g(s)=center+gain·(s−center)，把读者
+# 读的综合分的桶内跨源 sd 拉回 8 分（与子分同名量纲）。gain 是**冻结常数**、仿射
+# 且单调 ⇒ 名次与显著性判定不变；CI 宽度按同因子放大（显示层，见 README §5）。
+SCORE_INDEX_GAIN: float = 1.0
+SCORE_INDEX_CENTER: float = 50.0
+
+
+def apply_score_index_gain(gain: float | None = None,
+                           center: float | None = None) -> None:
+    """装载综合分缩放（config eval.score_index_gain → 模块级）。
+
+    传 None = 回到代码内缺省（gain=1.0 恒等，任何旧调用点逐位不变）。与
+    `evaluate.apply_score_slopes` 同模式：必须在任何评分计算之前装载一次，
+    点估计与 bootstrap 走同一个全局，meta 留痕、渲染层回放。
+    """
+    global SCORE_INDEX_GAIN, SCORE_INDEX_CENTER
+    SCORE_INDEX_GAIN = 1.0 if gain is None else float(gain)
+    if center is not None:
+        SCORE_INDEX_CENTER = float(center)
+
+
+def index_gain(x):
+    """仿射技能指数缩放：g(x)=center+gain·(x−center)，截断 [0,100]，NaN 传播。
+
+    标量与 numpy 数组通用（bootstrap 每天重算走数组路径）。gain=1.0 时走**恒等
+    快路**（见下），保证未装载配置时一切旧调用点逐位不变。截断 [0,100] 是量表的
+    物理边界：接近满分的**单桶**经放大后可能顶到上限（当前数据下 51 张榜最大 97.4，
+    未触及；触及时该桶饱和、是"封顶"语义而非错误）。
+    """
+    arr = np.asarray(x, dtype=float)
+    if SCORE_INDEX_GAIN == 1.0:
+        # 恒等快路：未装载缩放时一切旧调用点**逐位不变**（避免 center 加减的
+        # 1-ulp 漂移），NaN 也原样传播。
+        return float(arr) if arr.ndim == 0 else arr
+    with np.errstate(invalid="ignore"):
+        out = SCORE_INDEX_CENTER + SCORE_INDEX_GAIN * (arr - SCORE_INDEX_CENTER)
+    out = np.clip(out, 0.0, 100.0)
+    out = np.where(np.isnan(arr), np.nan, out)
+    return float(out) if out.ndim == 0 else out
+
+
 def _score_from_parts(values: dict[str, np.ndarray], parts) -> np.ndarray:
     """按评分权重表把指标值数组组合成 0~100 子分；缺项（NaN）按剩余权重归一。
 
@@ -751,7 +796,10 @@ def _score_from_parts(values: dict[str, np.ndarray], parts) -> np.ndarray:
         den = w * valid if den is None else den + w * valid
     if num is None:
         return np.full(next(iter(values.values())).shape if values else (), np.nan)
-    return np.where(den > 0, num / np.where(den > 0, den, 1.0), np.nan)
+    # 子分加权平均之后施加技能指数缩放（见文件头 SCORE_INDEX_GAIN）：与点估计
+    # 路径 evaluate._weighted_score 同一把尺子，bootstrap 的 CI 才不会与榜面数字分叉。
+    score = np.where(den > 0, num / np.where(den > 0, den, 1.0), np.nan)
+    return index_gain(score)
 
 
 def between_station_mbe_sd(n: np.ndarray, se: np.ndarray) -> np.ndarray:

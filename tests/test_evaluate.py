@@ -1,6 +1,8 @@
 import math
 from datetime import datetime, timedelta
 
+import pytest
+
 from weather_eval import storage
 from weather_eval.evaluate import (
     build_report, collect, temp_metrics, precip_metrics,
@@ -8,6 +10,19 @@ from weather_eval.evaluate import (
     _combined_day_boards, track_cells,
 )
 from weather_eval.timeutil import iso
+
+
+@pytest.fixture(autouse=True)
+def _index_gain_identity():
+    """评分函数单测断言的是**原始度量尺**：把综合分技能指数缩放重置为恒等。
+
+    生产路径（build_report）会在内部按 config 装载缩放值；本夹具只保证直接调用
+    temp_score / precip_score 的单测看到未缩放原值，测完复位、不跨用例泄漏。
+    """
+    import weather_eval.evaluate as ev
+    ev.apply_score_index_gain(1.0, 50.0)
+    yield
+    ev.apply_score_index_gain(1.0, 50.0)
 
 
 def test_temp_metrics_handcalc():
@@ -238,6 +253,43 @@ def test_score_clamps_and_dimension_conventions():
     # far 缺项（如从不报雨的源）按剩余权重归一，不整行出局
     assert precip_score({"far": None, "ets": 0.2}) == round(
         0.2 * SCORE_SLOPES["ets"], 2)
+
+
+def test_score_index_gain_affine_monotone_and_frozen():
+    """综合分技能指数缩放（2026-10-18）：仿射、严格保序、端点不动、config 冻结。
+
+    第一性原理（区分度）：15 个子分各自标定到"桶内跨源 sd = 8 分"，但综合分是
+    权重和为 1 的加权平均 → 互不完全相关的子分一平均，sd 收缩到 ≈8·√(Σw²)≈2.8，
+    整榜被压进 ~10 分带。根因是标定靶点打低了一层（打在子分，读者读综合分）。
+    此处把综合分（及两维分）做一次仿射缩放 g(s)=center+gain·(s−center)，把综合分
+    的桶内跨源 sd 拉回 8 分。仿射且单调 ⇒ 名次与显著性不变；gain 冻结、不按当期
+    μ/σ 自适应 ⇒ 若各家真一样就保持一样，不伪造区分度。
+    """
+    import weather_eval.evaluate as ev
+    from weather_eval import stats as st
+    from weather_eval.config import DEFAULT_EVAL
+    try:
+        # 恒等缺省：未装载缩放时逐位不变
+        ev.apply_score_index_gain(1.0, 50.0)
+        raw = temp_score({"acc2": 80, "rmse": 2.0})
+        assert st.index_gain(raw) == raw
+        # 装载 config 冻结值：gain = 8 / 冻结期桶内跨源 sd
+        g = float(DEFAULT_EVAL["score_index_gain"])
+        assert g > 1.0
+        ev.apply_score_index_gain(None, None)
+        assert st.SCORE_INDEX_GAIN == g
+        assert st.SCORE_INDEX_CENTER == 50.0
+        # 仿射：g(s)=center+gain·(s−center)；端点不动；严格保序
+        assert abs(st.index_gain(60.0) - (50.0 + g * 10.0)) < 1e-9
+        assert st.index_gain(0.0) == 0.0 and st.index_gain(100.0) == 100.0
+        assert st.index_gain(55.0) > st.index_gain(45.0)
+        # 综合分仍等于两维缩放后的均值（仿射 ⇒ 保均值）
+        t = temp_score({"acc2": 80, "rmse": 2.0})
+        p = precip_score({"ets": 0.2})
+        assert abs(overall_score({"acc2": 80, "rmse": 2.0}, {"ets": 0.2})
+                   - round((t + p) / 2, 2)) <= 0.01
+    finally:
+        ev.apply_score_index_gain(1.0, 50.0)
 
 
 def test_build_report_end_to_end(tmp_path, monkeypatch):
@@ -492,8 +544,10 @@ def test_overall_board_pools_all_leads_and_discloses_coverage(tmp_path, monkeypa
     board_100 = {r["model"]: r for r in data_100["leaderboards"]["all"]}
     assert board_100["ecmwf_ifs"]["qualified"] is False
     assert board_100["ecmwf_ifs"]["champion_pct"] == 0.0
-    # 完美预报满分；有偏差的源低于满分（macro 是各自桶分的平均，两个桶都 <100）
-    assert 0 < by_model["ecmwf_ifs"]["score"] < 100
+    # 完美预报顶到量表上限；有偏差的源低于上限（macro 是各自桶分的平均）。
+    # 2026-10-18 起综合分多做一次技能指数缩放 g(s)=center+gain·(s−center) 并截断
+    # [0,100]，故"完美源"落在上限 100（不再是恰好 <100 的窄带顶）。
+    assert 0 < by_model["ecmwf_ifs"]["score"] <= 100
     # macro 语义：总榜分 == 各"两维齐备"天桶综合分的等权平均
     # （既不等于全样本池化的分，也不把单维桶当成综合分）
     from weather_eval.evaluate import _mean_or_none
@@ -620,7 +674,8 @@ def test_overall_board_boundaries_and_pooling_benefit(tmp_path, monkeypatch):
     assert abs(row["score"] - round((row["temp_score"] + row["precip_score"]) / 2, 2)) < 1e-9
     assert row["score"] >= 75.0
     assert info["day1"]["qualified"] is False      # n_eff=5 < min_board_neff=30
-    assert 0 < info["wide"]["score"] < 100
+    # 近似完美源顶到量表上限（综合分缩放后截断 [0,100]，见 test_score_index_gain…）
+    assert 0 < info["wide"]["score"] <= 100
     assert info["sparse"]["score"] is None and info["sparse"]["qualified"] is False
     win = data["meta"]["difficulty_window"]["all"]
     assert win["tracks_present"] == ["hourly"] and win["single_track_note"]

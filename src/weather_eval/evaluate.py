@@ -1216,6 +1216,23 @@ SCORE_MAP_TEMPLATES: dict[str, str] = {
 DEFAULT_SCORE_SLOPES: dict[str, float] = dict(DEFAULT_EVAL["score_slopes"])
 SCORE_SLOPES: dict[str, float] = dict(DEFAULT_SCORE_SLOPES)
 
+# 综合分"技能指数"缩放的代码内缺省 **= config 冻结值**（与评分斜率同一纪律：
+# 标定量只此一处声明）。装载入口在 build_report，实现落在 stats.index_gain。
+DEFAULT_SCORE_INDEX_GAIN: float = float(DEFAULT_EVAL["score_index_gain"])
+DEFAULT_SCORE_INDEX_CENTER: float = float(DEFAULT_EVAL["score_index_center"])
+
+
+def apply_score_index_gain(gain: float | None = None,
+                           center: float | None = None) -> None:
+    """装载综合分技能指数缩放（config → stats 层，与 apply_score_slopes 同模式）。
+
+    None = 回到代码内缺省（config 冻结值）。必须在任何评分计算之前调用；点估计
+    与 bootstrap 共用 stats 的同一个全局，故两处自动同尺，meta 留痕供渲染回放。
+    """
+    _stats.apply_score_index_gain(
+        DEFAULT_SCORE_INDEX_GAIN if gain is None else gain,
+        DEFAULT_SCORE_INDEX_CENTER if center is None else center)
+
 
 def apply_score_slopes(slopes: dict | None) -> None:
     """装载当期换算斜率（config eval.score_slopes → 模块级换算函数）。
@@ -1358,7 +1375,13 @@ def _weighted_score(parts, metrics: dict) -> float | None:
             continue
         num += w * c
         den += w
-    return round(num / den, 2) if den else None
+    if not den:
+        return None
+    # 维度分 = 子分加权平均后再施加技能指数缩放（见 stats.index_gain）：与
+    # bootstrap 的 stats._score_from_parts 同一把尺子。daily_temp_score / overall_score
+    # 都在此之上取两个已缩放量的均值——仿射映射保序、保均值，故综合分=(温度分+降水分)/2
+    # 在缩放后依然成立。
+    return round(float(_stats.index_gain(num / den)), 2)
 
 
 def _mean_or_none(vals: list[float]) -> float | None:
@@ -1640,6 +1663,11 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     # 必须在任何子分计算之前装载——榜单、走势、敏感性、诊断要跑在**同一把尺子**上；
     # meta.score_slopes 留痕当期值，渲染层回放同一份，保证"评分构成"表与实际换算一致。
     apply_score_slopes(eval_cfg.get("score_slopes") if eval_cfg else None)
+    # 综合分技能指数缩放（见 config eval.score_index_gain）：同样必须在任何评分
+    # 计算之前装载——榜单、走势、敏感性、bootstrap 要跑在**同一把尺子**上。
+    apply_score_index_gain(
+        (eval_cfg.get("score_index_gain") if eval_cfg else None),
+        (eval_cfg.get("score_index_center") if eval_cfg else None))
     limits = eval_cfg["temp_accuracy_limits"]
     thr = eval_cfg["rain_threshold_mm"]
     thr_daily = eval_cfg.get("rain_daily_threshold_mm", 1.0)
@@ -2050,6 +2078,11 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
             # 评分换算斜率（当期实际生效值）：话语权 = 权重×斜率×离散度，斜率是
             # 季度标定的冻结值——披露当期值，读者才能把"评分构成"表对回配置
             "score_slopes": dict(SCORE_SLOPES),
+            # 综合分技能指数缩放（当期实际生效值）：读者读的 0~100 综合分 = 子分
+            # 加权平均后再做一次仿射缩放 g(s)=center+gain·(s−center)，使桶内跨源
+            # sd = 8 分（见 config eval.score_index_gain）。披露当期值以便对账。
+            "score_index_gain": float(_stats.SCORE_INDEX_GAIN),
+            "score_index_center": float(_stats.SCORE_INDEX_CENTER),
             "min_sample": min_sample,
             "min_board_neff": min_board_neff,
             "min_board_neff_rain": min_board_neff_rain,
