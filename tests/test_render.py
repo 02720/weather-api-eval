@@ -479,3 +479,149 @@ def test_score_parts_rows_split_formula_from_note():
 def render_mod_path():
     from weather_eval.report import render
     return render.__file__
+
+
+# --------------------------------------------------------------- 视图随代码重建
+# 第一性原理（2026-10）：报告页 = render(该月数据, 代码)。数据冻结、视图随代码
+# 重求值——产物头部盖一份"视图指纹"，重建前逐份比对，一致即跳过、不一致才重渲。
+# 这几条测试锁住该机制：指纹入产物、陈旧触发重建、最新不重写、无原料不崩。
+
+def _monthly_fixture(tmp_path, monkeypatch):
+    """铺 2026-08 的观测+快照，返回 (cfg_stub 用不到, 该月 build_report 结果)。"""
+    _populate(tmp_path, monkeypatch)
+    monkeypatch.setenv("WEATHER_EVAL_REPORTS_ROOT", str(tmp_path / "reports"))
+    start = datetime(2026, 8, 1, 0, 0)
+    end = datetime(2026, 8, 30, 23, 0)
+    cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
+           "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 5}
+    return build_report(["s1"], ["ecmwf_ifs"], cfg, start, end,
+                        "2026-08", is_monthly=True)
+
+
+class _StubCfg:
+    """refresh_monthly_archives 只从 cfg 取 stations（用于站点中文名）。"""
+    stations: list = []
+
+
+def test_report_embeds_view_fingerprint(tmp_path, monkeypatch):
+    """主报告与月榜都盖视图指纹 meta，且可由 _embedded_fingerprint 读回。"""
+    from weather_eval.report import render
+
+    data = _monthly_fixture(tmp_path, monkeypatch)
+    fp = render.view_fingerprint()
+    assert fp and len(fp) >= 8
+
+    html = render.render_report_html(data)
+    assert f'name="wx-render-fp" content="{fp}"' in html
+
+    out = render.write_monthly_report(data, force=True)
+    assert render._embedded_fingerprint(out) == fp
+    # 无指纹/非本模板产物回退为 None（调用方据此判过期）
+    plain = tmp_path / "reports" / "monthly" / "2020-01.html"
+    plain.write_text("<html><head></head></html>", encoding="utf-8")
+    assert render._embedded_fingerprint(plain) is None
+
+
+def test_refresh_rebuilds_stale_archive(tmp_path, monkeypatch):
+    """产物指纹陈旧时，refresh 用最新代码重建，并盖上当前指纹。"""
+    from weather_eval.report import render
+    import weather_eval.__main__ as m
+
+    data = _monthly_fixture(tmp_path, monkeypatch)
+    out = render.write_monthly_report(data, force=True)
+
+    # 模拟"代码变了"：当前指纹换成一个与产物不同的值（重建数据源已备好，
+    # 直接注入，跳过昂贵的全量重算——本测试只锁指纹判定与落盘这一环）
+    monkeypatch.setattr(render, "view_fingerprint", lambda: "deadbeefcafe0000")
+    monkeypatch.setattr(m, "_rebuild_month_data", lambda cfg, month: data)
+
+    n = m.refresh_monthly_archives(_StubCfg())
+    assert n == 1
+    assert render._embedded_fingerprint(out) == "deadbeefcafe0000"
+
+
+def test_refresh_skips_when_fingerprint_current(tmp_path, monkeypatch):
+    """指纹与当前代码一致 → 零重建、零重算，产物 mtime 不变。"""
+    from weather_eval.report import render
+    import weather_eval.__main__ as m
+
+    data = _monthly_fixture(tmp_path, monkeypatch)
+    out = render.write_monthly_report(data, force=True)
+    mtime = out.stat().st_mtime_ns
+
+    called = []
+    monkeypatch.setattr(m, "_rebuild_month_data",
+                        lambda cfg, month: (called.append(month), data)[1])
+    assert m.refresh_monthly_archives(_StubCfg()) == 0
+    assert called == []                            # 未触发任何重算
+    assert out.stat().st_mtime_ns == mtime         # 未重写
+
+
+def test_refresh_keeps_unrebuildable_month(tmp_path, monkeypatch, caplog):
+    """原始快照与结论摘要皆缺失的月份：告警并保留原样，不写坏产物。"""
+    import logging
+    from weather_eval.report import render
+    import weather_eval.__main__ as m
+
+    data = _monthly_fixture(tmp_path, monkeypatch)
+    out = render.write_monthly_report(data, force=True)
+    before = out.read_text(encoding="utf-8")
+
+    monkeypatch.setattr(render, "view_fingerprint", lambda: "newfpmustdiffer")
+    monkeypatch.setattr(m, "_rebuild_month_data", lambda cfg, month: None)
+
+    with caplog.at_level(logging.WARNING):
+        assert m.refresh_monthly_archives(_StubCfg()) == 0
+    assert "无法用最新代码重建" in caplog.text
+    assert out.read_text(encoding="utf-8") == before
+
+
+def test_rebuild_month_data_source_priority(tmp_path, monkeypatch):
+    """重建数据源优先级：保留期内原始快照 > 结论摘要 > 无（None）。"""
+    import json as _json
+    import weather_eval.__main__ as m
+
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))   # 空数据根
+
+    class _C:
+        station_ids: list = []
+        models: list = []
+        eval: dict = {}
+
+    # 两者皆无 → None（如 2026-07）
+    assert m._rebuild_month_data(_C(), "2026-07") is None
+
+    # 只有结论摘要 → 用它渲染结论级页面（期号/总榜非空才判为已固化）
+    storage._atomic_write_json(storage.period_summary_path("2026-07"), {
+        "period": "2026-07", "meta": {"period_label": "2026-07"},
+        "leaderboards": {"all": [{"model": "ecmwf_ifs", "score": 1.0}]},
+    })
+    data = m._rebuild_month_data(_C(), "2026-07")
+    assert isinstance(data, dict) and data["period"] == "2026-07"
+    assert _json.loads(storage.period_summary_path("2026-07").read_text(encoding="utf-8"))
+
+
+def test_summary_only_report_hides_detail_sections(tmp_path, monkeypatch):
+    """结论级页面（原始快照已出仓、只剩 summary.json）：隐藏需逐样本原料的图节，
+    榜单仍服务端渲染，并给出"结论摘要版"说明——不留空图框。
+
+    摘要形状与 ``__main__._write_period_summary`` 固化的完全一致（meta/coverage/
+    scorecard/leaderboards，无逐样本明细数组），故用真实 build_report 结果裁剪而来。
+    """
+    from weather_eval.report import render
+
+    data = _monthly_fixture(tmp_path, monkeypatch)
+    summary = {
+        "period": data["meta"]["period_label"], "frozen_at": "2026-09-01 06:00",
+        "note": "原始快照出仓后的唯一可复核来源",
+        "meta": data["meta"], "coverage": data.get("coverage"),
+        "scorecard": data.get("scorecard"), "leaderboards": data["leaderboards"],
+    }
+    html = render.render_report_html(summary, title="摘要版")
+
+    assert 'id="summary-only"' in html            # 摘要版说明在
+    for el in ("chartDecay", "chartWx", "chartHeat", "chartTs", "chartStation"):
+        assert f'id="{el}"' not in html, f"无原料却渲染了 {el}"
+    assert 'id="lbTable"' in html                 # 榜单照常服务端渲染
+
+

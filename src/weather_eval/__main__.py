@@ -37,6 +37,12 @@
   滚动 13 个月）。monthly/ 每月归档一份冻结的历史月份，回答"那个自然月谁
   最准"，与总榜分工互不干扰；主报告页脚自动列出归档链接。
 
+  月榜的冻结语义（2026-10 修正）：冻结的是该月**数据**，不是 HTML 视图。归档页
+  = ``render(该月数据, 代码)`` 的纯函数结果，代码一变（UI/评分口径）就该重求值。
+  每次 ``report`` / ``all`` / ``monthly`` 写主报告后都会调用
+  ``refresh_monthly_archives``：比对产物头部盖下的视图指纹（``render.view_fingerprint``），
+  不一致即用最新代码重建（有原始快照则全量重算，只剩结论摘要则渲染结论级页面）。
+
 快照粒度说明：Open-Meteo/彩云/和风的一次抓取共享同一条时间轴与起报口径，按模型拆分
 存档；中科天机各模式最新可用起报轮次可能不同步（发布进度独立），故其提供方直接按
 模型返回独立快照（各自 issue_iso 与时间轴），保证时效（lead）分组不被跨模式错位污染。
@@ -60,7 +66,7 @@ from .timeutil import now_beijing, parse_iso, floor_to_hour, ym
 from .storage import (
     _atomic_write_json,
     PROJECT_ROOT, available_months, compact_snapshots, data_footprint,
-    period_summary_path, reports_footprint,
+    has_period_summary, period_summary_path, reports_footprint,
     save_obs,
     save_forecast_snapshot,
 )
@@ -367,6 +373,69 @@ def _live_window(cfg) -> tuple[datetime, datetime, str]:
     return start, now, f"{start:%Y-%m-%d} ~ {now:%Y-%m-%d}"
 
 
+def _rebuild_month_data(cfg, month: str):
+    """取某月用于「以最新代码重渲」的数据源；None = 无原料可重建。
+
+    三级来源（耐久性递减，对应"视图 = render(数据, 代码)"里的**数据**那一半）：
+      ① 保留期内的原始快照（obs + forecasts）仍在 → ``build_report`` 全量重算，
+         页面与主报告同款、图表齐全；
+      ② 原始快照已出仓，但该月结论摘要 ``data/metrics/{month}/summary.json`` 还在
+         → 用它作 report_data 渲染**结论级**页面（榜单/评分卡是当年结果，逐样本
+         图表无原料，模板据数据缺失自动不渲染该几节）；
+      ③ 两者皆无 → None，调用方保留原样并告警（无法重建是事实，如实告知）。
+    """
+    if month in available_months():
+        start, end = _month_window(month)
+        return build_report(cfg.station_ids, cfg.models, cfg.eval, start, end,
+                            period_label=month, is_monthly=True)
+    if has_period_summary(month):
+        try:
+            return json.loads(period_summary_path(month).read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as e:
+            log.warning("月度结论摘要不可读，跳过重建 %s: %s", month, e)
+            return None
+    return None
+
+
+def refresh_monthly_archives(cfg) -> int:
+    """把历史月度归档刷新到**当前代码**渲染的版本（数据冻结、视图随代码重建）。
+
+    第一性原理：归档页 = ``render(该月数据, 代码)`` 的纯函数结果。过去把它的
+    **HTML** 当冻结对象，于是程序一改（UI 重构、评分口径更新），历史月榜就停在
+    旧代码的样貌上。修正后：HTML 只是"该月数据在当前代码下的视图缓存"，代码
+    一变（参见 render.view_fingerprint）就该重求值——这里逐份比对产物头部盖下
+    的视图指纹，一致即跳过（平时零成本），不一致才用最新代码重建。
+
+    重建数据源与降级见 ``_rebuild_month_data``；重建以 force 落盘（绕过
+    ``write_monthly_report`` 对冻结档案的保护——被冻结的是**数据**，不是视图）。
+    由 ``_update_live_report`` 在每次写主报告后调用，故 ``report`` / ``all`` /
+    ``monthly`` 三条路径都会自动刷新。
+    """
+    from .report import render as _render
+
+    monthly = _render._reports_root() / "monthly"
+    if not monthly.is_dir():
+        return 0
+    cur = _render.view_fingerprint()
+    labels = {s.id: s.name for s in cfg.stations}
+    rebuilt = unrebuildable = 0
+    for p in sorted(monthly.glob("*.html")):
+        if _render._embedded_fingerprint(p) == cur:
+            continue        # 已是当前代码的视图，无需重算
+        data = _rebuild_month_data(cfg, p.stem)
+        if data is None:
+            unrebuildable += 1
+            log.warning("月度归档 %s 无法用最新代码重建（原始快照与结论摘要均缺失），保留原样",
+                        p.stem)
+            continue
+        write_monthly_report(data, station_labels=labels, force=True)
+        rebuilt += 1
+    if rebuilt:
+        log.info("月度归档已按当前代码重建 %d 份（其余为最新版%s）",
+                 rebuilt, f"，另有 {unrebuildable} 份因无原料无法重建" if unrebuildable else "")
+    return rebuilt
+
+
 def _update_live_report(cfg):
     """用跨月累计窗口（数据起点 → 现在）重建主报告 reports/index.html（覆盖写）。
 
@@ -394,6 +463,9 @@ def _update_live_report(cfg):
     n_stale = write_health_report(cfg, stale_hours=int(cfg.eval.get("source_stale_hours", 30)))
     if n_stale:
         log.warning("有 %d 个源已陈旧，详见 reports/health.html", n_stale)
+    # 历史月度归档随代码刷新（数据冻结、视图随代码重建）：每次写主报告后顺手
+    # 比对一遍视图指纹，过期才重算——程序改动后月榜自动跟上，平时零成本。
+    refresh_monthly_archives(cfg)
     return label, out
 
 

@@ -8,6 +8,11 @@
   2026-10 起总榜窗口跨月：样本只增不减，月初不清零。
 - ``reports/monthly/YYYY-MM.html`` **月度归档**。每月 1 号把上个月的数据冻结成一份
   永久档案；主报告页脚会自动列出所有归档链接。
+  **数据冻结、视图随代码重建**（2026-10）：归档页不是"改不得的冻结文件"，而是
+  该月数据在"当时代码"下的一个视图——代码变了（UI/评分口径），视图就该重求值。
+  每份产物头部盖一份 ``view_fingerprint()``（见该函数），``__main__`` 的
+  ``refresh_monthly_archives`` 逐份比对：指纹一致即跳过，不一致才用最新代码
+  重建（有原始快照则全量重算，只剩结论摘要则渲染结论级页面）。
 
 2026-09 第一性原理重构：页面只回答一个问题——"谁家预报最准？"。结构收敛为
   答案（Hero）→ 证据（一张服务端渲染的总榜）→ 理解（五张各司其职的图）→
@@ -23,10 +28,13 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
+import re
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
@@ -411,6 +419,61 @@ def _list_archives(root: Path) -> list[str]:
     return sorted((p.stem for p in monthly_dir.glob("*.html")), reverse=True)
 
 
+@lru_cache(maxsize=1)
+def view_fingerprint() -> str:
+    """**视图指纹**：决定报告页面样貌的那批源码的内容哈希（短十六进制串）。
+
+第一性原理（2026-10 引入）：报告页 = ``render(数据, 代码)`` 的纯函数结果。
+    数据（某自然月的评估结论）应当冻结；HTML 只是该数据在**当前代码**下的一个
+    视图（缓存）。代码一变（UI 重构、评分斜率调整……），缓存即过期，须重求值。
+    指纹把"代码版本"从抽象变成可比较的字符串：产物里盖一个，重建前比一次，
+    一致就跳过、不一致才重算——平时零成本，改代码时自动刷新历史月榜。
+
+    取源码内容哈希而非版本号/git sha：内容《改了什么》比提交时间更贴近"视图会
+    不会变"；也不依赖 git 在场。覆盖范围 = 决定视图的三类源：包内 ``*.py``、
+    模板 ``*.j2``、以及配置 ``config/stations.yaml``（含评分斜率等口径，使
+    "评分体系更新"同样触发重建）。源码不可读（打包成 wheel 等无源码场景）时
+    该文件被跳过，指纹退化为其余文件的哈希，不会抛错。
+    """
+    base = Path(__file__).resolve().parent          # .../src/weather_eval
+    files: list[tuple[str, Path]] = []
+    for p in sorted(base.rglob("*.py")) + sorted(base.rglob("*.j2")):
+        if "__pycache__" in p.parts:
+            continue
+        files.append((p.relative_to(base).as_posix(), p))
+    cfg = base.parents[1] / "config" / "stations.yaml"
+    if cfg.is_file():
+        files.append(("../../config/stations.yaml", cfg))
+    h = hashlib.sha256()
+    for name, p in files:
+        h.update(name.encode("utf-8"))
+        h.update(b"\0")
+        try:
+            h.update(p.read_bytes())
+        except OSError:
+            continue
+    return h.hexdigest()[:16]
+
+
+_FP_RE = re.compile(r'name="wx-render-fp" content="([0-9a-f]{8,64})"')
+
+
+def _embedded_fingerprint(path: Path) -> str | None:
+    """读回产物头部盖下的视图指纹（``<head>`` 的 meta，见模板头部）。
+
+    只读文件头 ~4KB——meta 紧邻 ``<title>``，远在前段；避免为几个字节把整份
+    MB 级 HTML 读进内存。无指纹（旧版产物/非本模板产物）返回 None，调用方据此
+    判为"过期"并重建。
+    """
+    try:
+        head = path.open(encoding="utf-8").read(4096)
+    except OSError:
+        return None
+    m = _FP_RE.search(head)
+    return m.group(1) if m else None
+
+
+
 def _js_json(obj) -> str:
     """序列化为紧凑 JSON 并转义 </：防止数据中的 </script> 提前闭合内联脚本。
 
@@ -592,6 +655,7 @@ def render_report_html(report_data: dict, title: str | None = None,
         archives=archives or [],
         title=title or "天气预报准确度检验报告",
         generated_at=now_beijing().strftime("%Y-%m-%d %H:%M"),
+        view_fp=view_fingerprint(),
         base=base,
     )
 
