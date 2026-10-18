@@ -176,7 +176,8 @@ from .stats import (
     weight_champion_distribution,
 )
 from .timeutil import (parse_iso, floor_to_hour, lower_split, upper_split,
-                       unfrozen_split, minute_index, clear_minute_index)
+                       unfrozen_split, minute_index, clear_minute_index,
+                       clear_axis_cache)
 from .snapshot_meta import (ISSUE_SOURCE_LABELS, SUSPECT_ISSUE_SOURCES,
                              integrity_summary, snapshot_complete)
 from .storage import load_obs, list_forecast_snapshots
@@ -353,6 +354,29 @@ def _snapshot_struct_valid(snap: dict) -> bool:
     return True
 
 
+# 预报要素的物理合理域（与 obs/base.OBS_PLAUSIBLE_RANGES 同精神，但阈值按
+# **预报**的语义取：气温用地球实测极值留足余量，降水下限为 0、上限取单小时
+# 与单日都不可能超过的量级）。落在这里而不是每个 provider 里，是因为"什么算
+# 一个值"必须是全系统一个答案——13 个 provider 各写一份必然分叉（现状就有
+# 4 套互不相同的 inf/哨兵语义）。
+_FCST_PLAUSIBLE: dict[str, tuple[float, float]] = {
+    "temperature_2m": (-90.0, 60.0),
+    "precipitation": (0.0, 2000.0),
+}
+
+
+def _plausible_fcst(v: Any, lo: float, hi: float) -> float | None:
+    """有限且落在物理合理域内才返回值；否则 None（缺测，绝不折算 0）。"""
+    if v is None or isinstance(v, bool):
+        return None
+    if not isinstance(v, (int, float)):
+        return None
+    f = float(v)
+    if not math.isfinite(f):
+        return None
+    return f if lo <= f <= hi else None
+
+
 def _sanitize_hourly_arrays(snap: dict) -> dict:
     """把逐小时数组统一规整为 有限浮点 | None（第四轮 P1-6 纵深防御）。
 
@@ -372,15 +396,21 @@ def _sanitize_hourly_arrays(snap: dict) -> dict:
             arr = series.get(key)
             if not isinstance(arr, list):
                 continue
+            lo, hi = _FCST_PLAUSIBLE[key]
             for v in arr:
                 if v is None or isinstance(v, bool):
                     continue
-                if isinstance(v, float) and math.isfinite(v):
-                    continue
-                if isinstance(v, int) and math.isfinite(v):
-                    continue
-                dirty = True
-                break
+                if not isinstance(v, (int, float)) or not math.isfinite(v):
+                    dirty = True
+                    break
+                # 有限但非物理的哨兵（999.0 °C / 9999 mm）必须同样按缺测处理：
+                # 它们能通过 isfinite，被当成**真样本**算进 RMSE/MAE——观测侧
+                # 早有 OBS_PLAUSIBLE_RANGES 拦这一类（评审记录："哨兵值曾原样
+                # 落库 58 次"），但预报侧此前只在个别 provider 内部零散拦截。
+                # 这里在统一的清洗闸门上补齐：一个 choke point，所有源同样口径。
+                if not (lo <= v <= hi):
+                    dirty = True
+                    break
             if dirty:
                 break
         if dirty:
@@ -393,9 +423,10 @@ def _sanitize_hourly_arrays(snap: dict) -> dict:
         for key in ("temperature_2m", "precipitation"):
             arr = series.get(key)
             if isinstance(arr, list):
-                series[key] = [_finite_or_none(v) for v in arr]
+                lo, hi = _FCST_PLAUSIBLE[key]
+                series[key] = [_plausible_fcst(v, lo, hi) for v in arr]
     logging.getLogger(__name__).warning(
-        "快照逐小时数组含非法值（非数值/inf/NaN），已按缺测清洗: issue=%s",
+        "快照逐小时数组含非法值（非数值/inf/NaN/非物理哨兵），已按缺测清洗: issue=%s",
         snap.get("issue_iso"))
     return out
 
@@ -486,6 +517,9 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
     # 不清空会让上一轮残留的 id() 撞上本轮复用到的地址，读到一份**已失效**的快照。
     _SNAP_SANITIZE_CACHE.clear()
     clear_minute_index()
+    # 时间轴判定缓存同理：按 id(times) 记忆，必须与本次 collect 同生命周期，
+    # 否则上一轮释放后的地址被复用，会读到一条**已失效**的"这条轴是排好序的"。
+    clear_axis_cache()
     for sid in station_ids:
         obs_map = obs_maps[sid] if obs_maps is not None and sid in obs_maps \
             else load_obs(sid)
@@ -2094,12 +2128,14 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
             "bootstrap_blocks": (n_boot_days // block_days) if n_boot_days else 0,
             "bootstrap_days": n_boot_days,
             "bootstrap_daily_rho": (round(boot_rho, 3) if boot_rho is not None else None),
-            # Holm 校正口径（审查 P1-3）：用了哪套有效检验数、k_eff 是多少。
-            # k_eff 无论采用与否都披露——"27 家其实只相当于约 1.6 家独立信源"
-            # 是读者理解这张榜的含金量时必须知道的事实。
-            # 实际进入 Holm 校正族的比较数（逐榜）；meta.holm.m 的 len(models)
-            # 只是上界，两处并排披露才能对账（第四轮 P3-b）
+            # 显著性校正口径：max-T 单步（族内极值）而不是 Holm——
+            # Holm 的阈值 α/m 在 R=500 下低于 bootstrap p 的离散下界 2/(R+1)，
+            # 于是恒不显著（见 stats._max_t_pvalues 的推导）。family_actual 仍是
+            # 实际进入校正族的比较数（逐榜），供读者对账。
+            # k_eff 继续并列披露——"27 家其实只相当于约 1.6 家独立信源"是读者
+            # 判断这张榜含金量时必须知道的事实，与用哪种校正无关。
             "holm": {**holm_disclosure,
+                     "method": "max_t",
                      "family_actual": resolution_out.get("holm_family") or {}},
             # 天桶难度的劈分设计与各桶难度值：各榜公平性的可核对凭据。
             # 三张榜各一份：总榜的列是 (天桶 × 分辨率) 的笛卡尔积，列标签形如

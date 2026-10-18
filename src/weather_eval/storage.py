@@ -50,6 +50,7 @@ from __future__ import annotations
 import fcntl
 import gzip
 import json
+import math
 import logging
 import os
 import tempfile
@@ -141,12 +142,37 @@ def _fsync_dir(d: Path) -> None:
         pass
 
 
+def _json_safe(obj: Any) -> Any:
+    """递归把非有限浮点换成 None，使 payload 严格符合 RFC 8259。
+
+    为什么必须做：`json.dump` 默认 `allow_nan=True`，会把 `float('inf')` 写成
+    裸字面量 `Infinity`——那不是合法 JSON（Python 自己的 `json.loads` 能吃，
+    其他任何语言的解析器都不能）。而预报源的 `_num_or_none` 只挡 NaN、不挡
+    inf（accuweather / msn / qweather / fuxi 都是这样），一个上游的
+    `"Temperature": {"Value": 1e999}` 或除法产物就能让**整份存档**变成别的
+    工具读不了的文件；更隐蔽的是有限哨兵（999.0 °C）能通过 `isfinite` 过滤，
+    被当成真样本算进 RMSE。
+
+    选 None 而不是抛错：非有限值在语义上就是"这个点没有值"，与本项目
+    缺测一律记 None 的口径一致；抛错会连带丢掉该快照其余所有正常点，把
+    一个点的脏数据放大成一整份存档的损失。
+    """
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(v) for v in obj]
+    return obj
 def _atomic_write_json(path: Path, obj: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(obj, f, ensure_ascii=False, indent=2)
+            # _json_safe 已把非有限值折成 None；allow_nan=False 是第二道闸：
+            # 万一将来有人绕过它写入 inf，这里会**立刻报错**而不是产出非法 JSON。
+            json.dump(_json_safe(obj), f, ensure_ascii=False, indent=2,
+                      allow_nan=False)
             f.flush()
             os.fsync(f.fileno())   # 断电/panic 后"名字对、内容全零"比半截更毒
         os.chmod(tmp, 0o644)   # mkstemp 默认 0600，恢复常规读权限（部署/他人可读）

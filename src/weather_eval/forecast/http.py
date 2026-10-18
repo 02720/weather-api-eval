@@ -36,6 +36,7 @@ import math
 import ssl
 import time
 import warnings
+from datetime import datetime, timezone
 from typing import Any, Callable
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,10 @@ DEFAULT_TIMEOUT = (10, 60)        # (connect, read) 秒
 # 直接以明确错误收尾——把"这个源这轮废了"变成一个可见的失败，而不是一个
 # 看起来正常、实际只抓了一半的慢速成功。
 TOTAL_BUDGET_SECONDS = 900
+# 单次 `Retry-After` 等待的绝对上界（秒）。服务端可以要求任意长（"明天再来"），
+# 但本模块的存在理由就是"一个慢源不许吃掉整轮作业"——**任何一次睡眠都必须被
+# 剩余预算夹住**（见 `_bounded_sleep`），这条常数只是把"单次最多等多久"也钉死。
+RETRY_AFTER_MAX_SECONDS = 300.0
 
 # TLS 降级的同源告警去重（每进程每源只打一条 WARNING，后续降级走 DEBUG）
 _TLS_FALLBACK_WARNED: set[str] = set()
@@ -145,27 +150,53 @@ def _enforce_response_limit(resp: Any, source: str) -> None:
             "（确定性失败，不重试）")
 
 
-def _retry_after_scale(resp: Any) -> float:
-    """按服务端 `Retry-After` 放大退避倍数（无该头 / 非法 → 1.0，走原退避）。
+def _retry_after_seconds(resp: Any) -> float | None:
+    """把服务端 `Retry-After` 解析为**秒**（无法识别 → None）。
 
-    429 的本质是"服务端在告诉你等多久"。旧实现只看 attempt 数，于是服务端
-    要求等 120 s 时客户端 3 s 后又撞上去——既拿不到数据，又把自己推到更长的
-    封禁里。
+    单位是秒而不是倍数：服务端说的是"请等 N 秒"，把它换算成一个无量纲倍数再
+    乘回退基数，等于让服务端声明的等待时长被本地常数二次放大——旧实现
+    `min(secs/3.0, 100.0)` 在 `Retry-After: 3000` 下给出 ×100，
+    `min(30,3·2^a)·100` = 1200 s 的单次睡眠，而整份文件的存在理由
+    `TOTAL_BUDGET_SECONDS=900` 是"一个慢源不许吃掉整轮作业"（见 TimeBudget）。
+    注释当时写的是"上限 5 分钟"，代码给的是"上限 3000 秒"——两者只活下来一个。
+
+    HTTP-date 形式（`Retry-After: Wed, 21 Oct 2026 07:28:00 GMT`）由 RFC 9110
+    定义且真实存在；旧实现 `float(str(val))` 会抛 ValueError 并**静默退回 1.0**，
+    于是服务端明确要求的等待被当成"没说"。这里用 email.utils 解析，失败才跳过。
     """
     raw = getattr(resp, "headers", None)
     if not raw:
-        return 1.0
+        return None
     val = raw.get("Retry-After")
     if val is None:
-        return 1.0
+        return None
+    text = str(val).strip()
+    if not text:
+        return None
+    # 形式一：delta-seconds
     try:
-        secs = float(str(val).strip())
-    except (TypeError, ValueError):
-        return 1.0
+        secs = float(text)
+    except ValueError:
+        secs = None
+    if secs is None:
+        # 形式二：HTTP-date
+        try:
+            from email.utils import parsedate_to_datetime
+            dt = parsedate_to_datetime(text)
+        except Exception:                        # noqa: BLE001  解析不了就当没说
+            dt = None
+        if dt is None:
+            logger.warning("Retry-After 无法识别（按未提供处理）: %r", val)
+            return None
+        if dt.tzinfo is None:
+            secs = (dt - datetime.now()).total_seconds()
+        else:
+            secs = (dt - datetime.now(timezone.utc)).total_seconds()
     if not math.isfinite(secs) or secs <= 0:
-        return 1.0
-    # 上限 5 分钟：再长就超出单轮作业能等的范围，宁可失败也不要挂住流水线
-    return max(1.0, min(secs / 3.0, 100.0))
+        return None
+    # 单次等待的绝对上界：超过这条宁可本轮失败重排，也不让流水线挂住。
+    # 5 分钟 —— 与注释长期承诺的量级一致，且远小于任何一个 knock-on 窗口。
+    return min(float(secs), RETRY_AFTER_MAX_SECONDS)
 
 
 class _DeterministicError(RuntimeError):
@@ -267,7 +298,7 @@ def request_with_retries(
             logger.warning("%s 请求失败（第%d次）: %s", source, attempt + 1, last_err)
             # 总预算耗尽：不再退避（白等只会拖垮整轮作业，而时间是所有源共享的）
             if attempt < retries and not (budget is not None and budget.expired()):
-                time.sleep(min(30, 3 * 2 ** attempt))
+                _bounded_sleep(min(30, 3 * 2 ** attempt), budget, source)
             elif budget is not None and budget.expired():
                 logger.error("%s 总时间预算耗尽（%s），放弃本轮重试",
                              source, budget.describe())
@@ -298,10 +329,43 @@ def request_with_retries(
             logger.error("%s 总时间预算耗尽（%s），放弃本轮重试", source, budget.describe())
             break
         if attempt < retries:
-            time.sleep(min(30, 3 * 2 ** attempt) * _retry_after_scale(resp))
+            # 服务端要求等多久（429）优先，否则走指数退避；两种情形都被预算夹住
+            asked = _retry_after_seconds(resp)
+            _bounded_sleep(asked if asked is not None else min(30, 3 * 2 ** attempt),
+                           budget, source)
     if on_exhausted is not None:
         raise on_exhausted(last_status, last_err) from last_err
     raise RuntimeError(f"{source} 请求最终失败: {_mask(last_err)}") from last_err
+
+
+def _bounded_sleep(seconds: float, budget: "TimeBudget | None", source: str) -> bool:
+    """睡 `seconds`，但**绝不睡过预算**；返回是否真的睡了。
+
+    为什么必须有这一个入口：预算的语义是"这一个源不许吃掉整轮作业"，而睡眠
+    是唯一一处能无声突破它的地方——`budget.expired()` 只在**睡之前**看一眼，
+    睡多久由调用方自己决定，于是 `sleep(1200)` 在 900 s 的预算里照样睡满，
+    排在后面的 12 个源一起丢掉这一轮（形态是静默的覆盖缺失，不是报错）。
+
+    把"夹到剩余预算"做成唯一入口，任何一次退避都物理上不可能超过额度：
+    剩余不足（或预算不限但秒数非正）就不睡，交给调用方收尾。
+    """
+    if seconds <= 0:
+        return False
+    if budget is not None:
+        left = budget.remaining()
+        if left is None:
+            left = seconds
+        else:
+            left = max(0.0, left)
+        if left <= 0:
+            return False
+        seconds = min(seconds, left)
+    if seconds <= 0:
+        return False
+    logger.info("%s 退避等待 %.1fs（%s）", source, seconds,
+                budget.describe() if budget is not None else "无预算")
+    time.sleep(seconds)
+    return True
 
 
 def classify_status(resp: Any) -> tuple[str, Any]:

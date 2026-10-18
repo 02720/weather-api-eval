@@ -435,15 +435,29 @@ def view_fingerprint() -> str:
     "评分体系更新"同样触发重建）。源码不可读（打包成 wheel 等无源码场景）时
     该文件被跳过，指纹退化为其余文件的哈希，不会抛错。
     """
-    base = Path(__file__).resolve().parent          # .../src/weather_eval
+    # 本文件在 .../src/weather_eval/report/render.py。
+    #   pkg_root = .../src/weather_eval   （包内所有 *.py 与模板）
+    #   project  = .../                   （仓库根，config/ 在这里）
+    # 旧实现把 `base` 取成了 `report/`（本文件的 parent），于是只哈希到 3 个
+    # 报告模块 + 1 个模板，`diagnostics.py` 之外的评分代码全在指纹之外；而配置
+    # 用 `base.parents[1]` 算成 `src/config/stations.yaml`——那个路径**不存在**，
+    # `is_file()` 静默为假，配置从未被纳入指纹。两头都错，且都不报错：指纹依然
+    # 稳定地算出一个值，只是它不代表"决定这张视图的那批源"，历史月榜在评分口径
+    # 变更后不会失效。逐个显式判定，取不到再退到上一级，绝不静默跳过配置。
+    pkg_root = Path(__file__).resolve().parent.parent        # .../src/weather_eval
+    project_root = pkg_root.parent.parent                    # 仓库根
     files: list[tuple[str, Path]] = []
-    for p in sorted(base.rglob("*.py")) + sorted(base.rglob("*.j2")):
+    for p in sorted(pkg_root.rglob("*.py")) + sorted(pkg_root.rglob("*.j2")):
         if "__pycache__" in p.parts:
             continue
-        files.append((p.relative_to(base).as_posix(), p))
-    cfg = base.parents[1] / "config" / "stations.yaml"
+        files.append((p.relative_to(pkg_root).as_posix(), p))
+    cfg = project_root / "config" / "stations.yaml"
     if cfg.is_file():
-        files.append(("../../config/stations.yaml", cfg))
+        files.append(("config/stations.yaml", cfg))
+    else:
+        # 源码树里的 config 缺失（打包安装等）→ 明确说出来，不要静默少哈希一项
+        logging.getLogger(__name__).debug(
+            "视图指纹未纳入配置（%s 不存在）", cfg)
     h = hashlib.sha256()
     for name, p in files:
         h.update(name.encode("utf-8"))

@@ -9,9 +9,12 @@ import pytest
 
 from weather_eval import stats
 from weather_eval.config import DEFAULT_EVAL, Config
-from weather_eval.forecast.resample import floor_hour, hourly_axis, interpolate_hourly
 from weather_eval.forecast.http import (_DeterministicError, MAX_RESPONSE_BYTES,
-                                        _enforce_response_limit, _retry_after_scale)
+                                        RETRY_AFTER_MAX_SECONDS, _bounded_sleep,
+                                        _enforce_response_limit,
+                                        _retry_after_seconds)
+from weather_eval.forecast.resample import (floor_hour, hourly_axis,
+                                            interpolate_hourly)
 from weather_eval.storage import shift_month
 from weather_eval.timeutil import (axis_is_pruned_safe, lower_split, parse_iso,
                                    unfrozen_split, upper_split)
@@ -145,13 +148,32 @@ class _H:
     def __init__(self, headers):
         self.headers = headers
 
-
 def test_retry_after_is_not_discarded():
     """服务端说等 120s 时，旧实现 3s 后又撞上去（Retry-After 被忽略）。"""
-    assert _retry_after_scale(_H({})) == 1.0
-    assert _retry_after_scale(_H({"Retry-After": "120"})) > 1.0
-    # 非法/HTTP-date 形态按"无从解析"处理，退回原退避
-    assert _retry_after_scale(_H({"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"})) == 1.0
+    assert _retry_after_seconds(_H({})) is None
+    assert 119.0 <= _retry_after_seconds(_H({"Retry-After": "120"})) <= 120.0
+    # HTTP-date 形态现在**能**解析（旧实现静默退回"没说"），过去的时间即已过期
+    assert _retry_after_seconds(_H({"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"})) is None
+
+
+def test_retry_after_can_not_blow_the_time_budget():
+    """`Retry-After` 是服务端可控值：它不许把一次睡眠推过整轮预算。
+
+    旧实现把它当**倍数**（×100）乘在退避基数上：`Retry-After: 3000` → 1200 s
+    单次睡眠，而 `TOTAL_BUDGET_SECONDS` 只有 900 s——一个响应头就能让排在其后
+    的 12 个源丢掉这一轮。现在解析成秒，且被预算夹住。
+    """
+    # 绝对值上界：再长也不睡过 RETRY_AFTER_MAX_SECONDS
+    assert _retry_after_seconds(_H({"Retry-After": "3000"})) == RETRY_AFTER_MAX_SECONDS
+    assert _retry_after_seconds(_H({"Retry-After": "86400"})) == RETRY_AFTER_MAX_SECONDS
+    # 剩余预算不足时：物理上不可能睡过量
+    from weather_eval.forecast.http import TimeBudget
+    import time as _time
+    b = TimeBudget(900)
+    b._t0 = _time.monotonic() - 895      # 只剩 5 s
+    t0 = _time.monotonic()
+    _bounded_sleep(1200.0, b, "unit")
+    assert _time.monotonic() - t0 <= 5.9
 
 
 def test_oversized_response_is_fatal_not_retried():

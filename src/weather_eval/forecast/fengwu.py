@@ -159,7 +159,17 @@ class FengWuProvider(ForecastProvider):
         self.retries = retries
         self.session = session or requests.Session()
         self._budget = TimeBudget()  # 单源单轮总预算（第四轮 P1-7）
-        self._issue_cache: datetime | None = None  # 最新可查起报（产品级，跨站点复用）
+        # 两个**不同层级**的事实，必须分开存：
+        #   * `_avail_issue` = 产品级可用起报（来自 availability 接口，与站点无关，
+        #     跨站复用是对的）；
+        #   * `_issue_cache[station]` = 该站实际查询成功的轮次。**站点级**事实：
+        #     某站探测到偏旧轮次后回退成功，这个结论不能被其余站点继承。
+        # 旧实现只有一个 `_issue_cache`，`_query` 回退成功后把它改写成站点级结论，
+        # 而 provider 实例在 CLI 里跨站点复用（`prov` 只构造一次）——第 1 站的
+        # 回退轮次于是变成其余各站的起报，全线 lead/天桶错位，且不报错不告警。
+        # EW4ALL 踩过同一个坑并按 (模型, 站点) 建键修掉了；这里对齐同样的纪律。
+        self._avail_issue: datetime | None = None      # 产品级：可安全跨站复用
+        self._issue_cache: dict[str, datetime] = {}    # 站点 id → 该站可用起报
 
     def fetch_snapshot(self, station: Any, models: list[str] | None = None) -> dict:
         # 预算是**每站各自**的额度：本实例被 CLI 在所有站点间复用，
@@ -169,30 +179,45 @@ class FengWuProvider(ForecastProvider):
         payload = self._query(station, issue_utc)
         return self._build_snapshot(station, payload)
 
-    # ------------------------------------------------------------------ 内部
     def _resolve_issue(self) -> datetime:
-        """最新可查起报：availability.api_end_time 优先，查询 400 时逐轮回退。"""
-        if self._issue_cache is not None:
-            return self._issue_cache
+        """**产品级**可用起报：availability.api_end_time 优先，取不到就按整 6h 猜。
+
+        这里只回答"产品现在能查到哪一轮"——与站点无关，故跨站复用是安全的。
+        某站点因为自己的数据尚未出齐而回退到的更早轮次**不属于**这个函数，
+        见 `_query` 里的站点级缓存。
+        """
+        if self._avail_issue is not None:
+            return self._avail_issue
         payload = self._request(
             AVAIL_URL, params={"model_type": MODEL_TYPE, "region": REGION})
         end = (payload or {}).get("api_end_time") if isinstance(payload, dict) else None
         if isinstance(end, str) and end:
             try:
-                self._issue_cache = parse_iso_z(end)
-                return self._issue_cache
+                self._avail_issue = parse_iso_z(end)
+                return self._avail_issue
             except ValueError:
                 logger.warning("风乌 availability.api_end_time 无法解析: %r", end)
         # availability 不可用 → 从最近的整 6h 轮次直接猜
         now_utc = datetime.now(timezone.utc).replace(tzinfo=None, minute=0,
                                                      second=0, microsecond=0)
-        self._issue_cache = now_utc - timedelta(hours=now_utc.hour % 6)
-        return self._issue_cache
+        self._avail_issue = now_utc - timedelta(hours=now_utc.hour % 6)
+        return self._avail_issue
 
+    # ------------------------------------------------------------------ 内部
     def _query(self, station: Any, issue_utc: datetime) -> dict:
-        """查询点位序列；该起报 400（尚未可查）时向过去回退最多 MAX_ISSUE_FALLBACK 轮。"""
+        """查询点位序列；该起报 400（尚未可查）时向过去回退最多 MAX_ISSUE_FALLBACK 轮。
+
+        站点级缓存：本站在本次起报下回退到哪一轮，**只对本站有效**。
+        各站的数据出齐进度并不保证同步，把探测站的结论提升为产品级事实会让
+        其余站点打上错位的 issue_iso（lead 与天桶全线偏移，且不报错不告警）。
+        """
         last_err: Exception | None = None
-        issue = issue_utc
+        sid = str(getattr(station, "id", "") or getattr(station, "cma_id", "") or "?")
+        cached = self._issue_cache.get(sid)
+        if cached is not None:
+            issue = cached
+        else:
+            issue = issue_utc
         for attempt in range(MAX_ISSUE_FALLBACK):
             try:
                 payload = self._request(
@@ -209,7 +234,8 @@ class FengWuProvider(ForecastProvider):
                         logger.info("风乌起报 %s 不可查，回退使用 %s",
                                     issue_utc.strftime("%Y-%m-%dT%H:%MZ"),
                                     issue.strftime("%Y-%m-%dT%H:%MZ"))
-                    self._issue_cache = issue
+                    # 站点级：只记住"本站"实际可查的轮次
+                    self._issue_cache[sid] = issue
                     return payload
                 raise _Empty("响应 data 为空")
             except (_Rejected, _Empty) as e:

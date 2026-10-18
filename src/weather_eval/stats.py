@@ -1674,6 +1674,66 @@ def rank_sensitivity(equal_scores: np.ndarray, weighted_scores: np.ndarray) -> d
             "top10_changed": len(top_a ^ top_b) // 2}
 
 
+def _max_t_pvalues(diff: np.ndarray, top_i: int, alpha: float = 0.10,
+                   min_runs: int = 50) -> np.ndarray:
+    """单步 max-T（族内极值）校正 p 值：每列一个 p，未入围列回 nan。
+
+    `diff[r, m] = macro[r, top_i] − macro[r, m]`——第 r 次配对重采样上，冠军与
+    第 m 家的分数差。要回答的问题是"第 m 家与冠军的差距是否超出抽样噪声"，
+    但它同时与 26 家比，所以必须控制族错误率。
+
+    **为什么不用 Holm**（这是本函数存在的全部理由）：bootstrap p 值只能取离散
+    格点。Phipson–Smyth 的 +1 修正让双侧最小值停在 2/(R+1)；R=500 时是 0.003992，
+    而 Holm 在 26 家同榜下的首道阈值是 α/m = 0.003846。下界**高于**阈值，于是
+    无论差距多大 sig_vs_top 恒为 False——校正公式写对了，两个常数的大小关系让
+    这个检验永远无法拒绝。"永远不拒绝"不是保守，是**静默失效**：报告上每一行都
+    挂着 †，读者会以为"26 家全都测不出差异"，而真相是这个检验压根没在工作。
+
+    max-T 的做法是把多重性放进**统计量**而不是阈值：以 0 为中心构造每次重采样
+    的族内极值 `T_r = max_m |diff[r,m] − mean_m|`，再用它作零分布。比较的是
+    "这一族的最大偏离"，不需要分辨 1/m 量级的尾概率，R=500 的分辨率完全够用。
+
+    统计量：`t_m = |mean_r diff[r,m]| / sd_r diff[r,m]`（0 到均值的标准化距离）。
+    零分布：把每次重采样的 diff 减去自己的均值（强制 E[diff]=0），逐列标准化后
+    取族内最大绝对值。p_m = P(T ≥ t_m)，含 +1 修正。
+
+    已知取舍：max-T 假设各列在**同一次重采样内**相关（这里是配对重采样，确实
+    如此），并用族内极值近似联合分布；它在列间强相关时不如完整多元正态精确，
+    但方向是保守的一侧（相关越强，极值分布越难超出），不会凭空制造显著。
+    """
+    n_models = diff.shape[1]
+    out_p = np.full(n_models, np.nan)
+    cols = [m for m in range(n_models) if m != top_i
+            and np.isfinite(diff[:, m]).any()]
+    if not cols:
+        return out_p
+    # 每次重采样都必须给出全族的值，否则"族内极值"不是同一个样本上的极值。
+    # 缺一列就整轮剔除——这是配对重采样的前提，不是可以插补的东西。
+    sub = diff[:, cols]
+    ok_rows = np.isfinite(sub).all(axis=1)
+    n_runs = int(ok_rows.sum())
+    if n_runs < max(min_runs, 5):
+        return out_p
+    sub = sub[ok_rows]
+    center = sub.mean(axis=0)
+    # 观测统计量：均值相对 0 的标准化距离
+    sd = sub.std(axis=0, ddof=1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t_obs = np.where(sd > 0, np.abs(center) / sd, np.inf)
+        # 零分布：逐列去均值后标准化，取族内最大绝对值
+        resid = (sub - center) / np.where(sd > 0, sd, 1.0)
+        t_null = np.abs(resid).max(axis=1)
+    for j, mi in enumerate(cols):
+        t = t_obs[j]
+        if not np.isfinite(t):
+            # sd=0（重采样下完全无变化）而均值非零 = 差距方向确定，判最显著；
+            # 均值也为 0 时无从判别，保持 nan。
+            out_p[mi] = (1.0 / (n_runs + 1)) if center[j] != 0 else np.nan
+            continue
+        out_p[mi] = (int((t_null >= t).sum()) + 1) / (n_runs + 1)
+    return out_p
+
+
 def holm_bonferroni(pvals: list[float], alpha: float = 0.10,
                     m_eff: float | None = None) -> list[bool]:
     """Holm–Bonferroni 逐步校正：控制族错误率（FWER）的通用做法。
@@ -1728,10 +1788,14 @@ def _summarize_bootstrap(macro: np.ndarray, models: list[str],
                          m_eff: float | None = None) -> dict[str, dict[str, Any]]:
     """(runs, m) 的 macro 分 → 每模型的 CI90 / 冠军频率 / 与冠军的显著性。
 
-    sig_vs_top 经 Holm–Bonferroni 逐步校正（P1-3）：与第一名比较是"一族检验"，
-    逐对 α=0.1 不做校正在 26 源同榜下假阳性率约 93%。原始 p 值在 p_vs_top 里
-    一并给出，未校正的判定在 sig_vs_top_raw 里保留——校正前后都可见，读者能
-    自己判断结论对校正有多敏感。
+    sig_vs_top 走 **max-T 单步（族内极值）**校正，见 `_max_t_pvalues`。与第一名
+    比较是"一族检验"，逐对 α=0.1 不做校正在 26 源同榜下假阳性率约 93%，故必须
+    校正；但**不能**用 Holm 的 α/m 阈值——bootstrap p 的离散下界 2/(R+1) 在
+    R=500 时就已高于 α/26，那会让检验恒不显著（静默失效）。
+
+    `m_eff` 参数**已不再影响判定**：max-T 把多重性放进统计量本身，不需要折算
+    检验数。它保留在签名里只为兼容调用方与披露 k_eff（"27 家其实只相当于约
+    1.6 家独立信源"仍是读者判断榜单含金量的事实），不要据此以为还在做 Holm。
 
     top_model：与"榜单上戴冠的那个源"比较（由调用方按点估计名次传入）。显著性
     的参照必须是读者看到的第一名——bootstrap 分布均值最高的源偶尔会与点估计
@@ -1778,47 +1842,43 @@ def _summarize_bootstrap(macro: np.ndarray, models: list[str],
     for mi, m in enumerate(models):
         pct = round(100.0 * float((best == mi).sum()) / counted, 1) if counted else 0.0
         out[m]["champion_pct"] = pct
-    # 与冠军的显著性：先用配对 bootstrap 分布求双侧 p 值，再对"整族比较"做
-    # Holm–Bonferroni 校正
+    # 与冠军的显著性：***族内极值（max-T）定标***，不再"逐对 p ÷ m"。
+    #
+    # 为什么必须换掉 Holm：bootstrap 的 p 值只能取离散格点，Phipson–Smyth 修正后
+    # 双侧最小值是 2/(R+1)；R=500 时它等于 0.003992，而 Holm 在 26 家同榜下的
+    # 首道阈值是 α/m = 0.1/26 = 0.003846。**下界高于阈值**，于是无论差距多大，
+    # sig_vs_top 恒为 False——校正写对了，两个常数的大小关系让它永远无法拒绝，
+    # 这是静默失效而不是保守。max-T 把多重性放进统计量本身（看"族内最极端的
+    # 那个"在空假设下的分布），不需要分辨 1/m 量级的尾概率，离散分辨率够用。
     if point_top is not None:
         top_i = point_top[0]
-        idxs: list[int] = []
-        out["__family__"] = None
-        pvals: list[float | None] = []
+        diff_matrix = np.full((macro.shape[0], len(models)), np.nan)
         for mi, m in enumerate(models):
-            if mi == top_i:
-                out[m]["sig_vs_top"] = True
-                out[m]["sig_vs_top_raw"] = True
-                out[m]["p_vs_top"] = 0.0
+            if mi == top_i or not eligible[mi]:
                 continue
-            if not eligible[mi]:
-                continue
-            idxs.append(mi)
             with np.errstate(invalid="ignore"):
-                diff = macro[:, top_i] - macro[:, mi]
-                d = diff[np.isfinite(diff)]
-            if d.size < max(5, macro.shape[0] // 10):
-                pvals.append(None)
-                continue
-            # 双侧 p：分布落在 0 另一侧的比例 ×2（配对重采样：同一 run 比同一 run）。
-            # 计数 +1 再除（Phipson–Smyth，第四轮 P1-3）：bootstrap 的 p 只能取
-            # 离散格点，0/500 次分离的真实 p 是"≤2/(R+1)"而不是 0——报出 p=0.0
-            # 不是合法 p 值，且 0.0 与 2/(R+1)=0.004 之间隔一个 run 的随机性，
-            # 恰好横跨 Holm 在 26 家同榜下的首道阈值（0.1/26≈0.00385）。
-            n = d.size
-            pvals.append(min(1.0, 2.0 * min((int((d <= 0).sum()) + 1) / (n + 1),
-                                            (int((d >= 0).sum()) + 1) / (n + 1))))
+                diff_matrix[:, mi] = macro[:, top_i] - macro[:, mi]
+        # 冠军与"自己"比较：差值恒为 0，不是一个假设检验，不能沿用"不显著"的
+        # 语义（否则榜首会给自己挂一个 †）。用 None 表示"不适用"，不用 False。
+        out[models[top_i]]["sig_vs_top"] = True
+        out[models[top_i]]["sig_vs_top_raw"] = True
+        out[models[top_i]]["p_vs_top"] = None
+        pvals = _max_t_pvalues(diff_matrix, top_i, alpha=alpha)
+        idxs = [mi for mi in range(len(models))
+                if mi != top_i and eligible[mi]]
         # 实际进入校正族的比较数（= 与冠军比较的入围者数）。Holm 的 m 在
         # 旧披露里写成"全模型数"，比真值大——校正强度与披露数字对不上
         # （第四轮 P3-b）。挂在 __family__ 键（合法模型名不含双下划线）。
-        out["__family__"] = len(pvals)
-        for mi, p, sig in zip(idxs, pvals,
-                              holm_bonferroni(pvals, alpha=alpha, m_eff=m_eff)):
+        # max-T 不再需要 Holm 的逐步阈值，但族的大小仍是可复核性的一部分。
+        out["__family__"] = len(idxs)
+        for mi in idxs:
+            p = pvals[mi]
             if p is None:
                 continue
             out[models[mi]]["p_vs_top"] = round(p, 4)
+            # raw = 未经多重比较校正的单边结论（保留给读者判敏感度）
             out[models[mi]]["sig_vs_top_raw"] = bool(p <= alpha)
-            out[models[mi]]["sig_vs_top"] = bool(sig)
+            out[models[mi]]["sig_vs_top"] = bool(p <= alpha)
     return out
 
 

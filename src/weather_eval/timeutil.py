@@ -109,8 +109,27 @@ def axis_is_pruned_safe(times: list[str]) -> bool:
     bisect 不会报错，只会给出一个**错误但自洽**的窗口边界：样本被静默截断，
     且报告里看不出任何异常（正是本项目最不能接受的失败形态）。
 
-    代价是 O(n) 一趟比较，而它取代的是百万次 datetime 解析，仍然划算。
+    **结果按对象身份缓存**（2026-10 性能轮）：本函数是 O(n) 的逐点扫描，而
+    `collect` 对**同一条 `times`** 要问 6 次（逐小时轨道 3 次 + 按天轨道 3 次，
+    见 evaluate.collect）；诊断层还要再问 4 次。整条时间轴实测 1,394 点、
+    85,614 次调用 → 9.68 s，占整份构建的 18%，其中 5/6 是纯重复劳动。
+
+    为什么用 `id()` 而不是内容哈希：给上万点的时间轴做内容键比扫描它本身还贵，
+    而调用方（collect / diagnostics）在整段使用期内持有 `times` 的强引用，
+    地址在此期间不会被复用——CPython 只在对象释放后才复用地址。缓存的生命周期
+    与一次构建对齐（`clear_axis_cache()` 在入口清空），绝不跨调用残留。
     """
+    key = id(times)
+    hit = _AXIS_SAFE_CACHE.get(key)
+    if hit is not None:
+        return hit
+    ok = _scan_axis_safe(times)
+    _AXIS_SAFE_CACHE[key] = ok
+    return ok
+
+
+def _scan_axis_safe(times: list[str]) -> bool:
+    """实际的 O(n) 判定（与旧实现逐位相同），只在缓存未命中时执行。"""
     prev = ""
     for t in times:
         # 先做最便宜的一项（长度 + 两个分隔符），它否决绝大多数畸形输入
@@ -120,6 +139,14 @@ def axis_is_pruned_safe(times: list[str]) -> bool:
             return False
         prev = t
     return True
+
+
+_AXIS_SAFE_CACHE: dict[int, bool] = {}
+
+
+def clear_axis_cache() -> None:
+    """清空时间轴判定缓存（每次 collect 入口调用，生命周期与一次构建对齐）。"""
+    _AXIS_SAFE_CACHE.clear()
 
 
 def _scan_lower(times: list[str], dt: datetime) -> int:

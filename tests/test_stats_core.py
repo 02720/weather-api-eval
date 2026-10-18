@@ -152,7 +152,10 @@ def test_bootstrap_fallback_reference_is_highest_mean():
     out = stats._summarize_bootstrap(macro, ["worst", "best", "mid", "low"],
                                      [True] * 4, top_model=None)
     assert out["best"]["champion_pct"] == 100.0
-    assert out["best"]["p_vs_top"] == 0.0          # best 自己是参照系
+    # 冠军与"自己"比较不是一个假设检验：p 用 None（不适用），不是 0.0。
+    # 0.0 会被下游当成"p 值极小"，而它其实是"这一格没有可比的对象"。
+    assert out["best"]["p_vs_top"] is None
+    assert out["best"]["sig_vs_top"] is True        # 榜首不给自己挂 †
     assert out["worst"]["p_vs_top"] is not None    # 其余家都与他比较
 
 

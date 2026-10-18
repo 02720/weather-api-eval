@@ -30,7 +30,13 @@ dev = [
 analysis = ["duckdb>=1.1,<2"]
 
 [project.scripts]
-weather-eval = "weather_eval.cli:main"
+# 入口必须指向**真正存在**的那个 main。此前写的是 `weather_eval.cli:main`，而
+# `src/weather_eval/cli.py` 从未存在过——`pip install -e .` 会成功装出一个
+# `weather-eval` 命令，一运行就 ModuleNotFoundError。装包成功而命令必挂是最坏
+# 的一类坏：CI 里不报错（没人去执行它），只在有人真要用时才炸。
+# CLI 的全部实现本来就在 `__main__.py`（`python -m weather_eval` 走的也是它），
+# 这里直接复用，不为转发单独造一个空模块。
+weather-eval = "weather_eval.__main__:main"
 
 [build-system]
 requires = ["setuptools>=68"]

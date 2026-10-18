@@ -340,14 +340,18 @@ def test_collect_daily_track_respects_seal_gate(tmp_path, monkeypatch):
 
     issue = datetime(2026, 8, 1, 0, 0)
     # 起报次日的 24 个小时：00~03 时（4 个小时）是"实况之后才抓回来"的，
-    # 故意给 99°C——若按天轨道不看封存门槛，日最高就会被 99 抬走；
+    # 故意给 55°C——若按天轨道不看封存门槛，日最高就会被 55 抬走。
+    # 注：这里**不能**用 99°C。评估层现在把超出物理合理域的值按缺测清洗
+    # （_FCST_PLAUSIBLE，与观测侧 OBS_PLAUSIBLE_RANGES 同精神），99°C 会被
+    # 折成 None，标记值就失效了。55°C 在域内、且远高于其余 20~24°C，
+    # 足以判别"漏进聚合"与"被门槛挡住"。
     # 其余 20 小时已封存，恰好够 daily_min_hours 的覆盖门槛
     times, temps = [], []
     fetched = datetime(2026, 8, 2, 4, 0)
     for i in range(24):
         vt = issue + timedelta(days=1, hours=i)
         times.append(vt.strftime("%Y-%m-%dT%H:%M"))
-        temps.append(99.0 if vt < fetched else 20.0 + (i % 5))
+        temps.append(55.0 if vt < fetched else 20.0 + (i % 5))
     snap = {
         "issue_iso": "2026-08-01T00:00",
         "station_id": "s1", "source": "src", "models": ["m"],
@@ -368,14 +372,14 @@ def test_collect_daily_track_respects_seal_gate(tmp_path, monkeypatch):
     assert day_rows, "次日应仍有一条按天样本（20 小时已封存，覆盖达标）"
     r = day_rows[0]
     assert r["temp_max_fcst"] is not None and r["temp_max_fcst"] < 30, (
-        "未封存小时的 99°C 折进了日最高——按天轨道没有受封存门槛约束")
+        "未封存小时的 55°C 折进了日最高——按天轨道没有受封存门槛约束")
     assert stats.get("n_daily_unfrozen_hours", 0) == 4
 
-    # 对照：require_frozen=False（口径对照模式）下，99°C 按旧口径留在聚合里
+    # 对照：require_frozen=False（口径对照模式）下，55°C 按旧口径留在聚合里
     _h2, daily_loose = collect(["s1"], ["m"], start, end, 1, 16,
                                obs_maps={"s1": obs}, require_frozen=False)
     loose = [x for x in daily_loose if x["valid_day"] == "2026-08-02"][0]
-    assert loose["temp_max_fcst"] == 99.0
+    assert loose["temp_max_fcst"] == 55.0
 
 
 def test_collect_keeps_snapshots_without_fetched_at(tmp_path, monkeypatch):

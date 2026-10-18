@@ -1717,6 +1717,47 @@ def test_degenerate_bootstrap_reproduces_point_estimate(tmp_path, monkeypatch):
         assert board[m]["n_eff_rain"] is not None
 
 
+def test_significance_test_can_actually_reject():
+    """显著性检验必须**有可能判显著**——旧实现在数学上恒为 False。
+
+    旧实现：配对 bootstrap 双侧 p 的离散下界是 2/(R+1)（Phipson–Smyth 的 +1
+    修正），R=500 时 = 0.003992；而 Holm 在 26 家同榜下的首道阈值是
+    α/m = 0.1/26 = 0.003846。**下界高于阈值** ⇒ 任何非冠军都永远判不显著，
+    报告上每一行都挂着 †（"与第一名无显著差异"）。那不是保守，是静默失效：
+    读者看到的是"26 家全都测不出差别"这个假事实。
+
+    这条测试从两个方向钉住修复：
+      1. 差距极大时必须能判显著（否则标记永远不出现）；
+      2. 无真实差距时不许假阳性（否则标记变成噪声）。
+    """
+    import numpy as np
+
+    from weather_eval.stats import _max_t_pvalues
+    rng = np.random.default_rng(11)
+    runs, n_models = 500, 8
+
+    # (1) 冠军遥遥领先：每一家都必须被判显著
+    macro = 50.0 + rng.normal(0, 0.5, size=(runs, n_models))
+    for m in range(1, n_models):
+        macro[:, m] -= 10.0 * m
+    diff = np.full((runs, n_models), np.nan)
+    for m in range(1, n_models):
+        diff[:, m] = macro[:, 0] - macro[:, m]
+    p = _max_t_pvalues(diff, 0)
+    assert all(np.isfinite(p[m]) and p[m] <= 0.10 for m in range(1, n_models)), \
+        f"差距 10 分以上仍判不显著，检验依然失效: {p}"
+
+    # (2) 零假设：所有模型同分布，FWER 必须受控（不许集体假阳性）
+    base = rng.normal(0, 2.0, size=(runs, 1))
+    macro = 50.0 + base + rng.normal(0, 1.0, size=(runs, n_models))
+    diff = np.full((runs, n_models), np.nan)
+    for m in range(1, n_models):
+        diff[:, m] = macro[:, 0] - macro[:, m]
+    p = _max_t_pvalues(diff, 0)
+    n_sig = sum(1 for m in range(1, n_models)
+                if np.isfinite(p[m]) and p[m] <= 0.10)
+    assert n_sig == 0, f"零假设下出现 {n_sig} 个假阳性（FWER 失控）"
+
 def test_holm_bonferroni_step_down():
     """P1-3：Holm–Bonferroni 逐步校正（一旦不显著，此后全部不显著）。"""
     from weather_eval.stats import holm_bonferroni
