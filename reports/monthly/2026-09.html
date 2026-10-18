@@ -11,7 +11,7 @@
 <!-- 视图指纹：本页由「代码的哪个版本」渲染。数据冻结、视图随代码重建——
      月榜据此自判是否过期（见 render.view_fingerprint / __main__.refresh_monthly_archives）。
      本行属于产物契约，勿删。 -->
-<meta name="wx-render-fp" content="0a9761e0fb02f087">
+<meta name="wx-render-fp" content="092ae728868afdc8">
 <!-- ECharts 使用仓库内本地副本（避免 CDN 不可达）。加载失败时图表区会显示
      兜底提示，服务端渲染的榜单与结论不受影响。 -->
 <script src="../vendor/echarts.min.js"></script>
@@ -358,8 +358,10 @@
     .wrap { padding:8px 14px 40px; }
     .card { padding:20px 15px; margin:14px 0; }
     .card > h2 { font-size:19px; }
-    .card .desc { font-size:13px; }
-    .hint { font-size:12px; }
+    /* 手机上一屏只装得下十几行——说明文字收紧行高、降半档字号，
+       让"答案"（下面的榜单）尽早出现在首屏，而信息一个不删。 */
+    .card .desc { font-size:12.5px; line-height:1.6; }
+    .hint { font-size:12px; line-height:1.6; }
     .hero-inner { padding:34px 15px 46px; }
     .hero h1 { font-size:28px; letter-spacing:1px; }
     .hero .lede { font-size:14px; margin-bottom:20px; }
@@ -392,42 +394,78 @@
     .lb-table { display:block; min-width:0; font-size:13.5px; }
     .lb-table thead { display:none; }
     .lb-table tbody { display:block; }
-    .lb-table tr { display:block; border:1px solid var(--line); border-radius:12px;
-                   background:#fff; padding:12px 14px; margin:0 0 10px; }
-    .lb-table tr.is-top { border-color:var(--gold-line); }
+    /* 卡片 = flex 换行容器：首行放「名次徽章 + 源名」，第二行是整行的主分，
+       其余指标按两列 chips 折行。用 flex 而非 inline-block 的关键原因是：
+       flex 容器不把元素之间的换行缩进当成一个空白文本节点——两列宽度因此能用
+       column-gap 精确切分，不会因为 HTML 缩进把第二列挤到下一行（inline-block
+       方案里，50% 宽 + 行内空白必然溢出换行）。 */
+    .lb-table tr { display:flex; flex-wrap:wrap; align-items:center;
+                   column-gap:10px; row-gap:3px;
+                   border:1px solid var(--line); border-radius:12px;
+                   background:#fff; padding:13px 14px; margin:0 0 10px; }
+    /* 榜首：鎏金描边 + 左侧金条——扫一眼就能找到"第一名"那张卡 */
+    .lb-table tr.is-top { border-color:var(--gold-line);
+                          box-shadow:inset 3px 0 0 var(--gold); }
     .lb-table td { display:inline; border:0; padding:0; min-width:0; white-space:normal;
                    text-align:left; }
     /* 桌面端的单元格底色（白底粘性列、行悬浮）在卡片里全都要让位给卡片本身 */
     .lb-table tbody tr td, .lb-table tbody tr:hover td, .lb-table tr.is-top td,
     .lb-table tr.is-top:hover td, .lb-table tr.is-weak:hover td { background:transparent; }
-    .lb-table .c-rk { display:inline-block; min-width:20px; margin-right:4px;
-                      color:var(--muted); }
-    .lb-table .c-name { position:static; border:0; padding:0; min-width:0; }
-    .lb-table .c-name b { font-size:15px; }
+    /* 名次 = 徽章（榜首那枚鎏金），源名占满首行剩余宽度 */
+    .lb-table .c-rk { flex:0 0 auto; display:inline-flex; align-items:center;
+                      justify-content:center; min-width:24px; height:24px;
+                      border-radius:7px; background:var(--blue-soft); color:#3b5170;
+                      font-weight:800; font-size:12.5px; }
+    .lb-table tr.is-top .c-rk { background:var(--gold); color:#fff; }
+    .lb-table .c-name { flex:1 1 auto; position:static; border:0; padding:0; min-width:0; }
+    .lb-table .c-name b { font-size:15.5px; }
     .lb-table .c-name .mid { display:none; }   /* 原始模型 id 留给宽屏 */
-    .lb-table .c-score { display:block; margin:10px 0 7px; }
-    .lb-table .c-score .cell { gap:10px; }
-    .lb-table .c-score .thermo { min-width:0; }
-    .lb-table .c-score .score-num { font-size:21px; min-width:54px;
+    .lb-table .c-score { display:block; margin:8px 0 7px; }
+    /* 主分 = 卡片里唯一的大字：30px 黑体 + 一条随分伸缩的得分条，纵排。
+       宽屏把它当普通一列；手机上它必须一眼压住其余指标，否则 12 个同款小 chip
+       会把"第一名多少分"这个页面唯一的答案淹没。 */
+    .lb-table .c-score .cell { flex-direction:column; align-items:stretch; gap:5px; }
+    .lb-table .c-score .cell .score-num { order:1; }
+    .lb-table .c-score .cell .thermo { order:2; min-width:0; flex:none; }
+    .lb-table .c-score .score-num { font-size:30px; font-weight:900; color:var(--ink);
+                                    min-width:0; line-height:1.15; text-align:left;
                                     font-variant-numeric:tabular-nums; }
     .lb-table .c-spark { display:none; }       /* 走势留给 §02 的衰减曲线 */
-    /* 其余指标折成一行小字，标签由 data-label 提供（服务端与前端生成的行共用）。
-       inline-block + nowrap 让「标签 数值」成为一个整体换行单元——
-       否则行尾会在「晴雨TS」与它后面的 0.33 之间断开，读起来像是漏了一项。 */
-    .lb-table td[data-label] { display:inline-block; white-space:nowrap;
-                               margin-right:12px; font-size:12.5px; color:var(--slate); }
+    /* 其余指标折成小字 chips，标签由 data-label 提供（服务端与前端生成的行共用）。
+       每个 chip 恰好占半行宽（flex-basis 50% − 半个 column-gap），两列对齐成
+       一张两列表格——读者可以顺着某一列纵向下扫数值，而旧版自由折行让每行
+       都错位、只能逐个 chip 读。nowrap 保证「标签 数值」是一个整体换行单元，
+       不会在标签与数值之间断开。 */
+    .lb-table td[data-label] { flex:0 0 calc(50% - 5px); white-space:nowrap;
+                               font-size:12.5px; color:var(--slate); }
     .lb-table td[data-label]::before { content:attr(data-label) " "; color:var(--muted); }
-    /* 总综合分 = 卡片里的主分：标签在上、条与数字在下行（其余指标与子项分折成
-       ::before 小字 chips）。此规则特异性高于上面的通用 chips 规则，故 c-score
-       格保持块级排布。.score-bar 在窄屏恒隐藏（得分条是宽屏的横向对比工具，
-       卡片里 281px 宽放三条 96px 的条只剩噪声）——由上方全局规则兜住。 */
-    .lb-table td.c-score[data-label] { display:block; margin:10px 0 7px; }
+    /* 主分块 = 整行的一块：标签（td::before，小字退灰）→ 大数字 + 得分条。
+       三处主分同构——概览的综合分、温度页签的温度分、降水页签的降水分——
+       哪一维是当前排序键，哪一个就升格为这张卡的大字答案（其余维的分仍是 chips）。 */
+    .lb-table td.c-score[data-label] { display:block; flex:0 0 100%; width:auto;
+      white-space:normal; margin:8px 0 7px; }
     .lb-table td.c-score[data-label]::before { content:attr(data-label);
-      display:block; font-size:12px; color:var(--muted); margin-bottom:2px; }
-    /* 子项分的得分条在窄屏恒隐藏：与上面的 id 选择器同特异性、位置更靠后，
-       覆盖"子项页签显示条"的宽屏规则（媒体查询不降低特异性，靠顺序决胜）。 */
+      display:block; font-size:11.5px; letter-spacing:1.5px; color:var(--muted);
+      margin-bottom:2px; }
+    /* 温度/降水页签：该维的"分"格升格为整行主分（与上面的综合分同款：标签 → 大数字 → 条）。
+       id 选择器（1 类 1 id）特异性高于通用 chips 规则，故这里的 flex-basis 100%
+       压过 td[data-label] 的 50%。 */
+    #lbdim-temp:checked ~ .lb-scroll .sh-temp,
+    #lbdim-rain:checked ~ .lb-scroll .sh-rain { display:flex; flex-direction:column;
+      align-items:stretch; gap:5px; flex:0 0 100%; width:auto;
+      white-space:normal; margin:8px 0 7px; }
+    #lbdim-temp:checked ~ .lb-scroll .sh-temp::before,
+    #lbdim-rain:checked ~ .lb-scroll .sh-rain::before { content:attr(data-label);
+      display:block; font-size:11.5px; letter-spacing:1.5px; color:var(--muted); }
+    #lbdim-temp:checked ~ .lb-scroll .sh-temp .score-num,
+    #lbdim-rain:checked ~ .lb-scroll .sh-rain .score-num { order:1; font-size:30px;
+      font-weight:900; color:var(--ink); min-width:0; line-height:1.15; text-align:left;
+      font-variant-numeric:tabular-nums; }
+    /* 子项页签里，该维的得分条从"隐藏"改为"显示"，作为主分数字下的一条横条。
+       条只挂在当前排序键上这一条宽屏原则不变，只是窄屏下它成了主分的注脚。 */
     #lbdim-temp:checked ~ .lb-scroll .sh-temp .score-bar,
-    #lbdim-rain:checked ~ .lb-scroll .sh-rain .score-bar { display:none; }
+    #lbdim-rain:checked ~ .lb-scroll .sh-rain .score-bar { order:2; display:block;
+      width:auto; margin:5px 0 0; }
 
     /* ---- 折叠区：诊断类长表格在手机上改为可横向滚动。body 是 overflow-x:clip，
          7 列的表（如「名义 vs 实际」）会顶出卡片、最后一列被裁掉且无法滚到，
@@ -517,8 +555,8 @@
       「🌡️ 温度」「🌧️ 降水」展开该维的全部分数与指标，并改按该维分数排序（总综合分只在「概览」显示）；
       页签在<b>所有榜单</b>下可用——总榜的单项与综合分同一批格子、同一套难度对齐，分时效榜则是该档的原始口径。
       <span class="only-wide">点任意列名可重新排序；
-      「得分走势」是综合分随提前天数（1~16 天，小时口径）的衰减，<b>谁在右边还站得高，谁的长期预报就更可靠</b>。</span><span class="only-mobile">每个源一张卡片：大字是综合分，
-      下面一行是当前页签的分项。</span>
+      「得分走势」是综合分随提前天数（1~16 天，小时口径）的衰减，<b>谁在右边还站得高，谁的长期预报就更可靠</b>。</span><span class="only-mobile">每个源一张卡片：名次徽章旁是源名，<b>大字就是当前排序键的分</b>（「概览」= 综合分，「温度」「降水」= 该维分），
+      其下按两列排开该页签的分项与指标。</span>
       想看某个具体提前量的排名，用<b>榜单下拉</b>切到「提前 N 天」分榜——同一档内直接对照、不经难度对齐。</p>
     <div class="lb-dims" id="lbDims">
       <input type="radio" name="lbdim" id="lbdim-ov" checked><label class="lb-tab" for="lbdim-ov">概览</label>
@@ -3162,12 +3200,12 @@ MSN天气 17 份）。⑧
 </div>
 
 <footer>
-  生成时间：2026-10-18 12:04（北京时）｜ 预报源：Open-Meteo（多模型）· 彩云天气 · 和风天气 · 中科天机 · 伏羲 · 风乌 ·
+  生成时间：2026-10-18 13:38（北京时）｜ 预报源：Open-Meteo（多模型）· 彩云天气 · 和风天气 · 中科天机 · 伏羲 · 风乌 ·
   中科星图 · AccuWeather ｜ 实况：环境气象数据服务平台 eia-data.com<br>
   本页由 GitHub Actions 自动生成，每天 3 次更新；仅供学习参考，出行请以官方气象部门预报为准。
 <div class="merkle">Merkle root 9f712d26f05d3b596202301b924f33a8ab9212e750d2742410925a04d9ac2d3b</div>  <div class="merkle">
-    复现凭据：code 504c1dbe44c5（工作区有未提交改动，本轮结果不可复现）    ｜ 依赖锁 uv.lock#c14f57bf92903d95    ｜ bootstrap 种子 20260906 ｜ Python 3.14.4
-    ｜ numpy 2.5.3 · pandas 3.0.6 · cyeva 0.1.0.beta.12
+    复现凭据：code 9d283403c000（工作区有未提交改动，本轮结果不可复现）    ｜ 依赖锁 uv.lock#c14f57bf92903d95    ｜ bootstrap 种子 20260906 ｜ Python 3.12.8
+    ｜ numpy 2.1.2 · pandas 2.3.3 · cyeva 0.2.3
   </div>
 </footer>
 
