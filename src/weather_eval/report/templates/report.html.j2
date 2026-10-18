@@ -721,7 +721,7 @@
             data-lead="{{ r.get('lead_days') if r.get('lead_days') else '' }}">
           <td class="c-rk num">{{ loop.index }}</td>
           <td class="l c-name"><i class="dot" style="background:{{ c }}"></i><b>{{ model_labels.get(r.model, r.model) }}</b>
-            {%- if r.get('sig_vs_top') is sameas false %}<sup class="dagger" title="与第一名的差距经 Holm–Bonferroni 校正后仍不显著：前后名次更多是抽样运气">†</sup>{% endif -%}
+            {%- if r.get('sig_vs_top') is sameas false %}<sup class="dagger" title="与第一名的差距经 max-T（族内极值）多重比较校正后仍不显著：前后名次更多是抽样运气">†</sup>{% endif -%}
             {%- if r.get('disputed') %}<span class="warn-badge" title="{{ (r.get('disputed_reasons') or [])|join('；') }}">⚠️</span>{% endif -%}
             <span class="mid" title="{{ r.model }}">{{ r.model }}</span>
             {% if not r.get('qualified') %}<span class="mid">· 样本积累中</span>{% endif %}
@@ -1154,10 +1154,16 @@
               按 k_eff = m/(1+(m−1)ρ̄) 折算后的<b>有效独立信源数约 {{ sc.get('k_eff') }} 家</b>
               ——榜单上看上去是 {{ sc.get('n_models') }} 份证据，折算后只相当于约
               {{ sc.get('k_eff') }} 份。这直接决定"第一名领先第二名"这句话的含金量。
-              {% if report.meta.get('holm') and report.meta.holm.get('k_eff') %}
-              显著性检验（† 标记）当前用的是<b>{{ 'k_eff 折算口径' if report.meta.holm.mode == 'k_eff' else '保守口径 m' }}</b>
-              （m = {{ report.meta.holm.m }}，k_eff = {{ report.meta.holm.k_eff }}）：
-              保守口径宁可多说"说不清"，因为往 k_eff 方向放松会<b>增加</b>被判"与冠军有显著差异"的家数。
+              {% if report.meta.get('holm') %}
+              显著性检定（† 标记）采用 <b>max-T 单步（族内极值）</b>多重比较校正：把多重性
+              放进统计量本身（看"这一族里最极端的那次偏离"在重采样下的分布），而不是把阈值
+              除以比较家数——在本项目 R = {{ report.meta.bootstrap_runs }} 的重采样分辨率下，
+              后者会让检验恒不显著（静默失效）。
+              {% if report.meta.holm.get('k_eff') %}
+              括号里的 k_eff = {{ report.meta.holm.k_eff }} 是并列披露：{{ sc.get('n_models') }} 份
+              证据折算后只相当于约 {{ report.meta.holm.k_eff }} 份独立信源，判断"第一名领先"
+              的可信度时应据此打折。
+              {% endif %}
               {% endif %}</p>
             {% endif %}
 
@@ -1285,10 +1291,10 @@
         <dl class="glossary">
           <div><dt>起报 / 起报快照</dt><dd>预报发布的那一刻叫"起报"。每次起报的"未来 16 天逐小时预报"原样存档封存，等真实天气发生后对账——预报不能事后改，检验才算数。</dd></div>
           <div><dt>时效（提前 N 天）</dt><dd>有效时刻 − 起报时刻 = "提前多久做的预报"，按日历天分桶；每个桶里同难度比较。</dd></div>
-          <div><dt>综合得分 / 温度分 / 降水分</dt><dd>多个指标压缩成 0~100：温度 5 项、降水 4 项加权（换算斜率按数据标定），综合 = 两者各半；缺项按剩余权重折算。分数只用于排序，绝对值不可跨榜、跨期解读。</dd></div>
+          <div><dt>综合得分 / 温度分 / 降水分</dt><dd>多个指标压缩成 0~100：温度 8 项、降水 7 项加权（换算斜率按数据标定），综合 = 两者各半；缺项按剩余权重折算。分数只用于排序，绝对值不可跨榜、跨期解读。</dd></div>
           <div><dt>难度对齐（总榜）</dt><dd>先把每一档提前量有多难算出来、统一扣掉再比（双向加法模型），能报 3 天的和能报 15 天的同榜也不吃亏。</dd></div>
           <div><dt>覆盖时效</dt><dd>该源实际参与计算的样本最长覆盖到提前第几天。温度维与降水维分别核计：榜上数字取两维最远值，两维不一致时括注各自的天数（逐日预报块通常只延展温度维，如中科星图温度至 16 天、降水仍止于逐小时的 5 天）。可用时效越少，总榜平均所依据的"桶"越少。</dd></div>
-          <div><dt>90% 置信区间与 †</dt><dd>对评估窗口内的<b>天</b>做分块重采样 {{ report.meta.bootstrap_runs }} 次重算榜单得到的波动范围。名字带 <b>†</b> = 与第一名的差距经 Holm–Bonferroni 校正后仍与 0 分不开——不宜过度解读名次先后。</dd></div>
+          <div><dt>90% 置信区间与 †</dt><dd>对评估窗口内的<b>天</b>做分块重采样 {{ report.meta.bootstrap_runs }} 次重算榜单得到的波动范围。名字带 <b>†</b> = 与第一名的差距经 max-T（单步族内极值）多重比较校正后仍与 0 分不开——不宜过度解读名次先后。</dd></div>
           <div><dt>有效样本量 n_eff</dt><dd>逐小时误差强自相关，名义 n 会把同一信息重复计数；n_eff 按"每天真正带来多少新信息"折算，跨源比较请以它为准。</dd></div>
           <div><dt>RMSE / MAE / MBE</dt><dd>温度误差的典型大小（°C，越小越好）：RMSE 对偶发大误差惩罚更重；MAE 是最朴素的"平均差多少度"；MBE 正 = 习惯性报偏高，负 = 报偏低。</dd></div>
           <div><dt>相关系数 r / 回归斜率</dt><dd>r 越接近 1 越能跟上天气的"节奏"；斜率 &gt;1 = 起伏幅度偏小（该热不热），&lt;1 = 反应过激。</dd></div>

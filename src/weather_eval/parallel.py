@@ -154,22 +154,22 @@ def map_metric_calls(fn_name: str, jobs: list[tuple[tuple, dict]]) -> list:
             # 等待，docstring 承诺的退回就成了空话——整轮报告构建会挂在原地
             # 而不是降级跑完。上界按串行耗时的宽松倍数给（串行约 17 s，这里给
             # 20 分钟），宁可偶尔白跑一遍串行，也不无限期挂起。
-            return list(ex.map(_run_one, payload, chunksize=chunksize,
-                               timeout=MAP_TIMEOUT_S))
+            merged = list(ex.map(_run_one, payload, chunksize=chunksize,
+                                 timeout=MAP_TIMEOUT_S))
         except BaseException:
-            # ⚠️ 失败路径必须 **wait=False + cancel_futures** 才能真的退回
-            # （第五轮 P1-1）：让 `with` 的 __exit__ 收拾残局会走
-            # `shutdown(wait=True)`，它要 join 排队中的 work item 并 `p.join()`
-            # 每一个 worker——一个陷在死循环里的 worker 会把父进程永久卡住，
-            # 恰好是 MAP_TIMEOUT_S 要防的那个挂起。先掐掉未开始的 futures、再
-            # 不等候地关池，把挂死的 worker 交给 shutdown 内部的 terminate。
+            # ⚠️ 失败路径必须 **wait=False + cancel_futures** 才能真的退回：先掐掉
+            # 未开始的 futures、再不等候地关池，把挂死的 worker 交给 shutdown 内部的
+            # terminate。**绝不在这里（或 finally 里）再补一次 wait=True**——那会
+            # join 每一个 worker，一个陷在死循环里的 worker 会把父进程永久卡住，
+            # 恰好是 MAP_TIMEOUT_S 要防的那个挂起。
             ex.shutdown(wait=False, cancel_futures=True)
             raise
-        finally:
-            # 成功路径也要关池：不关会留下一批空闲 worker 挂到解释器退出
-            # （atexit 的 join 会让整轮构建在最后一步卡住）。此刻所有任务已
-            # 回收，wait=True 不会阻塞；失败路径上面已关过，再关一次是幂等的。
-            ex.shutdown(wait=True)
+        # 成功路径也要关池：不关会留下一批空闲 worker 挂到解释器退出
+        # （atexit 的 join 会让整轮构建在最后一步卡住）。此刻所有任务已回收，
+        # wait=True 不会阻塞。这一句**只走成功路径**——放进 finally 会让上面那条
+        # "不阻塞地退回串行"的兜底失去意义（超时后又去 join 挂死的 worker）。
+        ex.shutdown(wait=True)
+        return merged
     except Exception as exc:                    # noqa: BLE001  任何失败都整批退回串行
         logger.warning("指标并行失败（%s: %s），整批退回串行路径",
                        type(exc).__name__, exc)

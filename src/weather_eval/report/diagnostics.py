@@ -400,7 +400,7 @@ def fingerprint_drift(forecasts_root: Path, months: list[str],
 
 # ------------------------------------------------------------------ P1-1 桥梁源 + 留一源
 def _board_matrix(report: dict, board_key: str = "all") -> tuple[np.ndarray, list[str], list[str]] | None:
-    """从已算好的分桶榜单重建 (m, b) 分数矩阵与其权重矩阵。"""
+    """从已算好的分桶榜单重建 (m, b) 分数矩阵与其模型序、桶序。"""
     meta = report.get("meta") or {}
     dw = (meta.get("difficulty_window") or {}).get(board_key) or {}
     buckets = dw.get("buckets") or []
@@ -415,8 +415,9 @@ def _board_matrix(report: dict, board_key: str = "all") -> tuple[np.ndarray, lis
     if not models:
         return None
     idx = {m: i for i, m in enumerate(models)}
+    # 只重建分数矩阵：诊断用的是**等权**重建设计（见 board_matrices），逐格 n_eff
+    # 并未随报告导出，这里曾顺带构造一份权重矩阵却从未被返回或消费——纯死代码。
     S = np.full((len(models), len(buckets)), np.nan)
-    W = np.full((len(models), len(buckets)), np.nan)
     for j, b in enumerate(buckets):
         for row in lbs.get(b) or []:
             m = row.get("model")
@@ -425,11 +426,6 @@ def _board_matrix(report: dict, board_key: str = "all") -> tuple[np.ndarray, lis
             s = row.get("score")
             if isinstance(s, (int, float)):
                 S[idx[m], j] = float(s)
-            for wkey in ("n_eff", "n"):
-                w = row.get(wkey)
-                if isinstance(w, (int, float)) and w and w > 0:
-                    W[idx[m], j] = float(w)
-                    break
     return S, models, buckets
 
 

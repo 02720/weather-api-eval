@@ -472,6 +472,27 @@ def _snaps_for(sid: str, model: str, snapshots: dict | None,
     return [s for s in ok if snapshot_complete(s)]
 
 
+def _day_bucket(store: dict, day_key: str) -> dict:
+    """按自然日取/建预报侧聚合桶（双侧非缺测小时集合的累计器）。
+
+    定义为模块级而不是 collect 内层闭包：原实现把它写在 `for m in snap["data"]`
+    循环体内，于是**每份快照的每个模型**都要重新创建一个函数对象。两者逐位等价
+    （本函数不捕获任何循环变量），提出去只是不再重复构造。
+    """
+    return store.setdefault(day_key, {"max_temp": -math.inf, "min_temp": math.inf,
+                                      "sum_rain": 0.0, "n_temp": 0, "n_rain": 0})
+
+
+def _common_bucket(store: dict, day_key: str) -> dict:
+    """按自然日取/建**共同样本**桶：n_temp/n_rain 为两侧共同有值的小时数；
+    obs_* 是同一批小时上的观测聚合（与预报侧逐位同集合）。"""
+    return store.setdefault(day_key, {
+        "max_temp": -math.inf, "min_temp": math.inf,
+        "sum_rain": 0.0, "n_temp": 0, "n_rain": 0,
+        "obs_max_temp": -math.inf, "obs_min_temp": math.inf,
+        "obs_sum_rain": 0.0})
+
+
 def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
             hourly_lead_days: int, daily_max_offset_days: int,
             daily_min_hours: int = 20,
@@ -651,19 +672,6 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                     # "两侧同时非缺测"的配对样本上算，两条轨道的缺测哲学必须
                     # 一致：只有两侧同一小时都有值，该小时才进入按天聚合。
                     fc: dict[str, dict] = {}
-
-                    def _day_bucket(store, day_key):
-                        return store.setdefault(day_key, {"max_temp": -math.inf, "min_temp": math.inf,
-                                                          "sum_rain": 0.0, "n_temp": 0, "n_rain": 0})
-
-                    def _common_bucket(store, day_key):
-                        # n_temp/n_rain 为两侧共同有值的小时数；obs_* 是同一批
-                        # 小时上的观测聚合（与预报侧逐位同集合）
-                        return store.setdefault(day_key, {
-                            "max_temp": -math.inf, "min_temp": math.inf,
-                            "sum_rain": 0.0, "n_temp": 0, "n_rain": 0,
-                            "obs_max_temp": -math.inf, "obs_min_temp": math.inf,
-                            "obs_sum_rain": 0.0})
 
                     for i in range(d_lo, d_hi):
                         tstr = times[i]
@@ -1960,12 +1968,19 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
                    {"n_eff": re_all})
 
     # ---- 逐小时按天桶：温度（入分）/ 逐小时降水（诊断，含 1h 雨强分级） ----
+    # 按天桶分组只做**一次**：下面的温度/诊断降水循环与"小时榜入分降水"循环此前
+    # 各自对 by_model[m] 全量重扫一遍，做的是同一件事。分组结果与逐模型分别分组
+    # 的记录顺序逐位一致（同一遍历顺序），下游 _farrays/_pool/指标值完全不变。
+    hourly_by_bucket: dict[str, dict[int, list]] = {}
+    for m in models:
+        buckets: dict[int, list] = defaultdict(list)
+        for r in by_model[m]:
+            buckets[r["bucket"]].append(r)
+        hourly_by_bucket[m] = buckets
     temp_hourly: dict[str, dict] = {}
     precip_hourly: dict[str, dict] = {}
     for mi, m in enumerate(models):
-        by_bucket: dict[int, list] = defaultdict(list)
-        for r in by_model[m]:
-            by_bucket[r["bucket"]].append(r)
+        by_bucket = hourly_by_bucket[m]
         temp_hourly[m] = {}
         precip_hourly[m] = {}
         for b in range(1, hourly_lead_days + 1):
@@ -1997,9 +2012,7 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     # cyeva 的配置模块（stats.grade_bounds），不手工同步第二份表。
     gb_hourly, gb_daily = _stats.grade_bounds("1h"), _stats.grade_bounds("24h")
     for mi, m in enumerate(models):
-        by_bucket: dict[int, list] = defaultdict(list)
-        for r in by_model[m]:
-            by_bucket[r["bucket"]].append(r)
+        by_bucket = hourly_by_bucket[m]
         precip_hourly_score[m] = {}
         for b in range(1, hourly_lead_days + 1):
             recs = by_bucket.get(b, [])
@@ -2050,18 +2063,25 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     temp_daily: dict[str, dict] = {}
     precip_daily: dict[str, dict] = {}
     for mi, m in enumerate(models):
-        by_off = defaultdict(lambda: {"max": ([], []), "min": ([], []), "rain": ([], [])})
+        by_off = defaultdict(lambda: {"max": ([], []), "min": ([], []),
+                                       "rain": ([], []), "recs": []})
         for r in daily_by_model[m]:
-            by_off[r["offset"]]["max"][0].append(r["temp_max_obs"])
-            by_off[r["offset"]]["max"][1].append(r["temp_max_fcst"])
-            by_off[r["offset"]]["min"][0].append(r["temp_min_obs"])
-            by_off[r["offset"]]["min"][1].append(r["temp_min_fcst"])
-            by_off[r["offset"]]["rain"][0].append(r["rain_obs"])
-            by_off[r["offset"]]["rain"][1].append(r["rain_fcst"])
+            slot = by_off[r["offset"]]
+            slot["max"][0].append(r["temp_max_obs"])
+            slot["max"][1].append(r["temp_max_fcst"])
+            slot["min"][0].append(r["temp_min_obs"])
+            slot["min"][1].append(r["temp_min_fcst"])
+            slot["rain"][0].append(r["rain_obs"])
+            slot["rain"][1].append(r["rain_fcst"])
+            # 同一遍顺带留一份该偏移的记录（供 _station_groups 与日温度 n_eff）：
+            # 原实现对每个偏移量各重扫一遍 daily_by_model[m]，16 次 O(记录数) 的
+            # 全量过滤只为了再算一遍同样的事。逐偏移的记录序与"全量过滤"逐位一致，
+            # 下游 _station_groups 按站分组、站内顺序不变。
+            slot["recs"].append(r)
         temp_daily[m] = {}
         precip_daily[m] = {}
         for off in range(1, daily_max_offset + 1):
-            sub = [r for r in daily_by_model[m] if r["offset"] == off]
+            sub = by_off[off]["recs"]
             # 按天温度样本量小（多数站 n<30 不参与站内合并，回退池化），仍按站分组
             gmax = _station_groups(sub, "temp_max_obs", "temp_max_fcst")
             gmin = _station_groups(sub, "temp_min_obs", "temp_min_fcst")
@@ -2149,7 +2169,9 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     # 才去扫 data/ 估跨源相关（那次要扫描约 20s，故仅在需要时才做）。
     holm_m_eff, holm_disclosure = (None, {"mode": "m", "k_eff": None,
                                           "m": len(models), "reason": "未启用",
-                                          "note": "默认走保守口径 m"})
+                                          "note": "显著性检定用 max-T 单步（族内极值）"
+                                                  "校正；mode/k_eff 仅为并列披露，"
+                                                  "不改变判定"})
     if str(eval_cfg.get("holm_effective_tests", "m")).lower() == "k_eff":
         holm_m_eff, holm_disclosure = _resolve_holm_m_eff(
             eval_cfg, models, start_dt, end_dt)
@@ -2444,8 +2466,11 @@ def _resolve_holm_m_eff(eval_cfg: dict, models: list[str], start_dt, end_dt,
 
     disclosure = {"mode": mode, "k_eff": k_eff, "m": len(models),
                   "reason": reason,
-                  "note": ("默认走保守口径 m；k_eff 是并列披露的折算值" if mode != "k_eff"
-                           else "已按 k_eff 折算放松校正（会增加被判显著的家数）")}
+                  "note": ("显著性检定用 max-T 单步（族内极值）校正；k_eff 为"
+                           "并列披露的折算值，不改变判定"
+                           if mode != "k_eff" else
+                           "显著性检定用 max-T 单步（族内极值）校正；k_eff 已算出并"
+                           "并列披露（旧的 k_eff 折算开关不再改变判定）")}
     if mode == "k_eff" and k_eff:
         return float(k_eff), disclosure
     return None, disclosure
