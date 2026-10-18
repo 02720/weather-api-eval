@@ -805,6 +805,40 @@ def daily_source_mix(models: list[str], daily: list[dict]) -> dict[str, dict[str
     return {m: slots for m, slots in counts.items() if slots}
 
 
+def daily_source_mix_summary(mix: dict) -> dict:
+    """daily_source_mix 的窗口级汇总：报告页"日轨的样本从哪来"披露直接引用。
+
+    逐格明细（分模型分日偏移）在 daily_source_mix；跨源叙述与逐源表格要的是一个
+    窗口级口径：**逐小时聚合是默认路径，原生日产品是当日逐小时覆盖不足时的
+    罕见回退**——不是"某源有没有原生日产品"这个按快照存在性清点的口径
+    （score_review_proposal P5：实际 ~92% 的格走逐小时聚合）。措辞纪律：按
+    "补位是回退"叙述，绝不写成"各家有/没有原生日产品"的能力分组。
+
+    计数与逐格明细同源：只统计真正配成对的样本（观测与预报同时有值），所以
+    这里的总数与被分数算过的样本一一对应，披露不会多报一格。
+    """
+    n_hourly = n_daily = 0
+    by_model: dict[str, dict] = {}
+    for m, slots in mix.items():
+        h = d = 0
+        for slot in slots.values():
+            for cell in (slot.get("temp") or {}, slot.get("rain") or {}):
+                h += cell.get("hourly", 0)
+                d += cell.get("daily", 0)
+        if h or d:
+            n_hourly += h
+            n_daily += d
+            total = h + d
+            by_model[m] = {"hourly": h, "daily": d, "total": total,
+                           "daily_pct": round(100.0 * d / total, 1)}
+    n_total = n_hourly + n_daily
+    return {
+        "n_total": n_total, "n_hourly": n_hourly, "n_daily": n_daily,
+        "daily_share_pct": round(100.0 * n_daily / n_total, 1) if n_total else None,
+        "by_model": by_model,
+    }
+
+
 # ----------------------------------------------------------------- 指标计算
 def temp_metrics(obs_vals, fcst_vals, limits, min_sample, *,
                  n_eff: int | None = None,
@@ -1255,6 +1289,14 @@ SCORE_SLOPES: dict[str, float] = dict(DEFAULT_SCORE_SLOPES)
 DEFAULT_SCORE_INDEX_GAIN: float = float(DEFAULT_EVAL["score_index_gain"])
 DEFAULT_SCORE_INDEX_CENTER: float = float(DEFAULT_EVAL["score_index_center"])
 
+# 降水分"最小存活权重"门槛的代码内缺省 **= config 冻结值**（同一纪律）。这是
+# score_review_proposal §2 P8 的修法：降水维 7 项里 5 项事件指标需要真实降水
+# 事件才存在，"整桶没有可评事件"的格只剩雨量两项被重归一成 100% 话语权、
+# 拿满分——半个证据当整个用（与 temp_score 的 _mean2 同一条 MSN 教训）。
+# 存活权重（换算后有效子分的权重和）占比低于该门槛的格，降水分判缺测（None），
+# 绝不重归一。装载入口在 build_report（apply_precip_min_weight）。
+DEFAULT_PRECIP_MIN_WEIGHT: float = float(DEFAULT_EVAL["precip_min_surviving_weight"])
+
 
 def apply_score_index_gain(gain: float | None = None,
                            center: float | None = None) -> None:
@@ -1279,6 +1321,20 @@ def apply_score_slopes(slopes: dict | None) -> None:
     """
     global SCORE_SLOPES
     SCORE_SLOPES = {**DEFAULT_SCORE_SLOPES, **(slopes or {})}
+
+
+def apply_precip_min_weight(frac: float | None = None) -> None:
+    """装载降水分"最小存活权重"门槛（config eval.precip_min_surviving_weight →
+    evaluate + stats 两侧同一把尺，与 apply_score_slopes / apply_score_index_gain
+    同模式）。
+
+    None = 回到代码内缺省（config 冻结值）。必须在任何降水评分计算之前调用：
+    点估计经 evaluate.precip_score 读取 stats 的同一个全局，bootstrap 经
+    stats._rain_scores_from_aggregate 读取同一全局——两侧的门控判定逐格一致，
+    CI 中心才不会与榜面分叉。
+    """
+    _stats.apply_precip_weight_floor(
+        DEFAULT_PRECIP_MIN_WEIGHT if frac is None else frac)
 
 
 def _sig(x: float, n: int = 2) -> str:
@@ -1397,9 +1453,23 @@ def _clamp100(v: float) -> float | None:
     return max(0.0, min(100.0, v))
 
 
-def _weighted_score(parts, metrics: dict) -> float | None:
-    """按 (键, 权重, …, 换算函数) 表加权平均；缺项不计并按剩余权重归一。"""
+def _weighted_score(parts, metrics: dict,
+                    min_weight_frac: float | None = None) -> float | None:
+    """按 (键, 权重, …, 换算函数) 表加权平均；缺项不计并按剩余权重归一。
+
+    min_weight_frac：降水分专用的"最小存活权重"证据门槛（None = 不设门槛；
+    温度维 8 项在样本存在时恒可算，永远轮不到这个通道）。设了它时，**换算后
+    仍有效**的子分权重之和（den，与 stats._score_from_parts 同口径累加）低于
+    名义总权重 × 该比例 ⇒ 整个维度判缺测（None），不重归一。
+
+    这不是对"缺项按剩余权重归一"的否定，而是把它收窄到它本来正确的场景：
+    归一对"这项指标对该源不存在"是对的；但对"这一整批指标都因为**该桶没有
+    可评的降水事件**而算不出来"是灾难——剩下的 2/7 项被抬成 100% 话语权、
+    产出满分降水分，等于把半个证据当整个用（score_review_proposal §2 P8；
+    与 _mean2"缺一即缺"的 MSN 教训同一条原理，只是发生在指标层面）。
+    """
     num = den = 0.0
+    total = math.fsum(w for _k, w, *_r in parts) if min_weight_frac is not None else 0.0
     for key, w, _label, _map, fn in parts:
         v = metrics.get(key)
         if v is None:
@@ -1411,6 +1481,8 @@ def _weighted_score(parts, metrics: dict) -> float | None:
         den += w
     if not den:
         return None
+    if min_weight_frac is not None and den < min_weight_frac * total:
+        return None            # 存活证据不足门槛：整维缺测，绝不重归一（P8）
     # 维度分 = 子分加权平均后再施加技能指数缩放（见 stats.index_gain）：与
     # bootstrap 的 stats._score_from_parts 同一把尺子。daily_temp_score / overall_score
     # 都在此之上取两个已缩放量的均值——仿射映射保序、保均值，故综合分=(温度分+降水分)/2
@@ -1479,9 +1551,60 @@ def daily_temp_view(md: dict) -> dict:
     return out
 
 
+def daily_temp_halves_view(md: dict) -> dict:
+    """日温度维的**分半**视图：日最高/日最低各留一份全量指标，不做均值合成。
+
+    daily_temp_view（上方）逐项取两量均值，服务于"这一行指标列"；但它回答不了
+    "温度分这行怎么算出来的"——daily_temp_score 是**两个各自过换算、各自过技能
+    缩放的分数**再取均值，不是"合并序列的分数"。mbe 的子分换算走 |v|（
+    _conv_dev 的 mbe 分支），最高/最低偏差异号时两半的 100−|mbe|λ 各自独立，
+    显示列的"均值 mbe"却让两半的偏差相互抵消——只照均值列复算的读者永远
+    对不上温度分（score_review_proposal P2 实测：全窗口 mean|Δ|=1.36、
+    max|Δ|=8.28，异号格 3.26 vs 同号格 0.66）。这是当初为了堵"站间 MBE
+    抵消"而加 mbe_bdisp 的同一个坑，在 max/min 维度的**显示层**复现。
+
+    所以分半视图把两半的 8 个指标**原样**发布（键集即 _DAILY_TEMP_VIEW_KEYS，
+    精度同 temp_metrics 的计算精度、不做二次取整——任何"发布时再取整"都会给
+    复算引入舍入差，把核对从"逐位相等"放松成"近似成立"，披露就不再可判准）。
+    消费端：report/render.py 的 lbtemp 内联块 + 复算不变量（_verify_daily_
+    temp_halves）以本字段为唯一数据源；日榜行（_track_lead_boards 的 daily 轨）
+    随行发布。小时轨没有分半语义，不发布。
+    """
+    mx = (md or {}).get("max") or {}
+    mn = (md or {}).get("min") or {}
+    return {
+        "max": {k: mx.get(k) for k in _DAILY_TEMP_VIEW_KEYS},
+        "min": {k: mn.get(k) for k in _DAILY_TEMP_VIEW_KEYS},
+        "n": mx.get("n") or mn.get("n") or 0,
+    }
+
+
 def precip_score(p: dict) -> float | None:
-    """降水分(0~100)：4 项指标按 PRECIP_SCORE_PARTS 权重加权，缺项按剩余权重归一。"""
-    return _weighted_score(PRECIP_SCORE_PARTS, p)
+    """降水分(0~100)：7 项指标按 PRECIP_SCORE_PARTS 权重加权，缺项按剩余权重归一——
+    但整维存活权重低于 **precip_min_surviving_weight**（缺省 0.5，config 可调）
+    的格判缺测（None），不重归一。
+
+    **两种缺失必须分开处理（score_review_proposal §2 P8，2026-10-18 修）**：
+
+    1. "这项指标对该源不存在"——例如某个源没跑雨强分档。重归一是对的：该指标
+       对谁都没提供证据，剩下指标各归其位。
+    2. "这一整批指标都因为**该桶没有可评降水事件**而算不出来"——7 项里的
+       ets/pod/far/bias/grade_ets（共 0.775 权重）需要真实降水事件（命中/漏报/
+       空报、各雨强档），amt_mae/amt_bias 只需要 Σ实况雨量 > 0。一个"整桶只有
+       一两场不达标小雨"的格，5 个事件指标集体缺席、只剩 0.27 权重的雨量两项
+       被重归一成 100% 话语权——这不是"指标不存在"，是**证据**不存在；重归一
+       等于把半个证据当整个用（_mean2 对温度两侧"缺一即缺"的同一原理，MSN
+       教训在指标层面的复现）。实测它把没有降水可评能力格送上了分时效榜
+       第 1/2 名（P8）。修法就是本门槛：存活权重占比 < 0.5 ⇒ None。
+
+    在评分轨道上 gbounds/kind 恒传入、7 项恒以同一份样本计算，故**任何缺项
+    都是证据性缺项**——不存在"结构性不存在"的指标；缺项几乎总是聚集在事件
+    五项上，权重占比门槛恰好把这两类情形分开（缺 grade_ets 一项 → 0.90 存活，
+    照旧归一；缺事件五项 → ≤0.225 存活，判缺测）。门槛实现在 _weighted_score，
+    并与 bootstrap 的 stats._score_from_parts 共用同一全局门槛值（同一把尺）。
+    """
+    return _weighted_score(PRECIP_SCORE_PARTS, p,
+                           min_weight_frac=_stats.PRECIP_MIN_WEIGHT_FRAC)
 
 
 def overall_score(t: dict, p: dict) -> float | None:
@@ -1702,6 +1825,11 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     apply_score_index_gain(
         (eval_cfg.get("score_index_gain") if eval_cfg else None),
         (eval_cfg.get("score_index_center") if eval_cfg else None))
+    # 降水分"最小存活权重"门槛（P8 修法）：装载点在所有降水评分之前——门槛
+    # 同时约束点估计（precip_score → _weighted_score）与 bootstrap（stats
+    # 的同一个全局），config eval.precip_min_surviving_weight 可覆盖冻结缺省。
+    apply_precip_min_weight(
+        eval_cfg.get("precip_min_surviving_weight") if eval_cfg else None)
     limits = eval_cfg["temp_accuracy_limits"]
     thr = eval_cfg["rain_threshold_mm"]
     thr_daily = eval_cfg.get("rain_daily_threshold_mm", 1.0)
@@ -2092,6 +2220,12 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     score_trend = _score_trend(models, track_sources,
                                hourly_lead_days, daily_max_offset)
 
+    # 按天样本来源构成（P5/P6）：逐格明细（分模型分日偏移）进
+    # report["daily_source_mix"]；meta 只存窗口级汇总——报告页"日轨的样本
+    # 从哪来"披露直接引用它，这也是披露被删（模板重构 54bebdc7）后恢复的
+    # "补位数/总数"承诺的数据锚点。提前算好，meta 与 report 两处同源。
+    daily_mix = daily_source_mix(models, daily) if daily_source_fallback else {}
+
     # 诊断层需要读已算好的榜单，故报告先落成一个变量，注入诊断后再返回
     report = {
         "meta": {
@@ -2117,6 +2251,10 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
             # sd = 8 分（见 config eval.score_index_gain）。披露当期值以便对账。
             "score_index_gain": float(_stats.SCORE_INDEX_GAIN),
             "score_index_center": float(_stats.SCORE_INDEX_CENTER),
+            # 降水分"最小存活权重"门槛（当期实际生效值，P8 修法披露）：降水维
+            # 存活子分权重低于名义总权重 × 该比例的格判缺测。与点估计/bootstrap
+            # 共用同一全局，读者据此能复算"哪些格应该消失"。
+            "precip_min_surviving_weight": float(_stats.PRECIP_MIN_WEIGHT_FRAC),
             "min_sample": min_sample,
             "min_board_neff": min_board_neff,
             "min_board_neff_rain": min_board_neff_rain,
@@ -2149,6 +2287,11 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
             "calendar_span": calendar_span,
             "daily_min_hours": daily_min_hours,
             "daily_source_fallback": daily_source_fallback,
+            # 日轨来源构成的窗口级汇总（P5/P6 披露）：逐小时聚合是默认路径、
+            # 原生日产品是覆盖不足时的罕见回退，这些比例随报告留档，读者不必
+            # 自己从逐格明细里再聚合一次
+            "daily_track_provenance": (daily_source_mix_summary(daily_mix)
+                                       if daily_source_fallback else {}),
             "model_caveats": model_caveats,
             # 数据充分性披露（P2-1/P2-2/P2-3）
             "model_status": model_status,
@@ -2202,8 +2345,7 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
         # 后者回答"这一天下没下够 1mm"。
         "precip_hourly_score": precip_hourly_score,
         # 按天样本的来源构成（逐小时聚合 / 源自带日产品补位），分模型分日偏移
-        "daily_source_mix": (daily_source_mix(models, daily)
-                             if daily_source_fallback else {}),
+        "daily_source_mix": daily_mix,
         "per_station": per_station,
         "timeseries": timeseries,
         "heatmap": heatmap,
@@ -2777,12 +2919,20 @@ def _track_lead_boards(models, track: str, src: dict, days: int) -> dict[str, li
             # 综合分就该是空的，而温度维在同一天桶里与满分工的源同难度直接可比，
             # 把它连同温度分一起置空等于把"它报了 15 天温度"这一事实藏起来。
             composite = _mean2(ts, ps)
+            extra = {"qualified": (composite is not None)}
+            # P2（score_review_proposal）：日榜行**随行发布分半指标**——温度分
+            # 是 max/min 两个各自独立归一的分数取均值，均值指标列复算不出它
+            # （mbe 分半异号相消）。分半值让读者拿同一把尺逐位复算；render.py
+            # 的 lbtemp 块与复算不变量（_verify_daily_temp_halves）以此字段为
+            # 唯一数据源。小时轨单序列无分半语义，不附。
+            if track == "daily":
+                extra["temp_halves"] = daily_temp_halves_view(t)
             rows.append(_board_row(
                 m,
                 daily_temp_view(t) if track == "daily" else t,
                 p,
                 score=composite, temp_score=ts, precip_score=ps,
-                qualified=(composite is not None)))
+                **extra))
         boards[f"{track}:{bk}"] = _rank_rows(rows)
     return boards
 

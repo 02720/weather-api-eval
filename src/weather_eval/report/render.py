@@ -31,6 +31,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import tempfile
@@ -39,8 +40,9 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
 
-from ..evaluate import (PRECIP_SCORE_PARTS, TEMP_SCORE_PARTS, apply_score_slopes,
-                        score_map_text)
+from ..evaluate import (_DAILY_TEMP_VIEW_KEYS, PRECIP_SCORE_PARTS,
+                        TEMP_SCORE_PARTS, apply_score_slopes,
+                        daily_temp_score, score_map_text)
 from ..timeutil import now_beijing
 
 logger = logging.getLogger(__name__)
@@ -155,6 +157,66 @@ def _r(v, nd: int = 1):
     return None if v is None else round(v, nd)
 
 
+# lb 行分数三件套的发布小数位——`_r` 的缺省是 1，复算不变量必须按同一档判等
+# （见 `_recon_ok`）。单独具名是为了让"发布精度"只有一个定义可改。
+_PUB_ND = 1
+
+
+def _recon_ok(recon, pub) -> bool:
+    """P2 复算不变量的判等——按**发布精度**判等，不是按内部精度。
+
+    lb 行的分数三件套（综合分/温度分/降水分）经 `_r(v)` 发布，而 `_r` 的缺省
+    小数位是 **1**（render.py:155）。所以"逐位"的真实含义是"逐位复现**发布
+    精度下的值**"：内部 96.95 发布成 97.0，复算得 96.95，二者按 1 位判等即相等。
+
+    直接拿 2 位的内部值去比 1 位的发布值，是把契约写错了——那不是更严，是
+    不可满足：它会在**每一个**正常格上炸掉（实测 lb.daily[1][0] 首格即炸），
+    于是这条锁变成"渲染期必崩"，而不是一道可判准的锁。1 位容差之下仍然能抓住
+    真正的契约破坏：键集错、max/min 半映射搞反、发布时二次取整、精度档位写错
+    ——这些都会让偏差远超 0.05。
+    """
+    if recon is None or pub is None:
+        return recon is None and pub is None
+    return math.isclose(round(float(recon), _PUB_ND), float(pub),
+                        rel_tol=0.0, abs_tol=1e-9)
+
+
+def _verify_daily_temp_halves(lb: dict, lbtemp: dict) -> None:
+    """P2 复算不变量（score_review_proposal）：**发布**的分半指标必须能复算出
+    **发布**的日温度分。
+
+    在这里锁（而不是在 evaluate 里）是因为不变量的宾语是"发布契约"——键集/
+    精度/半映射/行对齐，全部在 `lbtemp` 块的装配点才成立；evaluate 侧按构造
+    就成立（daily_temp_score 本就是两半各自过尺再均值），锁不着发布环节。检查
+    拿发布值沿 daily_temp_score 同一把尺重走一遍，按**发布精度**判等（见 `_recon_ok`）：
+
+    * 此断言跑在报告构建路径上——一旦有人改了分半键集、加了发布精度取整、
+      或把 mx/mn 两半的映射搞反，报告构建当场炸出来，绝不带病上线；
+    * 判等按**发布精度**（`_PUB_ND = 1`）而非内部 2 位：lb 行经 `_r` 发布，
+      内部 96.95 发布成 97.0，按 2 位判等会在每个正常格上误炸；
+    * 只锁 daily 轨的分时效榜（lb.daily）：总榜与综合天榜温度维是难度对齐/
+      两轨合成口径，不是单格 daily_temp_score，不在不变量覆盖面内；
+    * 分半字段整体缺席（旧结论摘要数据重渲染）时无事可对，跳过不误伤；
+      一旦有任何分半值，对不上就是发布坏了，就地炸。
+    """
+    for day, hal_rows in (lbtemp or {}).items():
+        lb_rows = ((lb or {}).get("daily") or {}).get(day) or []
+        assert len(hal_rows) == len(lb_rows), \
+            f"lbtemp[{day}] 与 lb.daily[{day}] 行数不一致：" \
+            f"{len(hal_rows)} vs {len(lb_rows)}——lbtemp 必须与 lb.daily 同序对齐"
+        for i, (row, hal) in enumerate(zip(lb_rows, hal_rows)):
+            pub, mxs, mns = row[2], hal["mx"], hal["mn"]
+            if all(v is None for v in mxs + mns):
+                continue    # 分半字段整体缺席（旧数据）：无可对账，不得误伤
+            recon = daily_temp_score({
+                "max": dict(zip(_DAILY_TEMP_VIEW_KEYS, mxs)),
+                "min": dict(zip(_DAILY_TEMP_VIEW_KEYS, mns))})
+            assert _recon_ok(recon, pub), \
+                (f"P2 复算不变量破了：lb.daily[{day}][{i}] 发布温度分 {pub}，"
+                 f"但按发布分半指标复算得 {recon}（逐位应为同一值）——"
+                 "发布契约（键集/精度/半映射）与赋分口径已分叉")
+
+
 def _slim_report(report_data: dict) -> dict:
     """构建内联进页面的**精简数据视图**。
 
@@ -189,9 +251,15 @@ def _slim_report(report_data: dict) -> dict:
         trend[trk] = {dim: _curve(per) for dim, per in dims.items()}
 
     temp = {}
+    # P2（score_review_proposal）：键集从 6 扩到全部 8 个已评测温度指标——
+    # 日温度分是 max/min 两个**各自独立归一**的分半分数取均值，slope 与
+    # mbe_bdisp 的分半值此前在任何产物里都不存在，分数无法复算。§03 的日口径
+    # 温度图按 max/min 切换（wxHalf），现在两半的 8 个指标全部可画、可查。
+    _TEMP_FIELDS = ("acc1", "acc2", "rmse", "mae", "mbe", "r",
+                    "slope", "mbe_bdisp")
     for m, buckets in (report_data.get("temp_hourly") or {}).items():
         temp[m] = {b: {k: _r(v, 2) for k, v in d.items()
-                       if k in ("acc1", "acc2", "rmse", "mae", "mbe", "r")}
+                       if k in _TEMP_FIELDS}
                    for b, d in buckets.items()}
 
     rain = {}
@@ -205,7 +273,7 @@ def _slim_report(report_data: dict) -> dict:
     # 降水的指标矩阵。字段集与逐小时侧一致，页面复用同一套指标下拉；日温度的
     # max/min 是日预报的两个独立交付量，分开成两张矩阵（最高/最低切换）而不
     # 合并——混成一条序列会让两端相互遮盖（与 daily_temp_score 同一原则）。
-    _TD_FIELDS = ("acc1", "acc2", "rmse", "mae", "mbe", "r")
+    _TD_FIELDS = _TEMP_FIELDS
     _RD_FIELDS = ("acc", "pod", "far", "ts", "ets", "bias")
     tdmax, tdmin, rdaily = {}, {}, {}
     for m, buckets in (report_data.get("temp_daily") or {}).items():
@@ -262,6 +330,13 @@ def _slim_report(report_data: dict) -> dict:
     # LB_METRIC_COLS 的行数组下标，两处必须同步。置信区间/覆盖时效只在总榜
     # 有意义（分榜不做 bootstrap）。单项指标值是分榜行自带的同档原始口径
     # （_board_row 透传），页面页签直接渲染。无任何得分的榜不进内联（空榜没有读者）。
+    #
+    # **布局决策（P2，score_review_proposal）**：日温度的**分半指标**不进这张
+    # 21 列行（不往行数组里加宽），改走独立的 `lbtemp` 块（下方）——行数组
+    # 的 21 列下标是页面 JS（LB_METRIC_COLS）与外部对账脚本都在消费的
+    # load-bearing 契约，加列就要三处同步并可能带坏既有消费者；分半值是
+    # "日榜温度分如何复算" 的旁证数据，不是新的表列。两块靠
+    # `lbtemp[day][i] ↔ lb.daily[day][i]`（第 i 项对第 i 行）对应。
     rank_idx = {r["m"]: i for i, r in enumerate(board)}
     lb: dict[str, dict] = {}
     for key, rows in lbs.items():
@@ -285,6 +360,34 @@ def _slim_report(report_data: dict) -> dict:
              _r(r.get("grade_ets"), 2)]
             for r in rows if r["model"] in rank_idx
         ]
+
+    # 日温度**分半**指标块（P2）：`{day: [{"mx": [8 值], "mn": [8 值]}, …]}`。
+    # mx/mn 数组按 _DAILY_TEMP_VIEW_KEYS 顺序（acc2, acc1, rmse, mae, mbe, r,
+    # slope, mbe_bdisp），第 i 项对应 `lb.daily[day][i]`（同序数组）。精度取
+    # 赋分时的原值（temp_metrics 的 round3），**不做二次取整**——否则复算
+    # 从"逐位相等"掉回"近似成立"，核对就不再是可判准的断言。这是"发布"口径
+    # 的唯一高精度分半通道：日榜行的均值列是给看数的读者，这个块是给复算的读者。
+    def _half_keys(hal: dict) -> list:
+        values = hal or {}
+        return [values.get(k) for k in _DAILY_TEMP_VIEW_KEYS]
+
+    lbtemp: dict[str, list] = {}
+    for key, rows in lbs.items():
+        track, _, day = key.partition(":")
+        day_n = day[:-1] if day.endswith("d") else ""
+        if track != "daily" or not day_n.isdigit():
+            continue
+        if not any(r.get("score") is not None for r in rows):
+            continue
+        lbtemp[day_n] = [{"mx": _half_keys((r.get("temp_halves") or {}).get("max")),
+                          "mn": _half_keys((r.get("temp_halves") or {}).get("min"))}
+                         for r in rows if r["model"] in rank_idx]
+    # 复算不变量（P2）：发布出来的分半指标走 daily_temp_score 同一把尺，
+    # 必须逐位复现发布出来的温度分。这条锁的是**发布契约**（键集/精度/半映射/
+    # 对齐关系），不是评分本身——评分路径从不读 lbtemp。旧数据没有 temp_halves
+    # 字段时（结论摘要级的月度归档重渲染）无值可对，跳过不报错；一旦有分半值，
+    # 对不上就是发布坏了，就地炸出来（不允许"悄悄复算不上"）。
+    _verify_daily_temp_halves(lb, lbtemp)
 
     # 实况对比：每站最近 72 小时，全部压成数值数组（键名只出现一次）
     WIN = 72
@@ -326,7 +429,8 @@ def _slim_report(report_data: dict) -> dict:
         "rain_daily_threshold_mm": meta.get("rain_daily_threshold_mm"),
         "min_sample": meta.get("min_sample"),
     }
-    return {"meta": slim_meta, "board": board, "lb": lb, "trend": trend,
+    return {"meta": slim_meta, "board": board, "lb": lb, "lbtemp": lbtemp,
+            "trend": trend,
             "temp": temp, "rain": rain, "tdmax": tdmax, "tdmin": tdmin,
             "rdaily": rdaily, "heat": heat, "ts": ts,
             "stations": stations, "coverage": {

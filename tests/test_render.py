@@ -625,3 +625,98 @@ def test_summary_only_report_hides_detail_sections(tmp_path, monkeypatch):
     assert 'id="lbTable"' in html                 # 榜单照常服务端渲染
 
 
+
+
+# ---------------------------------------------------------------------------
+# P2 复算不变量（score_review_proposal §2 P2）：日榜温度分必须能由**发布的
+# 分半指标**复算出来。为什么单独锁：这条不变量守的是"发布契约"——键集、精度档
+# 位、max/min 半映射、行对齐。之前它只在真实整跑里生效，测试套件的
+# `_slim_report` 调用喂的是合成 fixture、`temp_halves` 整体缺席，于是
+# `_verify_daily_temp_halves` 每格都走 `continue` 分支——**锁从未被测过**。
+# 实际后果：它一度按内部 2 位精度去比发布 1 位精度的分数，在**第一个**正常格上
+# 就炸（lb.daily[1][0] 发布 97.0 / 复算 96.95），即"渲染期必崩"，而测试全绿。
+# ---------------------------------------------------------------------------
+
+
+def _half_case(mb_max=-1.22, mb_min=0.32):
+    """一个日温度格的发布三件套：分半指标 + 它的真分数。
+
+    mbe 刻意取**异号**——那正是 P2 的病根（显示列取均值会让两半偏差相消，
+    分数不会），异号时"用均值复算"必然对不上，用分半复算才对得上。
+    """
+    from weather_eval.evaluate import _DAILY_TEMP_VIEW_KEYS, daily_temp_score
+    mx = {"acc2": 80.4, "acc1": 45.2, "rmse": 1.63, "mae": 1.29,
+          "mbe": mb_max, "r": 0.71, "slope": 0.96, "mbe_bdisp": 0.42}
+    mn = {"acc2": 91.7, "acc1": 61.3, "rmse": 1.05, "mae": 0.86,
+          "mbe": mb_min, "r": 0.83, "slope": 1.02, "mbe_bdisp": 0.31}
+    keys = list(_DAILY_TEMP_VIEW_KEYS)
+    return (
+        {"daily": {"1": [[0, None, None, None] + [None] * 17]},
+         "hourly": {}},                                   # 行占位，仅第 2 列(温度分)参与
+        {"1": [{"mx": [mx[k] for k in keys], "mn": [mn[k] for k in keys]}]},
+        daily_temp_score({"max": mx, "min": mn}),
+    )
+
+
+def test_daily_temp_halves_invariant_reconstructs_published_score():
+    """发布精度下，分半指标必须逐位复现发布的日温度分。"""
+    from weather_eval.report.render import _verify_daily_temp_halves
+    lb, lbtemp, expect = _half_case()
+    lb["daily"]["1"][0][2] = round(expect, 1)          # lb 行经 _r 发布，1 位小数
+    _verify_daily_temp_halves(lb, lbtemp)     # 不抛 = 通过
+    assert abs(expect - round(expect, 1)) <= 0.05
+
+
+def test_daily_temp_halves_invariant_catches_corrupted_half_value():
+    """任一半的指标被改动/键集被改窄，复算必须立刻对不上并炸出来。
+
+    **这条锁抓不到的一类错误（有意记在这里，别误以为它有兜底）**：max/min
+    两半**整体互换**。daily_temp_score = (score(max) + score(min)) / 2，对两半
+    对称，互换后分数逐位不变——复算当然照样通过。真要抓它得另立一条"分半
+    与源序列一致"的检查（需要日最高/最低原值，当前未发布），那是另一件事。
+    这里只锁**可锁的**契约：一旦有人动键集、动精度、动某一半的数值，就地炸。
+    """
+    import pytest
+    from weather_eval.report.render import _verify_daily_temp_halves
+    lb, lbtemp, expect = _half_case()
+    lb["daily"]["1"][0][2] = round(expect, 1)
+
+    lbtemp["1"][0]["mn"][0] = 12.3          # 只动 min 侧的 acc2，其余原样
+    with pytest.raises(AssertionError, match="复算不变量"):
+        _verify_daily_temp_halves(lb, lbtemp)
+
+
+def test_daily_temp_halves_invariant_catches_dropped_key():
+    """键集被改窄（少发一项指标）必须被抓——半映射/键集是这条锁的主要宾语。"""
+    import pytest
+    from weather_eval.evaluate import _DAILY_TEMP_VIEW_KEYS
+    from weather_eval.report.render import _verify_daily_temp_halves
+    lb, lbtemp, expect = _half_case()
+    lb["daily"]["1"][0][2] = round(expect, 1)
+    # 少发 slope（它在 TEMP_SCORE_PARTS 里，且非线性），复算必然漂
+    idx = list(_DAILY_TEMP_VIEW_KEYS).index("slope")
+    lbtemp["1"][0]["mx"][idx] = None
+    lbtemp["1"][0]["mn"][idx] = None
+    with pytest.raises(AssertionError, match="复算不变量"):
+        _verify_daily_temp_halves(lb, lbtemp)
+
+
+def test_daily_temp_halves_invariant_catches_row_misalignment():
+    """lbtemp 与 lb.daily 行数不同（错位）必须被抓，不许静默按序错配。"""
+    import pytest
+    from weather_eval.report.render import _verify_daily_temp_halves
+    lb, lbtemp, expect = _half_case()
+    lb["daily"]["1"][0][2] = round(expect, 1)
+    lb["daily"]["1"].append([0, None, None, None] + [None] * 17)
+    with pytest.raises(AssertionError, match="行数不一致"):
+        _verify_daily_temp_halves(lb, lbtemp)
+
+
+def test_daily_temp_halves_invariant_tolerates_absent_halves():
+    """旧结论摘要重渲染时没有分半字段：无可对账，不得误伤。"""
+    from weather_eval.report.render import _verify_daily_temp_halves
+    lb, lbtemp, _ = _half_case()
+    lbtemp["1"][0]["mx"] = [None] * 8
+    lbtemp["1"][0]["mn"] = [None] * 8
+    lb["daily"]["1"][0][2] = 97.0
+    _verify_daily_temp_halves(lb, lbtemp)     # 不抛 = 通过

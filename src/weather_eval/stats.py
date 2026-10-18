@@ -740,6 +740,33 @@ def build_day_stat_tables_columnar(pt, models: list[str],
 SCORE_INDEX_GAIN: float = 1.0
 SCORE_INDEX_CENTER: float = 50.0
 
+# 降水分"最小存活权重"门槛（存活子分权重占比，0~1；0 = 关闭）。代码内缺省 =
+# config eval.precip_min_surviving_weight 的冻结值（与 SCORE_INDEX_GAIN 同纪律：
+# 只此一处声明；evaluate.apply_precip_min_weight 在 build_report 入口装载，
+# 点估计与 bootstrap 共用这个全局，两把尺自动一致）。缺省**开**：这是一个
+# **语义**缺陷的修复而非兼容开关——"该桶没有可评降水事件"与"某项指标本身
+# 不存在"是两种缺失，前者判缺测而不是把剩下的雨量指标抬成满分话语权
+# （score_review_proposal §2 P8，2026-10-18 修）。
+PRECIP_MIN_WEIGHT_FRAC: float = 0.5
+
+
+def apply_precip_weight_floor(frac: float) -> None:
+    """装载降水分"最小存活权重"门槛（config eval.precip_min_surviving_weight → 模块级）。
+
+    frac ∈ [0, 1]：0 = 关闭（回到修复前"缺项一律按剩余权重归一"的旧口径，
+    保留做对照/回归）；0.5 = 存活权重不足半数即判缺测（缺省）。
+    点估计（evaluate.precip_score → _weighted_score）调用点读本全局；bootstrap
+    （_rain_scores_from_aggregate → _score_from_parts）共用同一值——门控判定必须
+    逐格一致，置信区间的中心才不会与榜面数字分叉。与 apply_score_index_gain
+    同模式：必须在任何降水评分之前装载一次。
+    """
+    global PRECIP_MIN_WEIGHT_FRAC
+    frac = float(frac)
+    if not (0.0 <= frac <= 1.0):
+        raise ValueError(
+            f"precip_min_surviving_weight 必须在 [0, 1] 内，得到 {frac!r}")
+    PRECIP_MIN_WEIGHT_FRAC = frac
+
 
 def apply_score_index_gain(gain: float | None = None,
                            center: float | None = None) -> None:
@@ -760,8 +787,14 @@ def index_gain(x):
 
     标量与 numpy 数组通用（bootstrap 每天重算走数组路径）。gain=1.0 时走**恒等
     快路**（见下），保证未装载配置时一切旧调用点逐位不变。截断 [0,100] 是量表的
-    物理边界：接近满分的**单桶**经放大后可能顶到上限（当前数据下 51 张榜最大 97.4，
-    未触及；触及时该桶饱和、是"封顶"语义而非错误）。
+    物理边界：接近满分的**单桶**经放大后可能顶到上限（触及时该桶饱和、是"封顶"
+    语义而非错误）。**gain 由留白规则反解**（标定脚本 §1.6）：取标定窗口全部维度分
+    的 P99.5 映到软上限 98，gain=(98−50)/(P99.5−50)——当前冻结值 1.851（标定窗口
+    2026-08-01~10-14，P99.5=75.93），按构造撞顶格 ≤0.5%（实测 2/1541 格、无同桶
+    并列）。上一版 gain=2.66 按"桶内 sd=8"反解、未检查上端留白，把 >68.8 的维度分
+    全部钉在 100（1d/2d 温度维各 11/29 家钉顶，短时效区分度整段抹平）——
+    docs/score_review_proposal.md §2 P1 的评分缺陷，2026-10-18 随 P3 重标定一并
+    修复（上端饱和门限 + 留白规则 + 换基准，留档 docs/score_slopes.md §九）。
     """
     arr = np.asarray(x, dtype=float)
     if SCORE_INDEX_GAIN == 1.0:
@@ -775,10 +808,21 @@ def index_gain(x):
     return float(out) if out.ndim == 0 else out
 
 
-def _score_from_parts(values: dict[str, np.ndarray], parts) -> np.ndarray:
+def _score_from_parts(values: dict[str, np.ndarray], parts,
+                      min_weight_frac: float | None = None) -> np.ndarray:
     """按评分权重表把指标值数组组合成 0~100 子分；缺项（NaN）按剩余权重归一。
 
     values: 指标键 → 任意形状数组（NaN = 缺项）。返回同形状（全缺处 NaN）。
+
+    min_weight_frac：可选的"最小存活权重"门槛（0~1，None = 不设门槛——温度维
+    各指标在样本存在时恒可算，永远轮不到这个通道）。口径：**换算后仍有效的
+    子分权重之和**（den）低于名义总权重的该比例时，整个维度判缺测（NaN），
+    不再重归一。这是把"缺项按剩余权重归一"从无差别策略收窄成有差别策略：
+    归一仍然正确对待"这项指标对该源不存在"；但降水维的缺项几乎全部来自
+    "该桶没有可评的降水事件"，那是**证据**的缺失，不是指标不存在——剩下
+    2/7 指标被抬成 100% 话语权、产出满分降水分，正是半个证据当整个用
+    （score_review_proposal §2 P8）。与点估计 evaluate._weighted_score 的
+    min_weight_frac 分支同尺（同一比较、同一累加顺序）。
     """
     num = den = None
     for key, w, _label, _mp, fn in parts:
@@ -799,6 +843,11 @@ def _score_from_parts(values: dict[str, np.ndarray], parts) -> np.ndarray:
     # 子分加权平均之后施加技能指数缩放（见文件头 SCORE_INDEX_GAIN）：与点估计
     # 路径 evaluate._weighted_score 同一把尺子，bootstrap 的 CI 才不会与榜面数字分叉。
     score = np.where(den > 0, num / np.where(den > 0, den, 1.0), np.nan)
+    if min_weight_frac is not None:
+        # 证据门槛：存活权重不足名义总权重的该比例 ⇒ 整维缺测（NaN）。
+        # fsum 与点估计逐位一致（两侧权重集合相同、比较表达式相同）。
+        total_w = math.fsum(w for _k, w, *_r in parts)
+        score = np.where(den < min_weight_frac * total_w, np.nan, score)
     return index_gain(score)
 
 
@@ -992,15 +1041,24 @@ def grade_ets_point(counts: list[tuple[int, int, int]], n: int,
 
 
 def _rain_scores_from_aggregate(A: np.ndarray, precip_parts,
-                                min_sample: int = 5) -> np.ndarray:
+                                min_sample: int = 5,
+                                min_weight_frac: float | None = None) -> np.ndarray:
     """聚合列联计数 + 雨量 + 分级计数 (run?, m, b, s, 13) → 降水分 (run?, m, b)。
 
     跨站直接相加：二分类计数与 Σo/Σf/Σ|f−o| 都可加（这是它们能进 bootstrap 的
     前提）。雨量两维只在 **Σ实况 > 0** 的格子上定义（实况无降水时相对口径无
-    定义 → NaN → 按剩余权重归一），与点估计 `precip_amount_metrics` 同纪律。
+    定义 → NaN → 缺测），与点估计 `precip_amount_metrics` 同纪律。
     总量比 Σf/Σo = 0（整桶的雨一滴没报）是有限值 0，由 log 族换算记 0 分——
     绝不借 NaN 通道洗成"缺项"。
+
+    min_weight_frac：缺省读模块级 `PRECIP_MIN_WEIGHT_FRAC`（evaluate 装载的
+    config 值，缺省 0.5）——内含 5 个事件指标（ets/pod/far/bias/grade_ets）的
+    桶在重采样里可能出现"该次抽到的天里没有可评事件"：此时存活权重只剩雨量
+    两项（0.27 < 门槛）→ 该次重采样判缺测，而不是把雨量指标抬成满分。与点
+    估计 `evaluate.precip_score` 的门槛共用同一全局，逐格同尺。
     """
+    if min_weight_frac is None:
+        min_weight_frac = PRECIP_MIN_WEIGHT_FRAC
     has_run = A.ndim == 5
     if not has_run:
         A = A[None, ...]
@@ -1026,7 +1084,8 @@ def _rain_scores_from_aggregate(A: np.ndarray, precip_parts,
     values = {"acc": acc, "pod": pod, "far": far, "ts": ts, "ets": ets,
               "bias": bias, "amt_mae": amt_mae, "amt_bias": amt_bias,
               "grade_ets": grade_ets}
-    scores = _score_from_parts(values, precip_parts)
+    scores = _score_from_parts(values, precip_parts,
+                               min_weight_frac=min_weight_frac)
     return scores if has_run else scores[0]
 
 

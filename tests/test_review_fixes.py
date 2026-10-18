@@ -190,7 +190,9 @@ def test_disclosure_block_is_complete(tmp_path, monkeypatch):
     技巧剖面（短/中/长分段排名）已按 2026-09-27 的需求下线，不再产出。"""
     monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
     start = datetime(2026, 8, 20, 0, 0)
-    storage.save_obs("s1", _obs(start, 96))
+    # 实况给足真实降水事件（P8 门槛后整桶无可评降水事件的格判缺测、不再进设计；
+    # 本用例测披露块结构，不是测门槛语义——见 tests/test_precip_weight_gate.py）
+    storage.save_obs("s1", _obs(start, 96, rain=1.0))
     for m, bias in (("a", 0.5), ("b", 1.5), ("c", 2.5)):
         storage.save_forecast_snapshot("s1", m, _snap(start, 96, model=m, temp_bias=bias))
     data = build_report(["s1"], ["a", "b", "c"], CFG, start,
@@ -215,7 +217,8 @@ def test_long_tail_buckets_are_separated_not_mixed(tmp_path, monkeypatch):
     """长尾桶（家数不足最热闹桶一半）单独成参考榜，不参与总榜名次（P1-4）。"""
     monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
     start = datetime(2026, 8, 20, 0, 0)
-    storage.save_obs("s1", _obs(start, 16 * 24))
+    # 实况给足真实降水事件（P8 门槛后无降水事件的格判缺测；本用例测长尾口径）
+    storage.save_obs("s1", _obs(start, 16 * 24, rain=1.0))
     # 三家都覆盖前 3 天；只有一家覆盖到第 10 天 -> 第 4 天起的"家数"不足
     for m, bias in (("a", 0.5), ("b", 1.5), ("c", 2.5)):
         storage.save_forecast_snapshot("s1", m, _snap(start, 4 * 24, model=m, temp_bias=bias))

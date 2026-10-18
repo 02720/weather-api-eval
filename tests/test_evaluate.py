@@ -7,9 +7,20 @@ from weather_eval import storage
 from weather_eval.evaluate import (
     build_report, collect, temp_metrics, precip_metrics,
     temp_score, precip_score, overall_score, daily_temp_score, _mean_or_none,
-    _combined_day_boards, track_cells,
+    _combined_day_boards, track_cells, PRECIP_SCORE_PARTS, _weighted_score,
 )
 from weather_eval.timeutil import iso
+
+
+def _precip_raw(metrics: dict) -> float | None:
+    """换算语义单测的对照通道：P8"最小存活权重"门槛关闭（= 旧重归一口径）。
+
+    P8 起生产入口 precip_score 对存活权重低于门槛的 dict 判缺测（见
+    tests/test_precip_weight_gate.py）；本文件用单指标 dict 检查的是换算
+    方向/截断/对称本身，门槛在此只会掩盖被测语义，故显式走门槛关闭通道，
+    逐位复现旧口径。
+    """
+    return _weighted_score(PRECIP_SCORE_PARTS, metrics, min_weight_frac=0.0)
 
 
 @pytest.fixture(autouse=True)
@@ -126,13 +137,14 @@ def test_scores_weighted_multi_metric():
     # 拒收项（数学上是入分项的函数 / 样本量的函数）：在不在都不改变分数
     assert temp_score(dict(t_full, chi2=4.0, rss=1e5)) == temp_score(t_full)
     # 降水分：acc/ts 均不入分（acc 由气候基率主导且与 ETS/POD/FAR 同源同一张
-    # 列联表；ts 是未做基率校正的 ETS）
-    p = {"ets": 0.2, "acc": 80.0}
-    assert precip_score(p) == round(0.2 * SCORE_SLOPES["ets"], 2)
-    assert precip_score({"ets": 0.2, "acc": 0.0}) == round(0.2 * SCORE_SLOPES["ets"], 2)
-    assert precip_score({"ets": 0.2, "ts": 0.9}) == precip_score({"ets": 0.2})
+    # 列联表；ts 是未做基率校正的 ETS）。换算语义对照走门槛关闭通道：P8 起
+    # 生产 precip_score 对存活权重不足的 dict 判缺测（tests/test_precip_weight_gate.py）。
+    assert _precip_raw({"ets": 0.2, "acc": 80.0}) == round(0.2 * SCORE_SLOPES["ets"], 2)
+    assert _precip_raw({"ets": 0.2, "acc": 0.0}) == round(0.2 * SCORE_SLOPES["ets"], 2)
+    assert _precip_raw({"ets": 0.2, "ts": 0.9}) == _precip_raw({"ets": 0.2})
     # 雨量两维入分（2026-10-06 新增的唯一真新信息）
     base = {"ets": 0.2, "pod": 50.0, "far": 60.0, "bias": 1.5}
+    assert precip_score(base) is not None          # P8：0.675 ≥ 门槛 0.5
     assert precip_score(dict(base, amt_mae=1.2, amt_bias=1.1)) != precip_score(base)
     # 雨强分辨力（2026-10-06 第二轮新增：中雨/大雨档 ETS，与晴雨 ETS 近乎正交）
     assert precip_score(dict(base, grade_ets=0.30)) > precip_score(dict(
@@ -143,14 +155,15 @@ def test_scores_weighted_multi_metric():
     assert precip_score(dict(base, amt_bias=0.0)) < precip_score(base)
     # 子分截断到 [0,100]：ETS 为负记 0 分，不拖成负总分（在位的两项按剩余权重归一）
     w_p = {k: w for k, w, *_ in PRECIP_SCORE_PARTS}
-    assert precip_score({"ets": -0.5, "pod": 50.0}) == round(
+    assert _precip_raw({"ets": -0.5, "pod": 50.0}) == round(
         (0.0 * w_p["ets"] + 50.0 * SCORE_SLOPES["pod"] * w_p["pod"])
         / (w_p["ets"] + w_p["pod"]), 2)
     # RMSE 大到换算分为负时截断为 0
     assert temp_score({"rmse": 30.0}) == 0.0
     # 缺项按剩余权重归一：只有 r 时常数为 r×λ
     assert temp_score({"r": 0.8}) == round(0.8 * SCORE_SLOPES["r"], 2)
-    # 综合分 = 两者均分
+    # 综合分 = 两者均分（P8 门槛下 base 的 0.675 存活权重仍可评）
+    p = base
     assert overall_score(t, p) == round((temp_score(t) + precip_score(p)) / 2, 2)
     # 缺一即缺（2026-10-05：_mean2 语义，单维分不冒充综合分——MSN 教训）
     assert overall_score(t, {"ets": None, "pod": None}) is None
@@ -216,12 +229,12 @@ def test_score_slopes_frozen_and_log_symmetric():
         assert ev.SCORE_SLOPES == DEFAULT_EVAL["score_slopes"]
         assert set(ev.SCORE_SLOPES) == {k for k, *_ in
                                        (*ev.TEMP_SCORE_PARTS, *ev.PRECIP_SCORE_PARTS)}
-        # log 口径对称：偏 k 倍与偏 1/k 同罚
-        assert precip_score({"bias": 2.0}) == precip_score({"bias": 0.5})
+        # log 口径对称：偏 k 倍与偏 1/k 同罚（换算语义对照走门槛关闭通道）
+        assert _precip_raw({"bias": 2.0}) == _precip_raw({"bias": 0.5})
         assert temp_score({"slope": 1.4}) == temp_score({"slope": 1 / 1.4})
         # 超报 2 倍不再是悬崖：旧口径 0 分、日轨 57% 格子被压死在 0
-        assert 30.0 < precip_score({"bias": 2.0}) < 100.0
-        assert precip_score({"bias": 0.0}) == 0.0        # 从未报雨 = 最大错误
+        assert 30.0 < _precip_raw({"bias": 2.0}) < 100.0
+        assert _precip_raw({"bias": 0.0}) == 0.0        # 从未报雨 = 最大错误
         assert temp_score({"slope": -0.5}) == 0.0       # 幅度关系反向 = 最大错误
         # config 覆盖即时生效（换算函数在调用时读当期斜率）
         ev.apply_score_slopes({"rmse": 10.0})
@@ -240,30 +253,33 @@ def test_score_clamps_and_dimension_conventions():
     assert temp_score({"slope": 0.0}) == 0.0         # 斜率 0（幅度全丢）-> 0 分
     assert temp_score({"slope": 1.0}) == 100.0       # 斜率恰为 1 -> 满分
     assert temp_score({"mbe": -2.5}) == temp_score({"mbe": 2.5})   # |MBE| 双向对称
-    assert precip_score({"ets": 0.0}) == 0.0         # ETS=0 不因截断变 None
-    assert precip_score({"ets": -0.5}) == 0.0        # ETS 负值记 0 分
-    assert precip_score({"bias": 1.0}) == 100.0      # 频率偏差恰为 1 -> 满分
+    assert _precip_raw({"ets": 0.0}) == 0.0         # ETS=0 不因截断变 None
+    assert _precip_raw({"ets": -0.5}) == 0.0        # ETS 负值记 0 分
+    assert _precip_raw({"bias": 1.0}) == 100.0      # 频率偏差恰为 1 -> 满分
     # BIAS 极端值按 log 口径逐档递减（悬崖推到 2^(100/λ) 倍之外），不再一刀 0
-    assert precip_score({"bias": 4.6}) == round(
+    assert _precip_raw({"bias": 4.6}) == round(
         max(0.0, 100 - abs(math.log2(4.6)) * SCORE_SLOPES["bias"]), 2)
     # far 是百分比(0~100)的关键约定：100 − (100/3)×λ；
     # 若上游漂移成比值(0~1)，这里会得到 ≈100 分，即暴露量纲回归
-    assert abs(precip_score({"far": 100.0 / 3})
+    assert abs(_precip_raw({"far": 100.0 / 3})
                - (100.0 - 100.0 / 3 * SCORE_SLOPES["far"])) < 0.01
     # far 缺项（如从不报雨的源）按剩余权重归一，不整行出局
-    assert precip_score({"far": None, "ets": 0.2}) == round(
+    assert _precip_raw({"far": None, "ets": 0.2}) == round(
         0.2 * SCORE_SLOPES["ets"], 2)
 
 
 def test_score_index_gain_affine_monotone_and_frozen():
-    """综合分技能指数缩放（2026-10-18）：仿射、严格保序、端点不动、config 冻结。
+    """综合分技能指数缩放（2026-10-18 留白规则重标定）：仿射、严格保序、端点不动、config 冻结。
 
     第一性原理（区分度）：15 个子分各自标定到"桶内跨源 sd = 8 分"，但综合分是
-    权重和为 1 的加权平均 → 互不完全相关的子分一平均，sd 收缩到 ≈8·√(Σw²)≈2.8，
-    整榜被压进 ~10 分带。根因是标定靶点打低了一层（打在子分，读者读综合分）。
-    此处把综合分（及两维分）做一次仿射缩放 g(s)=center+gain·(s−center)，把综合分
-    的桶内跨源 sd 拉回 8 分。仿射且单调 ⇒ 名次与显著性不变；gain 冻结、不按当期
-    μ/σ 自适应 ⇒ 若各家真一样就保持一样，不伪造区分度。
+    权重和为 1 的加权平均 → 互不完全相关的子分一平均，sd 收缩到 ≈3.6，整榜被压进
+    ~20 分带。根因是标定靶点打低了一层（打在子分，读者读维度分）。此处把维度分
+    做一次仿射缩放 g(s)=center+gain·(s−center)。**gain 的取值规则**（不是拍数）：
+    取标定窗口全部维度分的 P99.5 映到软上限 98（留 2 分可见边），
+    gain=(98−50)/(P99.5−50)=1.851（P99.5=75.93）。旧口径按"sd=8"反解得 2.66，
+    却把 >68.8 的维度分全部钉在 100（1d/2d 温度维各 11/29 家钉顶，
+    score_review_proposal §2 P1）——留白优先是本轮的规则。仿射且单调 ⇒ 名次与
+    显著性不变；gain 冻结、不按当期 μ/σ 自适应 ⇒ 若各家真一样就保持一样。
     """
     import weather_eval.evaluate as ev
     from weather_eval import stats as st
@@ -273,9 +289,9 @@ def test_score_index_gain_affine_monotone_and_frozen():
         ev.apply_score_index_gain(1.0, 50.0)
         raw = temp_score({"acc2": 80, "rmse": 2.0})
         assert st.index_gain(raw) == raw
-        # 装载 config 冻结值：gain = 8 / 冻结期桶内跨源 sd
+        # 装载 config 冻结值：gain = (98 − 50) / (P99.5 − 50)（留白规则）
         g = float(DEFAULT_EVAL["score_index_gain"])
-        assert g > 1.0
+        assert abs(g - 1.851) < 1e-12
         ev.apply_score_index_gain(None, None)
         assert st.SCORE_INDEX_GAIN == g
         assert st.SCORE_INDEX_CENTER == 50.0
@@ -283,10 +299,16 @@ def test_score_index_gain_affine_monotone_and_frozen():
         assert abs(st.index_gain(60.0) - (50.0 + g * 10.0)) < 1e-9
         assert st.index_gain(0.0) == 0.0 and st.index_gain(100.0) == 100.0
         assert st.index_gain(55.0) > st.index_gain(45.0)
-        # 综合分仍等于两维缩放后的均值（仿射 ⇒ 保均值）
+        # 规则锚点：标定窗口 P99.5=75.93 的维度分映到软上限 98（±0.01 内为
+        # 3 位截断误差；撞顶线 = 50+50/g ≈ 77.01，与留档一致）
+        assert abs(st.index_gain(75.93) - 98.0) < 0.01
+        assert abs((50.0 + 50.0 / g) - 77.01) < 0.01
+        # 综合分仍等于两维缩放后的均值（仿射 ⇒ 保均值；P8 门槛下 precip dict
+        # 需 ≥0.5 存活权重，这里用 ets+pod+far 三件套）
+        pd = {"ets": 0.2, "pod": 50.0, "far": 30.0}
         t = temp_score({"acc2": 80, "rmse": 2.0})
-        p = precip_score({"ets": 0.2})
-        assert abs(overall_score({"acc2": 80, "rmse": 2.0}, {"ets": 0.2})
+        p = precip_score(pd)
+        assert abs(overall_score({"acc2": 80, "rmse": 2.0}, pd)
                    - round((t + p) / 2, 2)) <= 0.01
     finally:
         ev.apply_score_index_gain(1.0, 50.0)

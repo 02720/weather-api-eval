@@ -19,6 +19,11 @@ bias 名义 10%，实际 27%。README §5 承诺的权重契约没有兑现。
      macro_weight_range 敏感性与综合分方差分解披露覆盖。
   3) 对拍：新旧口径的分时效名次（Spearman / 冠军换人 / 平均名次位移），
      作为"口径变更前后名次不直接可比"披露的量化附件。
+  4) 验收与留白（2026-10-18 P1/P3 复核新增）：子分水平体检在**上下两端**做
+     饱和带检查（上带 band 由验收扫描定，见 docs/score_slopes.md §九）；并反解
+     "技能指数"增益——取标定窗口全部维度分（过 P8 降水门槛后）的 P99.5 映到软
+     上限 98，即 gain=(98−50)/(P99.5−50)，使过增益的维度分按构造不系统性撞 100
+     （P1 的修复规则；实际撞顶格占比与同桶并列情况在本段输出中验收）。
 
 λ 冻结进 config/stations.yaml 的 eval.score_slopes（config.py 的 DEFAULT_EVAL 是
 代码内缺省），季度重标定；λ 变更视为评分口径变更，月报注明。方法论与结论留档
@@ -52,6 +57,25 @@ MIN_MODELS_PER_BUCKET = 3  # 同审查报告：桶内 ≥3 家才参与离散度
 # 格子贴边意味着该维在 0~100 尺上没有可用梯度：要么给所有源发同一个常数、要么
 # 给出一片悬崖，名义权重形同虚设。重标或换族后重新体检，通过才允许冻结。
 SATURATION_FAIL_SHARE = 0.30
+# 上端饱和带（与下端对称，2026-10-18 P1/P3 复核新增）。带沿与阈值由验收扫描定
+# （docs/score_slopes.md §九）：[95,100] 上 slope/amt_bias 的"贴上沿"（47%/52%）
+# 是 log/dev 族的数据本性（大量源的 v≈1 点质量，任何 λ 都 cure 不掉），硬失败会
+# 让重标定永远跑不完；[98,100] 在此窗口两套 λ 下均通过、仍能抓住"过半格子接近
+# 满分"的真饱和。注意：P1（维度分过增益撞 100）由下方 §1.6 的留白规则与检查
+# 兜底——子分带检查管"单项有没有梯度"，留白检查管"维度分会不会钉顶"。
+SATURATION_HI_BAND = 98.0
+SATURATION_FAIL_SHARE_HI = 0.30
+# 维度分留白与增益反解（P1 主修法）：综合分 = 子分加权平均 × 仿射技能指数，
+# λ 标定只约束子分 sd=8，没人约束**维度分过增益后的上端留白**——旧 gain=2.66 时
+# 缩放前 >68.8 即钉在 100（实测 1d/2d 温度维各 11/29 家钉顶，短时效区分度整段
+# 抹平）。规则：取标定窗口全部维度分的 P99.5 映到软上限 98（留 2 分可见边），
+# gain=(98−50)/(P99.5−50)。允许"按构造 ≤0.5% 的极端格"撞顶——保护孤立极值
+# （88+ 的离群格）会把全榜分辨率压掉一多半，是拿 99.5% 的格子给 0.1% 陪绑；
+# 但要求**无同桶并列**：同一 (轨×维×桶) 内 ≥2 格同时触顶 = 系统性截断，
+# 那正是 P1 要消灭的现象。
+HEADROOM_SOFT_CAP = 98.0
+HEADROOM_QUANTILE = 99.5
+HEADROOM_MAX_CLIP_SHARE = 0.005   # 撞顶格占比上限（P99.5→98 规则实测 ≈0.1%）
 
 # 温度/降水各项 → (维度轨道源, 换算族, 梯度区判据)。换算族必须与
 # evaluate.py 的 _conv_pct/_conv_dev/_conv_log 一一对应（脚本直接调生产函数核验，
@@ -354,6 +378,78 @@ def compare_boards(old: dict, new: dict) -> list[dict]:
     return rows
 
 
+def saturation_bands(vals, hi_band: float = SATURATION_HI_BAND) -> tuple[float, float, float]:
+    """子分水平体检的三个占比：(≥95 诊断、≥hi_band、≤5)，先截断到 [0,100]。
+
+    判定只吃第二个（上端带）与第三个（下端带）；≥95 是"水平重心"诊断列，
+    不参与判定（见常量区注释与 docs/score_slopes.md §九）。
+    """
+    a = np.clip(np.asarray(vals, dtype=float), 0.0, 100.0)
+    return (float(np.mean(a >= 95.0)), float(np.mean(a >= hi_band)),
+            float(np.mean(a <= 5.0)))
+
+
+def dim_cells(ts: dict) -> list[tuple[str, str, str, str, float]]:
+    """过生产评分函数算出 **gain=1 的维度分格**（需要调用方已装载 λ/门槛）。
+
+    返回 [(轨道, 维, 源, 桶, 维度分)]；日温度维的 max/min 各算半格（与
+    daily_temp_score 的打分对象同构）。调用方负责 ev.apply_score_slopes /
+    ev.apply_score_index_gain(1.0, 50.0) / ev.apply_precip_min_weight（P8）。
+    """
+    import weather_eval.evaluate as ev
+    out: list[tuple[str, str, str, str, float]] = []
+    for trk in ("hourly", "daily"):
+        for m, buckets in (ts.get(trk, {}).get("temp") or {}).items():
+            for b, met in (buckets or {}).items():
+                met = met or {}
+                if trk == "daily":
+                    for half in ("max", "min"):
+                        v = ev.temp_score(met.get(half) or {})
+                        if v is not None:
+                            out.append((trk, "temp", m, b, float(v)))
+                else:
+                    v = ev.temp_score(met)
+                    if v is not None:
+                        out.append((trk, "temp", m, b, float(v)))
+        for m, buckets in (ts.get(trk, {}).get("precip") or {}).items():
+            for b, met in (buckets or {}).items():
+                v = ev.precip_score(met or {})
+                if v is not None:
+                    out.append((trk, "precip", m, b, float(v)))
+    return out
+
+
+def derive_headroom_gain(vals, soft_cap: float = HEADROOM_SOFT_CAP,
+                         q: float = HEADROOM_QUANTILE) -> tuple[float, float]:
+    """留白规则反解增益：把 Pq 的 gain 前维度分映到软上限。
+
+    gain = (soft_cap − 50) / (Pq − 50)；50 分（量表中心）是仿射不动点。
+    返回 (gain, Pq)。数据不足（Pq ≤ 50，全榜挤在中点以下）时抛 ValueError。
+    """
+    pq = float(np.percentile(np.asarray(vals, dtype=float), q))
+    if not math.isfinite(pq) or pq <= 50.0:
+        raise ValueError(f"P{q:g}={pq:.2f} ≤ 50：无法反解留白增益")
+    return (soft_cap - 50.0) / (pq - 50.0), pq
+
+
+def clip_structure(cells, gain: float) -> dict:
+    """gain 之后撞 100 的结构：格数、占比、桶内最多并列、明细与验收结论。
+
+    "撞顶" = center+gain·(d−center) > 100（线性外推越过上限，实际被截到 100）。
+    同 (轨×维×桶) 内 ≥2 格同时撞顶 = 系统性截断（同维内并列），是 P1 判定
+    失败的情形；孤立单格撞顶按规则允许（占比上限 HEADROOM_MAX_CLIP_SHARE）。
+    """
+    clipped = [c for c in cells if 50.0 + gain * (c[4] - 50.0) > 100.0 + 1e-9]
+    by_bucket: dict[tuple[str, str, str], int] = {}
+    for trk, dim, _m, b, _v in clipped:
+        by_bucket[(trk, dim, b)] = by_bucket.get((trk, dim, b), 0) + 1
+    max_in_bucket = max(by_bucket.values(), default=0)
+    share = len(clipped) / len(cells) if cells else 0.0
+    ok = share <= HEADROOM_MAX_CLIP_SHARE and max_in_bucket <= 1
+    return {"n_clip": len(clipped), "share": share, "clipped": clipped,
+            "max_in_bucket": max_in_bucket, "by_bucket": by_bucket, "ok": ok}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     src = ap.add_mutually_exclusive_group(required=True)
@@ -363,7 +459,8 @@ def main():
     ap.add_argument("--target", type=float, default=SD_TARGET,
                     help=f"每个子分的目标桶内跨源 sd（默认 {SD_TARGET} 分）")
     ap.add_argument("--strict", action="store_true",
-                    help="标定验收（§1.5）发现饱和带超标时以非零退出（默认只告警）")
+                    help="标定验收（§1.5/§1.6）发现饱和带超标或留白不足时以非零退出"
+                         "（默认只告警）")
     args = ap.parse_args()
 
     ts = load_track_sources(args)
@@ -398,14 +495,18 @@ def main():
 
     # ---- 1.5) 标定验收：子分水平体检 ----
     # 反解只保证"桶内跨源 sd = 8"，不保证水平可用。用候选 λ 逐项体检子分的
-    # 水平分布：>SATURATION_FAIL_SHARE 的格子落在 [95,100] 或 [0,5] 即告警。
+    # 水平分布：超阈值的格子落在 [SATURATION_HI_BAND,100] 或 [0,5] 即告警。
     # 默认只告警不失败：log 族指标（slope/amt_bias 类）的"贴上沿"常是数据本性
     # （多数源在该维确实接近完美），换 λ 无从 cure，硬失败会让重标定永远跑不完；
     # 需要把体检当门禁（重标定 CI 化时）加 --strict。体检用**未中心化**的子分
-    # ——水平问题恰恰在中心化时被抹掉，那是旧流程看不见它的原因。
-    print(f"\n=== 1.5) 标定验收：子分水平体检（>{SATURATION_FAIL_SHARE:.0%} 落"
-          f" [95,100]/[0,5]{' 即失败' if args.strict else '（告警）'}） ===")
-    print(f"{'项':7s} {'均值':>7s} {'P10':>7s} {'P90':>7s} {'∈[95,100]':>9s} {'∈[0,5]':>7s}")
+    # ——水平问题恰恰在中心化时被抹掉，那是旧流程看不见它的原因。上带沿取 98
+    # （不是 95）：[95,100] 占比作为诊断列保留——它是"水平重心偏高"的量度，
+    # 而判定要抓的是"接近满分成片"的真饱和（扫描与理由见 docs/score_slopes.md §九）。
+    print(f"\n=== 1.5) 标定验收：子分水平体检（>{SATURATION_FAIL_SHARE_HI:.0%} 落"
+          f" [{SATURATION_HI_BAND:.0f},100]/[0,5]"
+          f"{' 即失败' if args.strict else '（告警）'}） ===")
+    print(f"{'项':7s} {'均值':>7s} {'P10':>7s} {'P90':>7s} {'∈[95,100]':>9s} "
+          f"{'∈[98,100]':>9s} {'∈[0,5]':>7s}")
     sat_fail: list[str] = []
     for key, dim, family, grad in ITEMS:
         cells = collect_cells(ts, key, dim)
@@ -418,14 +519,13 @@ def main():
         if len(subs) < 30:
             continue
         a = np.clip(np.asarray(subs, dtype=float), 0.0, 100.0)
-        hi = float(np.mean(a >= 95.0))
-        lo = float(np.mean(a <= 5.0))
+        hi95, hi, lo = saturation_bands(a)
         print(f"{key:7s} {a.mean():7.2f} {np.percentile(a, 10):7.2f} "
-              f"{np.percentile(a, 90):7.2f} {hi:9.1%} {lo:7.1%}")
-        if hi > SATURATION_FAIL_SHARE or lo > SATURATION_FAIL_SHARE:
+              f"{np.percentile(a, 90):7.2f} {hi95:9.1%} {hi:9.1%} {lo:7.1%}")
+        if hi > SATURATION_FAIL_SHARE_HI or lo > SATURATION_FAIL_SHARE:
             sat_fail.append(key)
     if sat_fail:
-        msg = (f"{', '.join(sat_fail)} 的子分超 {SATURATION_FAIL_SHARE:.0%} 落在饱和带"
+        msg = (f"{', '.join(sat_fail)} 的子分超阈值落在饱和带"
                "——检查该维是否有可用梯度；log 族贴上沿若属数据本性可豁免，"
                "换族/调锚点需连带重估权重。")
         if args.strict:
@@ -434,6 +534,57 @@ def main():
         print(f"\n⚠ 标定验收告警：{msg}")
     else:
         print("✓ 标定验收通过：所有维度的饱和占比均在阈值内")
+
+    # ---- 1.6) 维度分留白与技能指数增益（P1 修法） ----
+    # 过生产评分函数（含 P8 降水门槛）算 **gain=1 的维度分**，再按留白规则反解
+    # gain=(98−50)/(P99.5−50)：P99.5 映到软上限 98，允许 ≤HEADROOM_MAX_CLIP_SHARE
+    # 的极端格撞 100，但同 (轨×维×桶) 内不允许出现 ≥2 格并列触顶（系统性截断）。
+    print("\n=== 1.6) 维度分留白与增益反解（gain=(cap−50)/(Pq−50) 扫描） ===")
+    print(f"  规则目标：P{HEADROOM_QUANTILE:g} → 软上限 {HEADROOM_SOFT_CAP:.0f}；"
+          f"撞顶格 ≤{HEADROOM_MAX_CLIP_SHARE:.1%} 且无同桶并列")
+    import weather_eval.evaluate as ev
+    ev.apply_score_slopes({k: round(v, 3) for k, v in lambdas.items()})
+    ev.apply_score_index_gain(1.0, 50.0)   # 反解对象是 gain 前的维度分
+    ev.apply_precip_min_weight(None)       # P8 门槛（代码内冻结缺省）：不可评格剔除
+    cells = dim_cells(ts)
+    vals = np.asarray([c[4] for c in cells], dtype=float)
+    print(f"  维度分格数 {len(vals)}（轨×维×桶×源，日温度 max/min 各半）："
+          f"mean {vals.mean():.2f}  P50 {np.percentile(vals, 50):.2f}  "
+          f"P90 {np.percentile(vals, 90):.2f}  P95 {np.percentile(vals, 95):.2f}  "
+          f"P99 {np.percentile(vals, 99):.2f}  P99.5 {np.percentile(vals, 99.5):.2f}  "
+          f"max {vals.max():.2f}")
+    print(f"  {'cap':>4s} {'q':>6s} {'Pq':>7s} {'gain':>7s} {'撞顶':>5s} {'占比':>7s} "
+          f"{'桶内最多并列':>12s}")
+    for cap in (96.0, 97.0, 98.0, 99.0, 100.0):
+        for q in (99.0, 99.5, 99.9, 100.0):
+            pq = float(np.percentile(vals, q))
+            if pq <= 50:
+                continue
+            g = (cap - 50.0) / (pq - 50.0)
+            st = clip_structure(cells, g)
+            print(f"  {cap:4.0f} {q:6.1f} {pq:7.2f} {g:7.3f} {st['n_clip']:5d} "
+                  f"{st['share']:7.2%} {st['max_in_bucket']:12d}")
+    gain, pq = derive_headroom_gain(vals)
+    st = clip_structure(cells, gain)
+    post = np.clip(50.0 + gain * (vals - 50.0), 0.0, 100.0)
+    print(f"\n  ⇒ 留白规则给出 gain = ({HEADROOM_SOFT_CAP:.0f}−50)/"
+          f"({pq:.2f}−50) = {gain:.3f}")
+    print(f"    撞顶 {st['n_clip']}/{len(vals)} 格（{st['share']:.2%}）；"
+          f"桶内最多并列 {st['max_in_bucket']}；过增益 P95 {np.percentile(post, 95):.2f}、"
+          f"max {post.max():.2f}")
+    for trk, dim, m, b, v in sorted(st["clipped"], key=lambda c: -c[4]):
+        print(f"      撞顶：{v:7.2f} → 100.00  {trk:6s} {dim:6s} {m:26s} {b}")
+    head_fail = not st["ok"]
+    if head_fail:
+        msg = (f"留白验收失败：撞顶占比 {st['share']:.2%}"
+               f"（上限 {HEADROOM_MAX_CLIP_SHARE:.1%}）或桶内并列 "
+               f"{st['max_in_bucket']}（上限 1）——降 gain 或先修数据侧。")
+        if args.strict:
+            print(f"\n✗ 留白验收失败（--strict）：{msg}")
+            sys.exit(1)
+        print(f"\n⚠ 留白验收告警：{msg}")
+    else:
+        print("✓ 留白验收通过：撞顶格占比与同桶并列均在阈值内")
 
     # ---- 2) 核验（生产评分函数 + 冻结值）----
     print("\n=== 2) 核验：生产评分函数下的逐项影响力占比（应 ≈ 名义权重） ===")
@@ -528,6 +679,9 @@ def main():
         else:
             txt = v % (1 / lam)
         print(f"    {key}: {round(lam, 3):<8g} # {txt}")
+    print(f"  score_index_gain: {gain:.3f}   # = ({HEADROOM_SOFT_CAP:.0f}−50)/"
+          f"(P{HEADROOM_QUANTILE:g}−50)，P{HEADROOM_QUANTILE:g}={pq:.2f}"
+          f"（本次标定窗口）；留白规则见 §1.6 / docs/score_slopes.md §九")
 
 
 if __name__ == "__main__":

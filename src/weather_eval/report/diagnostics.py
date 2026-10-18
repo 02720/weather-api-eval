@@ -722,12 +722,16 @@ def score_slope_influence(report: dict) -> dict[str, Any]:
     """
     from ..evaluate import TEMP_SCORE_PARTS, PRECIP_SCORE_PARTS, score_map_text
 
-    def _parts(parts: tuple, cells: dict) -> list[dict]:
-        """cells: {model: {bucket: 指标 dict}} → 逐项估算桶内中心化 sd 的话语权占比。"""
-        out = []
-        for key, w, label, formula, fn in parts:
+    def _side_swing(parts: tuple, view: dict) -> dict[str, float]:
+        """一侧（{model: {bucket: 平铺指标 dict}}）逐项的桶内中心化 sd（键 → swing）。
+
+        与小时轨原逻辑逐位相同：桶 ≥3 家才可横向比，全部桶内中心化偏差池化后
+        <8 个偏差者该键弃掉；换算落在边界上可能溢出，逐格 try/except 兜底。
+        """
+        swing: dict[str, float] = {}
+        for key, _w, _label, _formula, fn in parts:
             by_bucket: dict[str, list[float]] = defaultdict(list)
-            for per in cells.values():
+            for per in view.values():
                 for b, met in per.items():
                     v = (met or {}).get(key)
                     if isinstance(v, (int, float)) and np.isfinite(v):
@@ -745,8 +749,43 @@ def score_slope_influence(report: dict) -> dict[str, Any]:
                 devs.extend((arr - arr.mean()).tolist())
             if len(devs) < 8:
                 continue
+            swing[key] = float(np.std(devs, ddof=1))
+        return swing
+
+    def _parts(parts: tuple, cells: dict, split_daily: bool = False) -> list[dict]:
+        """cells: {model: {bucket: 指标 dict}} → 逐项估算桶内中心化 sd 的话语权占比。
+
+        日轨温度（split_daily=True）的指标 dict 是 {"max": {...}, "min": {...}}
+        两套并列（日最高/日最低各自成组，见 evaluate.temp_daily 的装配）。日温度
+        分 = 两侧子分**各自**换算后取均值（daily_temp_score），所以影响力同样
+        两侧**各自**收数、各自算 shares，再按分数的合成方式并表——两侧等权取均值：
+        swing 并表 = (swing_max + swing_min)/2，share 由此归一。**max/min 的原始
+        指标不得先池化后换算**——mbe 等绝对值换算会借异号相抵，重演
+        docs/score_review_proposal.md §2 P2 记录的显示层缺陷。某键只有一侧数据
+        时取余下单侧（该侧自足，同样不池化）。
+        """
+        if split_daily:
+            hi = _side_swing(parts, {m: {b: (((per or {}).get(b) or {}).get("max") or {})
+                                     for b in (per or {})}
+                                     for m, per in cells.items()})
+            lo = _side_swing(parts, {m: {b: (((per or {}).get(b) or {}).get("min") or {})
+                                     for b in (per or {})}
+                                     for m, per in cells.items()})
+            keys = [k for k, *_ in parts if k in hi or k in lo]
+            # 注意用 `k in hi` 而不是 `hi.get(k) or ...`：swing 合法地等于 0.0
+            # （桶内多家子分逐位相同），`or` 会把 0.0 当成"缺失"而回退到另一侧，
+            # 把一个真实的 0 悄悄换成一个非 0 的数。
+            swings = {k: ((hi[k] + lo[k]) / 2 if k in hi and k in lo else
+                          (hi[k] if k in hi else lo.get(k))) for k in keys}
+        else:
+            swings = _side_swing(parts, cells)
+        out = []
+        for key, w, label, formula, fn in parts:
+            swing = swings.get(key)
+            if swing is None:
+                continue
             out.append({"key": key, "nominal_weight": round(float(w), 3),
-                        "swing": round(float(np.std(devs, ddof=1)), 2),
+                        "swing": round(swing, 2),
                         "label": label, "formula": score_map_text(key, formula)})
         total = sum(r["nominal_weight"] * r["swing"] for r in out) or 1.0
         for r in out:
@@ -764,8 +803,8 @@ def score_slope_influence(report: dict) -> dict[str, Any]:
     tracks: dict[str, Any] = {}
     gaps = []
     for track, dims in cell_sources.items():
-        t = _parts(TEMP_SCORE_PARTS, dims["temp"])
-        p = _parts(PRECIP_SCORE_PARTS, dims["precip"])
+        t = _parts(TEMP_SCORE_PARTS, dims["temp"], split_daily=(track == "daily"))
+        p = _parts(PRECIP_SCORE_PARTS, dims["precip"])   # 降水两轨都是平铺指标 dict
         if not t and not p:
             continue
         tracks[track] = {"temp": t, "precip": p}
@@ -801,7 +840,11 @@ def composite_dimension_share(report: dict) -> dict[str, Any]:
     """
     from ..evaluate import TEMP_SCORE_PARTS, PRECIP_SCORE_PARTS
 
-    def _score(md: dict, parts, track: str) -> float | None:
+    def _score(md: dict, parts, split_daily: bool = False) -> float | None:
+        """split_daily 只给**温度**用：日轨温度是 {"max": {...}, "min": {...}} 嵌套，
+        两侧各算分再取均值。**降水不是**——两个轨的降水指标 dict 都是平铺的
+        （add_precip 直接落 {bucket: 指标}），意外的嵌套假设曾让日轨降水恒取
+        None、进而把 composite_dimension_share 的整个日轨静默抹掉（同 P4 披露 bug）。"""
         def one(half: dict) -> float | None:
             num = den = 0.0
             for key, w, _label, _mp, fn in parts:
@@ -814,7 +857,7 @@ def composite_dimension_share(report: dict) -> dict[str, Any]:
                 num += w * max(0.0, min(100.0, c))
                 den += w
             return num / den if den else None
-        if track != "daily":
+        if not split_daily:
             return one(md)
         hi, lo = one((md or {}).get("max")), one((md or {}).get("min"))
         return None if (hi is None or lo is None) else (hi + lo) / 2
@@ -833,8 +876,8 @@ def composite_dimension_share(report: dict) -> dict[str, Any]:
         for m, per in temp_src.items():
             for b, md in (per or {}).items():
                 pm = (precip_src.get(m) or {}).get(b)
-                ts = _score(md, TEMP_SCORE_PARTS, track)
-                ps = _score(pm, PRECIP_SCORE_PARTS, track)
+                ts = _score(md, TEMP_SCORE_PARTS, split_daily=(track == "daily"))
+                ps = _score(pm, PRECIP_SCORE_PARTS)         # 平铺 dict，两轨同构
                 if ts is not None and ps is not None:       # 两维齐备才算综合分
                     buckets[b].append((ts, ps))
         for vals in buckets.values():
