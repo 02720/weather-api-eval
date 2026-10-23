@@ -1678,6 +1678,64 @@ def _n_eff_temp(recs: list[dict]) -> int | None:
     return _stats.n_eff_from_station_series(series, times)
 
 
+def _rain_evidence_by_model(models: list[str], by_model: dict[str, list[dict]],
+                            daily_by_model: dict[str, list[dict]],
+                            thr_hourly: float, thr_daily: float) -> dict[str, dict]:
+    """每个源的降水事件证据量（P8 第 3 条的落地，2026-10-23）。
+
+    为什么不能拿 n_eff 当证据量：`_n_eff_rain` 数的是"雨/无雨判定"的**自相关
+    折减后样本数**，干燥小时占绝对多数。一个只覆盖 11 天、只有 14 个 ≥1mm/h
+    观测事件的源，仍能凭 1,068 个"判定"通过 `min_board_neff=30`——门槛量的是
+    样本量，不是**降水事件证据量**。这里直接按（站, 时刻）/（站, 日）去重数
+    真实事件：同一场雨被多轮起报覆盖时只算一次，绝不让抓取频率冒充证据。
+
+    返回 {model: {"rain_events_h": 观测 ≥thr_hourly 的独立站-小时数,
+                  "rain_events_fcst_h": 预报 ≥thr_hourly 的独立站-小时数,
+                  "rain_days_d": 观测日雨量 ≥thr_daily 的独立站-日数,
+                  "rain_days_fcst_d": 预报日雨量 ≥thr_daily 的独立站-日数}}
+    """
+    out: dict[str, dict] = {}
+    for m in models:
+        # 只数**两侧都有值**的配对事件：观测有雨但该源没有预报值的时刻，不构成
+        # "这个源被验证到的一场雨"的证据（与评分入样的配对口径一致）。
+        paired_h = [r for r in by_model.get(m, [])
+                    if r.get("bucket", 0) >= 1
+                    and r.get("rain_obs") is not None
+                    and r.get("rain_fcst") is not None]
+        obs_h = {(r["station"], r["valid_iso"]) for r in paired_h
+                 if r["rain_obs"] >= thr_hourly}
+        fc_h = {(r["station"], r["valid_iso"]) for r in paired_h
+                if r["rain_fcst"] >= thr_hourly}
+        paired_d = [r for r in daily_by_model.get(m, [])
+                    if r.get("rain_obs") is not None
+                    and r.get("rain_fcst") is not None]
+        obs_d = {(r["station"], r["valid_day"]) for r in paired_d
+                 if r["rain_obs"] >= thr_daily}
+        fc_d = {(r["station"], r["valid_day"]) for r in paired_d
+                if r["rain_fcst"] >= thr_daily}
+        out[m] = {"rain_events_h": len(obs_h), "rain_events_fcst_h": len(fc_h),
+                  "rain_days_d": len(obs_d), "rain_days_fcst_d": len(fc_d)}
+    return out
+
+
+def _rain_evidence_note(name: str, ev: dict, min_events: int, min_days: int,
+                        thr_hourly: float, thr_daily: float) -> tuple[bool, str]:
+    """该榜的降水证据是否不足，以及给读者看的具体原因。
+
+    `all` 榜同时受小时事件与日雨日两道门约束；`hourly` / `daily` 各受一道。
+    没有证据缺口时返回 (False, "样本积累中")——后者只在行因**别的**门槛
+    （温度 n_eff 等）未达标时才会被模板用到。
+    """
+    reasons: list[str] = []
+    if name in ("all", "hourly") and ev.get("rain_events_h", 0) < min_events:
+        reasons.append(f"{ev.get('rain_events_h', 0)} 个 ≥{thr_hourly:g}mm/h 雨事件")
+    if name in ("all", "daily") and ev.get("rain_days_d", 0) < min_days:
+        reasons.append(f"{ev.get('rain_days_d', 0)} 个 ≥{thr_daily:g}mm 雨日")
+    if reasons:
+        return True, "降水证据不足（" + " / ".join(reasons) + "）"
+    return False, "样本积累中"
+
+
 def _n_eff_rain(recs: list[dict], thr: float, time_key: str,
                 lead_key: str) -> int | None:
     """降水"报错"序列的有效样本量：晴雨判定不一致的 0/1 指示序列（按站）。
@@ -1853,6 +1911,12 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     # 日榜温度维的入围门槛（2026-09 双轨道新增）：日最高/最低的 n_eff 数的是
     # "独立自然日"，与逐小时温度 n_eff 的"独立小时误差"不是一个单位，必须单独设。
     min_board_neff_daily = int(eval_cfg.get("min_board_neff_daily", 20))
+    # 降水事件证据门（2026-10-23）：n_eff 的"雨/无雨判定"被干燥小时主导，
+    # 直接数独立雨事件 / 雨日，防止"样本量够但没下过几场雨"的源参与排名。
+    min_board_rain_events = int(eval_cfg.get(
+        "min_board_rain_events", DEFAULT_EVAL["min_board_rain_events"]))
+    min_board_rain_days = int(eval_cfg.get(
+        "min_board_rain_days", DEFAULT_EVAL["min_board_rain_days"]))
     bootstrap_runs = int(eval_cfg.get("bootstrap_runs", 500))
     sensitivity_runs = int(eval_cfg.get("sensitivity_runs", 500))
     # bootstrap 块长（天）：0/缺省 = 按日尺度误差自相关自动定（见 stats.resolve_block_days）
@@ -2202,6 +2266,8 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
         thr_daily=thr_daily, thr_hourly=thr_hourly, min_sample=min_sample,
         min_board_neff=min_board_neff, min_board_neff_rain=min_board_neff_rain,
         min_board_neff_daily=min_board_neff_daily,
+        min_board_rain_events=min_board_rain_events,
+        min_board_rain_days=min_board_rain_days,
         bootstrap_runs=bootstrap_runs, block_days=block_days,
         hourly=hourly, daily=daily,
             cell_weighting=cell_weighting, min_cell_neff=min_cell_neff,
@@ -2282,6 +2348,10 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
             "min_board_neff_rain": min_board_neff_rain,
             # 日榜温度维的门槛与逐小时侧不是一个单位，页面上要分别报数
             "min_board_neff_daily": min_board_neff_daily,
+            # 降水事件证据门（2026-10-23）：小时轨独立 ≥1mm/h 事件数、日轨独立
+            # ≥1mm 雨日数；与 n_eff 门并列，未达标者同样标"样本积累中"。
+            "min_board_rain_events": min_board_rain_events,
+            "min_board_rain_days": min_board_rain_days,
             "bootstrap_runs": bootstrap_runs,
             # 不确定性口径披露：块长与块数决定 CI 的宽窄（块长越短越偏窄）
             "bootstrap_block_days": block_days,
@@ -3220,6 +3290,7 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
                        *, by_model, daily_by_model, thr_daily, thr_hourly,
                        min_sample, min_board_neff, min_board_neff_rain,
                        min_board_neff_daily,
+                       min_board_rain_events, min_board_rain_days,
                        bootstrap_runs, block_days, hourly, daily,
                        cell_weighting, min_cell_neff, min_col_frac, ridge,
                        long_tail_board, model_issue,
@@ -3362,6 +3433,14 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
     #   逐小时温度/晴雨 → min_board_neff（小时尺度）
     #   日最高最低/日累计降水 → min_board_neff_daily / min_board_neff_rain（天尺度）
     # 总榜要求**四个门都过**：只在一种分辨率上攒够样本，不算"综合"到位。
+    #
+    # 另加两道**事件证据门**（2026-10-23）：n_eff 的"雨/无雨判定"被干燥小时主导，
+    # 数量够不等于降水事件够。cma_gowfs_v1 首次接入时 11 天只有 14 个 ≥1mm/h
+    # 事件、6 个 ≥1mm 雨日，却凭 1,068 个判定通过 n_eff=30——降水分 5.8 照常
+    # 参与排名。事件门直接数独立（站,时刻）/（站,日）事件，未达标者标"样本
+    # 积累中"，分数保留为参考值。
+    rain_evidence = _rain_evidence_by_model(
+        models, by_model, daily_by_model, thr_hourly, thr_daily)
     board_neff = {
         "hourly": (neff_t_hourly, neff_r_hourly),
         "daily": (neff_t_daily, neff_r_daily),
@@ -3373,7 +3452,7 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
             "n_eff_temp_daily": neff_t_daily[m], "n_eff_rain_daily": neff_r_daily[m]}
         for m in models}
 
-    def _qualified(name, i, m, score, t_score, p_score, comparable):
+    def _qualified(name, i, m, score, t_score, p_score, comparable, ev):
         """门槛跟着 n_eff 的**计数单位**走，每个门各配各的阈值。
 
         四个 n_eff 的单位两两不同（对抗式审查 P1-3：曾把"独立小时判定数"拿去和
@@ -3381,18 +3460,31 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
           逐小时温度 / 逐小时晴雨 → min_board_neff（小时尺度，默认 30）
           日最高最低 → min_board_neff_daily（按天计数，默认 20）
           日累计降水 → min_board_neff_rain（按天计数，默认 20）
+        另加两道降水**事件证据门**（2026-10-23）：n_eff 数的是"雨/无雨判定"，
+        干燥小时占绝对多数；事件门直接数独立雨事件 / 雨日：
+          逐小时晴雨 → 观测 ≥1mm/h 的独立站-小时事件数 ≥ min_board_rain_events
+          日累计降水 → 观测日雨量 ≥1mm 的独立站-日雨日数 ≥ min_board_rain_days
         """
         if not (score is not None and t_score is not None and p_score is not None
                 and comparable):
             return False
-        gates = [(neff_t_hourly[m], min_board_neff),
-                 (neff_r_hourly[m], min_board_neff),
-                 (neff_t_daily[m], min_board_neff_daily),
-                 (neff_r_daily[m], min_board_neff_rain)]
+        ev = ev or {}
+        gates_hourly = [
+            (neff_t_hourly[m], min_board_neff),
+            (neff_r_hourly[m], min_board_neff),
+            (ev.get("rain_events_h"), min_board_rain_events),
+        ]
+        gates_daily = [
+            (neff_t_daily[m], min_board_neff_daily),
+            (neff_r_daily[m], min_board_neff_rain),
+            (ev.get("rain_days_d"), min_board_rain_days),
+        ]
         if name == "hourly":
-            gates = gates[:2]
+            gates = gates_hourly
         elif name == "daily":
-            gates = gates[2:]
+            gates = gates_daily
+        else:
+            gates = gates_hourly + gates_daily
         return all(v is not None and v >= thr for v, thr in gates)
 
     # 三张榜共用一份行级派生量缓存（键 = 模型）：同一批记录只扫一遍
@@ -3405,6 +3497,10 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
             by_model=by_model, daily_by_model=daily_by_model,
             neff_pair=board_neff[name], neff_detail=neff_detail,
             qualified_of=_qualified, model_issue=model_issue,
+            rain_evidence=rain_evidence,
+            min_board_rain_events=min_board_rain_events,
+            min_board_rain_days=min_board_rain_days,
+            thr_hourly=thr_hourly, thr_daily=thr_daily,
             facts_cache=row_facts)
         ranks = _rank_rows(rows_by_board[name], keys=("score",))
         point_champs[name] = next((r["model"] for r in ranks
@@ -3487,11 +3583,17 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
             holm_family_actual[name] = got.get("__family__")
         for r in rows_by_board[name]:
             b = got.get(r["model"], {})
-            r["ci90"] = b.get("ci90") if r.get("score") is not None else None
+            # 未达标行（样本积累中 / 降水事件证据不足）不发布 CI 与显著性：
+            # 行内已有分数作参考值，但一个由 1 次命中撑起的区间会让读者误以为
+            # 这个名次有统计精度。事件门槛的判定在 _qualified 里，这里只读取。
+            rankable = bool(r.get("qualified")) and r.get("score") is not None
+            r["ci90"] = b.get("ci90") if rankable else None
+            # 冠军频率保留原始值（未达标行恒为 0，权重敏感性/冠军卡要它）；
+            # 只把"与第一名比较"的显著性藏掉——未达标行不比名次。
             r["champion_pct"] = b.get("champion_pct")
-            r["sig_vs_top"] = b.get("sig_vs_top")
-            r["sig_vs_top_raw"] = b.get("sig_vs_top_raw")
-            r["p_vs_top"] = b.get("p_vs_top")
+            r["sig_vs_top"] = b.get("sig_vs_top") if rankable else None
+            r["sig_vs_top_raw"] = b.get("sig_vs_top_raw") if rankable else None
+            r["p_vs_top"] = b.get("p_vs_top") if rankable else None
 
     # ---- 披露：把"难度对齐"与"跨轨分歧"做成可读信息 ----
     windows: dict[str, dict] = {}
@@ -3612,7 +3714,12 @@ def _build_row_facts(scored: list[dict], all_recs: list[dict],
 
 def _build_board_rows(models, name, design, *, by_model,
                       daily_by_model, neff_pair, neff_detail,
-                      qualified_of, model_issue, facts_cache: dict | None = None) -> list[dict]:
+                      qualified_of, model_issue,
+                      rain_evidence: dict | None = None,
+                      min_board_rain_events: int = 30,
+                      min_board_rain_days: int = 8,
+                      thr_hourly: float = 1.0, thr_daily: float = 1.0,
+                      facts_cache: dict | None = None) -> list[dict]:
     """按一张劈分设计生成该榜的行（含派生列与样本充分性字段）。"""
     adj = design["adj"]
     spec = design["spec"]
@@ -3679,6 +3786,21 @@ def _build_board_rows(models, name, design, *, by_model,
         score = _fin(scores[i], 2)
         t_score = _fin(aligned["temp_score"][i], 2)
         p_score = _fin(aligned["precip_score"][i], 2)
+        ev = (rain_evidence or {}).get(m) or {}
+        if score is None:
+            # 整行没有任何可评样本：先说"样本积累中"，不要把"0 个雨事件"
+            # 当成具体原因（那只是无数据的推论，不是证据不足的诊断）。
+            ev_short, ev_note = False, "样本积累中"
+        else:
+            ev_short, ev_note = _rain_evidence_note(
+                name, ev, min_board_rain_events, min_board_rain_days,
+                thr_hourly, thr_daily)
+        # 名称旁只放短标签（完整原因在 title 里）：长句会把表格的源名列撑宽。
+        ev_short_note = ("降水证据不足（"
+                         f"{ev.get('rain_events_h', 0)}/{ev.get('rain_days_d', 0)}）"
+                         if ev_short else "样本积累中")
+        qualified = qualified_of(name, i, m, score, t_score, p_score,
+                                 bool(row_keep[i]), ev)
         # 覆盖时效按**本榜口径**取数（第四轮 P3-b），且**按维拆开**（2026-10）：
         # "覆盖"回答的是"这家实际参与计算的样本最远到了第几天"——温度维与降水
         # 维的答案可以不同（典型：星图逐日产品把温度维带到第 16 天、降水维只有
@@ -3727,8 +3849,16 @@ def _build_board_rows(models, name, design, *, by_model,
             n_days_rain=len(days_rain),
             n_issues=n_issues,
             comparable=bool(row_keep[i]),
-            qualified=qualified_of(name, i, m, score, t_score, p_score,
-                                   bool(row_keep[i])),
+            qualified=qualified,
+            # 降水事件证据量（2026-10-23）：独立（站,时刻）/（站,日）事件数，
+            # 未达标者附具体原因；分数保留为参考值，但不参与名次/冠军竞争。
+            rain_events_h=ev.get("rain_events_h"),
+            rain_events_fcst_h=ev.get("rain_events_fcst_h"),
+            rain_days_d=ev.get("rain_days_d"),
+            rain_days_fcst_d=ev.get("rain_days_fcst_d"),
+            rain_evidence_short=ev_short,
+            evidence_note=ev_note,
+            evidence_short=ev_short_note,
             # 四个（分辨率 × 维度）的有效样本量逐项披露：门槛各有各的单位，
             # 读者要能自己核对"这一家到底在哪一维度上还没攒够"
             **neff_detail[m],

@@ -339,6 +339,8 @@ def test_build_report_end_to_end(tmp_path, monkeypatch):
     cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
            "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 1,
            "min_board_neff_rain": 1,
+           # 降水事件证据门在夹具规模下同样下调（真实缺省 30/20 见 config）
+           "min_board_rain_events": 1, "min_board_rain_days": 1,
            # 夹具只有 2 个自然日：进天桶的样本 24 条，门槛相应下调（默认 30 是
            # 为真实 25 天样本期设的；跨站相关校正后 n_eff 会比名义 n 更低）
            "min_board_neff": 20,
@@ -539,6 +541,7 @@ def test_overall_board_pools_all_leads_and_discloses_coverage(tmp_path, monkeypa
     cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
            "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 1,
            "min_board_neff": 10, "min_board_neff_rain": 1,
+           "min_board_rain_events": 1, "min_board_rain_days": 1,
            "min_board_neff_daily": 1,   # 夹具只有 2 个自然日（日最高/最低 n_eff 按天计）
            # 本用例考察的是"两维齐备才进 macro"的语义，故显式用等权口径；
            # 样本量加权本身由 test_weighted_board_* 专门锁定
@@ -1509,6 +1512,7 @@ def test_bootstrap_ci_deterministic_and_honest(tmp_path, monkeypatch):
     cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
            "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 1,
            "bootstrap_runs": 200, "min_board_neff_rain": 1,
+           "min_board_rain_events": 1, "min_board_rain_days": 1,
            # 日最高/最低的 n_eff 数的是"独立自然日"（本夹具 15 天），与逐小时
            # 的"独立小时误差"不同单位，同门槛也要下调
            "min_board_neff_daily": 1}
@@ -1544,6 +1548,7 @@ def test_weight_sensitivity_in_meta(tmp_path, monkeypatch):
     cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
            "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 1,
            "sensitivity_runs": 100, "min_board_neff_rain": 1,
+           "min_board_rain_events": 1, "min_board_rain_days": 1,
            # 本用例考察敏感性机制本身：晋级天桶的样本只有 23 条，门槛相应下调
            "min_board_neff": 20, "min_board_neff_daily": 1}
     data = build_report(["s1"], ["m_a", "m_b"], cfg, start,
@@ -1875,6 +1880,7 @@ def test_difficulty_adjusted_board_removes_coverage_bias(tmp_path, monkeypatch):
            # "覆盖偏差"无关，故把入围门槛降到 1（跨站校正本身由
            # tests/test_stats_core.py::test_n_eff_cross_station_correction 专门锁定）。
            "min_board_neff": 1, "min_board_neff_rain": 1, "min_board_neff_daily": 1,
+           "min_board_rain_events": 1, "min_board_rain_days": 1,
            "bootstrap_runs": 30, "sensitivity_runs": 30}
     end = start + timedelta(hours=7 * 24)
     data = build_report(stations, ["short", "mid", "wide"], cfg, start, end, "2026-08")

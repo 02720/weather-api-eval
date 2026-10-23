@@ -718,13 +718,16 @@
             data-amt_mae="{{ r.get('amt_mae') if r.get('amt_mae') is not none else '' }}"
             data-amt_bias="{{ r.get('amt_bias') if r.get('amt_bias') is not none else '' }}"
             data-grade_ets="{{ r.get('grade_ets') if r.get('grade_ets') is not none else '' }}"
-            data-lead="{{ r.get('lead_days') if r.get('lead_days') else '' }}">
+            data-lead="{{ r.get('lead_days') if r.get('lead_days') else '' }}"
+            data-rain-events="{{ r.get('rain_events_h') if r.get('rain_events_h') is not none else '' }}"
+            data-rain-days="{{ r.get('rain_days_d') if r.get('rain_days_d') is not none else '' }}"
+            data-neff-rain="{{ r.get('n_eff_rain_hourly') if r.get('n_eff_rain_hourly') is not none else '' }}">
           <td class="c-rk num">{{ loop.index }}</td>
           <td class="l c-name"><i class="dot" style="background:{{ c }}"></i><b>{{ model_labels.get(r.model, r.model) }}</b>
             {%- if r.get('sig_vs_top') is sameas false %}<sup class="dagger" title="与第一名的差距经 max-T（族内极值）多重比较校正后仍不显著：前后名次更多是抽样运气">†</sup>{% endif -%}
             {%- if r.get('disputed') %}<span class="warn-badge" title="{{ (r.get('disputed_reasons') or [])|join('；') }}">⚠️</span>{% endif -%}
             <span class="mid" title="{{ r.model }}">{{ r.model }}</span>
-            {% if not r.get('qualified') %}<span class="mid">· 样本积累中</span>{% endif %}
+            {% if not r.get('qualified') %}<span class="mid" title="{{ r.get('evidence_note') or '样本积累中' }}">· {{ r.get('evidence_short') or r.get('evidence_note') or '样本积累中' }}</span>{% endif %}
           </td>
           <td class="c-score ov-only" data-label="综合分"><div class="cell">
             {{ thermo(r.get('score'), r.get('ci90'), 'sm') }}
@@ -748,7 +751,10 @@
           <td class="r-only" data-label="雨量误差">{{ num(r.get('amt_mae'), 2) }}</td>
           <td class="r-only" data-label="雨量比">{{ num(r.get('amt_bias'), 2) }}</td>
           <td class="r-only" data-label="雨强ETS">{{ num(r.get('grade_ets'), 2) }}</td>
-          <td data-label="覆盖">{% if r.get('lead_days') %}{{ r.lead_days }} 天{% if r.get('lead_temp_days') and r.get('lead_rain_days') and r.lead_temp_days != r.lead_rain_days %}<span class="mid" title="覆盖时效按维核计：温度维最远 {{ r.lead_temp_days }} 天、降水维 {{ r.lead_rain_days }} 天（两维不等时，数字取两维最远）">温{{ r.lead_temp_days }}·雨{{ r.lead_rain_days }}</span>{% endif %}{% else %}—{% endif %}</td>
+          <td data-label="覆盖"
+              title="验证日数 {{ r.get('n_days') or 0 }}；起报轮次 {{ r.get('n_issues') or 0 }}；n_eff 温度 {{ r.get('n_eff_temp_hourly') if r.get('n_eff_temp_hourly') is not none else '—' }}/{{ r.get('n_eff_temp_daily') if r.get('n_eff_temp_daily') is not none else '—' }}、降水 {{ r.get('n_eff_rain_hourly') if r.get('n_eff_rain_hourly') is not none else '—' }}/{{ r.get('n_eff_rain_daily') if r.get('n_eff_rain_daily') is not none else '—' }}（小时/日）；降水事件 {{ r.get('rain_events_h') if r.get('rain_events_h') is not none else '—' }} 个 / 雨日 {{ r.get('rain_days_d') if r.get('rain_days_d') is not none else '—' }} 个">
+            {% if r.get('lead_days') %}{{ r.lead_days }} 天{% if r.get('lead_temp_days') and r.get('lead_rain_days') and r.lead_temp_days != r.lead_rain_days %}<span class="mid" title="覆盖时效按维核计：温度维最远 {{ r.lead_temp_days }} 天、降水维 {{ r.lead_rain_days }} 天（两维不等时，数字取两维最远）">温{{ r.lead_temp_days }}·雨{{ r.lead_rain_days }}</span>{% endif %}{% if r.get('rain_evidence_short') %}<span class="mid" title="{{ r.get('evidence_note') }}">· 雨证据 {{ r.get('rain_events_h') or 0 }}/{{ r.get('rain_days_d') or 0 }}</span>{% endif %}{% else %}—{% endif %}
+          </td>
           <td class="ci-cell" data-label="90%CI">{% if r.get('ci90') %}{{ num(r.get('ci90')[0]) }}~{{ num(r.get('ci90')[1]) }}{% else %}—{% endif %}</td>
           <td class="l c-spark">{{ spark_svg.get(r.model, '') | safe }}</td>
         </tr>
@@ -1069,6 +1075,11 @@
         <h3>口径与已知差异</h3>
         <p class="why">① <b>天桶按日历对齐</b>：「提前 N 天」= 起报日之后第 N 个自然日，两个口径同窗比较。
           ② <b>有效样本量 n_eff</b> 已扣除时间自相关与跨站相关，直接按站求和会高估约 1.7 倍。
+          <b>降水事件证据门</b>：n_eff 数的是"雨/无雨判定"，干燥小时占绝对多数——
+          一个只覆盖十来天、只有十几场雨的源也可能凭上千个"判定"过关。因此降水维另按
+          <b>独立观测事件</b>设门（小时轨 ≥{{ report.meta.get('min_board_rain_events', 30) }} 个 ≥1mm/h 事件、
+          日轨 ≥{{ report.meta.get('min_board_rain_days', 8) }} 个 ≥1mm 雨日，同一事件不因多轮起报重复计）；
+          未达标的源标"样本积累中"，分数保留为参考值，但不参与名次与冠军竞争，也不发布置信区间。
           ③ <b>总榜加权</b>：每个格子按 √(两维有效样本量的较小者) 加权，过薄格子剔出设计。
           ④ <b>逐小时降水口径</b>：各源入库口径不同（原生序列透传 / 雨率近似 / 累计均摊 / 移位标定），
           已在快照与代码中留档并定期标定复核。
@@ -1295,7 +1306,8 @@
           <div><dt>难度对齐（总榜）</dt><dd>先把每一档提前量有多难算出来、统一扣掉再比（双向加法模型），能报 3 天的和能报 15 天的同榜也不吃亏。</dd></div>
           <div><dt>覆盖时效</dt><dd>该源实际参与计算的样本最长覆盖到提前第几天。温度维与降水维分别核计：榜上数字取两维最远值，两维不一致时括注各自的天数（逐日预报块通常只延展温度维，如中科星图温度至 16 天、降水仍止于逐小时的 5 天）。可用时效越少，总榜平均所依据的"桶"越少。</dd></div>
           <div><dt>90% 置信区间与 †</dt><dd>对评估窗口内的<b>天</b>做分块重采样 {{ report.meta.bootstrap_runs }} 次重算榜单得到的波动范围。名字带 <b>†</b> = 与第一名的差距经 max-T（单步族内极值）多重比较校正后仍与 0 分不开——不宜过度解读名次先后。</dd></div>
-          <div><dt>有效样本量 n_eff</dt><dd>逐小时误差强自相关，名义 n 会把同一信息重复计数；n_eff 按"每天真正带来多少新信息"折算，跨源比较请以它为准。</dd></div>
+          <div><dt>有效样本量 n_eff</dt><dd>逐小时误差强自相关，名义 n 会把同一信息重复计数；n_eff 按"每天真正带来多少新信息"折算，跨源比较请以它为准。悬停"覆盖"列可看四个 n_eff 的明细。</dd></div>
+          <div><dt>降水事件证据</dt><dd>观测中真正达到阈值的独立事件数（小时 ≥1mm/h、日 ≥1mm），按 站×时刻 / 站×日 去重。它是"有没有足够多的雨可评"的证据门，与 n_eff 的"判定样本量"不是一回事：样本积累中的源分数仅作参考。</dd></div>
           <div><dt>RMSE / MAE / MBE</dt><dd>温度误差的典型大小（°C，越小越好）：RMSE 对偶发大误差惩罚更重；MAE 是最朴素的"平均差多少度"；MBE 正 = 习惯性报偏高，负 = 报偏低。</dd></div>
           <div><dt>相关系数 r / 回归斜率</dt><dd>r 越接近 1 越能跟上天气的"节奏"；斜率 &gt;1 = 起伏幅度偏小（该热不热），&lt;1 = 反应过激。</dd></div>
           <div><dt>准确率（±1°C / ±2°C）</dt><dd>预报与实况相差不超过 1°C（或 2°C）的样本占比，越高越好。</dd></div>

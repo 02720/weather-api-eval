@@ -20,6 +20,7 @@ from weather_eval.timeutil import iso
 CFG = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
        "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 1,
        "min_board_neff": 1, "min_board_neff_rain": 1,
+       "min_board_rain_events": 1, "min_board_rain_days": 1,
        "bootstrap_runs": 30, "sensitivity_runs": 30,
        # 夹具规模小，格子门槛与长尾门槛必须相应放开，否则设计会被清空——
        # 真实数据下的门槛值由 test_board_gates_on_real_scale 覆盖
