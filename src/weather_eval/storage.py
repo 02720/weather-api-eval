@@ -451,30 +451,94 @@ def _stamp_now():
     return now_beijing()
 
 
-def list_forecast_snapshots(station_id: str, model: str) -> list[dict]:
-    """该站该模型的全部快照（热层散装 .json 与冷层月度 bundle 透明合并）。
+# ------------------------------------------------------- 模型 id 沿袭（lineage）
+# 同一模式产品的"服务形态变更"（换服务 id）不构成新系列：历史存档以旧 id 落盘、
+# 永不改写（payload_sha256 锚定封存那一刻的字典），读取时把旧 id 目录的快照原样
+# 并入接替 id 的系列，评估记录的归属映射到接替 id（见 evaluate 的两处记录构造与
+# report/diagnostics 的归属）。前置条件：新旧 id 已逐站核实是同一产品，而非不同
+# 的模式——不同的产品必须各自独立成系列，绝不归并。
+# 现有成员：Open-Meteo 公告 2026-11-30 起 dwd_icon_global 改用原生格点，2026-10-24
+# 提前切换为 dwd_icon_global_native；经逐站核对两 id 的逐小时序列基本一致。
+FORECAST_MODEL_LINEAGE: dict[str, str] = {
+    "dwd_icon_global": "dwd_icon_global_native",
+}
 
-    两层展开成同一批快照，**按 `issue_iso` 去重**：同一份起报在两处出现时以
-    **散装 .json 为准**——bundle 冻结之后才补进来的快照不可能在 bundle 里，
-    它就是更新的真相（正常情况下两者不会并存；此规则是防御，不是常态）。
+
+def canonical_model(model: str) -> str:
+    """系列 id 的规范名：沿袭表里的旧 id 映射到接替 id，其余原样返回。"""
+    return FORECAST_MODEL_LINEAGE.get(model, model)
+
+
+def canonical_models(models) -> list[str]:
+    """模型列表规范名去重（保序）：沿袭前身的旧 id 折叠到接替 id。
+
+    防御性入口：正常配置只写接替 id，但若旧 id 混进 models（手工改配置、旧
+    结论摘要重放），折叠保证同一系列绝不被两条 id 重复入样。
     """
-    base = _root() / "forecasts" / station_id / model
-    if not base.exists():
-        return []
+    out: list[str] = []
+    for m in models:
+        c = canonical_model(str(m))
+        if c not in out:
+            out.append(c)
+    return out
+
+
+def list_forecast_snapshots(station_id: str, model: str) -> list[dict]:
+    """该站该**系列**的全部快照（热层散装 .json 与冷层月度 bundle 透明合并）。
+
+    系列身份按 :data:`FORECAST_MODEL_LINEAGE` 归并：请求接替 id 时，旧服务 id
+    目录里的历史存档**原样**并入合并 listing——绝不改写任何键或值，快照的
+    ``payload_sha256`` 锚定封存那一刻的字典，读取侧改键等于篡改证据。请求旧 id
+    本身也返回同一份合并 listing（旧 id 只是该系列的历史别名，不再独立成系列）。
+
+    两层展开后**按 `issue_iso` 去重**：同一份起报在多处出现时以**接替 id 目录**
+    为准（切换日两侧可能都抓过同一起报，接替 id 是现行真相）；散装 .json 对
+    bundle 的优先规则保留在单目录 listing 内。目录合并顺序为"旧 id 在先、接替
+    id 在后"——同刻有效时间的滚动预报由消费侧"后发布覆盖同刻旧值"的约定取得
+    接替 id 的更新值。
+    """
+    fc_base = _root() / "forecasts" / station_id
+    target = canonical_model(model)
+    merged: dict[Any, dict] = {}
+    dirs: list[tuple[str, Path]] = [
+        (old, fc_base / old)
+        for old in FORECAST_MODEL_LINEAGE if FORECAST_MODEL_LINEAGE[old] == target
+    ]
+    dirs.append((target, fc_base / target))
+    for dir_id, d in dirs:
+        anon = 0
+        for issue, snap in _list_dir_snapshots(d).items():
+            if isinstance(issue, str) and issue.startswith("__anon__"):
+                # 无起报时刻的存档仍须保留，不得丢弃；跨目录合并时键必须
+                # 带目录名（各目录的 __anon__N 会相撞）
+                anon += 1
+                merged[f"__anon__{dir_id}#{anon}"] = snap
+            else:
+                merged[issue] = snap       # 后写覆盖：接替 id 目录最后处理
+    return [merged[k] for k in merged]
+
+
+def _list_dir_snapshots(base: Path) -> dict[Any, dict]:
+    """单模型目录的快照 listing（按 `issue_iso` 去重，散装 .json 优先）。
+
+    原 ``list_forecast_snapshots`` 的目录内逻辑，提出为沿袭归并的构件：
+    `_snapshot_files` 已按文件名排序，且散装 .json（"2026-08-26T2100.json"）的
+    文件名恒排在 bundle（"2026-08.json.gz"）之前，故"先到者优先 + 散装覆盖"
+    的组合即为"散装优先"。
+    """
     out: dict[Any, dict] = {}
     anon = 0
+    if not base.exists():
+        return out
     for p in sorted(_snapshot_files(base)):
-        # _snapshot_files 已按文件名排序，且散装 .json（"2026-08-26T2100.json"）的
-        # 文件名恒排在 bundle（"2026-08.json.gz"）之前，故"先到者优先 + 散装覆盖"
-        # 的组合即为"散装优先"。
         for snap in _expand_snapshots(_load_json(p)):
             issue = snap.get("issue_iso")
             if issue is None:
                 anon += 1
-                out[f"__anon__{anon}"] = snap   # 无起报时刻的存档仍须保留，不得丢弃
+                out[f"__anon__{anon}"] = snap
             elif issue not in out or p.suffix == ".json":
                 out[issue] = snap
-    return [out[k] for k in out]
+    return out
 
 
 def _expand_snapshots(loaded: Any) -> list[dict]:

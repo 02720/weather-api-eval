@@ -556,7 +556,8 @@ tests/                    pytest（含 cyeva 手算对拍、算法性质、boots
 
 - **新增站点**：`config/stations.yaml` 的 `stations` 下加一项（`id`/`name`/`lat`/`lon`/`obs_url`）。若要接 `cma_public`（预报）或让站点走 `cma_data`（观测备用源），另加 `cma_id`（该站 WMO 站号）；未配时这两个源的抓取都会**响亮失败**，绝不猜站号。
 - **新增观测源**：实现 `obs/base.py` 的 `ObsSource` 接口（返回 `{"time", "temp", "rain", ...}` 列表，最新在前），然后**三处同步登记**：`obs/chain.py` 的 `OBS_SOURCE_PRIORITY`（顺序即权威顺序）、`__main__.py` 的 `_build_obs_sources`、以及 `config/stations.yaml` 的 `obs_sources`。优先级语义（高优先级源已给出的时刻不被低优先级覆盖）由编排层实现，新源无需自己处理覆盖问题。
-- **新增模型**：Open-Meteo 模型直接加进 `models`；中科天机模型需先在 `forecast/tianji.py` 的 `MODEL_SPECS` 登记。
+- **新增模型**：Open-Meteo 模型直接加进 `models`；中科天机模型需先在 `forecast/tianji.py` 的 `MODEL_SPECS` 登记。报告层三张登记表（`MODEL_LABELS`/`MODEL_COLORS`/`MODEL_FAMILIES`）同样要同步登记模型 id。
+- **模型 id 沿袭（同一产品的服务形态变更）**：当一家上游只是换了服务 id 而产品本身没变（如 2026-11-30 起 Open-Meteo 的 `dwd_icon_global` 改用原生格点、提前切换为 `dwd_icon_global_native`），在 `storage.FORECAST_MODEL_LINEAGE` 登记 `{旧 id: 接替 id}`，`config` 的 `models` 里只写接替 id。语义：**历史存档以旧 id 落盘、永不改写**（快照的 `payload_sha256` 锚定封存时的字典，改键等于篡改证据）；读取侧把旧 id 目录的快照**原样并入**接替 id 的系列，评估记录的归属映射到接替 id——榜单上接替 id 从切换当天起就带着全部历史样本，既不重开零样本系列，也不伪造连续性。前置条件（必须逐站核实并留档）：新旧 id 确是同一模式产品，而非不同的模式。若新旧真是**不同的产品**，则各自独立成系列，绝不归并。
 - **新增预报源**：实现 `forecast/base.py` 的 `ForecastProvider` 接口，在 `__main__.py` 的 `SOURCE_SPECS` 登记一个 `--source`（模型集合与提供方工厂在同一处登记，勿分两张表），评估逻辑无需改动。**报告层三张登记表必须同步**：`report/render.py` 的 `MODEL_LABELS`（中文名）/ `MODEL_COLORS`（配色）/ `MODEL_FAMILIES`（分组）——由守卫测试 `test_all_models_registered_in_report_layer` 机器校验，漏登任何一张表 CI 直接红。
 
 几个通用要求：

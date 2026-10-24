@@ -41,6 +41,7 @@ from typing import Any, Iterable
 
 import numpy as np
 from ..timeutil import parse_iso as _timeutil_parse_iso, lower_split, upper_split, minute_index
+from ..storage import canonical_model
 from .. import stats as st
 
 logger = logging.getLogger(__name__)
@@ -162,6 +163,11 @@ def iter_error_samples(forecasts_root: Path, obs_by_station: dict[str, dict],
                         yield station_dir.name, model_dir.name, snap
 
     for station, model, snap in _iter_pairs():
+        # 沿袭归并（storage.FORECAST_MODEL_LINEAGE）：目录流路径下旧 id 目录的
+        # 存档并入接替系列；内存快照路径的键已是规范 id，此处为幂等映射。
+        # 诊断层的"同源冗余/独立信源"结论必须按系列而非服务 id 计——把同一
+        # 产品的两代服务 id 当成两家信源，会凭空稀释跨源相关。
+        model = canonical_model(model)
         obs = obs_by_station.get(station) or {}
         if not obs:
             continue
@@ -205,11 +211,13 @@ def iter_error_samples(forecasts_root: Path, obs_by_station: dict[str, dict],
         hi_i = min(hi_i, lower_split(times, issue + timedelta(days=hi + 1)))
         if lo_i >= hi_i:
             continue
-        # 一份快照可能同时封装多个模型（Open-Meteo 批量接口）
+        # 一份快照可能同时封装多个模型（Open-Meteo 批量接口）；数据键同样按
+        # 沿袭映射——归并存的旧 id 键计入接替系列
         for mid, series in data.items():
             if not isinstance(series, dict):
                 continue
-            key_model = mid if mid in (snap.get("models") or []) else model
+            key_model = (canonical_model(mid)
+                         if mid in (snap.get("models") or []) else model)
             temps = series.get("temperature_2m") or []
             rains = series.get("precipitation") or []
             tg = t_map if key_model == model else temp_err.setdefault(key_model, {})
@@ -340,7 +348,10 @@ def fingerprint_drift(forecasts_root: Path, months: list[str],
                 for path in _snapshot_files(model_dir):
                     snap = _read_json(path)
                     if isinstance(snap, dict):
-                        yield model_dir.name, snap
+                        # 沿袭归并：旧 id 目录的存档并入接替系列的漂移组——
+                        # 契约漂移判定按系列进行，否则同一系列被拆成两组、
+                        # 前后半周期的众数各只看到半截历史
+                        yield canonical_model(model_dir.name), snap
 
     for model, snap in _iter():
         issue = _parse_iso(snap.get("issue_iso") or "")

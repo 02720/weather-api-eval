@@ -62,7 +62,16 @@ env = Environment(loader=FileSystemLoader(str(TPL_DIR)), autoescape=True,
 MODEL_LABELS = {
     "ecmwf_ifs": "ECMWF IFS HRES 9km",
     "ncep_gfs_global": "NCEP GFS Global 0.11°/0.25°",
-    "dwd_icon_global": "DWD ICON Global",
+    # DWD ICON Global 是**一个系列**：2026-10-24 起服务 id 由 dwd_icon_global
+    # 切换为 dwd_icon_global_native（Open-Meteo 2026-11-30 起该系列改用原生格点，
+    # 提前切换；经逐站核对两 id 序列基本一致）。两个 id 映射到**同一个显示名/
+    # 同一配色**：接替 id 在榜上直接继承旧 id 的全部历史样本（读取侧沿袭归并，
+    # 见 storage.FORECAST_MODEL_LINEAGE）；旧 id 仍登记在此，是为了切换前归档的
+    # 月度结论摘要（data/metrics/*/summary.json）重放时显示一致。
+    "dwd_icon_global": "DWD ICON Global Native",
+    "dwd_icon_global_native": "DWD ICON Global Native",
+    "dwd_aicon_global_native": "DWD AICON Global Native",
+    "meteofrance_arpege_world": "Météo-France ARPEGE World",
     "best_match": "Best match",
     "cma_grapes_global": "CMA GRAPES Global",
     "cmc_gem_gdps": "GEM Global",
@@ -101,7 +110,11 @@ MODEL_FAMILIES = [
         "best_match",
         "ecmwf_ifs", "ecmwf_ifs025", "ecmwf_aifs025_single",
         "ncep_gfs_global", "ncep_aigfs025", "ncep_hgefs025_ensemble_mean",
-        "dwd_icon_global", "cma_grapes_global", "cmc_gem_gdps",
+        # dwd_icon_global 与 _native 是同一系列的新旧服务 id（沿袭归并），
+        # 旧 id 保留在此供切换前结论摘要重放时的分组着色
+        "dwd_icon_global", "dwd_icon_global_native", "dwd_aicon_global_native",
+        "meteofrance_arpege_world",
+        "cma_grapes_global", "cmc_gem_gdps",
         "jma_gsm", "ukmo_global_deterministic_10km",
     ]},
     {"icon": "🏢", "name": "商业天气 API", "models": [
@@ -122,7 +135,11 @@ MODEL_FAMILIES = [
 MODEL_COLORS = {
     "ecmwf_ifs": "#2563eb",      # 蓝
     "ncep_gfs_global": "#f59e0b",  # 橙
-    "dwd_icon_global": "#10b981",  # 绿
+    # 系列同一（见 MODEL_LABELS 注释）：新旧服务 id 共用同一配色
+    "dwd_icon_global": "#047857",          # 深翠绿（DWD 家族色，暗于原 #10b981）
+    "dwd_icon_global_native": "#047857",   # 同上（dwd_icon_global 的接替 id）
+    "dwd_aicon_global_native": "#be123c",  # 深玫红（与 #e11d48/#f43f5e 同族但暗一档）
+    "meteofrance_arpege_world": "#0c4a6e",  # 深海蓝（与 #0ea5e9/#2563eb 拉开明度）
     "best_match": "#0ea5e9",     # 天蓝
     "cma_grapes_global": "#dc2626",  # 深红
     "cmc_gem_gdps": "#eab308",   # 黄

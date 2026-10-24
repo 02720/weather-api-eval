@@ -2020,3 +2020,56 @@ def test_collect_daily_offset_capped_at_eval_range(tmp_path, monkeypatch):
     assert offs == set(range(1, 17)), offs     # 1..16，含 16 不含 17
     # offset 17 的日产品与观测都在，但被评测范围拒之门外
     assert all(r["temp_src"] == "daily" for r in daily)
+
+
+# ------------------------------------------------------------------ 模型 id 沿袭
+def _lineage_scenario(tmp_path, monkeypatch, n_days: int = 6):
+    """沿袭归并的最小场景：旧 id 目录里 5 个起报的存档（物理键 = 旧 id），
+    观测与预报值恒定可核对。返回 (start, end, legacy_id, native_id)。"""
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    legacy, native = "dwd_icon_global", "dwd_icon_global_native"
+    start = datetime(2026, 8, 1, 0, 0)
+    obs = [{"time": iso(start + timedelta(hours=h)), "temp": 24.0, "rain": 0.0}
+           for h in range(n_days * 24)]
+    storage.save_obs("s1", obs)
+    for issue_d in range(n_days - 1):
+        issue = start + timedelta(days=issue_d)
+        times = [iso(issue + timedelta(hours=h)) for h in range(1, 49)]
+        storage.save_forecast_snapshot("s1", legacy, {
+            "issue_iso": iso(issue), "station_id": "s1", "source": "open-meteo",
+            "models": [legacy], "grid_lat": 23.0, "grid_lon": 111.0,
+            "elevation": 50, "hourly_time": times,
+            "data": {legacy: {"temperature_2m": [24.5] * 48,
+                              "precipitation": [0.0] * 48}}})
+    return start, start + timedelta(hours=n_days * 24 - 1), legacy, native
+
+
+def test_lineage_records_attributed_to_successor(tmp_path, monkeypatch):
+    """记录归属：旧 id 目录归并进来的存档，两条轨道的记录都记在接替 id 名下。
+
+    物理数据键不改（哈希链锚定），系列身份以接替 id 计——这是"同一产品换
+    服务 id 不构成新系列"在评估层的落点。"""
+    start, end, legacy, native = _lineage_scenario(tmp_path, monkeypatch)
+    hourly, daily = collect(["s1"], [native], start, end, 16, 16, 20, True)
+    assert hourly, "归并后的历史存档必须产生样本"
+    assert {r["model"] for r in hourly} == {native}, \
+        "逐小时记录必须归属接替 id，旧 id 不得再作为独立系列出现"
+    assert {r["model"] for r in daily} == {native}, "按天轨道同口径归属"
+
+
+def test_lineage_successor_inherits_full_history_on_board(tmp_path, monkeypatch):
+    """榜单上接替 id 直接继承旧 id 的全部历史样本，绝不重开零样本系列；
+    旧 id + 接替 id 并存（旧配置残留）时折叠去重，同一样本绝不入样两次。"""
+    start, end, legacy, native = _lineage_scenario(tmp_path, monkeypatch)
+    cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
+           "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 5}
+    data = build_report(["s1"], [native], cfg, start, end, "2026-08")
+    rows = {r["model"]: r for r in data["leaderboards"]["all:1d"]}
+    assert set(rows) == {native}, "旧 id 不得作为独立系列出现在榜单上"
+    assert (rows[native]["n"] or 0) > 0, "接替 id 必须带着归并的历史样本进榜"
+
+    both = build_report(["s1"], [legacy, native], cfg, start, end, "2026-08")
+    rows_both = {r["model"]: r for r in both["leaderboards"]["all:1d"]}
+    assert set(rows_both) == {native}, "旧 id 折叠后不得多出一行"
+    assert rows_both[native]["n"] == rows[native]["n"], \
+        "折叠去重失败：同一样本被两条 id 各计了一次"

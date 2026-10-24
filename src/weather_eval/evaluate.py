@@ -182,7 +182,8 @@ from .snapshot_meta import (FCST_PLAUSIBLE, ISSUE_SOURCE_LABELS,
                             SUSPECT_ISSUE_SOURCES, integrity_summary,
                             plausible_fcst_value, sanitize_hourly_arrays,
                             snapshot_complete)
-from .storage import load_obs, list_forecast_snapshots
+from .storage import (FORECAST_MODEL_LINEAGE, canonical_model, canonical_models,
+                      load_obs, list_forecast_snapshots)
 
 # 逐小时降水分级：cyeva 1h 雨强区间级别（小雨 0.1~1.9 … 大暴雨 ≥20 mm/h）
 HOURLY_GRADED_LEVS = ("1", "2", "3", "4", "5")
@@ -529,6 +530,9 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
     # 时间轴判定缓存同理：按 id(times) 记忆，必须与本次 collect 同生命周期，
     # 否则上一轮释放后的地址被复用，会读到一条**已失效**的"这条轴是排好序的"。
     clear_axis_cache()
+    # 沿袭规范化（防直接调用方）：build_report 已规范化，这里再折叠一次保证
+    # 旧 id + 接替 id 并存时同一系列绝不被两条 id 重复入样
+    models = canonical_models(models)
     max_lead = hourly_lead_days * 24
     for sid in station_ids:
         obs_map = obs_maps[sid] if obs_maps is not None and sid in obs_maps \
@@ -558,6 +562,10 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                 # 封存判定的基准时刻：一次定界 + 一次解析，绝不进内层循环
                 frozen_lo, fetched_dt = unfrozen_split(times, snap.get("fetched_at_bj"))
                 for m in snap["data"]:
+                    # 记录归属按沿袭表映射到接替 id：物理数据键不改（payload_sha256
+                    # 锚定封存那一刻的字典），但系列身份以接替 id 计——旧 id 目录
+                    # 归并进来的存档计入接替系列的样本（见 storage.FORECAST_MODEL_LINEAGE）
+                    series = canonical_model(m)
                     arr_t = snap["data"][m]["temperature_2m"]
                     arr_p = snap["data"][m]["precipitation"]
                     lt = len(arr_t)
@@ -579,7 +587,7 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                         # 是修订值甚至实况值。无 fetched_at 的历史存档无从判定，
                         # 按已封存处理（新契约是纯增量，绝不凭空抹掉历史样本）。
                         if fetched_dt is not None and i < frozen_lo:
-                            _note_unfrozen(stats, m,
+                            _note_unfrozen(stats, series,
                                            (fetched_dt - parse_iso(tstr)).total_seconds() / 3600.0,
                                            frozen_excluded=require_frozen)
                             if require_frozen:
@@ -607,7 +615,7 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                         # 数组越界按缺测处理（与按天聚合同防护）：畸形存档降级为
                         # 该点缺测，不拖垮整份报告
                         append_hr({
-                            "station": sid, "model": m, "valid_iso": tstr,
+                            "station": sid, "model": series, "valid_iso": tstr,
                             "issue_iso": issue_iso_s,
                             "lead": lead, "bucket": days_off,
                             "temp_obs": rec.get("temp"),
@@ -659,6 +667,7 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                 d_hi = upper_split(times, end_dt)
                 d_frozen_lo, fetched_dt = unfrozen_split(times, snap.get("fetched_at_bj"))
                 for m in snap["data"]:
+                    series = canonical_model(m)
                     arr_t = snap["data"][m]["temperature_2m"]
                     arr_p = snap["data"][m]["precipitation"]
                     lt = len(arr_t)
@@ -703,7 +712,7 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                             # seal_lag 样本单位不同（天-小时 vs 小时记录），
                             # 混进同一个计数器会两头虚增
                             by_m = stats.setdefault("daily_unfrozen_hours_by_model", {})
-                            by_m[m] = by_m.get(m, 0) + 1
+                            by_m[series] = by_m.get(series, 0) + 1
                             stats["n_daily_unfrozen_hours"] = stats.get("n_daily_unfrozen_hours", 0) + 1
                         d = d_cur
                         df = df_cur
@@ -794,7 +803,7 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                                 and f_temp is None and f_min is None and f_rain is None:
                             continue  # 该天无任何可用日聚合，不入样
                         daily_records.append({
-                            "station": sid, "model": m, "valid_day": day, "offset": offset,
+                            "station": sid, "model": series, "valid_day": day, "offset": offset,
                             "issue_iso": snap["issue_iso"],
                             "temp_max_obs": o_temp, "temp_max_fcst": f_temp,
                             "temp_min_obs": o_min, "temp_min_fcst": f_min,
@@ -1914,6 +1923,9 @@ def _preload(station_ids: list[str], models: list[str]) -> tuple[dict, dict]:
     """一次 IO 读全所有观测与快照，下游各节共用（P3-2：同批文件此前被读 4 遍）。"""
     global _PRELOAD_CACHE
     from .storage import _root, data_version
+    # 沿袭规范化：请求旧 id 与请求接替 id 得到同一批快照，且绝不重复加载——
+    # 否则 verify 的 Merkle 重算会双重计入，根必然对不上清单
+    models = canonical_models(models)
     key = (str(_root()), tuple(station_ids), tuple(models), data_version())
     if _PRELOAD_CACHE is not None and _PRELOAD_CACHE[0] == key:
         return _PRELOAD_CACHE[1], _PRELOAD_CACHE[2]
@@ -1926,6 +1938,10 @@ def _preload(station_ids: list[str], models: list[str]) -> tuple[dict, dict]:
 
 def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
                  period_label: str, is_monthly: bool = False) -> dict:
+    # 模型列表先按沿袭表规范化：旧 id 折叠到接替 id 并去重（保序）。评估集合、
+    # 分桶、榜单全部只认规范 id——归并进来的历史存档（物理键仍是旧 id）经
+    # collect 的记录归属映射落到接替系列名下，绝不重复入样。
+    models = canonical_models(models)
     # 评分换算斜率：config eval.score_slopes（季度标定冻结值）覆盖代码缺省。
     # 必须在任何子分计算之前装载——榜单、走势、敏感性、诊断要跑在**同一把尺子**上；
     # meta.score_slopes 留痕当期值，渲染层回放同一份，保证"评分构成"表与实际换算一致。
@@ -2852,10 +2868,15 @@ def _build_timeseries(station_ids, models, ts_start, end_dt, *,
             for snap in snaps:
                 if parse_iso(snap["issue_iso"]) > end_dt:
                     continue
-                if m not in snap["data"]:
+                # 数据键按沿袭解析：接替 id 的系列包含旧 id 目录归并来的存档，
+                # 其物理键仍是旧 id（payload_sha256 锚定，读取侧不改写）
+                key = m if m in snap["data"] else next(
+                    (old for old, new in FORECAST_MODEL_LINEAGE.items()
+                     if new == m and old in snap["data"]), None)
+                if key is None:
                     continue
-                arr_t = snap["data"][m]["temperature_2m"]
-                arr_p = snap["data"][m]["precipitation"]
+                arr_t = snap["data"][key]["temperature_2m"]
+                arr_p = snap["data"][key]["precipitation"]
                 for i, t in enumerate(snap["hourly_time"]):
                     # 数组越界按缺测处理（畸形存档不拖垮报告）
                     tmap[t] = (arr_t[i] if i < len(arr_t) else None,

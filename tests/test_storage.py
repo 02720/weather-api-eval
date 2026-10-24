@@ -275,3 +275,58 @@ def test_truncate_daily_block_conservative_cases(tmp_path, monkeypatch):
                       {"daily_time": ["2026-09-01"], "daily": "oops"}):
         s = {"issue_iso": "2026-09-01T08:00", **malformed}
         truncate_daily_block(s, 16)   # 绝不抛异常
+
+
+# ------------------------------------------------------------------ 模型 id 沿袭
+def _lineage_snap(issue: str, model: str, temp: float = 20.0) -> dict:
+    return {"issue_iso": issue, "station_id": "s1", "source": "open-meteo",
+            "models": [model], "grid_lat": 23.0, "grid_lon": 111.0,
+            "elevation": 50, "hourly_time": [issue],
+            "data": {model: {"temperature_2m": [temp], "precipitation": [0.0]}}}
+
+
+def test_lineage_listing_folds_legacy_dir(tmp_path, monkeypatch):
+    """沿袭归并：请求接替 id 时旧 id 目录的历史存档**原样**并入同一 listing。
+
+    系列身份归并的物理前提：合并只发生在读取层，绝不改写任何 dict——
+    payload_sha256 锚定封存那一刻的字典，读取侧改键等于篡改证据。"""
+    legacy, native = "dwd_icon_global", "dwd_icon_global_native"
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    storage.save_forecast_snapshot("s1", legacy, _lineage_snap("2026-08-01T00:00", legacy))
+    storage.save_forecast_snapshot("s1", native, _lineage_snap("2026-10-24T00:00", native))
+
+    merged = storage.list_forecast_snapshots("s1", native)
+    # 旧 id 目录在先、接替 id 在后：时间轴重叠段由"后发布覆盖同刻旧值"取得新值
+    assert [s["issue_iso"] for s in merged] == ["2026-08-01T00:00", "2026-10-24T00:00"]
+    assert list(merged[0]["data"]) == [legacy], "物理数据键必须保持旧 id 原样"
+    # 请求旧 id = 同一系列的历史别名，返回同一份合并 listing
+    assert storage.list_forecast_snapshots("s1", legacy) == merged
+
+    # 同一起报两侧并存（切换日两轮都抓过）：以接替 id 目录为准
+    storage.save_forecast_snapshot("s1", native, _lineage_snap("2026-08-01T00:00", native, 21.5))
+    by_issue = {s["issue_iso"]: s for s in storage.list_forecast_snapshots("s1", native)}
+    assert len(by_issue) == 2
+    assert by_issue["2026-08-01T00:00"]["data"][native]["temperature_2m"] == [21.5]
+
+
+def test_lineage_fold_preserves_payload_hash(tmp_path, monkeypatch):
+    """归并绝不触碰物理 dict：沿袭读取后的每份存档哈希复算必须仍与内嵌值一致。
+
+    这条守的是"读取侧改键 = verify 全红（篡改警报）"这整个故障类别——
+    沿袭实现若顺手把 data/models 的键改成接替 id，这条测试第一个红。"""
+    from weather_eval.snapshot_meta import check_snapshot_integrity
+
+    legacy, native = "dwd_icon_global", "dwd_icon_global_native"
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    storage.save_forecast_snapshot("s1", legacy, _lineage_snap("2026-08-01T00:00", legacy))
+    for s in storage.list_forecast_snapshots("s1", native):
+        ok = check_snapshot_integrity(s)[1]
+        assert ok, "沿袭归并改动了快照内容，内嵌哈希失配（= 伪造了一次篡改）"
+
+
+def test_canonical_models_folds_legacy_and_dedups():
+    """规范化入口：旧 id 折叠到接替 id 并去重（保序），其余模型原样保留。"""
+    assert storage.canonical_models(
+        ["dwd_icon_global", "ecmwf_ifs", "dwd_icon_global_native",
+         "dwd_icon_global", "jma_gsm"]) \
+        == ["dwd_icon_global_native", "ecmwf_ifs", "jma_gsm"]

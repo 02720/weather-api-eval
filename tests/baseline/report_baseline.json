@@ -148,7 +148,7 @@
     "ets": 0.148,
     "hourly_score": 51.76,
     "lead_days": 8.0,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
     "n": 28428.0,
     "n_days": 49.0,
     "n_eff": 347.0,
@@ -739,6 +739,54 @@
     "ets": null,
     "hourly_score": null,
     "lead_days": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_days": 0.0,
+    "n_eff": null,
+    "n_eff_rain": null,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "sig_vs_top": null,
+    "temp_score": null,
+    "track_gap": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "champion_pct": 0.0,
+    "ci90": null,
+    "comparable": false,
+    "daily_score": null,
+    "ets": null,
+    "hourly_score": null,
+    "lead_days": null,
+    "model": "meteofrance_arpege_world",
+    "n": 0.0,
+    "n_days": 0.0,
+    "n_eff": null,
+    "n_eff_rain": null,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "sig_vs_top": null,
+    "temp_score": null,
+    "track_gap": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "champion_pct": 0.0,
+    "ci90": null,
+    "comparable": false,
+    "daily_score": null,
+    "ets": null,
+    "hourly_score": null,
+    "lead_days": null,
     "model": "fuxi_det",
     "n": 0.0,
     "n_days": 0.0,
@@ -1030,7 +1078,33 @@
    {
     "acc2": null,
     "ets": null,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -1292,7 +1366,33 @@
    {
     "acc2": null,
     "ets": null,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -1671,7 +1771,33 @@
    {
     "acc2": null,
     "ets": null,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -2050,7 +2176,33 @@
    {
     "acc2": null,
     "ets": null,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -2429,7 +2581,33 @@
    {
     "acc2": null,
     "ets": null,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -2782,7 +2960,33 @@
    {
     "acc2": null,
     "ets": null,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -3096,7 +3300,33 @@
    {
     "acc2": null,
     "ets": null,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -3540,7 +3770,7 @@
    {
     "acc2": 90.49,
     "ets": 0.25,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
     "n": 4696.0,
     "n_precip": 196.0,
     "precip_score": 48.62,
@@ -3800,6 +4030,32 @@
    {
     "acc2": null,
     "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
     "model": "fuxi_det",
     "n": 0.0,
     "n_precip": 0.0,
@@ -3880,7 +4136,7 @@
    {
     "acc2": 87.38,
     "ets": 0.26,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
     "n": 4600.0,
     "n_precip": 192.0,
     "precip_score": 49.42,
@@ -4166,6 +4422,32 @@
    {
     "acc2": null,
     "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
     "model": "fuxi_det",
     "n": 0.0,
     "n_precip": 0.0,
@@ -4259,7 +4541,7 @@
    {
     "acc2": 84.78,
     "ets": 0.24,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
     "n": 4504.0,
     "n_precip": 188.0,
     "precip_score": 45.81,
@@ -4545,6 +4827,32 @@
    {
     "acc2": null,
     "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
     "model": "fuxi_det",
     "n": 0.0,
     "n_precip": 0.0,
@@ -4638,7 +4946,7 @@
    {
     "acc2": 83.59,
     "ets": 0.21,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
     "n": 4408.0,
     "n_precip": 184.0,
     "precip_score": 42.46,
@@ -4924,6 +5232,32 @@
    {
     "acc2": null,
     "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
     "model": "fuxi_det",
     "n": 0.0,
     "n_precip": 0.0,
@@ -5056,7 +5390,7 @@
    {
     "acc2": 83.67,
     "ets": 0.15,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
     "n": 4312.0,
     "n_precip": 180.0,
     "precip_score": 33.31,
@@ -5290,6 +5624,32 @@
    {
     "acc2": null,
     "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
     "model": "cma_grapes_global",
     "n": 228.0,
     "n_precip": 0.0,
@@ -5487,7 +5847,7 @@
    {
     "acc2": 79.97,
     "ets": 0.11,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
     "n": 4216.0,
     "n_precip": 176.0,
     "precip_score": 27.62,
@@ -5652,6 +6012,32 @@
     "score": 43.84,
     "temp_score": 61.76,
     "ts": 0.19
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    },
    {
     "acc2": null,
@@ -5983,7 +6369,7 @@
    {
     "acc2": 72.44,
     "ets": 0.02,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
     "n": 1692.0,
     "n_precip": 12.0,
     "precip_score": 6.19,
@@ -5992,6 +6378,32 @@
     "score": 35.85,
     "temp_score": 65.52,
     "ts": 0.02
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    },
    {
     "acc2": null,
@@ -6362,7 +6774,33 @@
    {
     "acc2": null,
     "ets": null,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -6741,7 +7179,33 @@
    {
     "acc2": null,
     "ets": null,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -6974,7 +7438,7 @@
     "comparable": true,
     "ets": 0.231,
     "lead_days": 7.0,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
     "n": 1128.0,
     "n_days": 49.0,
     "n_eff": 133.0,
@@ -7499,6 +7963,48 @@
     "comparable": false,
     "ets": null,
     "lead_days": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_days": 0.0,
+    "n_eff": null,
+    "n_eff_rain": null,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "sig_vs_top": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "champion_pct": 0.0,
+    "ci90": null,
+    "comparable": false,
+    "ets": null,
+    "lead_days": null,
+    "model": "meteofrance_arpege_world",
+    "n": 0.0,
+    "n_days": 0.0,
+    "n_eff": null,
+    "n_eff_rain": null,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "sig_vs_top": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "champion_pct": 0.0,
+    "ci90": null,
+    "comparable": false,
+    "ets": null,
+    "lead_days": null,
     "model": "fuxi_det",
     "n": 0.0,
     "n_days": 0.0,
@@ -7786,7 +8292,33 @@
    {
     "acc2": null,
     "ets": null,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -8074,7 +8606,33 @@
    {
     "acc2": null,
     "ets": null,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -8453,7 +9011,33 @@
    {
     "acc2": null,
     "ets": null,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -8832,7 +9416,33 @@
    {
     "acc2": null,
     "ets": null,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -9211,7 +9821,33 @@
    {
     "acc2": null,
     "ets": null,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -9551,7 +10187,33 @@
    {
     "acc2": null,
     "ets": null,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -9865,7 +10527,33 @@
    {
     "acc2": null,
     "ets": null,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -10257,7 +10945,7 @@
    {
     "acc2": 90.31,
     "ets": 0.314,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
     "n": 196.0,
     "n_precip": 196.0,
     "precip_score": 64.0,
@@ -10556,6 +11244,32 @@
    {
     "acc2": null,
     "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
     "model": "fuxi_det",
     "n": 0.0,
     "n_precip": 0.0,
@@ -10623,7 +11337,7 @@
    {
     "acc2": 86.98,
     "ets": 0.299,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
     "n": 192.0,
     "n_precip": 192.0,
     "precip_score": 61.99,
@@ -10922,6 +11636,32 @@
    {
     "acc2": null,
     "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
     "model": "fuxi_det",
     "n": 0.0,
     "n_precip": 0.0,
@@ -11015,7 +11755,7 @@
    {
     "acc2": 83.78,
     "ets": 0.293,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
     "n": 188.0,
     "n_precip": 188.0,
     "precip_score": 57.74,
@@ -11301,6 +12041,32 @@
    {
     "acc2": null,
     "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
     "model": "fuxi_det",
     "n": 0.0,
     "n_precip": 0.0,
@@ -11381,7 +12147,7 @@
    {
     "acc2": 82.88,
     "ets": 0.272,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
     "n": 184.0,
     "n_precip": 184.0,
     "precip_score": 55.41,
@@ -11680,6 +12446,32 @@
    {
     "acc2": null,
     "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
     "model": "fuxi_det",
     "n": 0.0,
     "n_precip": 0.0,
@@ -11786,7 +12578,7 @@
    {
     "acc2": 84.17,
     "ets": 0.239,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
     "n": 180.0,
     "n_precip": 180.0,
     "precip_score": 48.93,
@@ -12046,6 +12838,32 @@
    {
     "acc2": null,
     "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
     "model": "cma_grapes_global",
     "n": 0.0,
     "n_precip": 0.0,
@@ -12204,7 +13022,7 @@
    {
     "acc2": 81.25,
     "ets": 0.17,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
     "n": 176.0,
     "n_precip": 176.0,
     "precip_score": 39.75,
@@ -12408,6 +13226,32 @@
     "score": 44.35,
     "temp_score": 58.79,
     "ts": 0.254
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    },
    {
     "acc2": null,
@@ -12739,7 +13583,7 @@
    {
     "acc2": 62.5,
     "ets": 0.0,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
     "n": 12.0,
     "n_precip": 12.0,
     "precip_score": 0.0,
@@ -12748,6 +13592,32 @@
     "score": 24.25,
     "temp_score": 48.51,
     "ts": 0.0
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    },
    {
     "acc2": null,
@@ -13118,7 +13988,33 @@
    {
     "acc2": null,
     "ets": null,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -13497,7 +14393,33 @@
    {
     "acc2": null,
     "ets": null,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -13778,7 +14700,7 @@
     "comparable": true,
     "ets": 0.094,
     "lead_days": 8.0,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
     "n": 28428.0,
     "n_days": 49.0,
     "n_eff": 347.0,
@@ -14255,6 +15177,48 @@
     "comparable": false,
     "ets": null,
     "lead_days": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_days": 0.0,
+    "n_eff": null,
+    "n_eff_rain": null,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "sig_vs_top": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "champion_pct": 0.0,
+    "ci90": null,
+    "comparable": false,
+    "ets": null,
+    "lead_days": null,
+    "model": "meteofrance_arpege_world",
+    "n": 0.0,
+    "n_days": 0.0,
+    "n_eff": null,
+    "n_eff_rain": null,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "sig_vs_top": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "champion_pct": 0.0,
+    "ci90": null,
+    "comparable": false,
+    "ets": null,
+    "lead_days": null,
     "model": "fuxi_det",
     "n": 0.0,
     "n_days": 0.0,
@@ -14542,7 +15506,33 @@
    {
     "acc2": null,
     "ets": null,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -14804,7 +15794,33 @@
    {
     "acc2": null,
     "ets": null,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -15183,7 +16199,33 @@
    {
     "acc2": null,
     "ets": null,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -15562,7 +16604,33 @@
    {
     "acc2": null,
     "ets": null,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -15941,7 +17009,33 @@
    {
     "acc2": null,
     "ets": null,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -16320,7 +17414,33 @@
    {
     "acc2": null,
     "ets": null,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -16608,7 +17728,33 @@
    {
     "acc2": null,
     "ets": null,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -17078,7 +18224,7 @@
    {
     "acc2": 90.673,
     "ets": 0.18,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
     "n": 4696.0,
     "n_precip": 4696.0,
     "precip_score": 33.24,
@@ -17312,6 +18458,32 @@
    {
     "acc2": null,
     "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
     "model": "fuxi_det",
     "n": 0.0,
     "n_precip": 0.0,
@@ -17392,7 +18564,7 @@
    {
     "acc2": 87.783,
     "ets": 0.214,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
     "n": 4600.0,
     "n_precip": 4600.0,
     "precip_score": 36.84,
@@ -17678,6 +18850,32 @@
    {
     "acc2": null,
     "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
     "model": "fuxi_det",
     "n": 0.0,
     "n_precip": 0.0,
@@ -17771,7 +18969,7 @@
    {
     "acc2": 85.79,
     "ets": 0.191,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
     "n": 4504.0,
     "n_precip": 4504.0,
     "precip_score": 33.88,
@@ -18057,6 +19255,32 @@
    {
     "acc2": null,
     "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
     "model": "fuxi_det",
     "n": 0.0,
     "n_precip": 0.0,
@@ -18163,7 +19387,7 @@
    {
     "acc2": 84.301,
     "ets": 0.157,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
     "n": 4408.0,
     "n_precip": 4408.0,
     "precip_score": 29.51,
@@ -18436,6 +19660,32 @@
    {
     "acc2": null,
     "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
     "model": "fuxi_det",
     "n": 0.0,
     "n_precip": 0.0,
@@ -18633,7 +19883,7 @@
    {
     "acc2": 83.163,
     "ets": 0.071,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
     "n": 4312.0,
     "n_precip": 4312.0,
     "precip_score": 17.7,
@@ -18811,6 +20061,32 @@
     "score": 39.53,
     "temp_score": 71.49,
     "ts": 0.023
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    },
    {
     "acc2": null,
@@ -19012,7 +20288,7 @@
    {
     "acc2": 78.7,
     "ets": 0.059,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
     "n": 4216.0,
     "n_precip": 4216.0,
     "precip_score": 15.5,
@@ -19164,6 +20440,32 @@
     "score": 39.88,
     "temp_score": 71.26,
     "ts": 0.048
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    },
    {
     "acc2": null,
@@ -19352,7 +20654,7 @@
    {
     "acc2": 82.388,
     "ets": 0.032,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
     "n": 1692.0,
     "n_precip": 1692.0,
     "precip_score": 12.38,
@@ -19530,6 +20832,32 @@
     "score": 33.74,
     "temp_score": 59.68,
     "ts": 0.037
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
    },
    {
     "acc2": null,
@@ -19874,7 +21202,33 @@
    {
     "acc2": null,
     "ets": null,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -20253,7 +21607,33 @@
    {
     "acc2": null,
     "ets": null,
-    "model": "dwd_icon_global",
+    "model": "dwd_icon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "dwd_aicon_global_native",
+    "n": 0.0,
+    "n_precip": 0.0,
+    "precip_score": null,
+    "qualified": false,
+    "rmse": null,
+    "score": null,
+    "temp_score": null,
+    "ts": null
+   },
+   {
+    "acc2": null,
+    "ets": null,
+    "model": "meteofrance_arpege_world",
     "n": 0.0,
     "n_precip": 0.0,
     "precip_score": null,
@@ -20361,7 +21741,7 @@
   "expected_hours": 4808,
   "first_obs": "2026-08-25T22:00",
   "got_hours": 4808,
-  "last_obs": "2026-10-18T16:00"
+  "last_obs": "2026-10-24T08:00"
  },
  "inputs": {
   "obs": {
@@ -20856,7 +22236,7 @@
      "hourly": 3016,
      "total": 3016
     },
-    "dwd_icon_global": {
+    "dwd_icon_global_native": {
      "daily": 0,
      "daily_pct": 0.0,
      "hourly": 2256,
@@ -21002,7 +22382,7 @@
      "cma_public_v1",
      "geovis_v1",
      "qweather_v1",
-     "dwd_icon_global",
+     "dwd_icon_global_native",
      "ukmo_global_deterministic_10km",
      "ecmwf_ifs025",
      "ncep_aigfs025",
@@ -21063,7 +22443,7 @@
        "top10_changed": 1
       },
       {
-       "model": "dwd_icon_global",
+       "model": "dwd_icon_global_native",
        "spearman": 0.9994,
        "top10_changed": 0
       },
@@ -21350,7 +22730,7 @@
     "note": "降水阈值 / daily_min_hours / 逐格权重门槛走廊需重跑全量评估或导出逐格 n_eff，由 scripts/sensitivity_corridors.py 离线产出"
    },
    "fingerprint": {
-    "checked_snapshots": 9566,
+    "checked_snapshots": 10717,
     "drifted": [
      "accuweather_v1",
      "cma_ndfs",
@@ -21358,7 +22738,6 @@
      "fengwu_ghr_9km",
      "fuxi_c88",
      "geovis_v1",
-     "msn_v1",
      "qweather_v1"
     ],
     "fields": [
@@ -21382,7 +22761,7 @@
       ],
       "drift": true,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 623
+      "snapshots": 691
      },
      "best_match": {
       "actual_hours_early": 384,
@@ -21390,7 +22769,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 212
+      "snapshots": 236
      },
      "caiyun_v2_6": {
       "actual_hours_early": 384,
@@ -21398,7 +22777,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 672
+      "snapshots": 740
      },
      "cma_gowfs_v1": {
       "actual_hours_early": 240,
@@ -21406,7 +22785,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 84
+      "snapshots": 152
      },
      "cma_grapes_global": {
       "actual_hours_early": 384,
@@ -21414,7 +22793,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 212
+      "snapshots": 236
      },
      "cma_ndfs": {
       "actual_hours_early": 240,
@@ -21428,7 +22807,7 @@
       ],
       "drift": true,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 280
+      "snapshots": 320
      },
      "cma_public_v1": {
       "actual_hours_early": 163,
@@ -21436,7 +22815,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 288
+      "snapshots": 332
      },
      "cmc_gem_gdps": {
       "actual_hours_early": 384,
@@ -21444,15 +22823,15 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 212
+      "snapshots": 236
      },
-     "dwd_icon_global": {
+     "dwd_icon_global_native": {
       "actual_hours_early": 384,
       "actual_hours_late": 384,
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 216
+      "snapshots": 240
      },
      "ecmwf_aifs025_single": {
       "actual_hours_early": 384,
@@ -21460,7 +22839,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 212
+      "snapshots": 236
      },
      "ecmwf_ifs": {
       "actual_hours_early": 384,
@@ -21468,7 +22847,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 216
+      "snapshots": 240
      },
      "ecmwf_ifs025": {
       "actual_hours_early": 384,
@@ -21476,7 +22855,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 212
+      "snapshots": 236
      },
      "fengqing_ai": {
       "actual_hours_early": 355,
@@ -21490,7 +22869,7 @@
       ],
       "drift": true,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 276
+      "snapshots": 320
      },
      "fengwu_ghr_9km": {
       "actual_hours_early": 166,
@@ -21504,7 +22883,7 @@
       ],
       "drift": true,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 608
+      "snapshots": 672
      },
      "fuxi_c88": {
       "actual_hours_early": 360,
@@ -21523,7 +22902,7 @@
       ],
       "drift": true,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 416
+      "snapshots": 460
      },
      "geovis_v1": {
       "actual_hours_early": 120,
@@ -21537,7 +22916,7 @@
       ],
       "drift": true,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 644
+      "snapshots": 712
      },
      "jma_gsm": {
       "actual_hours_early": 384,
@@ -21545,21 +22924,15 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 212
+      "snapshots": 236
      },
      "msn_v1": {
-      "actual_hours_early": 223,
-      "actual_hours_late": 231,
-      "changes": [
-       {
-        "early": 223,
-        "field": "actual_hours",
-        "late": 231
-       }
-      ],
-      "drift": true,
-      "incomplete_pct_recent": 4.5,
-      "snapshots": 527
+      "actual_hours_early": 232,
+      "actual_hours_late": 232,
+      "changes": [],
+      "drift": false,
+      "incomplete_pct_recent": 4.0,
+      "snapshots": 594
      },
      "ncep_aigfs025": {
       "actual_hours_early": 384,
@@ -21567,7 +22940,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 212
+      "snapshots": 236
      },
      "ncep_gfs_global": {
       "actual_hours_early": 384,
@@ -21575,7 +22948,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 216
+      "snapshots": 240
      },
      "ncep_hgefs025_ensemble_mean": {
       "actual_hours_early": 384,
@@ -21583,7 +22956,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 212
+      "snapshots": 236
      },
      "qweather_v1": {
       "actual_hours_early": 240,
@@ -21597,7 +22970,7 @@
       ],
       "drift": true,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 664
+      "snapshots": 732
      },
      "tj_km_fusion": {
       "actual_hours_early": 240,
@@ -21605,7 +22978,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 388
+      "snapshots": 432
      },
      "tj_t1": {
       "actual_hours_early": 360,
@@ -21613,7 +22986,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 388
+      "snapshots": 432
      },
      "tj_t1h_ai": {
       "actual_hours_early": 360,
@@ -21621,7 +22994,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 384
+      "snapshots": 428
      },
      "tj_t2": {
       "actual_hours_early": 240,
@@ -21629,7 +23002,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 388
+      "snapshots": 432
      },
      "tj_t2_early": {
       "actual_hours_early": 240,
@@ -21637,7 +23010,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 380
+      "snapshots": 424
      },
      "ukmo_global_deterministic_10km": {
       "actual_hours_early": 384,
@@ -21645,7 +23018,7 @@
       "changes": [],
       "drift": false,
       "incomplete_pct_recent": 0.0,
-      "snapshots": 212
+      "snapshots": 236
      }
     },
     "n_models": 28
@@ -22326,7 +23699,7 @@
       "cmc_gem_gdps"
      ],
      [
-      "dwd_icon_global"
+      "dwd_icon_global_native"
      ],
      [
       "jma_gsm"
@@ -23199,7 +24572,7 @@
      "cma_ndfs",
      "cma_public_v1",
      "cmc_gem_gdps",
-     "dwd_icon_global",
+     "dwd_icon_global_native",
      "ecmwf_aifs025_single",
      "ecmwf_ifs",
      "ecmwf_ifs025",
@@ -23229,7 +24602,7 @@
      "cma_ndfs": 23780,
      "cma_public_v1": 16024,
      "cmc_gem_gdps": 36560,
-     "dwd_icon_global": 28428,
+     "dwd_icon_global_native": 28428,
      "ecmwf_aifs025_single": 41680,
      "ecmwf_ifs": 42640,
      "ecmwf_ifs025": 41680,
@@ -23447,6 +24820,74 @@
       true,
       true,
       true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+     ],
+     [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+     ],
+     [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
       false,
       false,
       false,
@@ -24463,7 +25904,8 @@
      "cma_ndfs": 56.52,
      "cma_public_v1": 54.22,
      "cmc_gem_gdps": 48.67,
-     "dwd_icon_global": 57.38,
+     "dwd_aicon_global_native": null,
+     "dwd_icon_global_native": 57.38,
      "ecmwf_aifs025_single": 63.92,
      "ecmwf_ifs": 52.4,
      "ecmwf_ifs025": 52.02,
@@ -24473,6 +25915,7 @@
      "fuxi_det": null,
      "geovis_v1": 56.05,
      "jma_gsm": 48.67,
+     "meteofrance_arpege_world": null,
      "msn_v1": 64.69,
      "ncep_aigfs025": 55.08,
      "ncep_gfs_global": 45.72,
@@ -24539,7 +25982,8 @@
       "cma_ndfs": null,
       "cma_public_v1": null,
       "cmc_gem_gdps": null,
-      "dwd_icon_global": null,
+      "dwd_aicon_global_native": null,
+      "dwd_icon_global_native": null,
       "ecmwf_aifs025_single": 42.62,
       "ecmwf_ifs": 33.37,
       "ecmwf_ifs025": 33.72,
@@ -24549,6 +25993,7 @@
       "fuxi_det": null,
       "geovis_v1": null,
       "jma_gsm": null,
+      "meteofrance_arpege_world": null,
       "msn_v1": null,
       "ncep_aigfs025": 29.6,
       "ncep_gfs_global": 29.32,
@@ -24570,14 +26015,14 @@
      "movers": [
       {
        "delta": -2,
-       "index": 10,
+       "index": 12,
        "model": "ncep_aigfs025",
        "rank_equal": 11,
        "rank_weighted": 9
       },
       {
        "delta": 2,
-       "index": 26,
+       "index": 28,
        "model": "fengqing_ai",
        "rank_equal": 23,
        "rank_weighted": 25
@@ -24591,35 +26036,35 @@
       },
       {
        "delta": -1,
-       "index": 4,
+       "index": 6,
        "model": "cma_grapes_global",
        "rank_equal": 22,
        "rank_weighted": 21
       },
       {
        "delta": -1,
-       "index": 6,
+       "index": 8,
        "model": "jma_gsm",
        "rank_equal": 25,
        "rank_weighted": 24
       },
       {
        "delta": -1,
-       "index": 7,
+       "index": 9,
        "model": "ukmo_global_deterministic_10km",
        "rank_equal": 16,
        "rank_weighted": 15
       },
       {
        "delta": -1,
-       "index": 11,
+       "index": 13,
        "model": "ncep_hgefs025_ensemble_mean",
        "rank_equal": 24,
        "rank_weighted": 23
       },
       {
        "delta": 1,
-       "index": 17,
+       "index": 19,
        "model": "tj_t1",
        "rank_equal": 10,
        "rank_weighted": 11
@@ -25787,6 +27232,8 @@
      true,
      true,
      true,
+     false,
+     false,
      true,
      true,
      true,
@@ -25902,6 +27349,42 @@
       true,
       true,
       true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+     ],
+     [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+     ],
+     [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
       false,
       false,
       false,
@@ -26454,7 +27937,8 @@
      "cma_ndfs": 60.04,
      "cma_public_v1": 61.69,
      "cmc_gem_gdps": 54.03,
-     "dwd_icon_global": 63.3,
+     "dwd_aicon_global_native": null,
+     "dwd_icon_global_native": 63.3,
      "ecmwf_aifs025_single": 64.22,
      "ecmwf_ifs": 57.04,
      "ecmwf_ifs025": 56.52,
@@ -26464,6 +27948,7 @@
      "fuxi_det": null,
      "geovis_v1": 59.57,
      "jma_gsm": 52.86,
+     "meteofrance_arpege_world": null,
      "msn_v1": 68.18,
      "ncep_aigfs025": 58.94,
      "ncep_gfs_global": 52.45,
@@ -26512,7 +27997,8 @@
       "cma_ndfs": null,
       "cma_public_v1": null,
       "cmc_gem_gdps": null,
-      "dwd_icon_global": null,
+      "dwd_aicon_global_native": null,
+      "dwd_icon_global_native": null,
       "ecmwf_aifs025_single": 44.31,
       "ecmwf_ifs": 35.58,
       "ecmwf_ifs025": 36.19,
@@ -26522,6 +28008,7 @@
       "fuxi_det": null,
       "geovis_v1": null,
       "jma_gsm": null,
+      "meteofrance_arpege_world": null,
       "msn_v1": null,
       "ncep_aigfs025": 31.2,
       "ncep_gfs_global": 31.28,
@@ -26543,28 +28030,28 @@
      "movers": [
       {
        "delta": -1,
-       "index": 5,
+       "index": 7,
        "model": "cmc_gem_gdps",
        "rank_equal": 22,
        "rank_weighted": 21
       },
       {
        "delta": -1,
-       "index": 6,
+       "index": 8,
        "model": "jma_gsm",
        "rank_equal": 26,
        "rank_weighted": 25
       },
       {
        "delta": 1,
-       "index": 23,
+       "index": 25,
        "model": "accuweather_v1",
        "rank_equal": 25,
        "rank_weighted": 26
       },
       {
        "delta": 1,
-       "index": 26,
+       "index": 28,
        "model": "fengqing_ai",
        "rank_equal": 21,
        "rank_weighted": 22
@@ -26586,13 +28073,13 @@
       {
        "delta": 0,
        "index": 2,
-       "model": "dwd_icon_global",
+       "model": "dwd_icon_global_native",
        "rank_equal": 6,
        "rank_weighted": 6
       },
       {
        "delta": 0,
-       "index": 3,
+       "index": 5,
        "model": "best_match",
        "rank_equal": 18,
        "rank_weighted": 18
@@ -26890,6 +28377,8 @@
      true,
      true,
      true,
+     false,
+     false,
      true,
      true,
      true,
@@ -27000,6 +28489,42 @@
       true,
       true,
       true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+     ],
+     [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+     ],
+     [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
       false,
       false,
       false,
@@ -27551,7 +29076,8 @@
      "cma_ndfs": 52.99,
      "cma_public_v1": 47.16,
      "cmc_gem_gdps": 43.31,
-     "dwd_icon_global": 51.65,
+     "dwd_aicon_global_native": null,
+     "dwd_icon_global_native": 51.65,
      "ecmwf_aifs025_single": 63.61,
      "ecmwf_ifs": 47.76,
      "ecmwf_ifs025": 47.52,
@@ -27561,6 +29087,7 @@
      "fuxi_det": null,
      "geovis_v1": 52.54,
      "jma_gsm": 44.48,
+     "meteofrance_arpege_world": null,
      "msn_v1": 61.2,
      "ncep_aigfs025": 51.22,
      "ncep_gfs_global": 38.98,
@@ -27609,7 +29136,8 @@
       "cma_ndfs": null,
       "cma_public_v1": null,
       "cmc_gem_gdps": null,
-      "dwd_icon_global": null,
+      "dwd_aicon_global_native": null,
+      "dwd_icon_global_native": null,
       "ecmwf_aifs025_single": 41.2,
       "ecmwf_ifs": 31.49,
       "ecmwf_ifs025": 31.76,
@@ -27619,6 +29147,7 @@
       "fuxi_det": null,
       "geovis_v1": null,
       "jma_gsm": null,
+      "meteofrance_arpege_world": null,
       "msn_v1": null,
       "ncep_aigfs025": 28.19,
       "ncep_gfs_global": 27.59,
@@ -27640,42 +29169,42 @@
      "movers": [
       {
        "delta": -3,
-       "index": 27,
+       "index": 29,
        "model": "cma_public_v1",
        "rank_equal": 17,
        "rank_weighted": 14
       },
       {
        "delta": -2,
-       "index": 4,
+       "index": 6,
        "model": "cma_grapes_global",
        "rank_equal": 21,
        "rank_weighted": 19
       },
       {
        "delta": -2,
-       "index": 11,
+       "index": 13,
        "model": "ncep_hgefs025_ensemble_mean",
        "rank_equal": 24,
        "rank_weighted": 22
       },
       {
        "delta": -2,
-       "index": 13,
+       "index": 15,
        "model": "qweather_v1",
        "rank_equal": 20,
        "rank_weighted": 18
       },
       {
        "delta": 2,
-       "index": 15,
+       "index": 17,
        "model": "tj_t2_early",
        "rank_equal": 19,
        "rank_weighted": 21
       },
       {
        "delta": 2,
-       "index": 23,
+       "index": 25,
        "model": "accuweather_v1",
        "rank_equal": 18,
        "rank_weighted": 20
@@ -27689,7 +29218,7 @@
       },
       {
        "delta": 1,
-       "index": 6,
+       "index": 8,
        "model": "jma_gsm",
        "rank_equal": 22,
        "rank_weighted": 23
@@ -27987,6 +29516,8 @@
      true,
      true,
      true,
+     false,
+     false,
      true,
      true,
      true,
@@ -28029,7 +29560,7 @@
   },
   "end": "2026-10-14 23:00",
   "excluded_incomplete": {
-   "msn_v1": 17
+   "msn_v1": 19
   },
   "generated_at": "2026-10-14 23:00",
   "holm": {
@@ -28039,23 +29570,23 @@
     "hourly": 26
    },
    "k_eff": 1.72,
-   "m": 29,
+   "m": 31,
    "mean_rho": 0.5643,
    "method": "max_t",
    "mode": "m",
-   "note": "默认走保守口径 m",
+   "note": "显著性检定用 max-T 单步（族内极值）校正；mode/k_eff 仅为并列披露，不改变判定",
    "reason": "由诊断层回填"
   },
   "hourly_lead_days": 16,
   "integrity": {
    "fetched_first": "2026-09-19T21:50:42",
-   "fetched_last": "2026-10-18T17:23:57",
+   "fetched_last": "2026-10-24T08:22:27",
    "hash_mismatches": [],
-   "merkle_root": "41be98574be1854adaee3b5d2c743d8b38a340f90ccd6955304c089a0c3dfcaf",
+   "merkle_root": "c3abe2a27552f4b7271eb53673ba96a27988ddb42bd25c9691d304816452a1b0",
    "n_hash_mismatch": 0,
    "n_legacy_hash": 0,
-   "n_snapshots": 9566,
-   "n_with_embedded_hash": 5471,
+   "n_snapshots": 10717,
+   "n_with_embedded_hash": 6622,
    "n_without_fetched_at": 4095
   },
   "is_monthly": false,
@@ -28065,14 +29596,14 @@
     "disputed_reasons": [
      "起报锚点语义为「请求时刻下取整（≈抓取时刻）」，声明时效可能系统性长于实际时效",
      "最近城市吸附（平均 3.5 km，代表城市而非站点）",
-     "同一源混用多种起报锚点语义：时间轴首点（产品的起始时刻）×108、请求时刻下取整（≈抓取时刻）×244"
+     "同一源混用多种起报锚点语义：时间轴首点（产品的起始时刻）×108、请求时刻下取整（≈抓取时刻）×312"
     ],
     "issue_source": "mixed",
     "issue_source_counts": {
      "axis_start": 108,
-     "request_floor": 244
+     "request_floor": 312
     },
-    "issue_source_declared": 352,
+    "issue_source_declared": 420,
     "issue_source_label": "请求时刻下取整（≈抓取时刻）",
     "issue_source_note": "仍有 271 份快照未声明锚点语义",
     "issue_source_undeclared": 271
@@ -28082,9 +29613,9 @@
     "disputed_reasons": [],
     "issue_source": "axis_start",
     "issue_source_counts": {
-     "axis_start": 116
+     "axis_start": 140
     },
-    "issue_source_declared": 116,
+    "issue_source_declared": 140,
     "issue_source_label": "时间轴首点（产品的起始时刻）",
     "issue_source_note": "仍有 96 份快照未声明锚点语义",
     "issue_source_undeclared": 96
@@ -28096,9 +29627,9 @@
     ],
     "issue_source": "request_floor",
     "issue_source_counts": {
-     "request_floor": 356
+     "request_floor": 424
     },
-    "issue_source_declared": 356,
+    "issue_source_declared": 424,
     "issue_source_label": "请求时刻下取整（≈抓取时刻）",
     "issue_source_note": "仍有 316 份快照未声明锚点语义",
     "issue_source_undeclared": 316
@@ -28108,9 +29639,9 @@
     "disputed_reasons": [],
     "issue_source": "model_run",
     "issue_source_counts": {
-     "model_run": 84
+     "model_run": 152
     },
-    "issue_source_declared": 84,
+    "issue_source_declared": 152,
     "issue_source_label": "模式轮次（真实起报时次）",
     "issue_source_note": null,
     "issue_source_undeclared": 0
@@ -28120,9 +29651,9 @@
     "disputed_reasons": [],
     "issue_source": "axis_start",
     "issue_source_counts": {
-     "axis_start": 116
+     "axis_start": 140
     },
-    "issue_source_declared": 116,
+    "issue_source_declared": 140,
     "issue_source_label": "时间轴首点（产品的起始时刻）",
     "issue_source_note": "仍有 96 份快照未声明锚点语义",
     "issue_source_undeclared": 96
@@ -28132,9 +29663,9 @@
     "disputed_reasons": [],
     "issue_source": "model_run",
     "issue_source_counts": {
-     "model_run": 220
+     "model_run": 260
     },
-    "issue_source_declared": 220,
+    "issue_source_declared": 260,
     "issue_source_label": "模式轮次（真实起报时次）",
     "issue_source_note": "仍有 60 份快照未声明锚点语义",
     "issue_source_undeclared": 60
@@ -28144,9 +29675,9 @@
     "disputed_reasons": [],
     "issue_source": "model_run",
     "issue_source_counts": {
-     "model_run": 232
+     "model_run": 276
     },
-    "issue_source_declared": 232,
+    "issue_source_declared": 276,
     "issue_source_label": "模式轮次（真实起报时次）",
     "issue_source_note": "仍有 56 份快照未声明锚点语义",
     "issue_source_undeclared": 56
@@ -28156,21 +29687,29 @@
     "disputed_reasons": [],
     "issue_source": "axis_start",
     "issue_source_counts": {
-     "axis_start": 116
+     "axis_start": 140
     },
-    "issue_source_declared": 116,
+    "issue_source_declared": 140,
     "issue_source_label": "时间轴首点（产品的起始时刻）",
     "issue_source_note": "仍有 96 份快照未声明锚点语义",
     "issue_source_undeclared": 96
    },
-   "dwd_icon_global": {
+   "dwd_aicon_global_native": {
+    "disputed": false,
+    "disputed_reasons": [],
+    "issue_source": "unknown",
+    "issue_source_label": "未知（无法从响应验证）",
+    "issue_source_note": "历史存档早于元数据契约，起报锚点语义未声明",
+    "issue_source_undeclared": 0
+   },
+   "dwd_icon_global_native": {
     "disputed": false,
     "disputed_reasons": [],
     "issue_source": "axis_start",
     "issue_source_counts": {
-     "axis_start": 116
+     "axis_start": 140
     },
-    "issue_source_declared": 116,
+    "issue_source_declared": 140,
     "issue_source_label": "时间轴首点（产品的起始时刻）",
     "issue_source_note": "仍有 100 份快照未声明锚点语义",
     "issue_source_undeclared": 100
@@ -28180,9 +29719,9 @@
     "disputed_reasons": [],
     "issue_source": "axis_start",
     "issue_source_counts": {
-     "axis_start": 116
+     "axis_start": 140
     },
-    "issue_source_declared": 116,
+    "issue_source_declared": 140,
     "issue_source_label": "时间轴首点（产品的起始时刻）",
     "issue_source_note": "仍有 96 份快照未声明锚点语义",
     "issue_source_undeclared": 96
@@ -28192,9 +29731,9 @@
     "disputed_reasons": [],
     "issue_source": "axis_start",
     "issue_source_counts": {
-     "axis_start": 116
+     "axis_start": 140
     },
-    "issue_source_declared": 116,
+    "issue_source_declared": 140,
     "issue_source_label": "时间轴首点（产品的起始时刻）",
     "issue_source_note": "仍有 100 份快照未声明锚点语义",
     "issue_source_undeclared": 100
@@ -28204,9 +29743,9 @@
     "disputed_reasons": [],
     "issue_source": "axis_start",
     "issue_source_counts": {
-     "axis_start": 116
+     "axis_start": 140
     },
-    "issue_source_declared": 116,
+    "issue_source_declared": 140,
     "issue_source_label": "时间轴首点（产品的起始时刻）",
     "issue_source_note": "仍有 96 份快照未声明锚点语义",
     "issue_source_undeclared": 96
@@ -28216,9 +29755,9 @@
     "disputed_reasons": [],
     "issue_source": "model_run",
     "issue_source_counts": {
-     "model_run": 216
+     "model_run": 260
     },
-    "issue_source_declared": 216,
+    "issue_source_declared": 260,
     "issue_source_label": "模式轮次（真实起报时次）",
     "issue_source_note": "仍有 60 份快照未声明锚点语义",
     "issue_source_undeclared": 60
@@ -28226,14 +29765,14 @@
    "fengwu_ghr_9km": {
     "disputed": true,
     "disputed_reasons": [
-     "同一源混用多种起报锚点语义：时间轴首点（产品的起始时刻）×100、模式轮次（真实起报时次）×240"
+     "同一源混用多种起报锚点语义：时间轴首点（产品的起始时刻）×100、模式轮次（真实起报时次）×304"
     ],
     "issue_source": "mixed",
     "issue_source_counts": {
      "axis_start": 100,
-     "model_run": 240
+     "model_run": 304
     },
-    "issue_source_declared": 340,
+    "issue_source_declared": 404,
     "issue_source_label": "模式轮次（真实起报时次）",
     "issue_source_note": "仍有 268 份快照未声明锚点语义",
     "issue_source_undeclared": 268
@@ -28243,9 +29782,9 @@
     "disputed_reasons": [],
     "issue_source": "model_run",
     "issue_source_counts": {
-     "model_run": 232
+     "model_run": 276
     },
-    "issue_source_declared": 232,
+    "issue_source_declared": 276,
     "issue_source_label": "模式轮次（真实起报时次）",
     "issue_source_note": "仍有 184 份快照未声明锚点语义",
     "issue_source_undeclared": 184
@@ -28262,14 +29801,14 @@
     "disputed": true,
     "disputed_reasons": [
      "起报锚点语义为「请求时刻下取整（≈抓取时刻）」，声明时效可能系统性长于实际时效",
-     "同一源混用多种起报锚点语义：时间轴首点（产品的起始时刻）×108、请求时刻下取整（≈抓取时刻）×244"
+     "同一源混用多种起报锚点语义：时间轴首点（产品的起始时刻）×108、请求时刻下取整（≈抓取时刻）×312"
     ],
     "issue_source": "mixed",
     "issue_source_counts": {
      "axis_start": 108,
-     "request_floor": 244
+     "request_floor": 312
     },
-    "issue_source_declared": 352,
+    "issue_source_declared": 420,
     "issue_source_label": "请求时刻下取整（≈抓取时刻）",
     "issue_source_note": "仍有 292 份快照未声明锚点语义",
     "issue_source_undeclared": 292
@@ -28279,38 +29818,46 @@
     "disputed_reasons": [],
     "issue_source": "axis_start",
     "issue_source_counts": {
-     "axis_start": 116
+     "axis_start": 140
     },
-    "issue_source_declared": 116,
+    "issue_source_declared": 140,
     "issue_source_label": "时间轴首点（产品的起始时刻）",
     "issue_source_note": "仍有 96 份快照未声明锚点语义",
     "issue_source_undeclared": 96
+   },
+   "meteofrance_arpege_world": {
+    "disputed": false,
+    "disputed_reasons": [],
+    "issue_source": "unknown",
+    "issue_source_label": "未知（无法从响应验证）",
+    "issue_source_note": "历史存档早于元数据契约，起报锚点语义未声明",
+    "issue_source_undeclared": 0
    },
    "msn_v1": {
     "disputed": true,
     "disputed_reasons": [
      "起报锚点语义为「数据更新时间（≈抓取时刻）」，声明时效可能系统性长于实际时效",
-     "17 份快照残缺（分片未取全）",
+     "19 份快照残缺（分片未取全）",
      "最近城市吸附（平均 3.7 km，代表城市而非站点）",
      "温度被量化到整数摄氏度（自带 ±0.5°C 量化误差）"
     ],
     "issue_source": "data_updated",
     "issue_source_counts": {
-     "data_updated": 330
+     "data_updated": 395
     },
-    "issue_source_declared": 330,
+    "issue_source_declared": 395,
     "issue_source_label": "数据更新时间（≈抓取时刻）",
-    "issue_source_note": "仍有 197 份快照未声明锚点语义",
-    "issue_source_undeclared": 197
+    "issue_source_note": "仍有 199 份快照未声明锚点语义",
+    "issue_source_undeclared": 199
    },
    "ncep_aigfs025": {
     "disputed": false,
     "disputed_reasons": [],
     "issue_source": "axis_start",
     "issue_source_counts": {
-     "axis_start": 116
+     "axis_start": 140
     },
-    "issue_source_declared": 116,
+    "issue_source_declared": 140,
     "issue_source_label": "时间轴首点（产品的起始时刻）",
     "issue_source_note": "仍有 96 份快照未声明锚点语义",
     "issue_source_undeclared": 96
@@ -28320,9 +29867,9 @@
     "disputed_reasons": [],
     "issue_source": "axis_start",
     "issue_source_counts": {
-     "axis_start": 116
+     "axis_start": 140
     },
-    "issue_source_declared": 116,
+    "issue_source_declared": 140,
     "issue_source_label": "时间轴首点（产品的起始时刻）",
     "issue_source_note": "仍有 100 份快照未声明锚点语义",
     "issue_source_undeclared": 100
@@ -28332,9 +29879,9 @@
     "disputed_reasons": [],
     "issue_source": "axis_start",
     "issue_source_counts": {
-     "axis_start": 116
+     "axis_start": 140
     },
-    "issue_source_declared": 116,
+    "issue_source_declared": 140,
     "issue_source_label": "时间轴首点（产品的起始时刻）",
     "issue_source_note": "仍有 96 份快照未声明锚点语义",
     "issue_source_undeclared": 96
@@ -28343,14 +29890,14 @@
     "disputed": true,
     "disputed_reasons": [
      "起报锚点语义为「请求时刻下取整（≈抓取时刻）」，声明时效可能系统性长于实际时效",
-     "同一源混用多种起报锚点语义：时间轴首点（产品的起始时刻）×108、请求时刻下取整（≈抓取时刻）×248"
+     "同一源混用多种起报锚点语义：时间轴首点（产品的起始时刻）×108、请求时刻下取整（≈抓取时刻）×316"
     ],
     "issue_source": "mixed",
     "issue_source_counts": {
      "axis_start": 108,
-     "request_floor": 248
+     "request_floor": 316
     },
-    "issue_source_declared": 356,
+    "issue_source_declared": 424,
     "issue_source_label": "请求时刻下取整（≈抓取时刻）",
     "issue_source_note": "仍有 308 份快照未声明锚点语义",
     "issue_source_undeclared": 308
@@ -28360,9 +29907,9 @@
     "disputed_reasons": [],
     "issue_source": "model_run",
     "issue_source_counts": {
-     "model_run": 200
+     "model_run": 244
     },
-    "issue_source_declared": 200,
+    "issue_source_declared": 244,
     "issue_source_label": "模式轮次（真实起报时次）",
     "issue_source_note": "仍有 188 份快照未声明锚点语义",
     "issue_source_undeclared": 188
@@ -28372,9 +29919,9 @@
     "disputed_reasons": [],
     "issue_source": "model_run",
     "issue_source_counts": {
-     "model_run": 200
+     "model_run": 244
     },
-    "issue_source_declared": 200,
+    "issue_source_declared": 244,
     "issue_source_label": "模式轮次（真实起报时次）",
     "issue_source_note": "仍有 188 份快照未声明锚点语义",
     "issue_source_undeclared": 188
@@ -28384,9 +29931,9 @@
     "disputed_reasons": [],
     "issue_source": "model_run",
     "issue_source_counts": {
-     "model_run": 196
+     "model_run": 240
     },
-    "issue_source_declared": 196,
+    "issue_source_declared": 240,
     "issue_source_label": "模式轮次（真实起报时次）",
     "issue_source_note": "仍有 188 份快照未声明锚点语义",
     "issue_source_undeclared": 188
@@ -28396,9 +29943,9 @@
     "disputed_reasons": [],
     "issue_source": "model_run",
     "issue_source_counts": {
-     "model_run": 200
+     "model_run": 244
     },
-    "issue_source_declared": 200,
+    "issue_source_declared": 244,
     "issue_source_label": "模式轮次（真实起报时次）",
     "issue_source_note": "仍有 188 份快照未声明锚点语义",
     "issue_source_undeclared": 188
@@ -28408,9 +29955,9 @@
     "disputed_reasons": [],
     "issue_source": "model_run",
     "issue_source_counts": {
-     "model_run": 196
+     "model_run": 240
     },
-    "issue_source_declared": 196,
+    "issue_source_declared": 240,
     "issue_source_label": "模式轮次（真实起报时次）",
     "issue_source_note": "仍有 184 份快照未声明锚点语义",
     "issue_source_undeclared": 184
@@ -28420,9 +29967,9 @@
     "disputed_reasons": [],
     "issue_source": "axis_start",
     "issue_source_counts": {
-     "axis_start": 116
+     "axis_start": 140
     },
-    "issue_source_declared": 116,
+    "issue_source_declared": 140,
     "issue_source_label": "时间轴首点（产品的起始时刻）",
     "issue_source_note": "仍有 96 份快照未声明锚点语义",
     "issue_source_undeclared": 96
@@ -28435,6 +29982,8 @@
   "min_board_neff": 30,
   "min_board_neff_daily": 20,
   "min_board_neff_rain": 20,
+  "min_board_rain_days": 8,
+  "min_board_rain_events": 30,
   "min_cell_neff": 15.0,
   "min_sample": 5,
   "model_caveats": {
@@ -28450,7 +29999,8 @@
    "cma_ndfs": "ok",
    "cma_public_v1": "ok",
    "cmc_gem_gdps": "ok",
-   "dwd_icon_global": "ok",
+   "dwd_aicon_global_native": "no_data",
+   "dwd_icon_global_native": "ok",
    "ecmwf_aifs025_single": "ok",
    "ecmwf_ifs": "ok",
    "ecmwf_ifs025": "ok",
@@ -28460,6 +30010,7 @@
    "fuxi_det": "no_data",
    "geovis_v1": "ok",
    "jma_gsm": "ok",
+   "meteofrance_arpege_world": "no_data",
    "msn_v1": "ok",
    "ncep_aigfs025": "ok",
    "ncep_gfs_global": "ok",
@@ -28475,7 +30026,9 @@
   "models": [
    "ecmwf_ifs",
    "ncep_gfs_global",
-   "dwd_icon_global",
+   "dwd_icon_global_native",
+   "dwd_aicon_global_native",
+   "meteofrance_arpege_world",
    "best_match",
    "cma_grapes_global",
    "cmc_gem_gdps",
@@ -28509,18 +30062,18 @@
   "provenance": {
    "bootstrap_seed": 20260906,
    "code_dirty": true,
-   "code_sha": "01b9fb471d1c",
+   "code_sha": "3d907126bc6e",
    "deps": {
-    "cyeva": "0.2.3",
-    "numpy": "2.1.2",
-    "pandas": "2.3.3",
+    "cyeva": "0.1.0.beta.12",
+    "numpy": "2.5.3",
+    "pandas": "3.0.6",
     "pint": "0.24.4",
     "scipy": "1.18.1"
    },
    "generated_by": "local",
    "lock_file": "uv.lock",
    "lock_hash": "c14f57bf92903d95",
-   "python": "3.12.8",
+   "python": "3.14.4",
    "schema_version": 2
   },
   "rain_daily_threshold_mm": 1.0,
@@ -28575,7 +30128,7 @@
      "lag_median_h": 2.96,
      "n_unfrozen": 312
     },
-    "dwd_icon_global": {
+    "dwd_icon_global_native": {
      "lag_max_h": 9.91,
      "lag_median_h": 2.96,
      "n_unfrozen": 312
@@ -28676,7 +30229,7 @@
    "cma_grapes_global": 412,
    "cma_ndfs": 2159,
    "cmc_gem_gdps": 412,
-   "dwd_icon_global": 412,
+   "dwd_icon_global_native": 412,
    "ecmwf_aifs025_single": 412,
    "ecmwf_ifs": 412,
    "ecmwf_ifs025": 412,
@@ -28700,169 +30253,169 @@
    "accuweather_v1": {
     "median_len": 240,
     "min_len": 240,
-    "snapshots": 623,
+    "snapshots": 691,
     "truncated": 0
    },
    "best_match": {
     "median_len": 384,
     "min_len": 384,
-    "snapshots": 212,
+    "snapshots": 236,
     "truncated": 0
    },
    "caiyun_v2_6": {
     "median_len": 384,
     "min_len": 384,
-    "snapshots": 672,
+    "snapshots": 740,
     "truncated": 0
    },
    "cma_gowfs_v1": {
     "median_len": 240,
     "min_len": 240,
-    "snapshots": 84,
+    "snapshots": 152,
     "truncated": 0
    },
    "cma_grapes_global": {
     "median_len": 384,
     "min_len": 384,
-    "snapshots": 212,
+    "snapshots": 236,
     "truncated": 0
    },
    "cma_ndfs": {
     "median_len": 240,
     "min_len": 240,
-    "snapshots": 280,
+    "snapshots": 320,
     "truncated": 0
    },
    "cma_public_v1": {
     "median_len": 157,
     "min_len": 151,
-    "snapshots": 288,
+    "snapshots": 332,
     "truncated": 0
    },
    "cmc_gem_gdps": {
     "median_len": 384,
     "min_len": 384,
-    "snapshots": 212,
+    "snapshots": 236,
     "truncated": 0
    },
-   "dwd_icon_global": {
+   "dwd_icon_global_native": {
     "median_len": 384,
     "min_len": 384,
-    "snapshots": 216,
+    "snapshots": 240,
     "truncated": 0
    },
    "ecmwf_aifs025_single": {
     "median_len": 384,
     "min_len": 384,
-    "snapshots": 212,
+    "snapshots": 236,
     "truncated": 0
    },
    "ecmwf_ifs": {
     "median_len": 384,
     "min_len": 384,
-    "snapshots": 216,
+    "snapshots": 240,
     "truncated": 0
    },
    "ecmwf_ifs025": {
     "median_len": 384,
     "min_len": 384,
-    "snapshots": 212,
+    "snapshots": 236,
     "truncated": 0
    },
    "fengqing_ai": {
     "median_len": 355,
     "min_len": 343,
-    "snapshots": 276,
+    "snapshots": 320,
     "truncated": 0
    },
    "fengwu_ghr_9km": {
     "median_len": 166,
     "min_len": 166,
-    "snapshots": 608,
+    "snapshots": 672,
     "truncated": 0
    },
    "fuxi_c88": {
     "median_len": 360,
     "min_len": 360,
-    "snapshots": 416,
+    "snapshots": 460,
     "truncated": 0
    },
    "geovis_v1": {
     "median_len": 120,
     "min_len": 120,
-    "snapshots": 644,
+    "snapshots": 712,
     "truncated": 0
    },
    "jma_gsm": {
     "median_len": 384,
     "min_len": 384,
-    "snapshots": 212,
+    "snapshots": 236,
     "truncated": 0
    },
    "msn_v1": {
     "median_len": 231,
     "min_len": 25,
-    "snapshots": 527,
-    "truncated": 20
+    "snapshots": 594,
+    "truncated": 21
    },
    "ncep_aigfs025": {
     "median_len": 384,
     "min_len": 384,
-    "snapshots": 212,
+    "snapshots": 236,
     "truncated": 0
    },
    "ncep_gfs_global": {
     "median_len": 384,
     "min_len": 384,
-    "snapshots": 216,
+    "snapshots": 240,
     "truncated": 0
    },
    "ncep_hgefs025_ensemble_mean": {
     "median_len": 384,
     "min_len": 384,
-    "snapshots": 212,
+    "snapshots": 236,
     "truncated": 0
    },
    "qweather_v1": {
     "median_len": 240,
     "min_len": 240,
-    "snapshots": 664,
+    "snapshots": 732,
     "truncated": 0
    },
    "tj_km_fusion": {
     "median_len": 240,
     "min_len": 168,
-    "snapshots": 388,
+    "snapshots": 432,
     "truncated": 0
    },
    "tj_t1": {
     "median_len": 360,
     "min_len": 48,
-    "snapshots": 388,
+    "snapshots": 432,
     "truncated": 8
    },
    "tj_t1h_ai": {
     "median_len": 360,
     "min_len": 24,
-    "snapshots": 384,
-    "truncated": 20
+    "snapshots": 428,
+    "truncated": 24
    },
    "tj_t2": {
     "median_len": 240,
     "min_len": 24,
-    "snapshots": 388,
-    "truncated": 16
+    "snapshots": 432,
+    "truncated": 20
    },
    "tj_t2_early": {
     "median_len": 240,
     "min_len": 24,
-    "snapshots": 380,
-    "truncated": 60
+    "snapshots": 424,
+    "truncated": 72
    },
    "ukmo_global_deterministic_10km": {
     "median_len": 384,
     "min_len": 384,
-    "snapshots": 212,
+    "snapshots": 236,
     "truncated": 0
    }
   },
@@ -29504,7 +31057,81 @@
     "slope": 0.835575
    }
   },
-  "dwd_icon_global": {
+  "dwd_aicon_global_native": {
+   "precip_24h": {
+    "acc": null,
+    "bias": null,
+    "ets": null,
+    "far": null,
+    "mae": null,
+    "mbe": null,
+    "n": 0.0,
+    "n_eff": null,
+    "pod": null,
+    "rmse": null,
+    "ts": null
+   },
+   "precip_72h": {
+    "acc": null,
+    "bias": null,
+    "ets": null,
+    "far": null,
+    "mae": null,
+    "mbe": null,
+    "n": 0.0,
+    "n_eff": null,
+    "pod": null,
+    "rmse": null,
+    "ts": null
+   },
+   "precip_all": {
+    "acc": null,
+    "bias": null,
+    "ets": null,
+    "far": null,
+    "mae": null,
+    "mbe": null,
+    "n": 0.0,
+    "n_eff": null,
+    "pod": null,
+    "rmse": null,
+    "ts": null
+   },
+   "temp_24h": {
+    "acc1": null,
+    "acc2": null,
+    "mae": null,
+    "mbe": null,
+    "n": 0.0,
+    "n_eff": null,
+    "r": null,
+    "rmse": null,
+    "slope": null
+   },
+   "temp_72h": {
+    "acc1": null,
+    "acc2": null,
+    "mae": null,
+    "mbe": null,
+    "n": 0.0,
+    "n_eff": null,
+    "r": null,
+    "rmse": null,
+    "slope": null
+   },
+   "temp_all": {
+    "acc1": null,
+    "acc2": null,
+    "mae": null,
+    "mbe": null,
+    "n": 0.0,
+    "n_eff": null,
+    "r": null,
+    "rmse": null,
+    "slope": null
+   }
+  },
+  "dwd_icon_global_native": {
    "precip_24h": {
     "acc": 81.233,
     "bias": 2.59,
@@ -30242,6 +31869,80 @@
     "r": 0.763420677418478,
     "rmse": 2.441,
     "slope": 0.958225
+   }
+  },
+  "meteofrance_arpege_world": {
+   "precip_24h": {
+    "acc": null,
+    "bias": null,
+    "ets": null,
+    "far": null,
+    "mae": null,
+    "mbe": null,
+    "n": 0.0,
+    "n_eff": null,
+    "pod": null,
+    "rmse": null,
+    "ts": null
+   },
+   "precip_72h": {
+    "acc": null,
+    "bias": null,
+    "ets": null,
+    "far": null,
+    "mae": null,
+    "mbe": null,
+    "n": 0.0,
+    "n_eff": null,
+    "pod": null,
+    "rmse": null,
+    "ts": null
+   },
+   "precip_all": {
+    "acc": null,
+    "bias": null,
+    "ets": null,
+    "far": null,
+    "mae": null,
+    "mbe": null,
+    "n": 0.0,
+    "n_eff": null,
+    "pod": null,
+    "rmse": null,
+    "ts": null
+   },
+   "temp_24h": {
+    "acc1": null,
+    "acc2": null,
+    "mae": null,
+    "mbe": null,
+    "n": 0.0,
+    "n_eff": null,
+    "r": null,
+    "rmse": null,
+    "slope": null
+   },
+   "temp_72h": {
+    "acc1": null,
+    "acc2": null,
+    "mae": null,
+    "mbe": null,
+    "n": 0.0,
+    "n_eff": null,
+    "r": null,
+    "rmse": null,
+    "slope": null
+   },
+   "temp_all": {
+    "acc1": null,
+    "acc2": null,
+    "mae": null,
+    "mbe": null,
+    "n": 0.0,
+    "n_eff": null,
+    "r": null,
+    "rmse": null,
+    "slope": null
    }
   },
   "msn_v1": {

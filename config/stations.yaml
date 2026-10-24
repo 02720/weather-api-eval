@@ -15,7 +15,15 @@ obs_sources:
 models:
   - ecmwf_ifs
   - ncep_gfs_global
-  - dwd_icon_global
+  # DWD ICON Global：2026-10-24 起抓取 id 由 dwd_icon_global 切换为
+  # dwd_icon_global_native（Open-Meteo 公告 2026-11-30 起该系列改用原生格点，
+  # 故提前切换；经逐站核对，两 id 的逐小时序列基本一致——同一 ICON Global
+  # 产品的服务形态变更，不是新模型）。历史存档仍以旧 id 落盘（证据不可改写），
+  # 由 storage.FORECAST_MODEL_LINEAGE 在读取时**原样并入**本系列：榜单上的
+  # DWD ICON Global Native 从切换当天起就带着全部历史样本，不重开零样本系列。
+  - dwd_icon_global_native         # DWD ICON Global（原生格点接替 dwd_icon_global，含其全部历史）
+  - dwd_aicon_global_native        # DWD AICON Global 原生 11km（DWD 的 AI 模式，2026-10 接入）
+  - meteofrance_arpege_world       # Météo-France ARPEGE World 0.25°（2026-10 接入；时效约 4.5 天）
   # —— Open-Meteo 新增模型（2026-08）——
   - best_match                 # Open-Meteo 最优匹配（多模型择优合成）
   - cma_grapes_global          # 中国 CMA GRAPES 全球

@@ -6,6 +6,58 @@
 不写这份记录，基线就会退化成一个每次红灯就重生成一遍的文件——那等于没有基线。
 
 ---
+## 2026-10-24 · 第九次重冻结（模型 id 沿袭：DWD ICON Global 切换原生格点 + 新增两个 Open-Meteo 模型）
+
+重冻结原因：**结构变更**（参赛者名单与一个系列的 id，不改任何评估口径）。冻结窗口
+与第八版**逐位相同**（2026-08-01T00:00 ~ 2026-10-14T23:00，用 `--end` 显式指定）。
+
+### 为什么这次必须重冻结
+
+模型集合 29 → 31，三处变化一次性发生：
+
+1. **沿袭切换**：`dwd_icon_global` → `dwd_icon_global_native`。Open-Meteo 公告
+   2026-11-30 起 `dwd_icon_global` 系列改用原生格点，2026-10-24 提前切换；经逐站
+   核对，两 id 的逐小时序列基本一致——这是**同一 ICON Global 产品的服务形态变更**，
+   不是新模型。落地机制（`storage.FORECAST_MODEL_LINEAGE`）：历史存档以旧 id 落盘、
+   **永不改写**（`payload_sha256` 锚定封存那一刻的字典），读取侧把旧 id 目录的快照
+   **原样并入**接替 id 的系列，评估记录的归属映射到接替 id。于是基线窗口内
+   `dwd_icon_global` 的全部样本原封不动地成为 `dwd_icon_global_native` 的样本——
+   系列的赛道成绩完整延续，绝不重开零样本系列。
+2. **接入** `dwd_aicon_global_native`（DWD AICON，AI 模式）与
+   `meteofrance_arpege_world`（Météo-France ARPEGE World 0.25°，时效约 4.5 天）：
+   冻结窗口内均无快照，照第六次重冻结的先例以**空行**入榜
+   （`n=0`、`score=None`、`qualified=False`）。
+
+榜单按"配置里的模型全集"出行：29 − 1（旧 id 折叠进接替 id）+ 2（新模型空行）=
+**31 行**，`test_report_matches_frozen_baseline` 的行数断言必然红——这不是口径
+漂移，是"参赛者名单变化"。
+
+### 凭什么认为"其它字段没变"（重冻结前逐字段对拍）
+
+用同一窗口重算一遍报告，与第八版基线**逐字段**比对：
+
+* **沿袭的系列逐位继承**：每个榜上 `dwd_icon_global_native`（新）与第八版的
+  `dwd_icon_global`（旧）**全部展示字段逐位相同**（score / temp_score /
+  precip_score / ci90 / champion_pct / n / n_eff / acc2 / rmse / ets / ts /
+  lead_days / n_days / track_gap…）——同一样本集、同一归属路径，只有 id 字符串
+  换了名。这是"复用之前评测的数据"的机器可验形式；
+* 其余 28 个既有模型的行：**0 处差异**，名次与分数逐位不变；
+* 唯一新增：两个新模型的空行，不影响任何指标与名次；
+* 其余差异全部归因于"六天里新归档的快照 + 观测推进 + 代码推进"：
+  `integrity`（Merkle 根与快照份数——归并是读取侧行为，参与哈希的物理 dict
+  集合与第八版完全一致）、`snapshot_quality` / `issue_anchors`（旧 id 的计数
+  并入接替 id 名下，是沿袭的预期呈现）、
+  `diagnostics.fingerprint.checked_snapshots`（9,566 → 10,7xx，仓库累计量）、
+  `coverage.last_obs`（10-18 → 10-24）、`holm.m`（29 → 31，比对族随参赛者
+  扩员）、`models` 列表、`provenance.code_sha`；另有
+  `min_board_rain_events`/`min_board_rain_days` 首次出现在 meta——那是
+  2026-10-23 已合入的 P8 第 3 条（降水事件证据门槛）的口径披露字段，第八版
+  冻结时该提交尚未落库，与本轮结构变更无关。
+
+结论：**没有任何既有评估指标发生变化**（沿袭系列的数字逐位延续），全部差异都能
+归因于"评估集合变更 + 六天新归档数据 + 观测推进"。符合重冻结条件。
+
+---
 ## 2026-10-18 · 第八次重冻结（P1 上端留白 + P3 λ 复标定；含 P8 证据门槛）
 
 重冻结原因：**口径变更**。冻结窗口与第七版**逐位相同**（2026-08-01T00:00 ~
