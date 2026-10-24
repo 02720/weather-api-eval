@@ -73,8 +73,10 @@ BUNDLE_SCHEMA_VERSION = 1
 BUNDLE_SUFFIX = ".json.gz"
 
 # 观测记录里"不参与变化比较"的字段：source 记录的是这条实况由哪条链路抓回来
-# （抓取通道的元数据，不是可测量的实况值），revisions 是历史数组本身。
-_PROVENANCE_KEYS = frozenset({"source", "revisions"})
+# （抓取通道的元数据，不是可测量的实况值），revisions 是历史数组本身，filled_by
+# 是 obs/chain 要素级补位的留痕（哪些要素由哪个低优先级源补的值）——三者都是
+# "这条记录怎么来的"，不是"实况是多少"。
+_PROVENANCE_KEYS = frozenset({"source", "revisions", "filled_by"})
 
 # 数据版本号：本进程内每次观测/快照写路径落盘后 +1。evaluate._preload 据此缓存
 # "一次全量读盘"的解析结果——同一进程里 report→health→月度重建不需要各自再把

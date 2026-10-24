@@ -62,6 +62,24 @@ def test_legacy_snapshot_without_fetched_at_uses_issue():
     assert h["legacy"]["without_fetched_at"] == 1
 
 
+def test_legacy_archive_without_any_timestamp_is_not_an_alarm():
+    """fetched_at 与 issue_iso 皆缺的纯历史存档：三态判定里的 legacy——只展示、
+    不进告警名单。把它当故障每轮报警等于训练运维忽略告警（模块立项要反对的事）；
+    与"时刻不可解析"（unavailable，照旧报警）必须分开。"""
+    snaps = {("s1", "old"): [{"complete": True, "issue_source": "unknown"}],
+             ("s1", "broken"): [{"complete": True, "fetched_at_bj": "not-a-date",
+                                 "issue_source": "unknown"}]}
+    h = health.evaluate_staleness(health.of(snaps, ["s1"], ["old", "broken"]),
+                                  stale_hours=30)
+    assert h["old"]["legacy"] is True
+    assert h["old"]["stale"] is False
+    assert h["old"]["unavailable"] is False
+    assert h["broken"]["legacy"] is False
+    assert h["broken"]["unavailable"] is True
+    # 告警名单只收"时刻不可解析"，不收历史存量
+    assert health.stale_sources(h) == ["broken"]
+
+
 def test_render_health_html_contains_alert_and_rows():
     old = (now_beijing() - timedelta(hours=72)).strftime("%Y-%m-%dT%H:%M:%S")
     h = health.evaluate_staleness(

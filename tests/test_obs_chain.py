@@ -164,7 +164,8 @@ def test_report_serialisable_and_descriptive():
     b = _Src(_recs(0, 27, source="cma_data"))
     _recs_out, rep = _chain(p, b).fetch(_Station())
     d = rep.as_dict()
-    assert set(d) == {"degraded", "n_records", "n_filled", "served_by", "attempts"}
+    assert set(d) == {"degraded", "n_records", "n_filled", "n_elem_filled",
+                      "served_by", "attempts"}
     assert d["attempts"][0]["name"] == "eia_data"
     assert d["attempts"][1]["attempted"] is False   # 未尝试也要如实记录
     assert "eia_data" in rep.describe()
@@ -172,6 +173,50 @@ def test_report_serialisable_and_descriptive():
     rep2 = _chain(_Src(error="boom"), _Src(_recs(0, 27))).fetch(_Station())[1]
     assert "失败" in rep2.describe()
     assert rep2.attempts[0].error == "boom"
+
+
+def test_element_level_fill_backfills_missing_fields():
+    """要素级补位：主源"半空"的小时不该永久挡住备用源对缺失要素的供给。
+
+    主源有 temp 而 rain 缺测、备用源同刻 rain 有值 → 合并结果 rain 取备用源的
+    值（temp 仍是主源的），补位逐值计数并写进 filled_by 留痕；来源标记保持
+    主源（小时所有权未变）。反过来（主源有值）备用源不得覆盖。
+    """
+    p = _Src(_recs(1, 5, temp=11.0, source="wd"))       # temp 有值、rain 缺测
+    for r in p.records:
+        r["rain"] = None
+    b = _Src(_recs(1, 5, temp=99.0, rain=3.5, source="cma_data"))
+    recs, rep = _chain(p, b).fetch(_Station())
+    assert len(recs) == 5
+    for r in recs:
+        assert r["temp"] == 11.0, "主源已有的 temp 不被补位覆盖"
+        assert r["rain"] == 3.5, "主源缺测的 rain 由备用源补上"
+        assert r["source"] == "wd", "小时所有权仍是主源"
+        assert r["filled_by"] == {"rain": "cma_data"}
+    assert rep.n_filled == 0                            # 没有整小时补位
+    assert rep.n_elem_filled == 5
+    assert rep.attempts[1].n_elem_filled == 5
+    assert "补缺测要素 5 个" in rep.describe()
+
+    # 两边都有值时仍按优先级：补位绝不覆盖主源已有的测量值
+    b2 = _Src(_recs(1, 5, temp=99.0, rain=8.0, source="cma_data"))
+    p2 = _Src(_recs(1, 5, temp=11.0, rain=1.0, source="wd"))
+    recs2, rep2 = _chain(p2, b2).fetch(_Station())
+    assert all(r["rain"] == 1.0 for r in recs2)
+    assert rep2.n_elem_filled == 0
+
+
+def test_cross_field_conflict_is_detected():
+    """冲突检测覆盖全部可测要素：气压不同也算冲突，不再只看 temp/rain。"""
+    p2 = _Src(_recs(1, 3, source="wd"))
+    for r in p2.records:
+        r["pressure"] = 1001.0
+    b2 = _Src(_recs(1, 3, source="cma_data"))
+    for r in b2.records:
+        r["pressure"] = 999.0
+    recs, rep = _chain(p2, b2).fetch(_Station())
+    assert rep.attempts[1].n_conflict == 3, "双有值且不同必须计为冲突"
+    assert all(r["pressure"] == 1001.0 for r in recs)
 
 
 def test_single_source_chain_assignment_form():

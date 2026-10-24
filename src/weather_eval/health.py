@@ -125,24 +125,39 @@ def evaluate_staleness(health: dict, stale_hours: int = 30) -> dict:
 
     只对**曾经有数据**的源判陈旧：从未接入的源（缺 Secret、尚未接线）
     不算故障——把正常状态当成故障会让告警迅速失去意义。
+
+    "没有时间戳"必须区分两种情形（三态判定），旧实现把它们混进同一个
+    `unavailable` 并全部拉进告警名单：
+
+    * **legacy 存档**（fetched_at 与 issue_iso 皆缺，早于 2026-09 契约）：
+      是随归档自然递减的**历史存量**，不是故障——页脚自己都这么写，机器却
+      每轮报警，等于训练运维忽略告警（正是本模块立项要反对的事）。标
+      `legacy=True` 只展示、不进告警名单；
+    * **时刻不可解析**（有时间戳但 parse 不出来）：口径异常，照旧
+      `unavailable=True` 进告警名单（第四轮 P2-6 的语义不变）。
     """
     now = now_beijing()
     out: dict[str, dict] = {}
     for m, h in health.items():
         if h["status"] == "no_data":
-            out[m] = {**h, "stale": False, "age_hours": None, "unavailable": False}
+            out[m] = {**h, "stale": False, "age_hours": None,
+                      "unavailable": False, "legacy": False}
             continue
         ref = h.get("last_fetched") or h.get("last_issue")
+        if not ref:
+            out[m] = {**h, "stale": False, "age_hours": None,
+                      "unavailable": False, "legacy": True}
+            continue
         age = None
-        if ref:
-            try:
-                age = (now - parse_iso(str(ref)[:16])).total_seconds() / 3600.0
-            except (ValueError, TypeError):
-                age = None
+        try:
+            age = (now - parse_iso(str(ref)[:16])).total_seconds() / 3600.0
+        except (ValueError, TypeError):
+            age = None
         stale = bool(age is not None and age > stale_hours)
         out[m] = {**h, "stale": stale,
                   "age_hours": round(age, 1) if age is not None else None,
-                  "unavailable": age is None}
+                  "unavailable": age is None,
+                  "legacy": False}
     return out
 
 
@@ -173,7 +188,12 @@ def render_health_html(health: dict, meta: dict, stale_hours: int) -> str:
             badge, cls = "陈旧", "bad"
             age = f"{h['age_hours']} h"
         elif h.get("unavailable"):
-            badge, cls = "无抓取时刻", "warn"
+            # 有时间戳但解析不了：口径异常，与陈旧同等进告警名单（第四轮 P2-6）
+            badge, cls = "时刻不可解析", "bad"
+            age = "—"
+        elif h.get("legacy"):
+            # 无任何时间戳的纯历史存档：可展示、不可判龄，**不进告警名单**
+            badge, cls = "无时间戳(历史)", "muted"
             age = "—"
         else:
             badge, cls = "正常", "ok"

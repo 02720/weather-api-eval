@@ -84,7 +84,7 @@ from typing import Any, Iterable
 
 import requests
 
-from .base import ObsSource, plausible
+from .base import MIN_HOURS, ObsSource, parse_obs_float, plausible
 from ..forecast.http import DEFAULT_TIMEOUT, TimeBudget, request_with_retries
 from ..timeutil import iso, now_beijing, parse_obs_time
 
@@ -132,28 +132,13 @@ DEFAULT_SLEEP_SECONDS = 0.1
 
 # 标称窗口内至少要拿到多少小时，才算"这个源这轮可用"（低于此值判为窗口被截断）。
 # 26h 窗口正常应有 ~25 条；门槛取 6 是"明显截断"的松边界——真正的可用性判定
-# 还有新鲜度与异常两条，见 obs/chain.py。
-DEFAULT_MIN_HOURS = 6
+# 还有新鲜度与异常两条，见 obs/base.py 与 obs/chain.py（单一出处 MIN_HOURS）。
+DEFAULT_MIN_HOURS = MIN_HOURS
 
 
 def _to_float(v: Any) -> float | None:
-    """把要素值转为 float；缺测/非数值一律 None（**绝不折算成 0.0**）。"""
-    if v is None or isinstance(v, bool):
-        return None
-    if isinstance(v, str):
-        s = v.strip()
-        if s == "" or s.lower() in ("none", "nan", "na", "null", "-", "—"):
-            return None
-        try:
-            f = float(s)
-        except ValueError:
-            return None
-    else:
-        try:
-            f = float(v)
-        except (TypeError, ValueError):
-            return None
-    return None if f != f else f  # 去掉 NaN
+    """统一走 obs/base.parse_obs_float（eia/cma 两源曾各持一份 95% 相同实现）。"""
+    return parse_obs_float(v)
 
 
 def _target_hours(lookback_hours: int, now: datetime) -> list[datetime]:

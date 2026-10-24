@@ -174,6 +174,20 @@ def _r(v, nd: int = 1):
     return None if v is None else round(v, nd)
 
 
+def _median(vals: list[float]) -> float | None:
+    """统计中位数（偶数长度取两中点均值）。
+
+    旧实现 `sorted(vals)[len // 2]` 取的是**上中位**：偶数长度时偏向较大一侧，
+    与"中位分"的文案不符。灰色参考线是全体的对照基线，应当是教科书意义的中位数。
+    """
+    if not vals:
+        return None
+    s = sorted(vals)
+    n = len(s)
+    mid = n // 2
+    return s[mid] if n % 2 else (s[mid - 1] + s[mid]) / 2
+
+
 # lb 行分数三件套的发布小数位——`_r` 的缺省是 1，复算不变量必须按同一档判等
 # （见 `_recon_ok`）。单独具名是为了让"发布精度"只有一个定义可改。
 _PUB_ND = 1
@@ -218,9 +232,10 @@ def _verify_daily_temp_halves(lb: dict, lbtemp: dict) -> None:
     """
     for day, hal_rows in (lbtemp or {}).items():
         lb_rows = ((lb or {}).get("daily") or {}).get(day) or []
-        assert len(hal_rows) == len(lb_rows), \
-            f"lbtemp[{day}] 与 lb.daily[{day}] 行数不一致：" \
-            f"{len(hal_rows)} vs {len(lb_rows)}——lbtemp 必须与 lb.daily 同序对齐"
+        if len(hal_rows) != len(lb_rows):
+            raise RuntimeError(
+                f"lbtemp[{day}] 与 lb.daily[{day}] 行数不一致："
+                f"{len(hal_rows)} vs {len(lb_rows)}——lbtemp 必须与 lb.daily 同序对齐")
         for i, (row, hal) in enumerate(zip(lb_rows, hal_rows)):
             pub, mxs, mns = row[2], hal["mx"], hal["mn"]
             if all(v is None for v in mxs + mns):
@@ -228,10 +243,13 @@ def _verify_daily_temp_halves(lb: dict, lbtemp: dict) -> None:
             recon = daily_temp_score({
                 "max": dict(zip(_DAILY_TEMP_VIEW_KEYS, mxs)),
                 "min": dict(zip(_DAILY_TEMP_VIEW_KEYS, mns))})
-            assert _recon_ok(recon, pub), \
-                (f"P2 复算不变量破了：lb.daily[{day}][{i}] 发布温度分 {pub}，"
-                 f"但按发布分半指标复算得 {recon}（逐位应为同一值）——"
-                 "发布契约（键集/精度/半映射）与赋分口径已分叉")
+            if not _recon_ok(recon, pub):
+                # 显式 raise 而非 assert（-O 会剥离 assert，让这道"发布不变量锁"
+                # 在优化模式下静默消失——锁必须与运行模式无关）
+                raise RuntimeError(
+                    f"P2 复算不变量破了：lb.daily[{day}][{i}] 发布温度分 {pub}，"
+                    f"但按发布分半指标复算得 {recon}（逐位应为同一值）——"
+                    "发布契约（键集/精度/半映射）与赋分口径已分叉")
 
 
 def _slim_report(report_data: dict) -> dict:
@@ -505,12 +523,17 @@ def _hero_curve_svg(report_data: dict, w: int = 1440, h: int = 220) -> str:
 
     报告的全部结论都建立在"拿实况说话"上——把真实观测画进版面，装饰即方法论。
     温度是逐小时原值，跨日夜的锯齿正是"天气"本身，不做平滑处理。
+
+    72h 窗口在**本函数内部**裁剪，不依赖上游 _build_timeseries 恰好已截到 72h：
+    那是隐式前提，上游窗口一变（或 summary 重放带来更长 obs）曲线点数就失控，
+    与文档"最近 72 小时"不再相符。取站显式按最小站 id，不依赖 dict 插入序。
     """
     ts = report_data.get("timeseries") or {}
     if not ts:
         return ""
-    first = next(iter(ts.values()))
-    temps = [x.get("temp") for x in (first.get("obs") or []) if x.get("temp") is not None]
+    first = ts[min(ts)]
+    temps = [x.get("temp") for x in (first.get("obs") or [])[-72:]
+             if x.get("temp") is not None]
     if len(temps) < 24:
         return ""
     lo, hi = min(temps), max(temps)
@@ -618,8 +641,12 @@ def _js_json(obj) -> str:
     # allow_nan=False（第四轮 P2-6）：裸 NaN 不是合法 JSON（RFC 8259），
     # JS 侧会显示成字面量 "NaN" 而不是 "—"。非有限值让它在**生成期**炸出来
     # （上游的 _fin/_r 才是清洗点），绝不带病上线。
-    return json.dumps(obj, ensure_ascii=False, separators=(",", ":"),
-                      allow_nan=False).replace("</", "<\\/")
+    # `</` 之外还要转义 `<!--`：HTML 规范里 <script> 内出现 "<!--" + "<script"
+    # 序列会进入 script data escaped 解析状态，可致脚本提前截断——数据键来自
+    # 站点 id/模型名（可控），一行成本把这一类整族堵死。
+    return (json.dumps(obj, ensure_ascii=False, separators=(",", ":"),
+                       allow_nan=False)
+            .replace("</", "<\\/").replace("<!--", "<\\!--"))
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -738,6 +765,15 @@ def render_report_html(report_data: dict, title: str | None = None,
     station_labels：站点 id → 中文名（如 wuzhou → 梧州气象站），缺省时页面显示 id。
     """
     tpl = env.get_template("report.html.j2")
+    # 评分斜率回放必须发生在**任何复算之前**（时序缺陷修复）：_slim_report 里的
+    # _verify_daily_temp_halves 会沿 daily_temp_score 同一把尺复算发布的分半值，
+    # 而那把尺是 evaluate 模块级的 SCORE_SLOPES——在调用时读取，不在构建时绑定。
+    # 旧实现把 apply_score_slopes 放在 _slim_report 之后：正常管线中 build_report
+    # 入口已装载 config 斜率、恰好相等，把时序问题掩盖了；但 summary.json 重放路径
+    # （月度归档重建 ②，进程没跑过 build_report）下全局还是代码缺省——归档的
+    # meta.score_slopes 与当期标定一旦不同（季度重标定后必然如此），校验就用错了
+    # 尺子、AssertionError 把整条月度刷新链炸断。装载必须先行，谁先消费谁先装。
+    apply_score_slopes((report_data.get("meta") or {}).get("score_slopes"))
     slim_json = _js_json(_slim_report(report_data))
     labels_json = _js_json(MODEL_LABELS)
     colors_json = _js_json(MODEL_COLORS)
@@ -751,7 +787,7 @@ def render_report_html(report_data: dict, title: str | None = None,
     lb_all_rows = (report_data.get("leaderboards") or {}).get("all") or []
     _med_vals = sorted(v for per in overall_trend.values()
                        for v in per.values() if v is not None)
-    spark_med = _med_vals[len(_med_vals) // 2] if _med_vals else None
+    spark_med = _median(_med_vals)
     spark_svg = {r["model"]: _sparkline_svg(
         [overall_trend.get(r["model"], {}).get(f"{i}d") for i in range(1, 17)],
         spark_med)
@@ -764,11 +800,6 @@ def render_report_html(report_data: dict, title: str | None = None,
 
     # 起报锚点披露：挂旗的源在前、其余按语义归组（见 _issue_anchor_rows 的 docstring）
     anchors = _issue_anchor_rows(report_data)
-
-    # 评分斜率回放：meta.score_slopes 是本轮评分实际生效的标定值（build_report
-    # 留痕）。重渲染历史报告时进程未必跑过 build_report，"评分构成"表若按代码
-    # 缺省渲染就会与榜单数字用的尺子不一致——同一份数据必须同一把尺子。
-    apply_score_slopes((report_data.get("meta") or {}).get("score_slopes"))
 
     return tpl.render(
         report=report_data,

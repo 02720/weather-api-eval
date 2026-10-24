@@ -682,7 +682,7 @@ def test_daily_temp_halves_invariant_catches_corrupted_half_value():
     lb["daily"]["1"][0][2] = round(expect, 1)
 
     lbtemp["1"][0]["mn"][0] = 12.3          # 只动 min 侧的 acc2，其余原样
-    with pytest.raises(AssertionError, match="复算不变量"):
+    with pytest.raises(RuntimeError, match="复算不变量"):
         _verify_daily_temp_halves(lb, lbtemp)
 
 
@@ -697,7 +697,7 @@ def test_daily_temp_halves_invariant_catches_dropped_key():
     idx = list(_DAILY_TEMP_VIEW_KEYS).index("slope")
     lbtemp["1"][0]["mx"][idx] = None
     lbtemp["1"][0]["mn"][idx] = None
-    with pytest.raises(AssertionError, match="复算不变量"):
+    with pytest.raises(RuntimeError, match="复算不变量"):
         _verify_daily_temp_halves(lb, lbtemp)
 
 
@@ -708,7 +708,7 @@ def test_daily_temp_halves_invariant_catches_row_misalignment():
     lb, lbtemp, expect = _half_case()
     lb["daily"]["1"][0][2] = round(expect, 1)
     lb["daily"]["1"].append([0, None, None, None] + [None] * 17)
-    with pytest.raises(AssertionError, match="行数不一致"):
+    with pytest.raises(RuntimeError, match="行数不一致"):
         _verify_daily_temp_halves(lb, lbtemp)
 
 
@@ -720,3 +720,50 @@ def test_daily_temp_halves_invariant_tolerates_absent_halves():
     lbtemp["1"][0]["mn"] = [None] * 8
     lb["daily"]["1"][0][2] = 97.0
     _verify_daily_temp_halves(lb, lbtemp)     # 不抛 = 通过
+
+
+def test_render_replays_score_slopes_before_any_recompute():
+    """斜率回放必须发生在任何复算**之前**（时序缺陷回归锁）。
+
+    场景：summary.json 重放路径（月度归档按最新代码重渲）——进程没跑过
+    build_report，模块全局 SCORE_SLOPES 还是代码缺省；归档的 meta.score_slopes
+    与缺省不同（季度重标定后必然如此）。旧实现把 apply_score_slopes 放在
+    _slim_report 之后：复算不变量用**缺省斜率**去对账**旧斜率发布的分半值**
+    → AssertionError 把整条月度刷新链炸断。修复后：先按 meta 装载，再复算，
+    同一份分半值在其发布斜率下逐位自洽。
+    """
+    from weather_eval.evaluate import (DEFAULT_SCORE_SLOPES, _DAILY_TEMP_VIEW_KEYS,
+                                       apply_score_slopes, daily_temp_score)
+    import weather_eval.evaluate as ev
+    from weather_eval.report.render import render_report_html
+    # 选一个与代码缺省显著不同的斜率（rmse 的换算斜率 ×5）
+    slopes = {**DEFAULT_SCORE_SLOPES, "rmse": DEFAULT_SCORE_SLOPES["rmse"] * 5}
+    assert slopes["rmse"] != DEFAULT_SCORE_SLOPES["rmse"]
+    # 在 slopes 尺度下构造一份自洽的发布数据（分半值 → 分数 → 发布精度）
+    try:
+        apply_score_slopes(slopes)
+        lb, lbtemp, expect = _half_case()
+        lb["daily"]["1"][0][2] = round(expect, 1)
+        halves = lbtemp
+        keys = list(_DAILY_TEMP_VIEW_KEYS)
+        assert round(daily_temp_score({
+            "max": dict(zip(keys, halves["1"][0]["mx"])),
+            "min": dict(zip(keys, halves["1"][0]["mn"])),
+        }), 1) == round(expect, 1)
+    finally:
+        apply_score_slopes(None)               # 还原进程缺省（重放路径的起点状态）
+    # ⚠️ 经模块属性读取：apply_score_slopes 是**整体重绑**模块全局，
+    # from-import 拿到的旧 dict 引用不会跟随更新
+    assert ev.SCORE_SLOPES["rmse"] == DEFAULT_SCORE_SLOPES["rmse"]
+    report_full = {
+        "meta": {"score_slopes": slopes},
+        "leaderboards": {**lb, "all": []},
+        "score_trend": {}, "timeseries": {}, "temp_hourly": {},
+        "precip_hourly": {}, "temp_daily": {}, "precip_daily": {},
+        "per_station": {}, "coverage": {"first_obs": "2026-08-01"},
+    }
+    html = render_report_html(report_full)     # 旧代码在此 AssertionError
+    assert html and "复算不变量" not in html
+    # 回放语义：渲染把归档斜率装进全局，同一进程内的后续渲染同尺
+    assert ev.SCORE_SLOPES["rmse"] == slopes["rmse"]
+    apply_score_slopes(None)

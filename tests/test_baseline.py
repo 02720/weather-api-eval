@@ -49,9 +49,12 @@ REL_TOL = 1e-9
 # 不能逐位冻结的诊断字段：它们是**仓库累计量**而不是窗口量。
 # `fingerprint.checked_snapshots` 数的是 data/forecasts 里的全部快照（含窗口
 # 之外、乃至窗口结束之后才落盘的那些），每天三次抓取各 +100 上下，单调增长。
-# 把它钉死 = 每一次数据提交都让对拍变红，而报告其实一位没变——这与基线自己
+# `fingerprint.n_models` 同理：数的是"指纹扫描里出现过的模型数"，新模型一旦
+# 开始产出快照就会 +1（第九次重冻结后接入的两个 Open-Meteo 模型正是这样把
+# 28 变成 30 的）——它度量的是"仓库里有多少参赛者"，不是"窗口内有多少"。
+# 把它们钉死 = 每一次数据提交都让对拍变红，而报告其实一位没变——这与基线自己
 # CHANGELOG 里记的"假红灯"是同一类错误，只是方向相反。
-REPO_SCALE_DIAG_FIELDS = {"fingerprint": ("checked_snapshots",)}
+REPO_SCALE_DIAG_FIELDS = {"fingerprint": ("checked_snapshots", "n_models")}
 
 pytestmark = [pytest.mark.golden]
 

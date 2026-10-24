@@ -231,12 +231,22 @@ class CaiyunProvider(ForecastProvider):
         if not temp_series:
             raise RuntimeError(f"彩云站点 {station.id} 返回空逐小时温度序列")
 
-        # 以温度序列时间为基准时间轴；降水按（下取整后）时间对齐，缺失补 None
+        # 以温度序列时间为基准时间轴；降水按（下取整后）时间对齐，缺失补 None。
+        # 两侧都按时间键归并去重（后见覆盖先见，与既有 p_by_dt 口径一致）：
+        # 旧实现温度轴直接 append、不查重复时刻——API 返回重复 datetime 或两个
+        # 条目 floor 到同一整点时，快照时间轴出现重复键，评估按索引配对静默错位
+        # （qweather 为此专门有 _merge_series 去重+告警，彩云是全家族的漏网点）。
+        t_by_dt: dict[datetime, Any] = {}
         p_by_dt: dict[datetime, Any] = {}
-        for p in precip_series:
-            # TypeError 必须一起兜：`p` 是字符串/None 之类的非 dict 条目时，
-            # `p["datetime"]` 抛的是 TypeError 而不是 KeyError——漏掉它，一个脏
+        for t in temp_series:
+            # TypeError 必须一起兜：`t` 是字符串/None 之类的非 dict 条目时，
+            # `t["datetime"]` 抛的是 TypeError 而不是 KeyError——漏掉它，一个脏
             # 条目就会从**逐条跳过**升级成整站抓取中断（契约漂移的常见形态）。
+            try:
+                t_by_dt[_parse_caiyun_dt(t["datetime"])] = t.get("value")
+            except (KeyError, ValueError, TypeError, AttributeError):
+                continue
+        for p in precip_series:
             try:
                 p_by_dt[_parse_caiyun_dt(p["datetime"])] = p.get("value")
             except (KeyError, ValueError, TypeError, AttributeError):
@@ -245,13 +255,9 @@ class CaiyunProvider(ForecastProvider):
         hourly_time: list[str] = []
         temps: list[float | None] = []
         precips: list[float | None] = []
-        for t in temp_series:
-            try:
-                dt = _parse_caiyun_dt(t["datetime"])
-            except (KeyError, ValueError, TypeError, AttributeError):
-                continue
+        for dt in sorted(t_by_dt):
             hourly_time.append(dt.strftime("%Y-%m-%dT%H:%M"))
-            temps.append(_num(t.get("value")))
+            temps.append(_num(t_by_dt[dt]))
             precips.append(_num(p_by_dt.get(dt)))
 
         if not hourly_time:

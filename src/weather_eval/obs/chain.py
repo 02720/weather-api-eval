@@ -11,9 +11,12 @@
 **1. 谁说了算？**
 优先级在**编排层**决定，绝不采用"谁后写谁赢"——那会让权威值取决于抓取顺序，
 是一个不可复现的隐式状态（同一批数据、换个运行顺序就得到不同的存档）。规则：
-按 `OBS_SOURCE_PRIORITY` 从高到低依次尝试；高优先级源已经给出的小时，低优先级源
-**不得覆盖**，只在主源没有该小时时补位。补位条数计入 `ChainReport.n_filled`，
-"这轮其实是谁顶上的"因此可考。
+按 `OBS_SOURCE_PRIORITY` 从高到低依次尝试；高优先级源已经给出的**小时**，低优先级源
+不得整体覆盖，只在主源没有该小时时补位；主源已有小时上**缺测的要素**，则由
+低优先级源的真实值做**要素级补位**（None 不是"值"，半空记录不该永久挡住另一源
+对缺失要素的供给），补位的来源记进 record 的 `filled_by` 留痕。补位条数计入
+`ChainReport.n_filled`，补位的要素个数计入 `n_elem_filled`，"这轮其实是谁顶上的"
+因此可考。
 
 **2. 主源返回了 200，就等于它可用吗？**
 不等于。这正是本项目已经吃过一次亏的静默失效形态：eia-data 页面改版后仍可能
@@ -41,7 +44,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..timeutil import now_beijing, parse_iso
-from .base import ObsSource
+from .base import MIN_HOURS, OBS_PLAUSIBLE_RANGES, STALE_HOURS, ObsSource
 
 logger = logging.getLogger(__name__)
 
@@ -51,13 +54,11 @@ logger = logging.getLogger(__name__)
 # "主源不可用时顶上"，而不是"平时并行抓一遍"。
 OBS_SOURCE_PRIORITY: tuple[str, ...] = ("eia_data", "cma_data")
 
-# 最新的把小时（判定"主源是否停摆"）。与 obs/eia_data.py 的 STALE_HOURS 同口径：
-# 逐小时观测在整点后数分钟内到报，滞后超过 3 小时即不是延迟而是停摆。
-DEFAULT_STALE_HOURS = 3.0
-
-# 一轮至少要有多少小时才算"窗口没被截断"。eia-data 正常返回 24 条；
-# 该门槛只负责拦住"明显截断"，真正的可用性还有异常/新鲜度两条。
-DEFAULT_MIN_HOURS = 6
+# 最新的把小时（判定"主源是否停摆"）与覆盖门槛：单一出处是 obs/base.py 的
+# STALE_HOURS / MIN_HOURS（eia_data、cma_data 两侧引用同一常量，杜绝"同口径
+# 靠注释对齐"的静默漂移）。
+DEFAULT_STALE_HOURS = STALE_HOURS
+DEFAULT_MIN_HOURS = MIN_HOURS
 
 
 @dataclass
@@ -70,7 +71,8 @@ class SourceAttempt:
     n_records: int = 0        # 该源本轮返回的记录数
     n_hours: int = 0          # 去重后的**小时数**（行数会被重复行撑大，第四轮 P1-2）
     n_used: int = 0           # 最终进入合并结果的条数（受优先级约束）
-    n_conflict: int = 0       # 与高优先级源同刻不同值的条数（真值交叉校验信号）
+    n_conflict: int = 0       # 与高优先级源同刻**同要素双有值**且不同的条数（交叉校验信号）
+    n_elem_filled: int = 0    # 为高优先级源**缺测要素**补上的值个数（要素级补位）
     latest: str | None = None  # 该源最新观测时刻
     age_hours: float | None = None
     degraded_reason: str | None = None
@@ -81,6 +83,7 @@ class SourceAttempt:
             "name": self.name, "attempted": self.attempted, "ok": self.ok,
             "n_records": self.n_records, "n_hours": self.n_hours,
             "n_used": self.n_used, "n_conflict": self.n_conflict,
+            "n_elem_filled": self.n_elem_filled,
             "latest": self.latest, "age_hours": self.age_hours,
             "degraded_reason": self.degraded_reason, "error": self.error,
         }
@@ -92,7 +95,8 @@ class ChainReport:
 
     attempts: list[SourceAttempt] = field(default_factory=list)
     n_records: int = 0
-    n_filled: int = 0     # 由**非首选可用源**补位的小时数
+    n_filled: int = 0     # 由**非首选可用源**整小时补位的小时数
+    n_elem_filled: int = 0  # 由非首选源为高优先级缺测要素补上的值个数
     served_by: list[str] = field(default_factory=list)
 
     @property
@@ -108,6 +112,7 @@ class ChainReport:
             "degraded": self.degraded,
             "n_records": self.n_records,
             "n_filled": self.n_filled,
+            "n_elem_filled": self.n_elem_filled,
             "served_by": self.served_by,
             "attempts": [a.as_dict() for a in self.attempts],
         }
@@ -123,6 +128,8 @@ class ChainReport:
                 parts.append(f"{a.name}: 降级（{a.degraded_reason}，{a.n_records} 条，用 {a.n_used}）")
             else:
                 parts.append(f"{a.name}: 失败（{a.error or a.degraded_reason}）")
+            if a.n_elem_filled:
+                parts[-1] += f"，补缺测要素 {a.n_elem_filled} 个"
         return "；".join(parts)
 
 
@@ -236,23 +243,43 @@ class ObsChain:
                 logger.warning("观测源 %s 在站点 %s 降级：%s（其记录仍参与合并）",
                                name, station.id, reason)
 
-            # 合并：高优先级源已经覆盖的小时不被覆盖（优先级在编排层解决）。
-            # 冲突必须显式留痕（第四轮 P1-3）：两源是同一批 CMA 观测的两个出口、
-            # 已证逐点相等——任何同刻不同值都是时间/口径/解析出错的响亮警报，
-            # 静默 continue 等于把全系统唯一近乎免费的交叉校验信号扔进垃圾桶。
+            # 合并：高优先级源已经覆盖的小时不被覆盖（优先级在编排层解决），
+            # 但**小时所有权 ≠ 要素所有权**：同一小时上高优先级记录缺测的要素，
+            # 由低优先级源的真实值补齐（None 不是"值"——主源"半空"的记录若把
+            # 低优先级源整体挡在外面，其缺的要素就永远补不进来，而 _payload_useful
+            # 只要一个要素有值就算"有用"，半空记录恰恰最常见于主源部分字段停摆）。
+            # 同刻再相遇分三种情形处置：
+            #   · 两边**双有值**且不同 → 冲突，响亮告警并留痕（真值交叉校验信号；
+            #     比对范围是全部可测要素——只看 temp/rain 时，气压差 5hPa 这类
+            #     信号会静默漏掉）；
+            #   · 高优先级缺测、低优先级有值 → 要素级补位，逐要素计数留痕
+            #     （filled_by 记进 record，storage 侧按来源标记剔除、不计回改）；
+            #   · 两边都缺测 → 无事发生。
             n_used = 0
             for r in recs:
                 t = r["time"]
                 if t in owner:
                     prev = merged[t]
-                    if prev.get("temp") != r.get("temp") \
-                            or prev.get("rain") != r.get("rain"):
-                        attempt.n_conflict += 1
-                        logger.warning(
-                            "观测冲突 %s %s %s：%s 给出 temp=%s rain=%s，"
-                            "采用 %s 的 temp=%s rain=%s",
-                            station.id, t, name, name, r.get("temp"), r.get("rain"),
-                            owner[t], prev.get("temp"), prev.get("rain"))
+                    for k in OBS_PLAUSIBLE_RANGES:
+                        rv = r.get(k)
+                        if rv is None:
+                            continue
+                        pv = prev.get(k)
+                        if pv is None:
+                            if k in prev:
+                                prev[k] = rv
+                                prev.setdefault("filled_by", {})[k] = name
+                                attempt.n_elem_filled += 1
+                                logger.info(
+                                    "观测要素补位 %s %s %s：高优先级 %s 缺 %s，"
+                                    "采用 %s 的 %s=%s", station.id, t, k,
+                                    owner[t], k, name, name, k, rv)
+                        elif pv != rv:
+                            attempt.n_conflict += 1
+                            logger.warning(
+                                "观测冲突 %s %s %s：要素 %s，%s 给出 %s，"
+                                "采用 %s 的 %s",
+                                station.id, t, k, k, name, rv, owner[t], pv)
                     continue
                 merged[t] = r
                 owner[t] = name
@@ -265,6 +292,12 @@ class ObsChain:
                 served.append(name)
                 if i > 0:
                     report.n_filled += n_used
+            if attempt.n_elem_filled:
+                report.n_elem_filled += attempt.n_elem_filled
+                if i > 0:
+                    logger.info(
+                        "观测源 %s 在站点 %s 为高优先级缺测要素补位 %d 个值",
+                        name, station.id, attempt.n_elem_filled)
 
             # 首选源（且可用）已采集到足够窗口 → 无需惊动备用源。
             # 这是"备用"的应有语义：平时完全不碰它，主源一坏立刻顶上。

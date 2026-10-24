@@ -378,7 +378,18 @@ def fingerprint_drift(forecasts_root: Path, months: list[str],
             vals = [fp.get(field) for _, fp in chunk if fp.get(field) is not None]
             if not vals:
                 return None
-            return max(set(vals), key=vals.count)
+            # 众数必须**确定性**：max(set(vals), key=vals.count) 有两个问题——
+            # (1) set 迭代序受 PYTHONHASHSEED 随机化影响，平票时两次进程会选出
+            #     不同的"众数"，changes/drift 标志随之翻转 → 健康告警间歇性
+            #     误报/漏报，同一份数据两次运行结论不同（违背项目可复现原则）；
+            # (2) vals.count 在循环里逐值重扫，O(n²)。
+            # Counter 一次计数 O(n)；平票按 repr(value) 字典序取最小，与运行
+            # 环境（哈希种子、插入序）完全无关。
+            counts: dict[Any, int] = {}
+            for v in vals:
+                counts[v] = counts.get(v, 0) + 1
+            best = max(counts.values())
+            return min((v for v, c in counts.items() if c == best), key=repr)
 
         changes = []
         for field in (*_FINGERPRINT_FIELDS, "actual_hours"):
@@ -666,12 +677,14 @@ def corridor_sensitivity(report: dict, board_key: str = "all",
     corridors: list[dict[str, Any]] = []
 
     # ① n_eff 入围门槛：n_eff 不足的源整行剔出设计后重算
+    # （"模型 → 逐格 n_eff"映射与门槛无关，循环外构建一次——旧实现每个门槛
+    #   重建同一个 dict）
+    board_rows = {row.get("model"): row.get("n_eff")
+                  for row in (report.get("leaderboards") or {}).get(board_key) or []}
     for gate in neff_gates:
         if abs(gate - default_gate) < 1e-9:
             continue
         S2 = S.copy()
-        board_rows = {row.get("model"): row.get("n_eff")
-                      for row in (report.get("leaderboards") or {}).get(board_key) or []}
         for i, m in enumerate(models):
             row = _row_neff(lbs, m, buckets, board_rows)
             if row is None or row < gate:
@@ -1003,6 +1016,14 @@ def compute_all(report: dict, data_root: Path, months: list[str] | None = None,
     meta = report.get("meta") or {}
     months = months or _months_from_meta(meta)
     months = [m for m in months if m]
+    # 输入契约显式校验（docstring 承诺"必须同时给或同时不给"）：只给其一时，
+    # "读盘口径"与"内存口径"会混在同一个诊断结果里——那是比慢更糟的问题，
+    # 必须当场炸出来而不是静默混算。
+    if (obs_maps is None) != (snapshots is None):
+        raise ValueError(
+            "obs_maps 与 snapshots 必须同时给或同时不给"
+            f"（收到 obs_maps={'有' if obs_maps is not None else '无'}、"
+            f"snapshots={'有' if snapshots is not None else '无'}）")
     obs_root = Path(data_root) / "obs"
     fc_root = Path(data_root) / "forecasts"
     out: dict[str, Any] = {"generated_from": "data/ 冻结快照 + 已算好的分桶榜单"}
@@ -1033,8 +1054,13 @@ def compute_all(report: dict, data_root: Path, months: list[str] | None = None,
         if with_fingerprint:
             out["fingerprint"] = fingerprint_drift(fc_root, months, snapshots=snapshots)
     else:
-        out["source_correlation"] = {"available": False, "reason": "未找到 data/forecasts"}
-        out["station_rho"] = {"available": False, "reason": "未找到 data/forecasts"}
+        # reason 必须指向**真实**缺失的那一半：观测为空与快照缺失是两种不同的
+        # 故障，笼统写"未找到 data/forecasts"会把排障方向引偏（观测目录存在
+        # 但空的场景下，快照其实好好的）。
+        reason = ("窗口内无观测数据" if not obs_by_station
+                  else "未找到 data/forecasts")
+        out["source_correlation"] = {"available": False, "reason": reason}
+        out["station_rho"] = {"available": False, "reason": reason}
 
     out["bridge"] = bridge_and_jackknife(report)
     out["corridor"] = corridor_sensitivity(report)

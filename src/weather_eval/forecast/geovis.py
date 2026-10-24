@@ -359,6 +359,12 @@ class GevisProvider(ForecastProvider):
             except Exception:  # noqa: BLE001
                 body_digest = ""
             if status == 401 or status == 403:
+                # ⚠️ 故意保持 RuntimeError 而非专门的鉴权异常：档位权限是**按
+                # 产品分开**的（professional 无权限而 basic 可用是真实场景，
+                # test_tier_fallback_to_48h_and_cached 钉的就是它）——401/403
+                # 必须进降档梯子，让"全部档位穷尽"的聚合错误兜住全局 token
+                # 失效。这里与 qweather 逐日 401 快速放弃的差异是有意的：星图
+                # 各档是独立产品，和风的逐日各档同属 v7 逐日产品。
                 return "fatal", RuntimeError(
                     f"星图鉴权/权限失败（HTTP {status} {body_digest!r}）——"
                     f"请确认 {TOKEN_ENV} 有效且账号已开通逐小时预报产品")

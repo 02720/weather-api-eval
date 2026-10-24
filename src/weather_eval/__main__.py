@@ -191,29 +191,50 @@ def cmd_fetch_obs(args):
     多源编排（2026-09）：主源（eia-data）失败、或抓通了但**数据陈旧/窗口截断**时，
     自动降级到备用源（中国气象数据网）补位；合并结果的来源构成写进日志留痕。
     观测是评估里唯一的真值来源，单点依赖等于把全部结论押在一个第三方页面上。
+
+    站间并行（线程池）：抓取是网络 IO 密集型——主源降级时最坏路径是
+    4 站 × 27 个逐整点请求全串行叠加。各站使用独立的源实例（各自 session、
+    各自 TimeBudget）、save_obs 按站按月持文件锁，站与站之间没有任何共享
+    可变状态，线程池并行不改变任何合并语义，只压缩墙钟时间。
     """
     cfg = load_config(args.config)
     source = getattr(args, "source", "auto")
     stale_hours = float(cfg.eval.get("obs_stale_hours", 3.0))
     min_hours = int(cfg.eval.get("obs_min_hours", 6))
-    failures = 0
+
+    def _fetch_one(st):
+        sources = _build_obs_sources(cfg, source, st)
+        chain = ObsChain(sources, priority=tuple(cfg.obs_sources),
+                         stale_hours=stale_hours, min_hours=min_hours)
+        recs, report = chain.fetch(st)
+        n = save_obs(st.id, recs)
+        log.info("站点 %s 写入 %d 条（累计去重后）；来源构成：%s",
+                 st.id, n, report.describe())
+        if report.degraded:
+            log.warning("站点 %s 本轮观测已降级（%d 条由备用源补位）——"
+                        "请核对首选源是否改版或停摆", st.id, report.n_filled)
+        return report.as_dict()
+
     chain_reports: dict[str, dict] = {}
-    for st in cfg.stations:
+    failures = 0
+    stations = list(cfg.stations)
+    if len(stations) == 1:
+        # 单站无并行收益，直连保持栈回溯的直观性
         try:
-            sources = _build_obs_sources(cfg, source, st)
-            chain = ObsChain(sources, priority=tuple(cfg.obs_sources),
-                             stale_hours=stale_hours, min_hours=min_hours)
-            recs, report = chain.fetch(st)
-            n = save_obs(st.id, recs)
-            log.info("站点 %s 写入 %d 条（累计去重后）；来源构成：%s",
-                     st.id, n, report.describe())
-            if report.degraded:
-                log.warning("站点 %s 本轮观测已降级（%d 条由备用源补位）——"
-                            "请核对首选源是否改版或停摆", st.id, report.n_filled)
-            chain_reports[st.id] = report.as_dict()
+            chain_reports[stations[0].id] = _fetch_one(stations[0])
         except Exception as e:  # noqa: BLE001
             failures += 1
-            log.error("站点 %s 抓取失败: %s", st.id, e)
+            log.error("站点 %s 抓取失败: %s", stations[0].id, e)
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(len(stations), 4)) as pool:
+            futures = [(st, pool.submit(_fetch_one, st)) for st in stations]
+            for st, fut in futures:
+                try:
+                    chain_reports[st.id] = fut.result()
+                except Exception as e:  # noqa: BLE001
+                    failures += 1
+                    log.error("站点 %s 抓取失败: %s", st.id, e)
     # ChainReport 落盘（第四轮 P1-5）：此前 as_dict 全仓零调用，降级信息只活在
     # 当轮日志里——"备用源已经独自支撑多久"在进程重启后无从追查，那正是这个
     # 机制立项要防的"静默死亡"的另一种写法。逐轮追加，健康核查有据可依。
@@ -437,21 +458,28 @@ def refresh_monthly_archives(cfg) -> int:
         for p in sorted(monthly.glob("*.html")):
             if _render._embedded_fingerprint(p) == cur:
                 continue        # 已是当前代码的视图，无需重算
-            data = _rebuild_month_data(cfg, p.stem)
-            if data is None:
-                unrebuildable += 1
-                if p.stem in known:
-                    log.info("月度归档 %s 无法用最新代码重建（原料双缺，已知情况，保留原样）",
-                             p.stem)
-                else:
-                    newly_lost += 1
-                    log.warning(
-                        "月度归档 %s 无法用最新代码重建（原始快照与结论摘要均缺失），"
-                        "保留原样；该情况不可行动，此后不再重复告警", p.stem)
-                known.add(p.stem)
-                continue
-            write_monthly_report(data, station_labels=labels, force=True)
-            rebuilt += 1
+            # 单份归档的失败**不得中止整条刷新链**（失败隔离）：index.html 已经
+            # 写完，一份归档重建炸掉（如旧数据缺字段、原料口径突变）若把循环
+            # 整个带走，后面的月份就全部停在旧代码视图上——与诊断层"不得拖垮
+            # 报告"的同一条纪律。失败保留原样 + WARNING，下轮自动重试。
+            try:
+                data = _rebuild_month_data(cfg, p.stem)
+                if data is None:
+                    unrebuildable += 1
+                    if p.stem in known:
+                        log.info("月度归档 %s 无法用最新代码重建（原料双缺，已知情况，保留原样）",
+                                 p.stem)
+                    else:
+                        newly_lost += 1
+                        log.warning(
+                            "月度归档 %s 无法用最新代码重建（原始快照与结论摘要均缺失），"
+                            "保留原样；该情况不可行动，此后不再重复告警", p.stem)
+                    known.add(p.stem)
+                    continue
+                write_monthly_report(data, station_labels=labels, force=True)
+                rebuilt += 1
+            except Exception as e:  # noqa: BLE001  单份失败不影响其余归档
+                log.warning("月度归档 %s 重建失败（保留原样，下轮重试）: %s", p.stem, e)
         if known:
             _atomic_write_json(state_path, sorted(known))
     if rebuilt:

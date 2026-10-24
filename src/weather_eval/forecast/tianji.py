@@ -52,6 +52,7 @@ t1_ai/t1、early/t1h 等）× 逐日要素候选码（tmax2m/tmin2m/mx2t/mn2t/tm
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -103,19 +104,25 @@ def candidate_base_times(now: datetime, count: int = MAX_BASE_FALLBACK) -> list[
 
 
 def _value_of(entry: Any) -> float | None:
-    """把 forecastDetails 条目的 value 数组归一为 float（缺测 → None）。"""
+    """把 forecastDetails 条目的 value 数组归一为 float（缺测 → None）。
+
+    bool 必须先挡：**float(True) == 1.0**——JSON `true` 会变成 1.0mm/h 的雨强
+    入库（第五轮 P2-4 修过 qweather 等家族的同一 bug，本函数是当时的漏网点）；
+    inf 同理按缺测处理（与全家族 `_num` 的口径一致）。
+    """
     if not isinstance(entry, dict):
         return None
     val = entry.get("value")
     if not isinstance(val, (list, tuple)) or not val:
         return None
+    first = val[0]
+    if isinstance(first, bool):
+        return None
     try:
-        f = float(val[0])
+        f = float(first)
     except (TypeError, ValueError):
         return None
-    if f != f:  # NaN
-        return None
-    return f
+    return f if (f == f and math.isfinite(f)) else None
 
 
 def _parse_tj_response(payload: Any, factor_code: str) -> dict[str, list[float | None]]:

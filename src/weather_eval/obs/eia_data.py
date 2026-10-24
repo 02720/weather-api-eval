@@ -20,7 +20,7 @@ from typing import Any
 import requests
 from bs4 import BeautifulSoup
 
-from .base import ObsSource, plausible
+from .base import ObsSource, STALE_HOURS, parse_obs_float, plausible
 from ..forecast.http import DEFAULT_TIMEOUT, TimeBudget, request_with_retries
 from ..timeutil import iso, parse_iso, parse_obs_time, now_beijing
 
@@ -52,29 +52,14 @@ NUMERIC_KEYS = {
     "visibility": "visibility",
 }
 
-# 最新观测滞后超过该小时数视为"数据可能停摆"，告警暴露
-STALE_HOURS = 3.0
+# 最新观测滞后阈值单一出处为 obs/base.py 的 STALE_HOURS（随 import 引入）：
+# chain.py 编排层判可用性用的是同一值，此前两处靠注释对齐——一侧改动另一侧
+# 静默漂移的口子已收掉。
 
 
 def _to_float(v: Any) -> float | None:
-    # bool 必须先挡：**float(True) == 1.0**。观测是评估里唯一的真值来源，页面里
-    # 一个 `true` 会直接变成 1°C / 1mm 的实况并写进归档（forecast 侧的 _num
-    # 系列均已挡，本函数是观测侧漏网的一处，第五轮 P2-4）。
-    if v is None or isinstance(v, bool):
-        return None
-    if isinstance(v, str):
-        s = v.strip()
-        if s == "" or s.lower() in ("none", "nan", "na", "null"):
-            return None
-        try:
-            return float(s)
-        except ValueError:
-            return None
-    try:
-        f = float(v)
-        return None if f != f else f  # 去掉 NaN
-    except (TypeError, ValueError):
-        return None
+    """统一走 obs/base.parse_obs_float（eia/cma 两源曾各持一份 95% 相同实现）。"""
+    return parse_obs_float(v)
 
 
 class _NonHourCounter:
@@ -182,6 +167,8 @@ def _records_from_table(html: str, cnt: _NonHourCounter) -> list[dict]:
             col["wind_speed"] = idx
         elif "风向" in h:
             col["wind_dir"] = idx
+        elif "能见度" in h:
+            col["visibility"] = idx
     out: list[dict] = []
     for tr in rows[1:]:
         tds = tr.find_all("td")
@@ -192,12 +179,18 @@ def _records_from_table(html: str, cnt: _NonHourCounter) -> list[dict]:
         except ValueError:
             continue
         rec = {"time": iso(dt), "source": "table"}
-        for out_key, idx in col.items():
-            if out_key == "time":
-                continue
+        # **固定键集**契约（与 NUMERIC_KEYS、_records_from_wd 同一口径）：逐
+        # NUMERIC_KEYS 输出，表头缺哪列该要素就写 None——绝不省略键。旧实现
+        # 只输出 col 里实际匹配到的列，表头少一列（站方移除"湿度"列、或本
+        # 回退此前根本不识别"能见度"）时记录缺键，storage._same_obs 按完整
+        # 可测量部分判等，键集不同即判"观测回改"——wd↔table 回退切换会让
+        # revisions 被伪回改淹没（cma_data.py 同一条契约的教训，见其注释）。
+        for out_key in NUMERIC_KEYS.values():
+            col_idx = col.get(out_key)
             rec[out_key] = plausible(
                 out_key,
-                _to_float(tds[idx].get_text(strip=True)) if idx < len(tds) else None)
+                _to_float(tds[col_idx].get_text(strip=True))
+                if (col_idx is not None and col_idx < len(tds)) else None)
         out.append(rec)
     return out
 

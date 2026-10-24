@@ -188,10 +188,10 @@ def _retry_after_seconds(resp: Any) -> float | None:
         if dt is None:
             logger.warning("Retry-After 无法识别（按未提供处理）: %r", val)
             return None
-        if dt.tzinfo is None:
-            secs = (dt - datetime.now()).total_seconds()
-        else:
-            secs = (dt - datetime.now(timezone.utc)).total_seconds()
+        # RFC 9110：HTTP-date 恒为 GMT；无 tzinfo 的畸形值也按 **UTC** 兜底——
+        # 旧实现用 datetime.now()（进程本地时区），在非 UTC 机器上会把等待时长
+        # 错偏一个时区差（中国时区即差 8 小时）。两个分支由此合一。
+        secs = (dt - datetime.now(timezone.utc)).total_seconds()
     if not math.isfinite(secs) or secs <= 0:
         return None
     # 单次等待的绝对上界：超过这条宁可本轮失败重排，也不让流水线挂住。

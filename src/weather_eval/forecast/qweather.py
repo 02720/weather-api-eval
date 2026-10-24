@@ -295,6 +295,12 @@ class QWeatherProvider(ForecastProvider):
         self.retries = retries
         # 逐日档位：订阅级属性，首次成功后进程内缓存、跨站点复用（与逐小时梯子同理）
         self._daily_tier_cache: int | None = None
+        # weather/v1 路由可用性：**账号级**属性（404=路由不存在、403/400=订阅未
+        # 开通），与 accuweather 的档位缓存同类。首次判定后进程内跳过 v1 探测——
+        # 免费凭据下旧实现每站每轮都先白烧一次注定失败的 v1 请求 + 一条 WARNING。
+        # 只缓存"路由/权限级"的不可用（400/403/404/200-无 hours）；429（限流）
+        # 与网络错误不缓存（下一站可能就恢复），401 会直接抛错、走不到这里。
+        self._v1_unavailable: bool = False
         # Key 只经请求头传递，绝不进入 URL/query（避免随日志/代理泄露）。
         self._headers = {**HEADERS, "X-QW-Api-Key": self.key}
         self.session = session or requests.Session()
@@ -308,10 +314,18 @@ class QWeatherProvider(ForecastProvider):
         r_lat = round(float(station.lat), 2)   # 和风坐标契约：小数不超过 2 位
         r_lon = round(float(station.lon), 2)
 
-        v1_url = f"https://{self.host}/weather/v1/hourly/{r_lat}/{r_lon}"
-        status_v1, body_v1 = self._get(v1_url, {"hours": self.hours})
+        if self._v1_unavailable:
+            status_v1, body_v1 = None, None
+            desc_v1 = "已判定 weather/v1 路由对本凭据不可用（账号级，进程内缓存），跳过探测"
+        else:
+            v1_url = f"https://{self.host}/weather/v1/hourly/{r_lat}/{r_lon}"
+            status_v1, body_v1 = self._get(v1_url, {"hours": self.hours})
+            desc_v1 = _describe_error(body_v1)
+            if (status_v1 in (400, 403, 404)
+                    or (status_v1 == 200
+                        and not (isinstance(body_v1, dict) and body_v1.get("hours")))):
+                self._v1_unavailable = True
         entries = body_v1.get("hours") if isinstance(body_v1, dict) else None
-        desc_v1 = _describe_error(body_v1)
 
         if status_v1 == 401:
             raise RuntimeError(
@@ -453,6 +467,10 @@ class QWeatherProvider(ForecastProvider):
                 logger.warning("和风站点 %s 逐日响应未解析出任何有效日（契约漂移），"
                                "本次快照不带逐日预报块", station_id)
                 return None
+            # ⚠️ 401/403 也降档（不用 accuweather 的"401 直接放弃"）：和风的逐日
+            # 各档位是**独立订阅产品**（免费档 30d 被拒而 15d 可用是真实场景，
+            # test_daily_tier_ladder_descends_and_caches 钉的就是它）——降档正是
+            # 对权限缺口的正确响应；全部档位穷尽才收敛为"不带逐日块"。
             logger.info("和风站点 %s 逐日档位 %dd 不可用（HTTP %s code=%s），降档尝试",
                         station_id, tier, status, code)
         logger.warning(

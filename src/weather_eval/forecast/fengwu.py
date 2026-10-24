@@ -271,6 +271,19 @@ class FengWuProvider(ForecastProvider):
             ))
         if not rows:
             raise RuntimeError("风乌响应无可解析的数据点")
+        # 量级哨兵（对齐 fuxi_data 的同一道防线，契约漂移时响亮告警）：
+        # 本源契约 t2m 为开尔文，上面无条件 −273.15。若服务端某天改发 ℃，
+        # 全部温度会整体错 273 度且无任何报错地入库——改码前先拦住：
+        # 原始值普遍已在 ℃ 量级（<150）即口径漂移信号。单点噪声不告警，
+        # ≥6 点且 ≥90% 命中才触发。
+        raw_t2m = [_num((item.get("values") or {}).get("t2m"))
+                   for item in payload.get("data") or [] if isinstance(item, dict)]
+        nums = [v for v in raw_t2m if v is not None]
+        if len(nums) >= 6 and sum(1 for v in nums if v < 150) >= 0.9 * len(nums):
+            logger.warning(
+                "风乌 t2m 数值普遍呈 ℃ 量级（如 %.1f）而契约应为开尔文——"
+                "疑似服务端口径漂移，本快照温度按契约减 273.15 后将整体失真，"
+                "请人工复核 fengwu.py 的单位换算", nums[0])
         rows.sort(key=lambda r: r[0])
         temp_samples = [(t, v) for t, v, _ in rows]
         tp_samples = [(t, v) for t, _, v in rows]
