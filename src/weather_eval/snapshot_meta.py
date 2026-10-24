@@ -71,6 +71,59 @@ SUSPECT_ISSUE_SOURCES = frozenset({
 # 换来"封存时刻可改 = verify 变红"这条硬保证。meta_schema 同理（纯版本标记）。
 _HASH_EXCLUDED = ("payload_sha256",)
 
+# 预报逐小时要素的物理合理域。"什么算一个合法值"是全系统一个答案，唯一出处
+# 在此（评估读侧与落盘闸门共用；历史版本曾放在 evaluate 里，两处必然分叉）。
+FCST_PLAUSIBLE: dict[str, tuple[float, float]] = {
+    "temperature_2m": (-90.0, 60.0),
+    "precipitation": (0.0, 2000.0),
+}
+
+
+def plausible_fcst_value(v: Any, lo: float, hi: float) -> float | None:
+    """有限且落在物理合理域内才返回值（与评估读侧逐位一致的 float 化）；否则 None。"""
+    if v is None or isinstance(v, bool):
+        return None
+    if not isinstance(v, (int, float)):
+        return None
+    f = float(v)
+    if not (f == f and f not in (float("inf"), float("-inf"))):
+        return None
+    return f if lo <= f <= hi else None
+
+
+def sanitize_hourly_arrays(snapshot: dict) -> tuple[dict, int]:
+    """把快照逐小时数组统一规整为 有限浮点 | None，返回 (快照, 替换值个数)。
+
+    干净的快照零拷贝原样返回（热路径无损）；含非法值（非数值/inf/NaN/非物理
+    哨兵）时返回**副本**，绝不原地改写调用方还持有引用的对象。这是写入口
+    （storage.save_forecast_snapshot）与读侧（evaluate）共用的唯一清洗实现：
+    "落盘即干净、读取即免清洗"必须基于同一份规则，否则两层各说各话。
+    """
+    data = snapshot.get("data")
+    if not isinstance(data, dict):
+        return snapshot, 0
+    dirty = 0
+    for series in data.values():
+        if not isinstance(series, dict):
+            continue
+        for key, (lo, hi) in FCST_PLAUSIBLE.items():
+            arr = series.get(key)
+            if not isinstance(arr, list):
+                continue
+            for v in arr:
+                if plausible_fcst_value(v, lo, hi) != v:
+                    dirty += 1
+    if not dirty:
+        return snapshot, 0
+    out = dict(snapshot)
+    out["data"] = {m: dict(s) for m, s in data.items()}
+    for series in out["data"].values():
+        for key, (lo, hi) in FCST_PLAUSIBLE.items():
+            arr = series.get(key)
+            if isinstance(arr, list):
+                series[key] = [plausible_fcst_value(v, lo, hi) for v in arr]
+    return out, dirty
+
 
 def snapshot_complete(snap: dict) -> bool:
     """快照是否完整（契约字段 complete）。

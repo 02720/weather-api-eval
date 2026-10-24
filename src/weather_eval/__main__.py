@@ -410,26 +410,50 @@ def refresh_monthly_archives(cfg) -> int:
     ``write_monthly_report`` 对冻结档案的保护——被冻结的是**数据**，不是视图）。
     由 ``_update_live_report`` 在每次写主报告后调用，故 ``report`` / ``all`` /
     ``monthly`` 三条路径都会自动刷新。
+
+    "无法重建"（原料双缺）是**永久且不可行动**的事实：首次出现时 WARNING（新
+    信号：又一个月丢了原料），此后每轮只 INFO——同一句话每轮刷一遍只会训练
+    运维忽略告警。已上报清单持久化在 data/health/unrebuildable_months.json。
     """
     from .report import render as _render
+    from .storage import _exclusive_lock, _root
 
     monthly = _render._reports_root() / "monthly"
     if not monthly.is_dir():
         return 0
     cur = _render.view_fingerprint()
     labels = {s.id: s.name for s in cfg.stations}
-    rebuilt = unrebuildable = 0
-    for p in sorted(monthly.glob("*.html")):
-        if _render._embedded_fingerprint(p) == cur:
-            continue        # 已是当前代码的视图，无需重算
-        data = _rebuild_month_data(cfg, p.stem)
-        if data is None:
-            unrebuildable += 1
-            log.warning("月度归档 %s 无法用最新代码重建（原始快照与结论摘要均缺失），保留原样",
-                        p.stem)
-            continue
-        write_monthly_report(data, station_labels=labels, force=True)
-        rebuilt += 1
+    state_path = _root() / "health" / "unrebuildable_months.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    with _exclusive_lock(state_path):
+        known: set[str] = set()
+        try:
+            loaded = json.loads(state_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, list):
+                known = {str(m) for m in loaded}
+        except (OSError, json.JSONDecodeError):
+            known = set()
+        rebuilt = unrebuildable = newly_lost = 0
+        for p in sorted(monthly.glob("*.html")):
+            if _render._embedded_fingerprint(p) == cur:
+                continue        # 已是当前代码的视图，无需重算
+            data = _rebuild_month_data(cfg, p.stem)
+            if data is None:
+                unrebuildable += 1
+                if p.stem in known:
+                    log.info("月度归档 %s 无法用最新代码重建（原料双缺，已知情况，保留原样）",
+                             p.stem)
+                else:
+                    newly_lost += 1
+                    log.warning(
+                        "月度归档 %s 无法用最新代码重建（原始快照与结论摘要均缺失），"
+                        "保留原样；该情况不可行动，此后不再重复告警", p.stem)
+                known.add(p.stem)
+                continue
+            write_monthly_report(data, station_labels=labels, force=True)
+            rebuilt += 1
+        if known:
+            _atomic_write_json(state_path, sorted(known))
     if rebuilt:
         log.info("月度归档已按当前代码重建 %d 份（其余为最新版%s）",
                  rebuilt, f"，另有 {unrebuildable} 份因无原料无法重建" if unrebuildable else "")
@@ -469,8 +493,8 @@ def _update_live_report(cfg):
     return label, out
 
 
-def write_health_report(cfg, stale_hours: int = 30):
-    """写 reports/health.html，返回陈旧源个数（0 = 全部健康）。"""
+def _compute_and_write_health(cfg, stale_hours: int) -> list:
+    """全量计算源健康度并写 reports/health.html + 陈旧状态，返回陈旧源名单。"""
     from . import health as _health
     from .evaluate import _preload
     from .report.render import write_health_page
@@ -489,16 +513,66 @@ def write_health_report(cfg, stale_hours: int = 30):
         "truth_transport": _health.truth_transport(cfg.stations),
     }
     write_health_page(_health.render_health_html(h, meta, stale_hours))
-    return len(_health.stale_sources(h))
+    stale = list(_health.stale_sources(h))
+    from .storage import _root
+    state_path = _root() / "health" / "source_staleness.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_json(state_path, {
+        "generated_at": now.strftime("%Y-%m-%dT%H:%M:%S"),
+        "stale_hours": int(stale_hours),
+        "stale_sources": stale,
+    })
+    return stale
+
+
+def write_health_report(cfg, stale_hours: int = 30):
+    """写 reports/health.html，返回陈旧源个数（0 = 全部健康）。
+
+    同时把陈旧判定落成轻量状态（data/health/source_staleness.json）：CI 的
+    `health` 步骤紧随 `all` 之后，而 `all` 内部刚刚做过同一份全量计算——
+    两次之间数据不会变，重读数千个文件只为再算一遍同样的结论。状态带时间戳，
+    cmd_health 只在"新鲜且口径一致"时复用，否则照常全量重算。
+    """
+    return len(_compute_and_write_health(cfg, stale_hours))
+
+
+# 陈旧状态的复用窗口（分钟）：超过即视为"不是同一轮流水线的产物"，回退全量重算。
+_HEALTH_STATE_MAX_AGE_MIN = 120
+
+
+def _read_health_state(stale_hours: int) -> dict | None:
+    """读上一次陈旧判定；不新鲜/口径不同/不可读一律返回 None（= 重算）。"""
+    from .storage import _root
+    from .timeutil import now_beijing, parse_iso
+    path = _root() / "health" / "source_staleness.json"
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(state, dict) or int(state.get("stale_hours", -1)) != int(stale_hours):
+        return None
+    try:
+        age_min = (now_beijing() - parse_iso(str(state["generated_at"]))).total_seconds() / 60
+    except (KeyError, ValueError, TypeError):
+        return None
+    if not 0 <= age_min <= _HEALTH_STATE_MAX_AGE_MIN:
+        return None
+    return state
 
 
 def cmd_health(args):
     """源健康度检查（CI 用）：陈旧源存在时以非零退出，供自动开 Issue 步骤捕捉。"""
     cfg = load_config(args.config)
-    n_stale = write_health_report(cfg, stale_hours=args.stale_hours)
-    if n_stale:
-        log.error("有 %d 个源超过 %d 小时未成功抓取（详见 reports/health.html）",
-                  n_stale, args.stale_hours)
+    state = _read_health_state(args.stale_hours)
+    if state is None:
+        stale = [str(s) for s in _compute_and_write_health(cfg, args.stale_hours)]
+    else:
+        log.info("复用 %s 生成的陈旧判定（%d 分钟内、阈值一致时不重复全量重算）",
+                 state.get("generated_at"), _HEALTH_STATE_MAX_AGE_MIN)
+        stale = [str(s) for s in (state.get("stale_sources") or [])]
+    if stale:
+        log.error("有 %d 个源超过 %d 小时未成功抓取（详见 reports/health.html）：%s",
+                  len(stale), args.stale_hours, ", ".join(stale))
         # 退出码只表示"有/无"，不表示条数：Linux 把 exit code 截断到 8 位，
         # 返回陈旧源个数会让 256 个陈旧源"变回" 0（= 成功），CI 因此看不见失败。
         return 1

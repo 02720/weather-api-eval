@@ -18,6 +18,17 @@ def _synthetic_fetch_time(monkeypatch):
     monkeypatch.setenv("WEATHER_EVAL_FETCHED_AT", SYNTHETIC_FETCHED_AT)
 
 
+@pytest.fixture(autouse=True)
+def _reset_eval_caches():
+    """逐用例清空进程级缓存/去重状态：预加载缓存与数据质量告警去重。"""
+    from weather_eval import evaluate
+    evaluate.clear_preload_cache()
+    evaluate.reset_data_quality_warnings()
+    yield
+    evaluate.clear_preload_cache()
+    evaluate.reset_data_quality_warnings()
+
+
 class FakeResp:
     def __init__(self, text, status_code=200):
         self.text = text

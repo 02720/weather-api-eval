@@ -178,8 +178,10 @@ from .stats import (
 from .timeutil import (parse_iso, floor_to_hour, lower_split, upper_split,
                        unfrozen_split, minute_index, clear_minute_index,
                        clear_axis_cache)
-from .snapshot_meta import (ISSUE_SOURCE_LABELS, SUSPECT_ISSUE_SOURCES,
-                             integrity_summary, snapshot_complete)
+from .snapshot_meta import (FCST_PLAUSIBLE, ISSUE_SOURCE_LABELS,
+                            SUSPECT_ISSUE_SOURCES, integrity_summary,
+                            plausible_fcst_value, sanitize_hourly_arrays,
+                            snapshot_complete)
 from .storage import load_obs, list_forecast_snapshots
 
 # 逐小时降水分级：cyeva 1h 雨强区间级别（小雨 0.1~1.9 … 大暴雨 ≥20 mm/h）
@@ -354,80 +356,65 @@ def _snapshot_struct_valid(snap: dict) -> bool:
     return True
 
 
-# 预报要素的物理合理域（与 obs/base.OBS_PLAUSIBLE_RANGES 同精神，但阈值按
-# **预报**的语义取：气温用地球实测极值留足余量，降水下限为 0、上限取单小时
-# 与单日都不可能超过的量级）。落在这里而不是每个 provider 里，是因为"什么算
-# 一个值"必须是全系统一个答案——13 个 provider 各写一份必然分叉（现状就有
-# 4 套互不相同的 inf/哨兵语义）。
-_FCST_PLAUSIBLE: dict[str, tuple[float, float]] = {
-    "temperature_2m": (-90.0, 60.0),
-    "precipitation": (0.0, 2000.0),
-}
+# 预报要素的物理合理域：唯一出处已移至 snapshot_meta（写入口与读侧共用），
+# 此处保留旧名引用以兼容既有调用点/测试。
+_FCST_PLAUSIBLE: dict[str, tuple[float, float]] = FCST_PLAUSIBLE
 
 
 def _plausible_fcst(v: Any, lo: float, hi: float) -> float | None:
     """有限且落在物理合理域内才返回值；否则 None（缺测，绝不折算 0）。"""
-    if v is None or isinstance(v, bool):
-        return None
-    if not isinstance(v, (int, float)):
-        return None
-    f = float(v)
-    if not math.isfinite(f):
-        return None
-    return f if lo <= f <= hi else None
+    return plausible_fcst_value(v, lo, hi)
+
+
+# 数据质量类告警的进程内去重（见 _warn_data_quality）：同一份存档在一轮
+# `all` 里会被 2~3 次 build_report 反复读到（总榜、健康度、月度重建），历史
+# 脏数据每遍都刷同样的告警只会淹没真信号。
+_DATA_QUALITY_WARNED: set[str] = set()
+_DATA_QUALITY_SUPPRESSED = 0
+_DATA_QUALITY_WARN_CAP = 20
+
+
+def _warn_data_quality(key: str, msg: str, *args) -> None:
+    """数据质量告警的"每键每进程至多一次"出口，超过上限后聚合计数。"""
+    global _DATA_QUALITY_SUPPRESSED
+    if key in _DATA_QUALITY_WARNED:
+        return
+    _DATA_QUALITY_WARNED.add(key)
+    if len(_DATA_QUALITY_WARNED) <= _DATA_QUALITY_WARN_CAP:
+        logging.getLogger(__name__).warning(msg, *args)
+        return
+    _DATA_QUALITY_SUPPRESSED += 1
+    if _DATA_QUALITY_SUPPRESSED == 1:
+        logging.getLogger(__name__).warning(
+            "历史存档的数据质量告警超过 %d 条，同类告警此后不再逐条打印"
+            "（详见各存档的 payload 与快照质量表）", _DATA_QUALITY_WARN_CAP)
+
+
+def reset_data_quality_warnings() -> None:
+    """清空告警去重状态（测试隔离用；生产进程一次生命周期正好去重一轮）。"""
+    global _DATA_QUALITY_SUPPRESSED
+    _DATA_QUALITY_WARNED.clear()
+    _DATA_QUALITY_SUPPRESSED = 0
 
 
 def _sanitize_hourly_arrays(snap: dict) -> dict:
     """把逐小时数组统一规整为 有限浮点 | None（第四轮 P1-6 纵深防御）。
 
-    逐小时数组此前**没有**任何归一口径（_finite_or_none 只用于日产品块）：
+    逐小时数组此前**没有任何归一口径**（_finite_or_none 只用于日产品块）：
     一个商业 API 快照里的一条脏值（字符串/哨兵/NaN）会在 temp_metrics 的
     np.asarray(..., dtype=float) 处炸掉整份报告——所有源、所有站、所有指标。
     每份快照只在加载时清洗一次（值合法时零拷贝原样返回，热路径无损）。
+    实现与"落盘即干净"的写入口同源（snapshot_meta.sanitize_hourly_arrays），
+    读侧只在历史存档（闸门上线前）上还会实际干活。
     """
-    data = snap.get("data")
-    if not isinstance(data, dict):
-        return snap
-    dirty = False
-    for series in data.values():
-        if not isinstance(series, dict):
-            continue
-        for key in ("temperature_2m", "precipitation"):
-            arr = series.get(key)
-            if not isinstance(arr, list):
-                continue
-            lo, hi = _FCST_PLAUSIBLE[key]
-            for v in arr:
-                if v is None or isinstance(v, bool):
-                    continue
-                if not isinstance(v, (int, float)) or not math.isfinite(v):
-                    dirty = True
-                    break
-                # 有限但非物理的哨兵（999.0 °C / 9999 mm）必须同样按缺测处理：
-                # 它们能通过 isfinite，被当成**真样本**算进 RMSE/MAE——观测侧
-                # 早有 OBS_PLAUSIBLE_RANGES 拦这一类（评审记录："哨兵值曾原样
-                # 落库 58 次"），但预报侧此前只在个别 provider 内部零散拦截。
-                # 这里在统一的清洗闸门上补齐：一个 choke point，所有源同样口径。
-                if not (lo <= v <= hi):
-                    dirty = True
-                    break
-            if dirty:
-                break
-        if dirty:
-            break
-    if not dirty:
-        return snap
-    out = dict(snap)
-    out["data"] = {m: dict(s) for m, s in data.items()}
-    for m, series in out["data"].items():
-        for key in ("temperature_2m", "precipitation"):
-            arr = series.get(key)
-            if isinstance(arr, list):
-                lo, hi = _FCST_PLAUSIBLE[key]
-                series[key] = [_plausible_fcst(v, lo, hi) for v in arr]
-    logging.getLogger(__name__).warning(
-        "快照逐小时数组含非法值（非数值/inf/NaN/非物理哨兵），已按缺测清洗: issue=%s",
-        snap.get("issue_iso"))
+    out, n_dirty = sanitize_hourly_arrays(snap)
+    if n_dirty:
+        models = sorted(snap.get("data") or {})
+        _warn_data_quality(
+            f"sanitize|{snap.get('station_id')}|{','.join(models)}|{snap.get('issue_iso')}",
+            "快照逐小时数组含非法值（非数值/inf/NaN/非物理哨兵），已按缺测清洗:"
+            " station=%s models=%s issue=%s（%d 个值）",
+            snap.get("station_id"), models, snap.get("issue_iso"), n_dirty)
     return out
 
 
@@ -462,9 +449,10 @@ def _snaps_for(sid: str, model: str, snapshots: dict | None,
         if cached is False:
             if stats is not None:
                 stats["n_malformed_snaps"] = stats.get("n_malformed_snaps", 0) + 1
-                logging.getLogger(__name__).warning(
-                    "快照结构畸形，已跳过（不入任何指标）: station=%s model=%s",
-                    sid, model)
+                _warn_data_quality(
+                    f"malformed|{sid}|{model}|{s.get('issue_iso')}",
+                    "快照结构畸形，已跳过（不入任何指标）: station=%s model=%s issue=%s",
+                    sid, model, s.get("issue_iso"))
             continue
         ok.append(cached if isinstance(cached, dict) else s)
     if not require_complete:
@@ -541,9 +529,12 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
     # 时间轴判定缓存同理：按 id(times) 记忆，必须与本次 collect 同生命周期，
     # 否则上一轮释放后的地址被复用，会读到一条**已失效**的"这条轴是排好序的"。
     clear_axis_cache()
+    max_lead = hourly_lead_days * 24
     for sid in station_ids:
         obs_map = obs_maps[sid] if obs_maps is not None and sid in obs_maps \
             else load_obs(sid)
+        obs_get = obs_map.get
+        append_hr = hourly_records.append
         # 逐小时配对
         # 时间轴剪枝（2026-10 性能轮）：窗口过滤与封存门槛都只依赖"时间先后"，而
         # 存档时间轴是分钟分辨率的定长 ISO 且升序（实测 212 万点全部 16 字符），
@@ -554,10 +545,13 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
         for model in models:
             for snap in _snaps_for(sid, model, snapshots, require_complete, stats):
                 issue = parse_iso(snap["issue_iso"])
+                issue_iso_s = snap["issue_iso"]
                 # 起报时刻的分钟序号；None = 起报串不是分钟分辨率 → 本快照整体
                 # 回退 datetime 路径（口径不变，只是不再走整数快路径）
-                issue_im = minute_index(snap["issue_iso"])
-                issue_day_s = snap["issue_iso"][:10]
+                issue_im = minute_index(issue_iso_s)
+                issue_day_s = issue_iso_s[:10]
+                # 起报日的分钟序号（天桶的整数快路径）：每快照一次，绝不进内层循环
+                issue_day_im = (issue_im // 1440) if issue_im is not None else None
                 times = snap["hourly_time"]
                 n_lo = lower_split(times, start_dt)
                 n_hi = upper_split(times, end_dt)
@@ -566,9 +560,11 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                 for m in snap["data"]:
                     arr_t = snap["data"][m]["temperature_2m"]
                     arr_p = snap["data"][m]["precipitation"]
+                    lt = len(arr_t)
+                    lp = len(arr_p)
                     for i in range(n_lo, n_hi):
                         tstr = times[i]
-                        rec = obs_map.get(tstr)
+                        rec = obs_get(tstr)
                         if rec is None:
                             continue
                         im = minute_index(tstr) if issue_im is not None else None
@@ -576,7 +572,7 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                             lead = (im - issue_im) // 60
                         else:
                             lead = int((parse_iso(tstr) - issue).total_seconds() // 3600)
-                        if lead <= 0 or lead > hourly_lead_days * 24:
+                        if lead <= 0 or lead > max_lead:
                             continue
                         # ---- 封存时点门槛（审查 P1-4）----
                         # 有效时刻已经过去之后才抓回来的"预报值"不进任何榜：它可能
@@ -603,21 +599,21 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                         # 逐时效曲线）使用——那是另一套合法且已披露的口径，不该被
                         # 天桶对齐连带删掉，否则等于用一次口径修正把诊断视图掏空。
                         if im is not None:
-                            days_off = im // 1440 - issue_im // 1440
+                            days_off = im // 1440 - issue_day_im
                         else:
                             days_off = _days_between(issue_day_s, tstr[:10])
                         if days_off < 0 or days_off > hourly_lead_days:
                             continue
                         # 数组越界按缺测处理（与按天聚合同防护）：畸形存档降级为
                         # 该点缺测，不拖垮整份报告
-                        hourly_records.append({
+                        append_hr({
                             "station": sid, "model": m, "valid_iso": tstr,
-                            "issue_iso": snap["issue_iso"],
+                            "issue_iso": issue_iso_s,
                             "lead": lead, "bucket": days_off,
                             "temp_obs": rec.get("temp"),
-                            "temp_fcst": (arr_t[i] if i < len(arr_t) else None),
+                            "temp_fcst": (arr_t[i] if i < lt else None),
                             "rain_obs": rec.get("rain"),
-                            "rain_fcst": (arr_p[i] if i < len(arr_p) else None),
+                            "rain_fcst": (arr_p[i] if i < lp else None),
                         })
 
     # 按天聚合
@@ -626,6 +622,9 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
     for sid in station_ids:
         obs_map = obs_maps[sid] if obs_maps is not None and sid in obs_maps \
             else load_obs(sid)
+        # 逐小时段的同名绑定属于**那一轮** sid：按天段必须按本站重新绑定，
+        # 否则会一路沿用最后一个站点的观测表（站序一变，样本就串站）
+        obs_get = obs_map.get
         # 观测日聚合（n_temp/n_rain = 非缺测小时数，供覆盖门槛判定）
         od: dict[str, dict] = {}
         for tstr, rec in obs_map.items():
@@ -662,6 +661,8 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                 for m in snap["data"]:
                     arr_t = snap["data"][m]["temperature_2m"]
                     arr_p = snap["data"][m]["precipitation"]
+                    lt = len(arr_t)
+                    lp = len(arr_p)
                     fd: dict[str, dict] = {}
                     fd_frozen: dict[str, dict] = {}
                     # 共同小时集合上的双测聚合（预报侧与观测侧同一批小时）：按天
@@ -673,11 +674,30 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                     # 一致：只有两侧同一小时都有值，该小时才进入按天聚合。
                     fc: dict[str, dict] = {}
 
+                    # 按日缓存三只聚合桶（fd / fd_frozen / 共同桶）：时间轴升序，
+                    # 同一天内 setdefault 是纯重复劳动；"仅在需要时建桶"的时机
+                    # 与逐点版本逐位一致（fd_frozen 桶只在首个放行小时创建，
+                    # 共同桶只在首个双测命中创建），下游的键集合不变。
+                    cur_day = None
+                    cur_allowed = None
+                    d_cur: dict | None = None
+                    df_cur: dict | None = None
+                    c_cur: dict | None = None
                     for i in range(d_lo, d_hi):
                         tstr = times[i]
                         day = tstr[:10]
-                        d = _day_bucket(fd, day)
                         unfrozen = fetched_dt is not None and i < d_frozen_lo
+                        allowed = not (unfrozen and require_frozen)
+                        if day != cur_day:
+                            cur_day = day
+                            d_cur = _day_bucket(fd, day)
+                            df_cur = _day_bucket(fd_frozen, day) if allowed else None
+                            cur_allowed = allowed
+                            c_cur = None
+                        elif allowed != cur_allowed:
+                            # 封存门槛在日内翻转（未封存→封存，单调至多一次）
+                            df_cur = _day_bucket(fd_frozen, day) if allowed else None
+                            cur_allowed = allowed
                         if unfrozen and stats is not None:
                             # 按天侧单独计数（第四轮 P1-1）：与逐小时轨道的
                             # seal_lag 样本单位不同（天-小时 vs 小时记录），
@@ -685,24 +705,29 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                             by_m = stats.setdefault("daily_unfrozen_hours_by_model", {})
                             by_m[m] = by_m.get(m, 0) + 1
                             stats["n_daily_unfrozen_hours"] = stats.get("n_daily_unfrozen_hours", 0) + 1
-                        df = None if unfrozen and require_frozen else _day_bucket(fd_frozen, day)
-                        rec_o = obs_map.get(tstr)
+                        d = d_cur
+                        df = df_cur
+                        rec_o = obs_get(tstr)
                         ot = rec_o.get("temp") if rec_o else None
                         op = rec_o.get("rain") if rec_o else None
-                        has_t = i < len(arr_t) and arr_t[i] is not None
-                        has_p = i < len(arr_p) and arr_p[i] is not None
+                        has_t = i < lt and arr_t[i] is not None
+                        has_p = i < lp and arr_p[i] is not None
                         # 该小时是否进入共同集合：两侧都有值，且在封存门槛内
                         # （df is None ⟺ require_frozen 且该小时未封存）
                         common = df is not None
                         if common and has_t and ot is not None:
-                            c = _common_bucket(fc, day)
+                            if c_cur is None:
+                                c_cur = _common_bucket(fc, day)
+                            c = c_cur
                             c["max_temp"] = max(c["max_temp"], arr_t[i])
                             c["min_temp"] = min(c["min_temp"], arr_t[i])
                             c["obs_max_temp"] = max(c["obs_max_temp"], ot)
                             c["obs_min_temp"] = min(c["obs_min_temp"], ot)
                             c["n_temp"] += 1
                         if common and has_p and op is not None:
-                            c = _common_bucket(fc, day)
+                            if c_cur is None:
+                                c_cur = _common_bucket(fc, day)
+                            c = c_cur
                             c["sum_rain"] += arr_p[i]
                             c["obs_sum_rain"] += op
                             c["n_rain"] += 1
@@ -1872,11 +1897,30 @@ def _farrays(records, keys) -> tuple[np.ndarray, np.ndarray]:
             np.asarray([r[kb] for r in records], dtype=float))
 
 
+# 进程内 _preload 缓存：key = (数据根, 站点, 模型, 数据版本)。同一次 `all`/`report`
+# 进程里，总榜 → 健康度 → 月度归档重建会先后发起 2~N 次全量读盘（每次数千个
+# 文件 + JSON 解析），读的却是同一批数据——直到有写路径落盘（storage 的
+# data_version 递增）为止。缓存只在版本一致时命中，正确性不依赖任何时序假设。
+_PRELOAD_CACHE: tuple[tuple, dict, dict] | None = None
+
+
+def clear_preload_cache() -> None:
+    """丢弃进程内预加载缓存（测试隔离 / 强制重读用）。"""
+    global _PRELOAD_CACHE
+    _PRELOAD_CACHE = None
+
+
 def _preload(station_ids: list[str], models: list[str]) -> tuple[dict, dict]:
     """一次 IO 读全所有观测与快照，下游各节共用（P3-2：同批文件此前被读 4 遍）。"""
+    global _PRELOAD_CACHE
+    from .storage import _root, data_version
+    key = (str(_root()), tuple(station_ids), tuple(models), data_version())
+    if _PRELOAD_CACHE is not None and _PRELOAD_CACHE[0] == key:
+        return _PRELOAD_CACHE[1], _PRELOAD_CACHE[2]
     obs_maps = {sid: load_obs(sid) for sid in station_ids}
     snapshots = {(sid, m): list_forecast_snapshots(sid, m)
                  for sid in station_ids for m in models}
+    _PRELOAD_CACHE = (key, obs_maps, snapshots)
     return obs_maps, snapshots
 
 
@@ -4045,8 +4089,10 @@ def _snapshot_quality(models: list[str], snapshots: dict) -> dict[str, dict]:
         out[m] = {"snapshots": len(lens), "median_len": median,
                   "min_len": ordered[0], "truncated": truncated}
         if truncated:
-            logger.warning("源 %s 有 %d/%d 份残缺快照（序列长度 < 中位 %d 的 70%%，最短 %d）",
-                           m, truncated, len(lens), median, ordered[0])
+            _warn_data_quality(
+                f"truncated|{m}",
+                "源 %s 有 %d/%d 份残缺快照（序列长度 < 中位 %d 的 70%%，最短 %d）",
+                m, truncated, len(lens), median, ordered[0])
     return out
 
 

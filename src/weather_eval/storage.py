@@ -76,6 +76,20 @@ BUNDLE_SUFFIX = ".json.gz"
 # （抓取通道的元数据，不是可测量的实况值），revisions 是历史数组本身。
 _PROVENANCE_KEYS = frozenset({"source", "revisions"})
 
+# 数据版本号：本进程内每次观测/快照写路径落盘后 +1。evaluate._preload 据此缓存
+# "一次全量读盘"的解析结果——同一进程里 report→health→月度重建不需要各自再把
+# 数千个文件读一遍（版本变了缓存自动失效，正确性不依赖时序假设）。
+_DATA_VERSION = 0
+
+
+def data_version() -> int:
+    return _DATA_VERSION
+
+
+def _bump_data_version() -> None:
+    global _DATA_VERSION
+    _DATA_VERSION += 1
+
 
 
 def _root() -> Path:
@@ -244,6 +258,8 @@ def save_obs(station_id: str, records: list[dict]) -> int:
                     v = _with_revision(v, old, revised_at)
                 existing[k] = v
             _atomic_write_json(path, existing)
+    if updated:
+        _bump_data_version()
     return updated
 
 
@@ -377,12 +393,19 @@ def save_forecast_snapshot(station_id: str, model: str, snapshot: dict, *,
     覆盖截断后的实际存档。评测侧的日偏移过滤（collect）是第二道闸，两者口径
     同源（同一配置项），详见 snapshot_meta.truncate_daily_block。
     """
-    from .snapshot_meta import stamp_snapshot, truncate_daily_block
+    from .snapshot_meta import sanitize_hourly_arrays, stamp_snapshot, truncate_daily_block
     issue_iso = snapshot["issue_iso"]
     path = _root() / "forecasts" / station_id / model / _issue_filename(issue_iso)
     with _exclusive_lock(path):
         if path.exists():
             return False
+        snapshot, n_dirty = sanitize_hourly_arrays(snapshot)
+        if n_dirty:
+            # 写时告警（而非读时每轮重刷）：脏数据到达的那一刻是最可行动的时机
+            logging.getLogger(__name__).warning(
+                "快照落盘前清洗了 %d 个非法值（非数值/inf/NaN/非物理哨兵，已按缺测"
+                "归一）：station=%s model=%s issue=%s——请核对相应 provider 的解析",
+                n_dirty, station_id, model, issue_iso)
         truncate_daily_block(
             snapshot,
             daily_max_offset_days if daily_max_offset_days is not None
@@ -400,6 +423,7 @@ def save_forecast_snapshot(station_id: str, model: str, snapshot: dict, *,
             fetched_utc=now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
         )
         _atomic_write_json(path, snapshot)
+    _bump_data_version()
     return True
 
 
@@ -509,6 +533,8 @@ def archive_old_snapshots(older_than_days: int, apply: bool = False) -> list[Pat
         changed.append(path)
         if apply:
             _atomic_gzip_replace(path)
+    if apply and changed:
+        _bump_data_version()
     return changed
 
 
@@ -680,6 +706,8 @@ def compact_snapshots(*, grace_days: int = 2, retain_months: int = 13,
                     except OSError as e:
                         report["errors"].append(f"{gz}: {e}")
                         logger.error("出仓失败 %s: %s", gz, e)
+    if apply and (report["bundles_created"] or report["expired"]):
+        _bump_data_version()
     return report
 
 

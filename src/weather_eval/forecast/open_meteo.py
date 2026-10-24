@@ -128,6 +128,11 @@ class OpenMeteoProvider(ForecastProvider):
             if tarr is None or parr is None:
                 logger.warning("模型 %s 的数据数组缺失，跳过", model)
                 continue
+            parr, n_clamped = _clamp_trace_precip(parr)
+            if n_clamped:
+                logger.info(
+                    "模型 %s 的逐小时降水有 %d 个痕迹量负值（%.1f…mm），已钳制为 0.0",
+                    model, n_clamped, -_TRACE_PRECIP_EPS)
             data[model] = {"temperature_2m": tarr, "precipitation": parr}
         if not data:
             raise RuntimeError("Open-Meteo 未返回任何请求的模型数据")
@@ -178,6 +183,28 @@ _DAILY_VARS = (
     ("temperature_2m_min", "temp_min"),
     ("precipitation_sum", "precipitation"),
 )
+
+# 痕迹量降水的舍入残留上限（mm）：实测 jma_gsm/ecmwf_ifs025 等模式会回吐
+# -0.1 mm —— 物理上降水非负，这是"下了不到 0.1mm"的编码而非真值。
+_TRACE_PRECIP_EPS = 0.5
+
+
+def _clamp_trace_precip(arr: list) -> tuple[list, int]:
+    """把微小的负降水钳制为 0.0（痕迹量的物理语义），返回 (数组, 钳制数)。
+
+    无负值时零拷贝原样返回（快照热路径无损）。非数值元素原样透传：
+    它们属于"非法值"而非"痕迹量"，交由落盘闸门（snapshot_meta）按缺测处理。
+    大幅负值（< -eps）同样透传：那不是舍入残留，静默改写会掩盖数据事故。
+    """
+    n = 0
+    for v in arr:
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and -_TRACE_PRECIP_EPS <= v < 0:
+            n += 1
+    if not n:
+        return arr, 0
+    out = [0.0 if isinstance(v, (int, float)) and not isinstance(v, bool)
+           and -_TRACE_PRECIP_EPS <= v < 0 else v for v in arr]
+    return out, n
 
 
 def _parse_daily(payload: dict, models: list[str], allow_bare: bool,
@@ -243,6 +270,12 @@ def _parse_daily(payload: dict, models: list[str], allow_bare: bool,
                 # 轴被过滤/去重过，或数组短于原始日轴：按保留索引裁剪对齐，
                 # 越界位置按缺测写入，绝不前移对齐、绝不造值
                 data[model][out] = [arr[i] if i < len(arr) else None for i in keep_idx]
+            if out == "precipitation":
+                fixed, n_clamped = _clamp_trace_precip(data[model][out])
+                if n_clamped:
+                    logger.info("模型 %s 的逐日降水有 %d 个痕迹量负值，已钳制为 0.0",
+                                model, n_clamped)
+                    data[model][out] = fixed
     if not data:
         logger.warning("Open-Meteo 站点 %s 的 daily 组未解析出任何模型，"
                        "本次快照不带逐日预报块", station_id)
