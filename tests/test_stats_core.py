@@ -374,3 +374,61 @@ def test_pairwise_corr_matrix_matches_naive():
                     assert a is None and b is None, (i, j, a, b)
                 else:
                     assert a == b, (i, j, a, b)
+
+
+# ------------------------------------------- 综合分第二层缩放与赛段宏观权重
+def test_composite_gain_affine_monotone_clipped():
+    """综合分第二层缩放：仿射、严格保序、中心不动、越界截断、NaN 传播。"""
+    old_gain, old_center = stats.SCORE_COMPOSITE_GAIN, stats.SCORE_COMPOSITE_CENTER
+    try:
+        stats.apply_composite_gain(1.65, 50.0)
+        assert abs(stats.composite_gain(50.0) - 50.0) < 1e-12
+        assert abs(stats.composite_gain(80.0) - (50.0 + 1.65 * 30.0)) < 1e-12
+        vals = [stats.composite_gain(x) for x in (0, 20, 40, 60, 80, 100)]
+        assert all(a < b for a, b in zip(vals, vals[1:]))   # 严格保序（未截断段）
+        assert stats.composite_gain(100.0) == 100.0          # 上端截断
+        assert stats.composite_gain(0.0) == 0.0
+        assert np.isnan(stats.composite_gain(float("nan")))
+    finally:
+        stats.apply_composite_gain(old_gain, old_center)
+
+
+def test_two_way_adjust_segment_weights_downweight_daily_segment():
+    """赛段宏观权重：小时:日 = 1:0.5 时，只在小时段强的行应排前。
+
+    两行在小时/日赛段上完全对称（A 强于小时、B 强于日）。等权时两者打平；
+    给日段 0.5 权重后 A 的行效应必须高于 B——这就是"日轨只算 1/3"的落点。
+    """
+    S = np.array([[80.0, 80.0, 60.0, 60.0],
+                  [60.0, 60.0, 80.0, 80.0]])
+    W = np.full_like(S, 4.0)
+    base = stats.two_way_adjust(S, min_col=2, min_row=2, weights=W,
+                                min_cell_weight=3.87, min_col_frac=0.0,
+                                segment_sizes=(2, 2))
+    assert abs(base["scores"][0] - base["scores"][1]) < 1e-9
+    weighted = stats.two_way_adjust(
+        S, min_col=2, min_row=2, weights=W, min_cell_weight=3.87,
+        min_col_frac=0.0, segment_sizes=(2, 2), segment_weights=(1.0, 0.5))
+    assert weighted["scores"][0] > weighted["scores"][1] + 1.0
+    # 门槛按**未缩放**权重判：日段 4.0 ≥ 3.87，缩放后 2.0 < 3.87 也不得被剔除
+    assert weighted["dropped_thin_cells"] == 0
+    assert weighted["cell_valid"].all()
+    # 实际拟合权重已含赛段缩放（披露/派生列必须用它）
+    assert np.allclose(weighted["fit_weights"][:, :2], 4.0)
+    assert np.allclose(weighted["fit_weights"][:, 2:], 2.0)
+
+
+def test_composite_worst_case_regression_without_second_layer():
+    """回归守卫：第二层 gain=1.0 时，综合分退回"两维平均"旧口径逐位不变。
+
+    （生产路径装载 config 值；本用例只锁"恒等快路"这一层，防止缩放悄悄
+    渗进维度分或改变名次。）
+    """
+    old_gain, old_center = stats.SCORE_COMPOSITE_GAIN, stats.SCORE_COMPOSITE_CENTER
+    try:
+        stats.apply_composite_gain(1.0, 50.0)
+        assert stats.composite_gain(63.37) == 63.37
+        assert (stats.composite_gain(np.array([0.0, 50.0, 100.0]))
+                == np.array([0.0, 50.0, 100.0])).all()
+    finally:
+        stats.apply_composite_gain(old_gain, old_center)

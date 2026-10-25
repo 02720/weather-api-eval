@@ -81,10 +81,10 @@ def test_synthetic_amt_only_bucket_is_missing_not_full_score():
     _set_gate(0.0)
     old = precip_score(AMT_ONLY)
     assert old == round(_weighted_raw(PRECIP_SCORE_PARTS, AMT_ONLY), 2)
-    # 旧口径只凭雨量两项重归一出一个高分（本夹具在 2026-10-18 λ 下 = 88.69：
-    # amt_bias 恰好 1.0 满分、amt_mae 0.5 相对误差扣到 81.1）。分数带的精确值
-    # 随 λ 冻结值浮动，断言只锁"高分"这个性质本身。
-    assert 85.0 <= old <= 100.0, old
+    # 旧口径只凭雨量一项重归一出一个高分（2026-10-25 去冗余后 amt_bias 不再
+    # 入分，只剩 amt_mae 0.5 相对误差 → 81.1）。分数带的精确值随 λ 冻结值浮动，
+    # 断言只锁"高分"这个性质本身。
+    assert 80.0 <= old <= 100.0, old
     # 更贴近 P8 榜首形态的夹具：近乎完美的雨量格（0.05 相对误差）→ 旧口径 ≥95。
     # 对任意合理 λ 成立（0.05×λ 至多扣 2~3 分），这正是"整桶没有可评事件却产出
     # 榜首"的机制——P8 修法判它缺测（None），而不是把雨量两项抬成全部话语权。

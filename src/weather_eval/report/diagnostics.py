@@ -461,6 +461,8 @@ def board_matrices(report: dict, board_key: str = "all"
     说明正式总榜本身就落在等权路径上（``_board_cell_weights`` 在逐格 n_eff
     整体缺失时的安全网会退回等权）。用等权而非"拿 n 当 n_eff 凑一个权重矩阵"
     ——后者是伪造精度，会造出一条与正式榜不同却自称同源的基线。
+    **赛段宏观权重（小时:日=2:1）不在"等权"之列**：它是口径，不是格子信息量，
+    由 ``meta.daily_track_weight`` 恢复；两侧都不带它才是真的换了个估计量。
 
     保真度由调用方显式披露：诊断是"在重建设计上做相对比较"，不是"重算正式榜"。
     """
@@ -506,11 +508,16 @@ def _adjust(S: np.ndarray, report: dict, buckets: list[str],
             ridge: float | None = None, **over) -> np.ndarray:
     """在当前 meta 口径下跑一次双向劈分（等权），返回行分。"""
     meta = report.get("meta") or {}
+    seg = _segment_sizes(buckets)
     opts = dict(min_col=st.MIN_MODELS_PER_BUCKET,
                 min_row=st.MIN_BUCKETS_PER_MODEL,
                 min_col_frac=float(meta.get("board_min_col_frac") or 0.0),
                 min_cell_weight=0.0,
-                segment_sizes=_segment_sizes(buckets))
+                segment_sizes=seg)
+    if seg:
+        # 与正式总榜同尺（2026-10-25，复核 P1）：重建可以等权（逐格 n_eff 未导出），
+        # 但**赛段宏观权重**必须保留，否则保真度比较的是另一个估计量。
+        opts["segment_weights"] = (1.0, float(meta.get("daily_track_weight", 0.5)))
     opts.update(over)
     lam = float(meta.get("board_ridge") or 0.0) if ridge is None else float(ridge)
     return st.two_way_adjust(S, ridge=lam, **opts)["scores"]
@@ -528,12 +535,15 @@ def bridge_and_jackknife(report: dict, board_key: str = "all",
         return {"available": False, "reason": "无法重建分数矩阵"}
     S, models, buckets = built
     meta = report.get("meta") or {}
+    _seg = _segment_sizes(buckets)
     base_res = st.two_way_adjust(S, ridge=float(meta.get("board_ridge") or 0.0),
                                  min_col=st.MIN_MODELS_PER_BUCKET,
                                  min_row=st.MIN_BUCKETS_PER_MODEL,
                                  min_col_frac=float(meta.get("board_min_col_frac") or 0.0),
                                  min_cell_weight=0.0,
-                                 segment_sizes=_segment_sizes(buckets))
+                                 segment_sizes=_seg,
+                                 segment_weights=((1.0, float(meta.get(
+                                     "daily_track_weight", 0.5))) if _seg else None))
     base_scores = base_res["scores"]
     row_keep = base_res["row_keep"]
 
@@ -845,7 +855,9 @@ def score_slope_influence(report: dict) -> dict[str, Any]:
             "nominal_vs_effective": gaps,
             "most_influential": worst,
             "note": "effective_share = 名义权重 × 子分桶内 sd ÷ Σ(同维度全部项)；"
-                    "标定契约：各轨占比 ≈ 名义权重"}
+                    "标定契约：各轨占比 ≈ 名义权重。**这是维度内口径**——它回答"
+                    "“温度维内部 8 项 / 降水维内部 6 项谁说话”，不是对综合分的"
+                    "方差贡献；后者见 composite_share（两维之间）"}
 
 
 def composite_dimension_share(report: dict) -> dict[str, Any]:
@@ -858,29 +870,17 @@ def composite_dimension_share(report: dict) -> dict[str, Any]:
 
     注意分母：方差份额之和 = 100%（含协方差项，可为负）。
     """
-    from ..evaluate import TEMP_SCORE_PARTS, PRECIP_SCORE_PARTS
+    # 直接调用**生产评分函数**（2026-10-25 修正）：旧实现自己重算加权平均，
+    # 漏掉了 P8"最小存活权重"门槛——于是"该桶没有可评降水事件、生产降水分判
+    # 缺测"的格子仍被算进方差分解，份额与榜面口径分叉。生产函数同时带维度
+    # gain（仿射，不改变份额）与同一套缺项/门槛纪律，这里不再维护第二份公式。
+    from ..evaluate import temp_score, daily_temp_score, precip_score
 
-    def _score(md: dict, parts, split_daily: bool = False) -> float | None:
-        """split_daily 只给**温度**用：日轨温度是 {"max": {...}, "min": {...}} 嵌套，
-        两侧各算分再取均值。**降水不是**——两个轨的降水指标 dict 都是平铺的
-        （add_precip 直接落 {bucket: 指标}），意外的嵌套假设曾让日轨降水恒取
-        None、进而把 composite_dimension_share 的整个日轨静默抹掉（同 P4 披露 bug）。"""
-        def one(half: dict) -> float | None:
-            num = den = 0.0
-            for key, w, _label, _mp, fn in parts:
-                v = (half or {}).get(key)
-                if not isinstance(v, (int, float)) or not np.isfinite(v):
-                    continue
-                c = fn(v)
-                if c is None or not np.isfinite(c):
-                    continue
-                num += w * max(0.0, min(100.0, c))
-                den += w
-            return num / den if den else None
-        if not split_daily:
-            return one(md)
-        hi, lo = one((md or {}).get("max")), one((md or {}).get("min"))
-        return None if (hi is None or lo is None) else (hi + lo) / 2
+    def _temp_score(md: dict, daily: bool) -> float | None:
+        return daily_temp_score(md or {}) if daily else temp_score(md or {})
+
+    def _precip_score(md: dict) -> float | None:
+        return precip_score(md or {})
 
     cell_sources = {
         "hourly": (report.get("temp_hourly") or {},
@@ -896,8 +896,8 @@ def composite_dimension_share(report: dict) -> dict[str, Any]:
         for m, per in temp_src.items():
             for b, md in (per or {}).items():
                 pm = (precip_src.get(m) or {}).get(b)
-                ts = _score(md, TEMP_SCORE_PARTS, split_daily=(track == "daily"))
-                ps = _score(pm, PRECIP_SCORE_PARTS)         # 平铺 dict，两轨同构
+                ts = _temp_score(md, daily=(track == "daily"))
+                ps = _precip_score(pm)                      # 平铺 dict，两轨同构
                 if ts is not None and ps is not None:       # 两维齐备才算综合分
                     buckets[b].append((ts, ps))
         for vals in buckets.values():
@@ -926,7 +926,9 @@ def composite_dimension_share(report: dict) -> dict[str, Any]:
     if not out["tracks"]:
         return {"available": False, "reason": "没有两维齐备的逐桶格子"}
     out["note"] = ("份额 = 各维方差贡献 ÷ 综合分方差（桶内中心化、两维齐备格）；"
-                   "两维份额 + 协方差份额 = 100%")
+                   "两维份额 + 协方差份额 = 100%。综合分的第二层技能指数缩放在"
+                   "这里不改变份额：仿射变换同时缩放协方差与方差，比值不变。"
+                   "50:50 是名义权重；实际份额随窗口变化，跨期不可直接对比。")
     return out
 
 

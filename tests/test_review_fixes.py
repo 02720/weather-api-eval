@@ -205,7 +205,8 @@ def test_disclosure_block_is_complete(tmp_path, monkeypatch):
         assert key in dw, key
     vd = dw["variance"]
     assert vd["residual_share"] is not None
-    assert abs(vd["row_share"] + vd["col_share"] + vd["residual_share"] - 1.0) < 1e-6
+    # 份额各自 round 到 4 位小数，三项之和最多偏离 1.5e-4；容差按展示精度给
+    assert abs(vd["row_share"] + vd["col_share"] + vd["residual_share"] - 1.0) < 1e-3
     # 技巧剖面（短/中/长分段排名）已按需求下线：不再产出 profile/profile_rank
     assert "profile" not in dw
     assert all("profile_rank" not in r for r in data["leaderboards"]["all"])

@@ -432,7 +432,7 @@ def day_block_weights(runs: int, n_days: int, block_days: int = 1,
 # 温度充分统计量的列含义（逐样本可加，故"天"内可预聚合、重采样时按权重求和）
 _TEMP_STATS = ("n", "se2", "ae", "se", "h1", "h2", "sx", "sy", "sxy", "sxx", "syy")
 # 降水：二分类列联计数 + 雨量精度的可加充分统计量。
-# 后四项（2026-10 新增）服务于"雨量精度"两维（amt_mae / amt_bias，见
+# 后四项（2026-10 新增）服务于"雨量精度"（amt_mae 入分、amt_bias 明细，见
 # evaluate.precip_amount_metrics）：它们只由 Σo / Σf / Σ|f−o| 构成，因此按天
 # 分块 bootstrap 能逐位重算与点估计**同一把尺子**。这是可入分的**硬约束**——
 # 任何参考量不可加的口径（例如 1 − MAE/mean|o−mean o|，参考量随重采样的日集合
@@ -740,6 +740,16 @@ def build_day_stat_tables_columnar(pt, models: list[str],
 SCORE_INDEX_GAIN: float = 1.0
 SCORE_INDEX_CENTER: float = 50.0
 
+# 综合分的**第二层**技能指数缩放（2026-10-25，第一性原理复核 P4 的正确落点）。
+# 上面的 SCORE_INDEX_GAIN 作用于**维度分**（温度/降水各自）；读者读的是两维
+# 平均后的综合分。两维均值差 40+ 分，一平均就把上端整段砍掉：维度 P99.5 已到
+# 98，综合分 P99.5 只有 ~80。复核建议"把靶点从维度分改到综合分、重解 gain"是
+# **错的**——那会把维度分放大到上限以外、把温度维一半格子 clip 成 100（正是
+# 2026-10-18 修掉的旧缺陷）。正确做法是分层：维度分保持自己的 gain，在综合分
+# 上再施加一次冻结仿射。gain=1.0 时走恒等快路，旧调用点逐位不变。
+SCORE_COMPOSITE_GAIN: float = 1.0
+SCORE_COMPOSITE_CENTER: float = 50.0
+
 # 降水分"最小存活权重"门槛（存活子分权重占比，0~1；0 = 关闭）。代码内缺省 =
 # config eval.precip_min_surviving_weight 的冻结值（与 SCORE_INDEX_GAIN 同纪律：
 # 只此一处声明；evaluate.apply_precip_min_weight 在 build_report 入口装载，
@@ -780,6 +790,37 @@ def apply_score_index_gain(gain: float | None = None,
     SCORE_INDEX_GAIN = 1.0 if gain is None else float(gain)
     if center is not None:
         SCORE_INDEX_CENTER = float(center)
+
+
+def apply_composite_gain(gain: float | None = None,
+                         center: float | None = None) -> None:
+    """装载综合分第二层缩放（config eval.score_composite_gain → 模块级）。
+
+    与 `apply_score_index_gain` 同模式：必须在任何评分计算之前装载一次，点估计
+    与 bootstrap 走同一个全局。传 None = 回到代码内缺省（gain=1.0 恒等快路）。
+    """
+    global SCORE_COMPOSITE_GAIN, SCORE_COMPOSITE_CENTER
+    SCORE_COMPOSITE_GAIN = 1.0 if gain is None else float(gain)
+    if center is not None:
+        SCORE_COMPOSITE_CENTER = float(center)
+
+
+def composite_gain(x):
+    """综合分第二层仿射缩放：g(x)=center+gain·(x−center)，截断 [0,100]，NaN 传播。
+
+    只作用于**两维平均之后**的综合分，不作用于维度分。gain=1.0 走恒等快路
+    （未装载配置的一切旧调用点逐位不变）。与 `index_gain` 同一纪律：冻结常数、
+    仿射单调 ⇒ 名次与显著性判定不变，CI 宽度按同因子放大。
+    """
+    arr = np.asarray(x, dtype=float)
+    if SCORE_COMPOSITE_GAIN == 1.0:
+        return float(arr) if arr.ndim == 0 else arr
+    with np.errstate(invalid="ignore"):
+        out = SCORE_COMPOSITE_CENTER + SCORE_COMPOSITE_GAIN * (
+            arr - SCORE_COMPOSITE_CENTER)
+    out = np.clip(out, 0.0, 100.0)
+    out = np.where(np.isnan(arr), np.nan, out)
+    return float(out) if out.ndim == 0 else out
 
 
 def index_gain(x):
@@ -1432,7 +1473,8 @@ def two_way_adjust(S2: np.ndarray,
                    min_col_frac: float = 0.0,
                    ridge: float = 0.0,
                    min_cell_weight: float = 0.0,
-                   segment_sizes: tuple[int, ...] | None = None) -> dict:
+                   segment_sizes: tuple[int, ...] | None = None,
+                   segment_weights: tuple[float, ...] | None = None) -> dict:
     """把 (m, b) 的分数矩阵劈成"行的技巧"与"列的难度"，返回难度对齐后的行分。
 
     为什么要这一步（第一性原理）：预报难度随时效单调上升，而各家能预报的天数
@@ -1454,6 +1496,12 @@ def two_way_adjust(S2: np.ndarray,
 
     segment_sizes：列被切成若干"赛段"（如总榜的 [b_hourly, b_daily]）时，要求
     行在每个非空赛段都有格子——见 design_mask。缺省 None 即不设赛段门槛。
+
+    segment_weights：各赛段的**宏观权重**（如总榜的小时:日 = 1:0.5）。它只缩放
+    拟合权重、不改变入设计掩膜——所以 `min_cell_weight` 仍按**未缩放**的格子
+    权重判定（否则日轨的厚格子会因为宏观降权被误判成薄格子）。行效应 α 于是
+    按"小时段的证据算两份、日段算一份"合成；列效应不受同一赛段内均匀缩放影响。
+    缺省 None = 各段等权（旧行为逐位不变）。
 
     代价要说清楚：这是**加法假设**——若某家在短时效特别强、长时效特别弱（存在
     源 × 时效的交互），"对齐"后的单一数字表达不了这种差异，跨覆盖范围的比较仍
@@ -1478,12 +1526,25 @@ def two_way_adjust(S2: np.ndarray,
         W0 = np.asarray(weights, dtype=float)
         if W0.shape != S2.shape:
             raise ValueError("weights 必须与分数矩阵同形状")
+    # 赛段宏观权重：只作用于**拟合**，门槛仍按未缩放的 W0 判（见 docstring）。
+    # 必须在 thin 判定之后再乘，否则日轨的厚格子会被 0.5 因子误判成薄格子。
+    seg_mult = None
+    if segment_weights is not None:
+        if segment_sizes is None or len(segment_weights) != len(segment_sizes):
+            raise ValueError("segment_weights 必须与 segment_sizes 一一对应")
+        seg_mult = np.concatenate([
+            np.full(int(n), float(w), dtype=float)
+            for n, w in zip(segment_sizes, segment_weights)])
+        if seg_mult.size != S2.shape[1]:
+            raise ValueError("segment_sizes 之和不等于分数矩阵的列数")
     V0 = np.isfinite(S2)
     dropped_thin = 0
     if W0 is not None and min_cell_weight > 0:
         thin = V0 & ~(np.isfinite(W0) & (W0 >= min_cell_weight))
         dropped_thin = int(thin.sum())
         V0 = V0 & ~thin
+    if seg_mult is not None:
+        W0 = (np.ones_like(S2) if W0 is None else W0) * seg_mult[None, :]
     row_keep, col_keep = design_mask(V0, min_col=min_col, min_row=min_row,
                                      min_col_frac=min_col_frac,
                                      segment_sizes=segment_sizes)
@@ -1510,7 +1571,8 @@ def two_way_adjust(S2: np.ndarray,
                 "mu": None, "row_keep": row_keep, "col_keep": col_keep,
                 "n_components": n_components, "cell_valid": V,
                 "dropped_thin_cells": dropped_thin,
-                "effective_min_col": eff_min_col}
+                "effective_min_col": eff_min_col,
+                "fit_weights": None}
     if W0 is not None:
         # 被门槛剔掉的格子权重必须同时清零（第四轮 P1-1）：只传 valid 不清权重，
         # _fit_parts 的 WLS 仍会按原权重把它们请回来，"直接剔出设计"就是假披露。
@@ -1527,7 +1589,10 @@ def two_way_adjust(S2: np.ndarray,
             "row_keep": row_keep, "col_keep": col_keep,
             "n_components": n_components, "cell_valid": V3[0],
             "dropped_thin_cells": dropped_thin,
-            "effective_min_col": eff_min_col}
+            "effective_min_col": eff_min_col,
+            # 实际拟合权重（含赛段宏观权重、已按门槛清零）：派生列、CI 与
+            # 方差披露必须与它同尺，否则页面上的两列来自两个估计量。
+            "fit_weights": (W3[0] if W3 is not None else None)}
 
 
 # ------------------------------------------------ 加法假设的量化与名次稳定性
@@ -2054,14 +2119,17 @@ def track_bucket_scores(tables: dict[str, np.ndarray],
         valid_h, valid_d = bv[:, :b], bv[:, b:]
     else:
         valid_h, valid_d = tv_h & rv_h, tv_d & rv_d
-    h_scores = np.where(
+    # 综合分 = 两维平均后再施加第二层技能指数缩放（见 SCORE_COMPOSITE_GAIN）。
+    # 与点估计 evaluate._composite_score 同一把尺子：bootstrap 的 CI 中心才不会
+    # 与榜面数字分叉。缩放只作用于综合分，不碰维度分。
+    h_scores = composite_gain(np.where(
         valid_h,
         _nanmean_stack([np.where(tv_h, t_h, np.nan),
-                        np.where(rv_h, r_h, np.nan)]), np.nan)
-    d_scores = np.where(
+                        np.where(rv_h, r_h, np.nan)]), np.nan))
+    d_scores = composite_gain(np.where(
         valid_d,
         _nanmean_stack([np.where(tv_d, daily_t, np.nan),
-                        np.where(rv_d, r_d, np.nan)]), np.nan)
+                        np.where(rv_d, r_d, np.nan)]), np.nan))
     # 必须用 concatenate(axis=-1) 而不是 hstack：hstack 对 ndim≥2 的数组沿
     # **axis 1** 拼接，而这里的倒数第二维是"模型"，天桶才是最后一维——用 hstack
     # 会把两条轨道沿着模型维拼起来，形状变成 (run, 2m, b) 还不报错。
@@ -2201,6 +2269,64 @@ def weight_champion_distribution(
     order = np.argsort(-counts)
     return [{"index": int(i), "pct": round(100.0 * float(counts[i]) / total, 1)}
             for i in order if counts[i] > 0]
+
+
+def macro_champion_at_alpha(temp_sub: np.ndarray, precip_sub: np.ndarray,
+                            temp_parts, precip_parts, alpha: float,
+                            adj_row: np.ndarray | None = None,
+                            adj_col: np.ndarray | None = None,
+                            adj_w: np.ndarray | None = None,
+                            adj_ridge: float = 0.0) -> dict | None:
+    """固定"温度占综合分比例 α"下的冠军（P0-2 的前置披露，2026-10-25）。
+
+    随机权重敏感性回答"权重一起扰动时冠军换不换"；读者真正要问的却是
+    **"温度:降水从 30:70 挪到 70:30 时，冠军是谁"**——全榜最有争议的那个旋钮
+    此前只在 U(30%,70%) 的冠军频率里被平均掉，看不到端点。本函数在**名义子分
+    权重不动、只改 α** 的条件下重跑同一个难度对齐设计，返回该 α 下的第一名。
+
+    temp_sub / precip_sub：(m, b, k) 已换算截断的子分张量（NaN=缺项），列布局
+    与总榜一致（[hourly 1..H | daily 1..D]）。adj_w 必须与正式榜同尺（含赛段
+    宏观权重），否则端点冠军与正式榜不是同一把尺子。
+    """
+    w_t = np.array([p[1] for p in temp_parts], dtype=float)
+    w_p = np.array([p[1] for p in precip_parts], dtype=float)
+    mt = ~np.isnan(temp_sub)
+    mp = ~np.isnan(precip_sub)
+    st = np.where(mt, temp_sub, 0.0)
+    sp = np.where(mp, precip_sub, 0.0)
+    num_t = np.einsum("k,mbk->mb", w_t, st)
+    den_t = np.einsum("k,mbk->mb", w_t, mt.astype(float))
+    num_p = np.einsum("k,mbk->mb", w_p, sp)
+    den_p = np.einsum("k,mbk->mb", w_p, mp.astype(float))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        t_score = num_t / np.where(den_t > 0, den_t, np.nan)
+        p_score = num_p / np.where(den_p > 0, den_p, np.nan)
+    vt, vp = np.isfinite(t_score), np.isfinite(p_score)
+    tot = alpha * vt + (1.0 - alpha) * vp
+    with np.errstate(invalid="ignore", divide="ignore"):
+        num = alpha * np.where(vt, t_score, 0.0) \
+            + (1.0 - alpha) * np.where(vp, p_score, 0.0)
+        bucket = np.where(tot > 0, num / np.where(tot > 0, tot, 1.0), np.nan)
+    if adj_row is None or adj_col is None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            scores = np.nanmean(bucket, axis=-1)
+    else:
+        # difficulty_adjusted 要 (r, m, b)：单次固定 α 只是 r=1 的特例
+        scores = difficulty_adjusted(
+            bucket[None, ...], np.asarray(adj_row, dtype=bool),
+            np.asarray(adj_col, dtype=bool),
+            weights=(None if adj_w is None
+                     else np.asarray(adj_w, dtype=float)[None, ...]),
+            ridge=adj_ridge)[0]
+    # 与榜面同尺：第二层综合分缩放也要施加（仿射不改 argmax，但披露的 score
+    # 必须能和榜上的数字对照，否则读者会以为端点冠军只有 55 分）
+    scores = composite_gain(scores)
+    finite = np.isfinite(scores)
+    if not finite.any():
+        return None
+    best = int(np.where(finite, np.round(scores, 6), -np.inf).argmax())
+    return {"index": best, "score": round(float(scores[best]), 2)}
 
 
 # ================================================================== 跨源相关（对抗式审查 P0-1）

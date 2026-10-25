@@ -49,6 +49,9 @@
   于是"第 5 天的小时预报有多难"与"第 5 天的日预报有多难"是两个各自估计的列效应，
   两榜的尺度差被各自的列截距吃掉（不必假设两榜分数可比），而"这家跨两种分辨率的
   综合技巧"是同一个行效应——这就是总榜那个唯一的数字。
+  **两段不是等权**（2026-10-25 复核 P1）：日轨对多数源是同一份逐小时预报重新分箱，
+  独立性有限，拟合权重降为小时段的 0.5（`daily_track_weight`）；日轨真正独立的
+  交付量（日最高/最低）仍在，但不再把同一类信息计两遍。
   **总榜要求行在两条轨道上都有格子**（segment_sizes=(B, B)）：一家只在小时分辨率
   上被验证过、日分辨率一个桶都没有，它的"综合分"就是它的小时分；让它与两条轨道
   都被验证过的源同榜竞争，等于让没被考的科目自动满分。
@@ -105,9 +108,9 @@
 
 得分体系（排行榜、分时效榜单与时效趋势共用）：
 - 把预报质量拆成互不重复的维度，每维度取代表性指标换算成 0~100 的子分后加权平均：
-  温度 5 族 / 7 项入分（命中轮廓 {±2°C, ±1°C}、误差幅度 {RMSE, MAE}、相关系数 r、
-  |MBE| 偏差分、回归斜率分），降水 6 项入分（ETS（首位）、POD、100−FAR、
-  |log₂BIAS|、雨量量级误差、雨量总量偏差）。
+  温度 6 族 / 8 项入分（命中轮廓 {±2°C, ±1°C}、误差幅度 {RMSE, MAE}、相关系数 r、
+  |MBE| 偏差分、回归斜率分、站间一致性），降水 6 项入分（ETS（首位）、POD、
+  100−FAR、|log₂BIAS|、雨量精度 amt_mae、雨强分辨力）。
   **2026-10-06 全指标审计**：每一个已评测的指标都有归属——真信息自己开权重槽位；
   同族冗余（桶内跨源 ρ≈0.9）并入该族、**族权重在成员间平分**（不新开槽位=不重复
   计权）；数学上是入分项的函数、或样本量的函数者**拒收**并写明恒等式
@@ -124,22 +127,24 @@
   信息论上同一量级的错误，惩罚必须对称。
   各子分截断到 [0,100]，缺项按剩余权重归一（不让单一缺项把整行踢出局）。
   不入分的指标及理由见 TEMP/PRECIP_SCORE_PARTS 注释与 README。
-- 综合得分 = mean(温度得分, 降水分)，缺一即缺——单维分不冒充综合分（MSN 教训）。
+- 综合得分 = mean(温度得分, 降水分) 再过**第二层技能指数缩放**（2026-10-25 复核
+  P4，只作用于综合分、不碰维度分），缺一即缺——单维分不冒充综合分（MSN 教训）。
+  跨轨合成按 1:0.5（小时:日 = 2:1），见 `_track_mean` 与 config.daily_track_weight。
 - 排行榜（leaderboards）分**两个维度**：分辨率层 × 时效层，共 3+3·N 张榜。
   * 分辨率层三张（"all" / "hourly" / "daily"）：**难度对齐分**——用(天桶×分辨率)做
     列的双向加法模型把难度与技巧劈开后给出的期望分。三张答三个问题：
       "总榜" = 综合起来谁最准（跨分辨率）；
       "hourly" = 谁把"某日几点"报得最准（逐小时温度 + 该小时是否下雨）；
       "daily"  = 谁把"这一天的极值/总量"报得最准（日最高/最低 + 日累计降水）。
-    行附 90% 置信区间、冠军频率、与第一名显著性、n_eff 门槛
-    （min_board_neff）达标标记（未达标 = 样本积累中，不参与冠军竞争）、覆盖
-    时效（按各指标实际有效样本），以及 track_gap = 小时榜分 − 日榜分（两榜分歧）。
+    行附 90% 置信区间、冠军频率、与第一名显著性、n_eff / 降水事件 / 入设计
+    格子数（min_board_cells）门槛达标标记（未达标 = 样本积累中，不参与冠军竞争）、
+    覆盖时效（按各指标实际有效样本），以及 track_gap = 小时榜分 − 日榜分（两榜分歧）。
   * 时效层（"hourly:1d".."hourly:16d" / "daily:1d".."daily:16d"）：同一分辨率、
     同一提前天数内的直接对照。不经过任何难度对齐，是最保守的视角。两族必须分开
     命名：此前的 "1d".."16d" 把两个不同口径的分数（温度走逐小时、降水走日累计）
     混成一个数，却挂在一个连自己的出身都没交代的名字下。
   * 综合天榜（"all:1d".."all:Nd"，N = min(小时榜天数, 日榜天数)）：同一天桶内
-    小时榜与日榜各半的等权平均、两轨缺一即缺——总榜在单天粒度的对应物，回答
+    小时榜与日榜按 1:0.5 合成、两轨缺一即缺——总榜在单天粒度的对应物，回答
     "提前第 N 天这天综合谁最准"。同天桶内无覆盖偏差，故无需重跑劈分（名次与
     "先扣列效应再平均"严格等价，见 _combined_day_boards）。
   所有榜共用同一行结构与打分公式，主报告表格排行榜与冠军横幅共用这份数据。
@@ -1187,8 +1192,13 @@ def precip_amount_metrics(obs_vals, fcst_vals, min_sample,
       amt_mae  = Σ|预报−实况| / Σ实况    相对雨量量级误差（用 MAE；dev 族）
       amt_bias = Σ预报 / Σ实况           雨量总量比（用 MBE；log 族，超/欠对称）
 
-    两者在桶内跨源空间的实测相关 ≈ 0.00：一个量"逐次差多少"、一个量"总量偏
-    多少"，互补而非重复。换算族与 BIAS/斜率同纪律（log₂ 对称）。
+    **两者高度冗余（2026-10-25 复核 P3 更正）**：旧 docstring 称"桶内相关 ≈0.00、
+    互补而非重复"，与实测相反——原始值桶内跨源相关 **+0.995（小时）/ +1.000（日）**，
+    log₂ amt_bias 与 amt_mae 也有 +0.56/+0.61。原因是降水序列以非降水时段为主，
+    Σ|f−o| 被"预报有雨而实况无雨"的空报量主导，于是 amt_mae ≈ |Σf−Σo|/Σo，
+    与 |amt_bias−1| 退化为同一个量。故 **amt_bias 只保留在明细列、不进评分表**
+    （见 PRECIP_SCORE_PARTS 的"雨量精度族"注释）。换算族与 BIAS/斜率同纪律
+    （log₂ 对称）——这条口径本身不变，只是不再重复计权。
 
     可加性（硬约束）：两者都只由可加充分统计量 Σo / Σf / Σ|f−o| 构成，因此按天
     分块 bootstrap 能**逐位重算同一把尺子**（stats._rain_scores_from_aggregate）。
@@ -1271,9 +1281,9 @@ def precip_amount_metrics(obs_vals, fcst_vals, min_sample,
 #     （全部来自指标的 3~4 位小数舍入）。第二轮把"强行写进公式"的两条路实测堵死：
 #     残差当子分（dev 族）会把总分抬高 4.39 分（"残差=0"被读成满分）；残差当零
 #     中心修正则逐格偏移 ≤0.157 分（等于恒等 0，写进公式只是记账）。
-# 降水（7 项入分：晴雨判别 4 + 雨量精度 2 + 雨强分辨力 1；2026-10-06 第二轮）：
+# 降水（6 项入分：晴雨判别 4 + 雨量精度 1 + 雨强分辨力 1；2026-10-25 复核 P3）：
 #   晴雨综合技巧 ETS（首位）· 命中 POD · 空报 FAR · 频率无偏 BIAS ·
-#   雨量量级 amt_mae · 雨量总量 amt_bias · **雨强分辨力 grade_ets（新）**
+#   雨量量级 amt_mae（雨量精度族，族权重 22.5%）· **雨强分辨力 grade_ets**
 #   * grade_ets（新，A）：中雨/大雨两档（1h：2~4.9、5~9.9 mm/h；24h：≥10、≥25 mm，
 #     阈值经 stats.grade_bounds 从 cyeva 配置单点读取）各自的 ETS 按事件数加权。
 #     实测与晴雨 ETS 的桶内相关仅 0.03~0.21、对晴雨四项的 1−R² = 0.79~0.82——
@@ -1281,8 +1291,13 @@ def precip_amount_metrics(obs_vals, fcst_vals, min_sample,
 #     P90/P10 = 5.0/2.9（优于最差的 r 5.7 与 BIAS 5.3）。原 6 项 ×0.9 等比缩放
 #     让出槽位，原配比不做二次改动。1 级/小雨档不入分（与晴雨判定 ρ 0.93/0.98，
 #     同一件事换个说法）；4 级以上该窗口 ETS 中位归零（样本太稀，Q3 不达标）。
-#   * 雨量二维（A，真新信息）：对晴雨四项的 1−R² = 0.93~0.99、跨源 |ρ| ≤0.27，
-#     且两维之间 ρ≈0.00（一个量"逐次差多少"、一个量"总量偏多少"）。
+#   * 雨量精度（A，真新信息）：对晴雨四项的 1−R² = 0.93~0.99、跨源 |ρ| ≤0.27。
+#     **2026-10-25 更正**：旧注释称 amt_mae 与 amt_bias"桶内相关 ≈0.00、互补"，
+#     与事实相反——实测原始值桶内相关 **+0.995（小时）/ +1.000（日）**：
+#     降水序列以非降水时段为主，Σ|f−o| 被"预报有雨、实况无雨"的空报量主导，
+#     于是 amt_mae ≈ |Σf−Σo|/Σo ≈ |amt_bias−1|，两者是同一个量的两种写法。
+#     amt_bias 的子分与降水分桶内相关仅 −0.106 / +0.132（日轨是反的），
+#     故**只保留 amt_mae 入分**（族权重 22.5% 不缩水），amt_bias 留在明细列。
 #   C 拒收：TS、晴雨准确率 acc、漏报率、空报频率 POFD。**这四个与 ETS/POD/FAR
 #     同源于同一张 2×2 列联表（h, fa, mi, c）**：给定 n，列联表只有 3 个自由度，
 #     而 {ETS, POD, FAR} 恰好撑满它——审计用 (ETS,POD,FAR,n) 反解列联表重建
@@ -1300,7 +1315,11 @@ def precip_amount_metrics(obs_vals, fcst_vals, min_sample,
 SCORE_MAP_TEMPLATES: dict[str, str] = {
     "acc2": "百分比×{lam}（±2°C 命中率每差 {per} 个百分点扣 1 分）",
     "rmse": "100 − RMSE×{lam}（每差 {per}°C 扣 1 分，≥{sat}°C 记 0 分）",
-    "r": "r×{lam}（同步程度 −1~1 线性入分，负值记 0 分）",
+    # 负值截断的取舍写明（复核 P6）：r<0 表示预报与实况**反相**，比 r=0（无关）
+    # 更糟，但换算在 0 分处截断，两者同分。受影响格子很少（基线窗口日轨 1.26%，
+    # 子分 0~16 分区间），改成为负值再扣分需要重标 λ 并重冻基线——当前选择是
+    # "记录取舍、不改分数"，读者可据此自行判断。
+    "r": "r×{lam}（同步程度 −1~1 线性入分；负值一律记 0 分——反相与无关同分）",
     "mbe": "100 − |MBE|×{lam}（每差 {per}°C 扣 1 分，≥{sat}°C 记 0 分）",
     "slope": "100 − |log₂斜率|×{lam}（幅度每偏 2 倍（log₂ 刻度）扣 {lam} 分，超/欠对称；偏差 ≥{satx} 倍才记 0 分）",
     "acc1": "百分比×{lam}（±1°C 命中率每差 {per} 个百分点扣 1 分）",
@@ -1330,10 +1349,14 @@ SCORE_SLOPES: dict[str, float] = dict(DEFAULT_SCORE_SLOPES)
 # 标定量只此一处声明）。装载入口在 build_report，实现落在 stats.index_gain。
 DEFAULT_SCORE_INDEX_GAIN: float = float(DEFAULT_EVAL["score_index_gain"])
 DEFAULT_SCORE_INDEX_CENTER: float = float(DEFAULT_EVAL["score_index_center"])
+# 综合分第二层缩放（2026-10-25，复核 P4）：与维度分 gain 同一纪律——标定量只此
+# 一处声明，运行时由 config eval.score_composite_gain 覆盖，点估计与 bootstrap
+# 共用 stats 的同一个全局。
+DEFAULT_SCORE_COMPOSITE_GAIN: float = float(DEFAULT_EVAL["score_composite_gain"])
 
 # 降水分"最小存活权重"门槛的代码内缺省 **= config 冻结值**（同一纪律）。这是
-# score_review_proposal §2 P8 的修法：降水维 7 项里 5 项事件指标需要真实降水
-# 事件才存在，"整桶没有可评事件"的格只剩雨量两项被重归一成 100% 话语权、
+# score_review_proposal §2 P8 的修法：降水维 6 项里 5 项事件指标需要真实降水
+# 事件才存在，"整桶没有可评事件"的格只剩雨量精度一项被重归一成 100% 话语权、
 # 拿满分——半个证据当整个用（与 temp_score 的 _mean2 同一条 MSN 教训）。
 # 存活权重（换算后有效子分的权重和）占比低于该门槛的格，降水分判缺测（None），
 # 绝不重归一。装载入口在 build_report（apply_precip_min_weight）。
@@ -1349,6 +1372,19 @@ def apply_score_index_gain(gain: float | None = None,
     """
     _stats.apply_score_index_gain(
         DEFAULT_SCORE_INDEX_GAIN if gain is None else gain,
+        DEFAULT_SCORE_INDEX_CENTER if center is None else center)
+
+
+def apply_composite_gain(gain: float | None = None,
+                         center: float | None = None) -> None:
+    """装载综合分第二层缩放（config eval.score_composite_gain → stats 全局）。
+
+    None = 回到代码内缺省（config 冻结值）。必须在任何评分计算之前调用；点估计
+    （evaluate._composite_score）与 bootstrap（stats.track_bucket_scores）共用
+    stats 的同一个全局，故两处自动同尺，meta 留痕供渲染回放。
+    """
+    _stats.apply_composite_gain(
+        DEFAULT_SCORE_COMPOSITE_GAIN if gain is None else gain,
         DEFAULT_SCORE_INDEX_CENTER if center is None else center)
 
 
@@ -1474,16 +1510,20 @@ TEMP_SCORE_PARTS = (
 # 换人跳到 6/30、最低 Spearman 掉到 0.82，越过"扰动可接受"的线。
 PRECIP_SCORE_PARTS = (
     ("ets", 0.315, "晴雨 ETS 评分", SCORE_MAP_TEMPLATES["ets"], _conv_pct("ets")),
+    # 雨量精度族（原 22.5% = amt_mae 13.5% + amt_bias 9%）**并入 amt_mae 一项**
+    # （2026-10-25，第一性原理复核 P3）：两者在桶内跨源空间的原始相关实测
+    # **+0.995（小时）/ +1.000（日）**——Σ|f−o| 被"预报有雨而实况无雨"的空报量
+    # 主导，于是 amt_mae ≈ |Σf−Σo|/Σo ≈ |amt_bias−1|，退化为同一个量。
+    # 保留 amt_mae（子分与降水分桶内相关 +0.545/+0.633）而剔除 amt_bias
+    # （−0.106/+0.132，日轨甚至是反的）：同一份证据只给一个槽位，族权重不缩水。
+    ("amt_mae", 0.225, "雨量量级误差换算分（雨量精度族）",
+     SCORE_MAP_TEMPLATES["amt_mae"], _conv_dev("amt_mae")),
     ("pod", 0.135, "命中率 POD", SCORE_MAP_TEMPLATES["pod"], _conv_pct("pod")),
     ("far", 0.135, "空报率换算分", SCORE_MAP_TEMPLATES["far"], _conv_dev("far")),
     # （表内按权重降序排列：ETS 首位是原设计意图，测试锁 "list(w) == 权重降序"）
-    ("amt_mae", 0.135, "雨量量级误差换算分",
-     SCORE_MAP_TEMPLATES["amt_mae"], _conv_dev("amt_mae")),
     ("grade_ets", 0.10, "雨强分辨力换算分（中雨/大雨档 ETS）",
      SCORE_MAP_TEMPLATES["grade_ets"], _conv_pct("grade_ets")),
     ("bias", 0.09, "频率偏差换算分", SCORE_MAP_TEMPLATES["bias"], _conv_log("bias")),
-    ("amt_bias", 0.09, "雨量总量偏差换算分",
-     SCORE_MAP_TEMPLATES["amt_bias"], _conv_log("amt_bias")),
 )
 
 
@@ -1547,8 +1587,40 @@ def _mean2(a: float | None, b: float | None) -> float | None:
     return round((a + b) / 2, 2) if a is not None and b is not None else None
 
 
+def _composite_from_raw(raw: float | None) -> float | None:
+    """已合成的原始综合分 → 第二层技能指数缩放后的展示值（None 原样传播）。"""
+    if raw is None:
+        return None
+    return round(float(_stats.composite_gain(raw)), 2)
+
+
+def _track_mean(a: float | None, b: float | None,
+                daily_track_weight: float) -> float | None:
+    """两轨合成：小时轨权重 1、日轨权重 `daily_track_weight`，缺一即缺。
+
+    `daily_track_weight=0.5` 即 2:1；=1.0 退化为旧口径"两轨各半"。只用于
+    **跨轨**合成（总榜 / 综合天榜 / 趋势 all），单轨榜与单维内合成不受影响。
+    两轨缺一即缺——与 `_mean2` 同一条纪律，不给"半截证据"留位置。
+    """
+    if a is None or b is None:
+        return None
+    return round((a + daily_track_weight * b) / (1.0 + daily_track_weight), 2)
+
+
+def _composite_score(ts: float | None, ps: float | None) -> float | None:
+    """综合分：两维各半 → 再施加**第二层**技能指数缩放（stats.composite_gain）。
+
+    为什么不是直接 `_mean2`（2026-10-25 复核 P4）：两维均值差 40+ 分，平均后
+    综合分的上端被整段砍掉（维度 P99.5 已到 98，综合分 P99.5 只有 ~80）。
+    第二层仿射只放大综合分、不碰维度分——把靶点直接改到维度分会让温度维一半
+    的格子撞顶（2026-10-18 修掉的旧缺陷），那是把问题挪了个位置。
+    缺一即缺的语义不变：任一维 None → None（缩放不改变缺测判定）。
+    """
+    return _composite_from_raw(_mean2(ts, ps))
+
+
 def temp_score(t: dict) -> float | None:
-    """温度得分(0~100)：5 项指标按 TEMP_SCORE_PARTS 权重加权，缺项按剩余权重归一。"""
+    """温度得分(0~100)：8 项指标按 TEMP_SCORE_PARTS 权重加权，缺项按剩余权重归一。"""
     return _weighted_score(TEMP_SCORE_PARTS, t)
 
 
@@ -1622,7 +1694,7 @@ def daily_temp_halves_view(md: dict) -> dict:
 
 
 def precip_score(p: dict) -> float | None:
-    """降水分(0~100)：7 项指标按 PRECIP_SCORE_PARTS 权重加权，缺项按剩余权重归一——
+    """降水分(0~100)：6 项指标按 PRECIP_SCORE_PARTS 权重加权，缺项按剩余权重归一——
     但整维存活权重低于 **precip_min_surviving_weight**（缺省 0.5，config 可调）
     的格判缺测（None），不重归一。
 
@@ -1630,19 +1702,19 @@ def precip_score(p: dict) -> float | None:
 
     1. "这项指标对该源不存在"——例如某个源没跑雨强分档。重归一是对的：该指标
        对谁都没提供证据，剩下指标各归其位。
-    2. "这一整批指标都因为**该桶没有可评降水事件**而算不出来"——7 项里的
+    2. "这一整批指标都因为**该桶没有可评降水事件**而算不出来"——6 项里的
        ets/pod/far/bias/grade_ets（共 0.775 权重）需要真实降水事件（命中/漏报/
-       空报、各雨强档），amt_mae/amt_bias 只需要 Σ实况雨量 > 0。一个"整桶只有
-       一两场不达标小雨"的格，5 个事件指标集体缺席、只剩 0.27 权重的雨量两项
+       空报、各雨强档），amt_mae 只需要 Σ实况雨量 > 0。一个"整桶只有
+       一两场不达标小雨"的格，5 个事件指标集体缺席、只剩 0.225 权重的雨量精度
        被重归一成 100% 话语权——这不是"指标不存在"，是**证据**不存在；重归一
        等于把半个证据当整个用（_mean2 对温度两侧"缺一即缺"的同一原理，MSN
        教训在指标层面的复现）。实测它把没有降水可评能力格送上了分时效榜
        第 1/2 名（P8）。修法就是本门槛：存活权重占比 < 0.5 ⇒ None。
 
-    在评分轨道上 gbounds/kind 恒传入、7 项恒以同一份样本计算，故**任何缺项
+    在评分轨道上 gbounds/kind 恒传入、6 项恒以同一份样本计算，故**任何缺项
     都是证据性缺项**——不存在"结构性不存在"的指标；缺项几乎总是聚集在事件
     五项上，权重占比门槛恰好把这两类情形分开（缺 grade_ets 一项 → 0.90 存活，
-    照旧归一；缺事件五项 → ≤0.225 存活，判缺测）。门槛实现在 _weighted_score，
+    照旧归一；缺事件五项 → 0.225 存活，判缺测）。门槛实现在 _weighted_score，
     并与 bootstrap 的 stats._score_from_parts 共用同一全局门槛值（同一把尺）。
     """
     return _weighted_score(PRECIP_SCORE_PARTS, p,
@@ -1650,14 +1722,15 @@ def precip_score(p: dict) -> float | None:
 
 
 def overall_score(t: dict, p: dict) -> float | None:
-    """综合得分：温度分与降水分的均分，**缺一即缺**（任一维为 None 即 None）。
+    """综合得分：温度分与降水分的均分（再过第二层技能指数缩放），**缺一即缺**。
 
     2026-10-05 起改用 _mean2 语义（第一性原理审查 P3-6）：旧实现 _mean_or_none
     会在缺一维时把另一维**原样**当综合分返回——那正是 MSN"纯温度分当综合分"
     的老洞。当前三处榜单调用点都显式传 score= 覆盖，洞未实际触发，但本函数是
     _board_row 的默认值，未来任何新调用点忘了覆盖就会复活。堵在源头。
+    2026-10-25：均分之后再施加 `composite_gain`（只作用于综合分，不碰维度分）。
     """
-    return _mean2(temp_score(t), precip_score(p))
+    return _composite_score(temp_score(t), precip_score(p))
 
 
 TRACKS = ("hourly", "daily")
@@ -1679,9 +1752,9 @@ def track_cells(track: str, t: dict, p: dict) -> tuple[float | None, ...]:
     ps = precip_score(p)
     if ts is None or ps is None:
         return (None, None, None)
-    # 此处 ts/ps 均非 None，_mean_or_none 与 _mean2 等价；写 _mean2 是为了让
-    # "两维各半、缺一即缺"的意图在所有合成点保持同一个措辞
-    return (_mean2(ts, ps), ts, ps)
+    # 此处 ts/ps 均非 None；综合分 = 两维各半再过第二层技能指数缩放
+    # （_composite_score 内部仍走 _mean2，缺一即缺的措辞在所有合成点统一）
+    return (_composite_score(ts, ps), ts, ps)
 
 
 # ----------------------------------------------------------------- 有效样本量
@@ -1951,6 +2024,11 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     apply_score_index_gain(
         (eval_cfg.get("score_index_gain") if eval_cfg else None),
         (eval_cfg.get("score_index_center") if eval_cfg else None))
+    # 综合分第二层缩放（2026-10-25，复核 P4）：同样在所有评分之前装载——
+    # 榜单、走势、bootstrap 必须跑在同一把尺子上。
+    apply_composite_gain(
+        (eval_cfg.get("score_composite_gain") if eval_cfg else None),
+        (eval_cfg.get("score_index_center") if eval_cfg else None))
     # 降水分"最小存活权重"门槛（P8 修法）：装载点在所有降水评分之前——门槛
     # 同时约束点估计（precip_score → _weighted_score）与 bootstrap（stats
     # 的同一个全局），config eval.precip_min_surviving_weight 可覆盖冻结缺省。
@@ -1992,6 +2070,11 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     ridge = float(eval_cfg.get("board_ridge", 0.0))
     long_tail = bool(eval_cfg.get("board_long_tail_board", True))
     macro_w = tuple(eval_cfg.get("macro_weight_range", (0.30, 0.70)))
+    # 入设计格子数门槛（2026-10-25，复核 P0-1）：按**每条轨道**数入设计的天桶数。
+    min_board_cells = int(eval_cfg.get("min_board_cells",
+                                      DEFAULT_EVAL["min_board_cells"]))
+    # 小时:日 的宏观权重（2026-10-25，复核 P1）：日轨 0.5 = 2:1。
+    daily_track_weight = float(eval_cfg.get("daily_track_weight", 0.5))
     require_complete = bool(eval_cfg.get("require_complete_snapshots", True))
     # 封存时点门槛（审查 P1-4）：默认开——"预报必须在实况之前封存"不该只是口号。
     # 关掉它可退回旧口径做对照，两份报告的差就是这一个开关的代价。
@@ -2316,7 +2399,8 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     # 天数取两轨的较小者——综合分要求两条轨道同天都有格子，单轨延伸出去的
     # 天数（如日产品到 90 天而逐小时只到 16 天）挤不进综合，多出纯粹是空榜。
     leaderboards.update(_combined_day_boards(
-        models, track_sources, min(hourly_lead_days, daily_max_offset)))
+        models, track_sources, min(hourly_lead_days, daily_max_offset),
+        daily_track_weight=daily_track_weight))
 
     # 三张对齐榜共享同一次重采样（理由见 stats.day_block_bootstrap）。
     difficulty_window: dict[str, dict] = {}
@@ -2328,6 +2412,8 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
         min_board_neff_daily=min_board_neff_daily,
         min_board_rain_events=min_board_rain_events,
         min_board_rain_days=min_board_rain_days,
+        min_board_cells=min_board_cells,
+        daily_track_weight=daily_track_weight,
         bootstrap_runs=bootstrap_runs, block_days=block_days,
         hourly=hourly, daily=daily,
             cell_weighting=cell_weighting, min_cell_neff=min_cell_neff,
@@ -2350,23 +2436,27 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     # 权重敏感性：与总榜同走一张劈分设计——回答的必须是"同一个估计量"的稳定性。
     # 宏观权重（温度:降水）也纳入扰动（P1-2）。
     all_win = difficulty_window.get("all", {})
+    ws_champions, ws_macro = _weight_sensitivity_champions(
+        models, track_sources, hourly_lead_days, daily_max_offset,
+        sensitivity_runs, qualified_models,
+        adj_row=np.array(all_win.get("row_keep") or [], dtype=bool),
+        adj_col=np.array(all_win.get("col_keep") or [], dtype=bool),
+        adj_w=resolution_out["weights"].get("all"),
+        adj_ridge=ridge, macro_weight_range=macro_w)
     weight_sensitivity = {
         "runs": sensitivity_runs,
         "n_parts": len(TEMP_SCORE_PARTS) + len(PRECIP_SCORE_PARTS),
         "macro_weight_range": [float(macro_w[0]), float(macro_w[1])],
-        "champions": _weight_sensitivity_champions(
-            models, track_sources, hourly_lead_days, daily_max_offset,
-            sensitivity_runs, qualified_models,
-            adj_row=np.array(all_win.get("row_keep") or [], dtype=bool),
-            adj_col=np.array(all_win.get("col_keep") or [], dtype=bool),
-            adj_w=resolution_out["weights"].get("all"),
-            adj_ridge=ridge, macro_weight_range=macro_w),
+        "champions": ws_champions,
+        # 宏观权重端点冠军（P0-2 前置披露）：温度占 α_lo / α_hi 时谁第一
+        "macro_champions": ws_macro,
     }
 
-    # ---- 得分随时效衰减：小时/日两轨各一份 + 两轨各半合成的综合口径 ----
+    # ---- 得分随时效衰减：小时/日两轨各一份 + 两轨 2:1 合成的综合口径 ----
     # （"all" 与综合天榜同式，页面 §02 三选一；榜单与趋势图永不分叉）
     score_trend = _score_trend(models, track_sources,
-                               hourly_lead_days, daily_max_offset)
+                               hourly_lead_days, daily_max_offset,
+                               daily_track_weight=daily_track_weight)
 
     # 按天样本来源构成（P5/P6）：逐格明细（分模型分日偏移）进
     # report["daily_source_mix"]；meta 只存窗口级汇总——报告页"日轨的样本
@@ -2399,6 +2489,9 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
             # sd = 8 分（见 config eval.score_index_gain）。披露当期值以便对账。
             "score_index_gain": float(_stats.SCORE_INDEX_GAIN),
             "score_index_center": float(_stats.SCORE_INDEX_CENTER),
+            # 综合分第二层缩放（2026-10-25，复核 P4）：只作用于两维平均之后的
+            # 综合分，靶点是综合分 P99.5 → 98；维度分各自的 gain 不受影响。
+            "score_composite_gain": float(_stats.SCORE_COMPOSITE_GAIN),
             # 降水分"最小存活权重"门槛（当期实际生效值，P8 修法披露）：降水维
             # 存活子分权重低于名义总权重 × 该比例的格判缺测。与点估计/bootstrap
             # 共用同一全局，读者据此能复算"哪些格应该消失"。
@@ -2412,6 +2505,10 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
             # ≥1mm 雨日数；与 n_eff 门并列，未达标者同样标"样本积累中"。
             "min_board_rain_events": min_board_rain_events,
             "min_board_rain_days": min_board_rain_days,
+            # 入设计格子数门（2026-10-25，复核 P0-1）：与 n_eff / 事件门并列
+            "min_board_cells": min_board_cells,
+            # 小时:日的宏观权重（2026-10-25，复核 P1）：0.5 = 2:1
+            "daily_track_weight": daily_track_weight,
             "bootstrap_runs": bootstrap_runs,
             # 不确定性口径披露：块长与块数决定 CI 的宽窄（块长越短越偏窄）
             "bootstrap_block_days": block_days,
@@ -2767,8 +2864,13 @@ def _weight_sensitivity_champions(models, track_sources, hourly_lead_days,
                                   adj_col: np.ndarray | None = None,
                                   adj_w: np.ndarray | None = None,
                                   adj_ridge: float = 0.0,
-                                  macro_weight_range: tuple = (0.30, 0.70)) -> list[dict]:
-    """权重 ±40% 扰动下的冠军分布（P0-2.2）：桶得分重组冠军计 500 次。
+                                  macro_weight_range: tuple = (0.30, 0.70)
+                                  ) -> tuple[list[dict], list[dict]]:
+    """权重 ±40% + 宏观权重扰动下的冠军分布，以及宏观端点的固定 α 冠军。
+
+    返回 (champions, macro_champions)：
+      champions       随机权重扰动下的夺冠频率（旧口径）
+      macro_champions α 固定为区间下/上端时的第一名（P0-2 前置披露）
 
     指标值不随权重变化，只需把**已换算并截断**的子分张量按扰动权重重组——
     向量化实现（stats.weight_champion_distribution），成本可忽略。
@@ -2829,7 +2931,19 @@ def _weight_sensitivity_champions(models, track_sources, hourly_lead_days,
                                         adj_row=adj_row, adj_col=adj_col,
                                         adj_w=adj_w, adj_ridge=adj_ridge,
                                         macro_weight_range=tuple(macro_weight_range))
-    return [{"model": models[d["index"]], "pct": d["pct"]} for d in dist]
+    # 宏观权重的**端点冠军**（P0-2 的"前置披露"）：随机扰动把最有争议的旋钮
+    # 平均掉了，读者看不到"温度占 30% / 70% 时冠军是谁"。端点用同一批子分、
+    # 同一张设计、同一组赛段权重重算，只是 α 固定。
+    macro_endpoints = []
+    for alpha in (float(macro_weight_range[0]), float(macro_weight_range[1])):
+        got = _stats.macro_champion_at_alpha(
+            t_sub, p_sub, TEMP_SCORE_PARTS, PRECIP_SCORE_PARTS, alpha,
+            adj_row=adj_row, adj_col=adj_col, adj_w=adj_w, adj_ridge=adj_ridge)
+        if got is not None:
+            macro_endpoints.append({"alpha": alpha, "model": models[got["index"]],
+                                    "score": got["score"]})
+    return ([{"model": models[d["index"]], "pct": d["pct"]} for d in dist],
+            macro_endpoints)
 
 
 def _build_timeseries(station_ids, models, ts_start, end_dt, *,
@@ -3078,7 +3192,7 @@ def _track_lead_boards(models, track: str, src: dict, days: int) -> dict[str, li
             # 但**两维分数各自可见**：第 6~16 天只有逐日温度产品的源（星图），
             # 综合分就该是空的，而温度维在同一天桶里与满分工的源同难度直接可比，
             # 把它连同温度分一起置空等于把"它报了 15 天温度"这一事实藏起来。
-            composite = _mean2(ts, ps)
+            composite = _composite_score(ts, ps)
             extra = {"qualified": (composite is not None)}
             # P2（score_review_proposal）：日榜行**随行发布分半指标**——温度分
             # 是 max/min 两个各自独立归一的分数取均值，均值指标列复算不出它
@@ -3097,21 +3211,24 @@ def _track_lead_boards(models, track: str, src: dict, days: int) -> dict[str, li
     return boards
 
 
-def _combined_day_boards(models, track_sources, days: int) -> dict[str, list[dict]]:
+def _combined_day_boards(models, track_sources, days: int,
+                         daily_track_weight: float = 0.5) -> dict[str, list[dict]]:
     """综合天榜（"all:Nd"）：把"提前第 N 天"的小时榜与日榜合成一个该天综合分。
 
     动机：小时榜与日榜分开后，"提前 5 天这天综合谁最准"要读者自己在两张子榜
     之间换算。这里按天给出合成口径——总榜（跨分辨率对齐分）在单天粒度上的
     对应物。
 
-    为什么是"两轨各半的等权平均"而不是总榜那套双向劈分（第一性原理）：总榜的
+    为什么是"按固定轨道权重直接合成"而不是总榜那套双向劈分（第一性原理）：总榜的
     对齐吸收的是"各家覆盖天数不同"的偏差——那只在**跨天桶**比较时才存在；
     同一天桶之内所有模型面对同一批难度，不存在覆盖偏差。此时合成只剩两条纪律：
       * **两轨缺一即缺**——与总榜"行须在两条轨道都有格子"同一底线，单轨分
         不配叫综合分（MSN 凭纯温度分登顶的教训）；
-      * **等权平均**——这正是总榜走势线（页面 TREND_OV）已在用的口径，榜单
-        与走势图永不分叉。名次上它与"先扣列效应再平均"严格等价：同一批列的
-        列效应是全体模型共享的常数，不改变名次，故无需为单天榜重跑劈分。
+      * **小时:日 = 1:daily_track_weight（缺省 2:1）**——这正是总榜走势线
+        （页面 TREND_OV）已在用的口径，榜单与走势图永不分叉。日轨对多数源是
+        同一份逐小时预报重新分箱，独立性有限，故其话语权降为 1/3；两轨真正的
+        独立部分（日最高/最低）仍保留。名次上它与"先扣列效应再平均"严格等价：
+        同一批列的列效应是全体模型共享的常数，不改变名次，故无需为单天榜重跑劈分。
     行内诊断列（两维全部已评测指标）同样两轨各取均值、缺一即缺——与综合分
     同一条纪律，不给"半截证据"留展示位。完备性判定分层：**综合分**是格子级
     （两轨两维四方齐备）；**维度分/诊断列**是维度级（该维度两轨齐备即可）——
@@ -3133,11 +3250,14 @@ def _combined_day_boards(models, track_sources, days: int) -> dict[str, list[dic
             # 不该连两轨都齐备的降水维一起陪葬。
             ts_h, ps_h = temp_score(t_h), precip_score(p_h)
             ts_d, ps_d = daily_temp_score(t_d), precip_score(p_d)
-            comp_h = _mean2(ts_h, ps_h)             # 格子综合分：两维齐备（与 track_cells 同式）
+            # 格子综合分：两维齐备（与 track_cells 同式，缩放申请一次且只在
+            # 两轨合成**之后**施加，不能对每一轨各缩一次）
+            comp_h = _mean2(ts_h, ps_h)
             comp_d = _mean2(ts_d, ps_d)
-            score = _mean2(comp_h, comp_d)          # 两轨格子齐备才有综合分
-            t_s = _mean2(ts_h, ts_d)
-            p_s = _mean2(ps_h, ps_d)
+            score = _composite_from_raw(
+                _track_mean(comp_h, comp_d, daily_track_weight))
+            t_s = _track_mean(ts_h, ts_d, daily_track_weight)
+            p_s = _track_mean(ps_h, ps_d, daily_track_weight)
             v_d = daily_temp_view(t_d)
             # 诊断列（全部已评测指标）同样两轨各取均值、缺一即缺——与综合分
             # 同一条纪律（_DAILY_TEMP_VIEW_KEYS 与降水键集即"行内诊断列"的口径清单）。
@@ -3356,6 +3476,7 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
                        min_sample, min_board_neff, min_board_neff_rain,
                        min_board_neff_daily,
                        min_board_rain_events, min_board_rain_days,
+                       min_board_cells=4, daily_track_weight=0.5,
                        bootstrap_runs, block_days, hourly, daily,
                        cell_weighting, min_cell_neff, min_col_frac, ridge,
                        long_tail_board, model_issue,
@@ -3408,6 +3529,9 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
                                                  cell_weighting, min_cell_neff)
         n_with = int(np.isfinite(S).any(axis=1).sum())
         min_col = max(2, min(_stats.MIN_MODELS_PER_BUCKET, n_with)) if n_with else 1
+        # 赛段宏观权重（2026-10-25，复核 P1）：只给总榜的 [小时 | 日] 两段。
+        # 门槛仍按未缩放的格子权重判（见 stats.two_way_adjust 的 docstring）。
+        seg_w = ((1.0, daily_track_weight) if spec["segments"] else None)
         # min_row 的第一尝试用 stats 模块的默认 2（MIN_BUCKETS_PER_MODEL）：只在
         # 1 个桶有分的行，其 α_m 与那一桶的 β_b 在数学上完全混淆（design_mask
         # docstring 的可识别性论证），把它放进设计等于让"没被考的科目自动满分"。
@@ -3419,7 +3543,8 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
         adj = _stats.two_way_adjust(S, min_col=min_col, min_row=2, weights=W_cell,
                                     min_cell_weight=cell_min_w,
                                     min_col_frac=min_col_frac, ridge=ridge,
-                                    segment_sizes=spec["segments"])
+                                    segment_sizes=spec["segments"],
+                                    segment_weights=seg_w)
         gate_relaxed = False
         row_relaxed = False
 
@@ -3430,13 +3555,15 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
             adj = _stats.two_way_adjust(S, min_col=min_col, min_row=1,
                                         weights=W_cell, min_cell_weight=cell_min_w,
                                         min_col_frac=min_col_frac, ridge=ridge,
-                                        segment_sizes=spec["segments"])
+                                        segment_sizes=spec["segments"],
+                                        segment_weights=seg_w)
             row_relaxed = True
         if cell_min_w > 0 and not _design_ok(adj):
             adj = _stats.two_way_adjust(S, min_col=min_col, min_row=1,
                                         weights=W_cell, min_cell_weight=0.0,
                                         min_col_frac=min_col_frac, ridge=ridge,
-                                        segment_sizes=spec["segments"])
+                                        segment_sizes=spec["segments"],
+                                        segment_weights=seg_w)
             gate_relaxed = True
             row_relaxed = False
         degraded = not _design_ok(adj)
@@ -3449,13 +3576,22 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
             # 才允许彻底放开——那种情形下任何约束都留不住设计。
             adj_seg = _stats.two_way_adjust(
                 S, min_col=1, min_row=1, weights=W_cell, min_cell_weight=0.0,
-                min_col_frac=0.0, ridge=ridge, segment_sizes=spec["segments"])
+                min_col_frac=0.0, ridge=ridge, segment_sizes=spec["segments"],
+                segment_weights=seg_w)
             if adj_seg["row_keep"].any() and adj_seg["col_keep"].any():
                 adj = adj_seg
             else:
                 adj = _stats.two_way_adjust(S, min_col=1, min_row=1,
                                             weights=W_cell, min_cell_weight=0.0,
-                                            min_col_frac=0.0, ridge=ridge)
+                                            min_col_frac=0.0, ridge=ridge,
+                                            segment_sizes=spec["segments"],
+                                            segment_weights=seg_w)
+        # 下游（派生列对齐、CI、方差披露、长尾参考榜）必须用**实际拟合权重**：
+        # 它含赛段宏观权重、且已按薄格门槛清零。继续用未缩放的 W_cell 等于让
+        # 页面上的两列来自两个估计量（P1-3 的同一教训）。
+        W_fit = adj.get("fit_weights")
+        if W_fit is not None:
+            W_cell = W_fit
         designs[name] = {"spec": spec, "adj": adj, "W_cell": W_cell,
                          "gate_relaxed": gate_relaxed, "degraded": degraded,
                          "row_relaxed": row_relaxed,
@@ -3467,6 +3603,7 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
                              "min_cell_neff": float(min_cell_neff),
                              "min_col_frac": float(min_col_frac),
                              "ridge": float(ridge),
+                             "segment_weights": (list(seg_w) if seg_w else None),
                          }}
 
     # ---- 逐榜：行分 + 派生列 + 样例充分性 ----
@@ -3529,20 +3666,27 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
         干燥小时占绝对多数；事件门直接数独立雨事件 / 雨日：
           逐小时晴雨 → 观测 ≥1mm/h 的独立站-小时事件数 ≥ min_board_rain_events
           日累计降水 → 观测日雨量 ≥1mm 的独立站-日雨日数 ≥ min_board_rain_days
+        再叠一道**入设计格子数门**（2026-10-25，复核 P0-1）：n_eff 再厚也只是
+        "一个天桶里的样本多"，行效应 α 的精度由**跨了多少个桶**决定。每条轨道
+        至少 min_board_cells 个格子入设计；总榜要求小时段与日段各自达标
+        （1 格小时 + 1 格日不再是"综合"）。
         """
         if not (score is not None and t_score is not None and p_score is not None
                 and comparable):
             return False
         ev = ev or {}
+        cells_h, cells_d = _cells_in_design(name, i)
         gates_hourly = [
             (neff_t_hourly[m], min_board_neff),
             (neff_r_hourly[m], min_board_neff),
             (ev.get("rain_events_h"), min_board_rain_events),
+            (cells_h, min_board_cells),
         ]
         gates_daily = [
             (neff_t_daily[m], min_board_neff_daily),
             (neff_r_daily[m], min_board_neff_rain),
             (ev.get("rain_days_d"), min_board_rain_days),
+            (cells_d, min_board_cells),
         ]
         if name == "hourly":
             gates = gates_hourly
@@ -3551,6 +3695,23 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
         else:
             gates = gates_hourly + gates_daily
         return all(v is not None and v >= thr for v, thr in gates)
+
+    def _cells_in_design(name: str, i: int) -> tuple[int | None, int | None]:
+        """该行在**本榜实际设计**（cell_valid）里的小时段 / 日段格子数。
+
+        必须读 `adj["cell_valid"]` 而不是原始分数矩阵的非空格：薄格门槛、长尾桶
+        门槛、赛段约束与降级路径都会改变"哪些格子真的进了估计"，用非空格数会
+        把"有分但没进设计"的格子也算成证据。`all` 榜按列布局 [hourly H | daily D]
+        拆成两段——总榜的"综合"要求两段各自够厚，不能拿 8 个小时格顶 4+4。
+        """
+        cv = np.asarray(designs[name]["adj"]["cell_valid"], dtype=bool)
+        if name == "all":
+            return int(cv[i, :H].sum()), int(cv[i, H:].sum())
+        if name == "hourly":
+            return int(cv[i].sum()), None
+        # daily：第二项才是日段计数；把日榜的格子数塞进小时段会让
+        # gates_daily 拿到 None（2026-10-25 重冻结实测：整张日榜因此全判未达标）
+        return None, int(cv[i].sum())
 
     # 三张榜共用一份行级派生量缓存（键 = 模型）：同一批记录只扫一遍
     row_facts: dict[str, dict] = {}
@@ -3565,6 +3726,9 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
             rain_evidence=rain_evidence,
             min_board_rain_events=min_board_rain_events,
             min_board_rain_days=min_board_rain_days,
+            min_board_cells=min_board_cells,
+            cells_in_design={m: _cells_in_design(name, i)
+                             for i, m in enumerate(models)},
             thr_hourly=thr_hourly, thr_daily=thr_daily,
             facts_cache=row_facts)
         ranks = _rank_rows(rows_by_board[name], keys=("score",))
@@ -3730,8 +3894,9 @@ def _board_menu(models: list[str], leaderboards: dict[str, list[dict]]) -> list[
 
 _BOARD_DESC = {
     "all": "把小时预报与日预报放在一起：这一个数是跨两种时间分辨率的综合技巧，"
-           "两榜各自的难度由各自的列效应扣掉（不需要假设两个分数可直接相减）。"
-           "只纳入两种分辨率都被验证过的源。",
+           "两榜各自的难度由各自的列效应扣掉（不需要假设两个分数可直接相减），"
+           "两轨按 2:1 合成（日轨独立性有限）。只纳入两种分辨率都被验证过、"
+           "且每条轨道有足够天桶的源。",
     "hourly": "只看「某日几点」准不准：逐小时温度 + 该小时是否够得上在下雨（≥"
               + "1mm/h 口径，见 0.1mm 被毛毛雨偏差主导的标定）。",
     "daily": "只看「这一天」准不准：日最高/最低温度（两个量各评一次再平均）+ "
@@ -3783,6 +3948,8 @@ def _build_board_rows(models, name, design, *, by_model,
                       rain_evidence: dict | None = None,
                       min_board_rain_events: int = 30,
                       min_board_rain_days: int = 8,
+                      min_board_cells: int = 4,
+                      cells_in_design: dict | None = None,
                       thr_hourly: float = 1.0, thr_daily: float = 1.0,
                       facts_cache: dict | None = None) -> list[dict]:
     """按一张劈分设计生成该榜的行（含派生列与样本充分性字段）。"""
@@ -3852,18 +4019,31 @@ def _build_board_rows(models, name, design, *, by_model,
         t_score = _fin(aligned["temp_score"][i], 2)
         p_score = _fin(aligned["precip_score"][i], 2)
         ev = (rain_evidence or {}).get(m) or {}
+        cells_h, cells_d = (cells_in_design or {}).get(m, (None, None))
+        cells_shown = [c for c in (cells_h, cells_d) if c is not None]
+        cells_short = bool(
+            score is not None and cells_shown
+            and any(c < min_board_cells for c in cells_shown))
         if score is None:
             # 整行没有任何可评样本：先说"样本积累中"，不要把"0 个雨事件"
             # 当成具体原因（那只是无数据的推论，不是证据不足的诊断）。
-            ev_short, ev_note = False, "样本积累中"
+            rain_short, ev_note = False, "样本积累中"
         else:
-            ev_short, ev_note = _rain_evidence_note(
+            rain_short, ev_note = _rain_evidence_note(
                 name, ev, min_board_rain_events, min_board_rain_days,
                 thr_hourly, thr_daily)
         # 名称旁只放短标签（完整原因在 title 里）：长句会把表格的源名列撑宽。
         ev_short_note = ("降水证据不足（"
                          f"{ev.get('rain_events_h', 0)}/{ev.get('rain_days_d', 0)}）"
-                         if ev_short else "样本积累中")
+                         if rain_short else
+                         (f"入设计格子不足（{'/'.join(str(c) for c in cells_shown)}）"
+                          if cells_short else "样本积累中"))
+        if cells_short:
+            # 与降水事件门并列显示；两种缺口同时存在时都要说清楚（读者据此
+            # 知道"再来几场雨"或"再攒几个天桶"哪个才是缺的那一块）。
+            gap = "、".join(str(c) for c in cells_shown)
+            ev_note = ((ev_note + "；") if rain_short else "") + \
+                f"入设计格子不足（{gap} < {min_board_cells}）"
         qualified = qualified_of(name, i, m, score, t_score, p_score,
                                  bool(row_keep[i]), ev)
         # 覆盖时效按**本榜口径**取数（第四轮 P3-b），且**按维拆开**（2026-10）：
@@ -3921,7 +4101,14 @@ def _build_board_rows(models, name, design, *, by_model,
             rain_events_fcst_h=ev.get("rain_events_fcst_h"),
             rain_days_d=ev.get("rain_days_d"),
             rain_days_fcst_d=ev.get("rain_days_fcst_d"),
-            rain_evidence_short=ev_short,
+            rain_evidence_short=rain_short,
+            # 入设计格子数（2026-10-25，复核 P0-1）：总榜按小时段/日段分列，
+            # 单轨榜只有总数。未达标者与事件门同样标"样本积累中"。
+            n_cells_hourly_design=cells_h,
+            n_cells_daily_design=cells_d,
+            n_cells_design=(sum(cells_shown) if cells_shown else None),
+            min_board_cells=min_board_cells,
+            cells_short=cells_short,
             evidence_note=ev_note,
             evidence_short=ev_short_note,
             # 四个（分辨率 × 维度）的有效样本量逐项披露：门槛各有各的单位，
@@ -4003,16 +4190,27 @@ def _board_window(models, name, design, spec, H, long_tail_board) -> dict:
                 "本轮只有「" + TRACK_LABELS.get(only, only)
                 + "」这一条分辨率的天桶凑得出可横向比较的设计，另一条同台家数不足。"
                 "此时总榜实际等于该单轨榜，不能当作跨分辨率的综合结论来读。")
-    # 等权对照（同一张设计、同一批格子，只把权重换成 1）——用于披露"名次对加权
-    # 方式有多敏感"。这不是"另一个榜单"，而是同一估计量的一个反事实。
+    # 等权对照（同一张设计、同一批格子，只把**格子样本量权重**换成段内等权）——
+    # 用于披露"名次对加权方式有多敏感"。这不是"另一个榜单"，而是同一估计量的
+    # 一个反事实。总榜的**赛段宏观权重**必须保留在两侧：否则"加权 vs 等权"会
+    # 把"日轨 2:1"和"格子样本量加权"两个旋钮混在一起，读不出任何一个的敏感度。
+    seg_weights = (design.get("gate_params") or {}).get("segment_weights")
+    W_eq = None
+    if seg_weights:
+        mult = np.concatenate([
+            np.full(int(n), float(w), dtype=float)
+            for n, w in zip((H, days - H), seg_weights)])
+        W_eq = np.where(cell_valid, mult[None, :], 0.0)
     scores_equal = _stats.difficulty_adjusted(
-        S[None, ...], row_keep, col_keep, weights=None, ridge=0.0,
+        S[None, ...], row_keep, col_keep,
+        weights=(W_eq[None, ...] if W_eq is not None else None), ridge=0.0,
         valid=cell_valid[None, ...])[0]
     scores_w = np.where(row_keep, np.asarray(design["adj"]["scores"], dtype=float),
                         np.nan)
     win["rank_sensitivity"] = _stats.rank_sensitivity(scores_equal, scores_w)
     win["rank_sensitivity"].setdefault("primary", "weighted")
-    win["rank_sensitivity"].setdefault("spearman_label", "按样本量加权 vs 等权")
+    win["rank_sensitivity"].setdefault(
+        "spearman_label", "按样本量加权 vs 段内等权")
     for mv in win["rank_sensitivity"].get("movers", []):
         mv["model"] = models[mv["index"]]
     win["equal_weight_scores"] = {m: (_fin(scores_equal[i], 2)
@@ -4118,7 +4316,7 @@ def _snapshot_quality(models: list[str], snapshots: dict) -> dict[str, dict]:
 
 
 def _score_trend(models, track_sources, hourly_lead_days,
-                 daily_max_offset) -> dict:
+                 daily_max_offset, daily_track_weight: float = 0.5) -> dict:
     """各口径的"得分随时效衰减"：{track: {overall/temp/precip: {m: {bk: 分}}}}。
 
     track = hourly / daily（两条分辨率轨道各一份）+ all（小时与日综合）。
@@ -4127,8 +4325,8 @@ def _score_trend(models, track_sources, hourly_lead_days,
     衰减来自哪条分辨率；现在小时榜与日榜各有一条自己的曲线。
 
     "all"（综合口径）与综合天榜（_combined_day_boards）完全同式：同一提前天数上
-    小时榜分数与日榜分数各半合成（两轨缺一即缺）；天数取两轨的较小者，单轨
-    延伸出去的天数挤不进综合——与综合天榜同一条纪律。
+    小时榜与日榜按 1:daily_track_weight（缺省 2:1）合成（两轨缺一即缺）；
+    天数取两轨的较小者，单轨延伸出去的天数挤不进综合——与综合天榜同一条纪律。
     """
     trend: dict = {}
     for track in TRACKS:
@@ -4152,7 +4350,7 @@ def _score_trend(models, track_sources, hourly_lead_days,
                 # 温度分原样输出成"综合分"，于是榜单写"无结论"的那一格，趋势图上
                 # 却画出一条 86 分的综合曲线——恰好是本项目反复批判的"半个证据当
                 # 整个用"。docstring 承诺"榜单与趋势图永不分叉"，靠的就是这一行。
-                block["overall"][m][bk] = _mean2(ts, ps)
+                block["overall"][m][bk] = _composite_score(ts, ps)
         trend[track] = block
 
     # 综合口径（"all"）：与 _combined_day_boards 逐桶同式——维度分按维度合成
@@ -4169,8 +4367,9 @@ def _score_trend(models, track_sources, hourly_lead_days,
             ps_h = precip_score(h_src["precip"][m].get(bk) or {})
             ts_d = daily_temp_score(d_src["temp"][m].get(bk) or {})
             ps_d = precip_score(d_src["precip"][m].get(bk) or {})
-            block["temp"][m][bk] = _mean2(ts_h, ts_d)
-            block["precip"][m][bk] = _mean2(ps_h, ps_d)
-            block["overall"][m][bk] = _mean2(_mean2(ts_h, ps_h), _mean2(ts_d, ps_d))
+            block["temp"][m][bk] = _track_mean(ts_h, ts_d, daily_track_weight)
+            block["precip"][m][bk] = _track_mean(ps_h, ps_d, daily_track_weight)
+            block["overall"][m][bk] = _composite_from_raw(_track_mean(
+                _mean2(ts_h, ps_h), _mean2(ts_d, ps_d), daily_track_weight))
     trend["all"] = block
     return trend

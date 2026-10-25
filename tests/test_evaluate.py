@@ -7,7 +7,8 @@ from weather_eval import storage
 from weather_eval.evaluate import (
     build_report, collect, temp_metrics, precip_metrics,
     temp_score, precip_score, overall_score, daily_temp_score, _mean_or_none,
-    _combined_day_boards, track_cells, PRECIP_SCORE_PARTS, _weighted_score,
+    _combined_day_boards, _track_mean, _composite_from_raw,
+    track_cells, PRECIP_SCORE_PARTS, _weighted_score,
 )
 from weather_eval.timeutil import iso
 
@@ -32,8 +33,10 @@ def _index_gain_identity():
     """
     import weather_eval.evaluate as ev
     ev.apply_score_index_gain(1.0, 50.0)
+    ev.apply_composite_gain(1.0, 50.0)
     yield
     ev.apply_score_index_gain(1.0, 50.0)
+    ev.apply_composite_gain(1.0, 50.0)
 
 
 def test_temp_metrics_handcalc():
@@ -142,17 +145,18 @@ def test_scores_weighted_multi_metric():
     assert _precip_raw({"ets": 0.2, "acc": 80.0}) == round(0.2 * SCORE_SLOPES["ets"], 2)
     assert _precip_raw({"ets": 0.2, "acc": 0.0}) == round(0.2 * SCORE_SLOPES["ets"], 2)
     assert _precip_raw({"ets": 0.2, "ts": 0.9}) == _precip_raw({"ets": 0.2})
-    # 雨量两维入分（2026-10-06 新增的唯一真新信息）
+    # 雨量精度入分（2026-10-25：amt_bias 与 amt_mae 桶内相关 0.995/1.000，
+    # 已合并为"雨量精度族"、只留 amt_mae；amt_bias 只列明细）
     base = {"ets": 0.2, "pod": 50.0, "far": 60.0, "bias": 1.5}
     assert precip_score(base) is not None          # P8：0.675 ≥ 门槛 0.5
-    assert precip_score(dict(base, amt_mae=1.2, amt_bias=1.1)) != precip_score(base)
+    assert precip_score(dict(base, amt_mae=1.2)) != precip_score(base)
+    # 不再入分的 amt_bias 在不在都不改变分数（去冗余的机器守卫）
+    assert precip_score(dict(base, amt_bias=1.1)) == precip_score(base)
     # 雨强分辨力（2026-10-06 第二轮新增：中雨/大雨档 ETS，与晴雨 ETS 近乎正交）
     assert precip_score(dict(base, grade_ets=0.30)) > precip_score(dict(
         base, grade_ets=0.02))
     # 该档样本不足 → None（缺项按剩余权重归一），**不是** 0 分
     assert precip_score(dict(base, grade_ets=None)) == precip_score(base)
-    # amt_bias → 0（整桶的雨一滴没报）是该维的最大错误，记 0 分而不是"缺项归一"
-    assert precip_score(dict(base, amt_bias=0.0)) < precip_score(base)
     # 子分截断到 [0,100]：ETS 为负记 0 分，不拖成负总分（在位的两项按剩余权重归一）
     w_p = {k: w for k, w, *_ in PRECIP_SCORE_PARTS}
     assert _precip_raw({"ets": -0.5, "pod": 50.0}) == round(
@@ -178,7 +182,7 @@ def test_score_parts_contract():
     for parts, keys in (
         (TEMP_SCORE_PARTS, {"acc2", "acc1", "rmse", "mae", "r", "mbe", "slope",
                             "mbe_bdisp"}),
-        (PRECIP_SCORE_PARTS, {"ets", "pod", "far", "bias", "amt_mae", "amt_bias",
+        (PRECIP_SCORE_PARTS, {"ets", "pod", "far", "bias", "amt_mae",
                               "grade_ets"}),
     ):
         assert {k for k, *_ in parts} == keys
@@ -194,17 +198,13 @@ def test_score_parts_contract():
     # 族内等权：两个"命中轮廓"成员与两个"误差幅度"成员权重必须相等
     w_t = {k: w for k, w, *_ in TEMP_SCORE_PARTS}
     assert w_t["acc1"] == w_t["acc2"] and w_t["rmse"] == w_t["mae"]
-    # 雨量两维与雨强分辨力的比例契约：雨量两维合计 0.225、grade_ets 0.10
-    # （2026-10-06 第二轮：全部旧项 ×0.9 等比缩放让出 0.10 槽位，故雨量两维
-    #  相对其他旧项的比例不变——原设计配比不做二次改动）
+    # 雨量精度族与雨强分辨力的比例契约（2026-10-25）：雨量精度族 0.225
+    # （amt_bias 退役后全部归 amt_mae，族权重不缩水）、grade_ets 0.10
     w_p = {k: w for k, w, *_ in PRECIP_SCORE_PARTS}
-    assert abs(w_p["amt_mae"] + w_p["amt_bias"] - 0.225) < 1e-9
+    assert abs(w_p["amt_mae"] - 0.225) < 1e-9
     assert abs(w_p["grade_ets"] - 0.10) < 1e-9
-    old6 = {k: w for k, w in w_p.items() if k != "grade_ets"}
-    assert all(abs(w - 0.9 * v) < 1e-9 for k, w in old6.items()
-               for v in [ {"ets": 0.35, "pod": 0.15, "far": 0.15,
-                           "amt_mae": 0.15, "bias": 0.10,
-                           "amt_bias": 0.10}[k] ])
+    # 去冗余契约：amt_bias 永不回到评分表（与 amt_mae 桶内相关 0.995/1.000）
+    assert "amt_bias" not in w_p
     # P0-3 契约：acc 不入分（气候基率主导）；ETS 权重首位；
     # FAR+BIAS 权重之和不低于 POD（不奖励"多报占便宜"）
     keys = [k for k, *_ in PRECIP_SCORE_PARTS]
@@ -346,7 +346,13 @@ def test_build_report_end_to_end(tmp_path, monkeypatch):
            "min_board_neff": 20,
            # 日最高/最低的 n_eff 数的是"独立自然日"，夹具只有 1 个可用自然日，
            # 同门槛也要下调（默认 20 是为真实样本期设的）
-           "min_board_neff_daily": 1}
+           "min_board_neff_daily": 1,
+           # 单站夹具的格子 n_eff≈1：薄格门槛与格子数门相应下调（本用例考察
+           # 报告装配本身，格子数门由专门用例锁定）
+           "min_cell_neff": 1, "min_board_cells": 1,
+           # 本用例断言"综合分 = 加权轨道均值"的原始量表；第二层缩放由
+           # test_score_index_gain_* 与 test_composite_gain_* 专门锁定
+           "score_composite_gain": 1.0}
     data = build_report(["s1"], ["ecmwf_ifs"], cfg, start, end, "2026-08")
 
     # 逐小时 24h 桶：lead 1..24 共 24 对，且预报=观测+1 -> 误差恒为 1 -> ±2°C 准确率 100%，RMSE=1
@@ -414,9 +420,14 @@ def test_build_report_end_to_end(tmp_path, monkeypatch):
     # 综合天榜（all:Nd）：同一天桶内小时榜与日榜各半的合成，两轨缺一即缺——
     # 分数与走势线（总榜趋势 = 两轨桶分均值）同口径，榜单与图不得分叉。
     rowa = next(r for r in data["leaderboards"]["all:1d"] if r["model"] == "ecmwf_ifs")
-    assert rowa["score"] == _mean_or_none([lb1[0]["score"], rowd["score"]])
-    assert rowa["temp_score"] == _mean_or_none([lb1[0]["temp_score"], rowd["temp_score"]])
-    assert rowa["precip_score"] == _mean_or_none([lb1[0]["precip_score"], rowd["precip_score"]])
+    # 综合天榜的轨道权重 = 1 : daily_track_weight（缺省 0.5 = 2:1），
+    # 不是旧的各半均值（2026-10-25 复核 P1）
+    assert rowa["score"] == round(
+        (lb1[0]["score"] + 0.5 * rowd["score"]) / 1.5, 2)
+    assert rowa["temp_score"] == round(
+        (lb1[0]["temp_score"] + 0.5 * rowd["temp_score"]) / 1.5, 2)
+    assert rowa["precip_score"] == round(
+        (lb1[0]["precip_score"] + 0.5 * rowd["precip_score"]) / 1.5, 2)
     assert rowa["qualified"] is True
     # 诊断列（±2°C）也是两轨各半：逐小时 100%、日最高/最低两量取均值
     assert rowa["acc2"] == round((t1["acc2"] + rowd["acc2"]) / 2, 2)
@@ -444,6 +455,8 @@ def test_build_report_end_to_end(tmp_path, monkeypatch):
     hourly_cells = _cells(th, ph, temp_score)
     daily_cells = _cells(td, pd, daily_temp_score)
     assert hourly_cells and daily_cells      # 两轨都有两维齐备的桶
+    # 单源降级口径下难度不可识别：行分 = 各桶分的等权平均（赛段权重只在多源
+    # 拟合里改变 α 的合成权重）。多源下的 2:1 合成由 test_track_weight_* 专门锁定。
     assert all_row["score"] == _mean_or_none(hourly_cells + daily_cells)
     assert all_row["n_buckets"] == len(hourly_cells) + len(daily_cells)
     # 两条单轨各自的对齐分（单源降级口径下 = 该轨桶分的等权平均）
@@ -544,8 +557,11 @@ def test_overall_board_pools_all_leads_and_discloses_coverage(tmp_path, monkeypa
            "min_board_rain_events": 1, "min_board_rain_days": 1,
            "min_board_neff_daily": 1,   # 夹具只有 2 个自然日（日最高/最低 n_eff 按天计）
            # 本用例考察的是"两维齐备才进 macro"的语义，故显式用等权口径；
-           # 样本量加权本身由 test_weighted_board_* 专门锁定
-           "board_cell_weighting": "equal"}
+           # 样本量加权本身由 test_weighted_board_* 专门锁定。
+           # min_board_cells=0：本夹具只有 2 个天桶，格子数门由专门用例锁定。
+           "board_cell_weighting": "equal", "min_board_cells": 0,
+           # 本用例断言原始量表下的等权/两维齐备语义；第二层缩放单独用例锁定
+           "score_composite_gain": 1.0}
     data = build_report(["s1"], ["ecmwf_ifs", "short_range"], cfg, start, end, "2026-08")
 
     board = data["leaderboards"]["all"]
@@ -1515,7 +1531,10 @@ def test_bootstrap_ci_deterministic_and_honest(tmp_path, monkeypatch):
            "min_board_rain_events": 1, "min_board_rain_days": 1,
            # 日最高/最低的 n_eff 数的是"独立自然日"（本夹具 15 天），与逐小时
            # 的"独立小时误差"不同单位，同门槛也要下调
-           "min_board_neff_daily": 1}
+           "min_board_neff_daily": 1,
+           # 单站夹具每个（源,天桶）格子的 n_eff≈1：薄格门槛与格子数门相应下调，
+           # 本用例考察 CI 机制本身
+           "min_cell_neff": 1, "min_board_cells": 1}
     d1 = build_report(["s1"], ["noisy_a", "noisy_b"], cfg, start,
                       start + timedelta(hours=16 * 24 - 2), "2026-08")
     d2 = build_report(["s1"], ["noisy_a", "noisy_b"], cfg, start,
@@ -1550,7 +1569,8 @@ def test_weight_sensitivity_in_meta(tmp_path, monkeypatch):
            "sensitivity_runs": 100, "min_board_neff_rain": 1,
            "min_board_rain_events": 1, "min_board_rain_days": 1,
            # 本用例考察敏感性机制本身：晋级天桶的样本只有 23 条，门槛相应下调
-           "min_board_neff": 20, "min_board_neff_daily": 1}
+           "min_board_neff": 20, "min_board_neff_daily": 1,
+           "min_cell_neff": 1, "min_board_cells": 1}
     data = build_report(["s1"], ["m_a", "m_b"], cfg, start,
                         start + timedelta(hours=46), "2026-08")
     ws = data["meta"]["weight_sensitivity"]
@@ -1558,6 +1578,11 @@ def test_weight_sensitivity_in_meta(tmp_path, monkeypatch):
     assert ws["champions"] and sum(c["pct"] for c in ws["champions"]) <= 100.5
     names = {c["model"] for c in ws["champions"]}
     assert names <= {"m_a", "m_b"}
+    # 宏观权重端点冠军（2026-10-25，复核 P0-2 前置披露）：两个端点各一条，
+    # 且模型名必须是入围者（不能把未达标源写成冠军）
+    mac = ws.get("macro_champions") or []
+    assert [round(c["alpha"], 2) for c in mac] == [0.3, 0.7]
+    assert {c["model"] for c in mac} <= {"m_a", "m_b"}
 
 
 def test_bootstrap_rain_sample_size_counts_all_cells_not_hits():
@@ -1612,10 +1637,9 @@ def test_bootstrap_rain_sample_size_counts_all_cells_not_hits():
            "pod": 25.0 * SCORE_SLOPES["pod"],
            "far": 100.0,
            "bias": 100.0 - 2.0 * SCORE_SLOPES["bias"],
-           # 雨量两维（2026-10 新增）：相对量级误差 = Σ|误差|/Σ实况 = 6/8 = 0.75，
-           # 总量比 = Σ预报/Σ实况 = 2/8 = 0.25（欠报 4 倍，log₂ 对称同罚）
-           "amt_mae": 100.0 - 0.75 * SCORE_SLOPES["amt_mae"],
-           "amt_bias": 100.0 - 2.0 * SCORE_SLOPES["amt_bias"]}
+           # 雨量精度（2026-10-25：amt_bias 已并入 amt_mae、不再入分）：
+           # 相对量级误差 = Σ|误差|/Σ实况 = 6/8 = 0.75
+           "amt_mae": 100.0 - 0.75 * SCORE_SLOPES["amt_mae"]}
     # grade_ets 在本桶缺项（分级计数全 0 → 各档事件数 0 < min_sample）→ 不入权，
     # 期望 = 在位子分的加权和 ÷ 在位权重和（缺项按剩余权重归一）
     expect_rain = sum(w_p[k] * sub[k] for k in sub) / sum(
@@ -1881,6 +1905,9 @@ def test_difficulty_adjusted_board_removes_coverage_bias(tmp_path, monkeypatch):
            # tests/test_stats_core.py::test_n_eff_cross_station_correction 专门锁定）。
            "min_board_neff": 1, "min_board_neff_rain": 1, "min_board_neff_daily": 1,
            "min_board_rain_events": 1, "min_board_rain_days": 1,
+           # 本用例考察难度对齐本身：短覆盖源只有 1~5 个天桶，格子数门由专门用例锁定；
+           # 第二层综合分缩放会让高分撞顶、把排序压平，故这里用恒等缩放
+           "min_board_cells": 0, "score_composite_gain": 1.0,
            "bootstrap_runs": 30, "sensitivity_runs": 30}
     end = start + timedelta(hours=7 * 24)
     data = build_report(stations, ["short", "mid", "wide"], cfg, start, end, "2026-08")
@@ -2073,3 +2100,91 @@ def test_lineage_successor_inherits_full_history_on_board(tmp_path, monkeypatch)
     assert set(rows_both) == {native}, "旧 id 折叠后不得多出一行"
     assert rows_both[native]["n"] == rows[native]["n"], \
         "折叠去重失败：同一样本被两条 id 各计了一次"
+
+
+def test_combined_day_boards_use_daily_track_weight():
+    """综合天榜按小时:日 = 1:daily_track_weight 合成（2026-10-25 复核 P1）。
+
+    两轨分数不同时，top 行的综合分必须是加权均值而不是各半均值；
+    daily_track_weight=1.0 时退回旧口径（各半），作为对照。
+    """
+    t_h = {"acc2": 90.0, "acc1": 70.0, "rmse": 1.0, "mae": 0.8,
+           "r": 0.9, "mbe": 0.2, "slope": 1.0, "mbe_bdisp": 0.1}
+    t_d = {"max": {"acc2": 50.0, "acc1": 30.0, "rmse": 3.0, "mae": 2.5,
+                   "r": 0.5, "mbe": 0.8, "slope": 1.2, "mbe_bdisp": 0.6},
+           "min": {"acc2": 50.0, "acc1": 30.0, "rmse": 3.0, "mae": 2.5,
+                   "r": 0.5, "mbe": 0.8, "slope": 1.2, "mbe_bdisp": 0.6}}
+    p = {"ets": 0.2, "pod": 50.0, "far": 30.0, "bias": 1.0,
+         "amt_mae": 0.6, "grade_ets": 0.1}
+    src = {"hourly": {"temp": {"m": {"1d": t_h}},
+                      "precip": {"m": {"1d": p}}},
+           "daily": {"temp": {"m": {"1d": t_d}},
+                     "precip": {"m": {"1d": p}}}}
+    h = _mean_or_none([temp_score(t_h), precip_score(p)])
+    d = _mean_or_none([daily_temp_score(t_d), precip_score(p)])
+    assert h is not None and d is not None and h != d
+    row = _combined_day_boards(["m"], src, 1, daily_track_weight=0.5)["all:1d"][0]
+    assert row["score"] == _composite_from_raw(_track_mean(h, d, 0.5))
+    old = _combined_day_boards(["m"], src, 1, daily_track_weight=1.0)["all:1d"][0]
+    assert old["score"] == _composite_from_raw(_mean_or_none([h, d]))
+    assert row["score"] != old["score"]       # 2:1 与 1:1 必须给出不同数字
+
+
+def test_min_board_cells_gate_excludes_thin_sources(tmp_path, monkeypatch):
+    """P0-1：入设计格子数不足的源标"样本积累中"，分数保留为参考值。
+
+    构造 thin/mid/wide 三家（分别覆盖 1/3/6 个天桶），其余门槛全部下调：
+    只有 wide 满足 min_board_cells=4；thin/mid 的分数仍在，但 qualified=False，
+    且行内披露实际入设计的小时段/日段格子数，读者能看出缺的是哪一块。
+    """
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    start = datetime(2026, 8, 1, 0, 0)
+    obs = [{"time": iso(start + timedelta(hours=h)), "temp": 24.0,
+            "rain": 2.0 if h % 24 < 2 else 0.0} for h in range(8 * 24)]
+    storage.save_obs("s1", obs)
+
+    def snap(model, hours, bias):
+        times = [iso(start + timedelta(hours=h)) for h in range(1, hours + 1)]
+        return {"issue_iso": iso(start), "station_id": "s1", "source": "test",
+                "models": [model], "grid_lat": 23.0, "grid_lon": 111.0,
+                "elevation": 50, "hourly_time": times,
+                "data": {model: {
+                    "temperature_2m": [24.0 + bias + 0.1 * (h / 24.0)
+                                       for h in range(1, hours + 1)],
+                    "precipitation": [2.0 if h % 24 < 2 else 0.0
+                                      for h in range(1, hours + 1)]}}}
+
+    for model, hours, bias in (("thin", 24, 0.0), ("mid", 3 * 24, 0.2),
+                               ("wide", 6 * 24, 0.4)):
+        storage.save_forecast_snapshot("s1", model, snap(model, hours, bias))
+
+    cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
+           "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 1,
+           "min_board_neff": 1, "min_board_neff_rain": 1,
+           "min_board_neff_daily": 1, "min_board_rain_events": 1,
+           "min_board_rain_days": 1, "min_cell_neff": 1,
+           "min_board_cells": 4, "board_cell_weighting": "equal",
+           "bootstrap_runs": 10, "sensitivity_runs": 10}
+    data = build_report(["s1"], ["thin", "mid", "wide"], cfg, start,
+                        start + timedelta(days=8), "2026-08")
+    # 总榜要求两轨都有格子：thin 只有小时段、没有日段 → 综合分本就无结论
+    # （比"格子数不足"更早的门），这不是本条要测的形态。
+    rows = {r["model"]: r for r in data["leaderboards"]["all"]}
+    assert rows["thin"]["score"] is None
+    assert rows["mid"]["score"] is not None        # 分数保留为参考值
+    assert rows["mid"]["qualified"] is False
+    assert rows["mid"]["cells_short"] is True
+    assert "入设计格子不足" in (rows["mid"]["evidence_note"] or "")
+    assert rows["wide"]["qualified"] is True
+    assert rows["wide"]["n_cells_hourly_design"] >= 4
+    assert rows["wide"]["n_cells_daily_design"] >= 4
+    # 单轨榜同一条门：thin/mid 的分数在、但因格子数不足不参与名次；
+    # 这正是 P0-1 要拦的形态（"一个天桶换个名字"的源不能当冠军）。
+    hrows = {r["model"]: r for r in data["leaderboards"]["hourly"]}
+    assert hrows["thin"]["score"] is not None
+    assert hrows["thin"]["qualified"] is False
+    assert hrows["thin"]["cells_short"] is True
+    assert hrows["thin"]["n_cells_hourly_design"] < 4
+    assert "入设计格子不足" in (hrows["thin"]["evidence_note"] or "")
+    assert hrows["mid"]["qualified"] is False
+    assert hrows["wide"]["qualified"] is True
