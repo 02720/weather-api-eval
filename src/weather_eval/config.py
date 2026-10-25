@@ -241,6 +241,11 @@ class Station:
         # CMA 公众气象服务网（weather.cma.cn）以 WMO 站号寻址；未配置时该源的
         # 抓取会响亮失败（见 forecast/cma_public.py），绝不猜站号
         self.cma_id: str | None = str(data["cma_id"]) if data.get("cma_id") else None
+        # 最美天气（h5-api.zuimeitianqi.com）以行政区 cityCode 寻址；未配置时该源
+        # 同样响亮失败（见 forecast/zuimeitianqi.py），绝不在线猜码——geo 接口
+        # 吸附的行政区可随兴趣点库漂移，寻址语义必须可复核
+        self.zmtq_city_id: str | None = (
+            str(data["zmtq_city_id"]) if data.get("zmtq_city_id") else None)
 
 
 def _station(s: Any) -> Station:

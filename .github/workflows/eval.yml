@@ -197,6 +197,22 @@ jobs:
           TZ: Asia/Shanghai
         run: python -m weather_eval fetch-forecast --source cma_gowfs
 
+      - name: 抓取最美天气预报（PC 网页接口，无需凭据）
+        # 抓取 h5-api.zuimeitianqi.com/h5zh/api/pc/{actual,forecast}（前端 bundle
+        # 逆向，契约与口径见 src/weather_eval/forecast/zuimeitianqi.py docstring，
+        # 2026-10-25 线上实测留档）。单模型、每站 2 次请求（actual+forecast），
+        # 4 站 8 次/轮；逐小时取 /actual 的 360 点（15 天，2026-10-25 由 /index
+        # 的滚动 24 点换入，字段形态相同）。三个易踩点：①无效 cityId 不报错而是**静默回退北京**，
+        # 唯一哨兵是响应内 cityInfo.cityCode 回显，不一致即响亮失败；②逐日列表
+        # 混排历史日历与 +90 天趋势填充，真预报由 spanDaysNew>=0 标记，不滤则
+        # 气候值冒充预报污染日轨；③逐小时产品是"滚动 24h"（首点=当前整点），
+        # 锚点按 request_floor 申报（同彩云/AccuWeather 口径）。失败只影响该源，
+        # 不阻断主流程。
+        continue-on-error: true
+        env:
+          TZ: Asia/Shanghai
+        run: python -m weather_eval fetch-forecast --source zuimeitianqi
+
       - name: 抓取观测 + 预报快照 + 更新主报告（本月累计，覆盖写 index.html）
         # 观测走多源编排（obs/chain.py）：主源 eia-data 可用时不惊动备用源；
         # 主源失败，或抓通了但数据陈旧/窗口截断时，自动降级到中国气象数据网

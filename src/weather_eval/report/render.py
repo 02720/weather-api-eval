@@ -98,6 +98,7 @@ MODEL_LABELS = {
     "fengqing_ai": "风清AI模式",
     "cma_public_v1": "中国气象局公众网",
     "cma_gowfs_v1": "中国气象数据网",
+    "zmtq_v1": "最美天气",
 }
 
 # 模型家族分组（选源器按此分组展示）。源多了以后，读者按"这家是什么来头"找源，
@@ -118,7 +119,7 @@ MODEL_FAMILIES = [
         "jma_gsm", "ukmo_global_deterministic_10km",
     ]},
     {"icon": "🏢", "name": "商业天气 API", "models": [
-        "caiyun_v2_6", "qweather_v1", "accuweather_v1", "msn_v1",
+        "caiyun_v2_6", "qweather_v1", "accuweather_v1", "msn_v1", "zmtq_v1",
     ]},
     {"icon": "🔬", "name": "中科天机", "models": [
         "tj_km_fusion", "tj_t2_early", "tj_t2", "tj_t1", "tj_t1h_ai",
@@ -166,6 +167,7 @@ MODEL_COLORS = {
     "fengqing_ai": "#c026d3",    # 洋红（与亮紫/品红拉开明度）
     "cma_public_v1": "#0e7490",  # 深青（CMA 家族色：与 cma_ndfs 深海军蓝同族；与 #06b6d4/#14b8a6 靠明度拉开）
     "cma_gowfs_v1": "#7c2d12",   # 深赭（CMA 家族第三色：与深海军蓝/深青拉开色相，暗于既有棕橙 #b45309）
+    "zmtq_v1": "#7e22ce",        # 深紫（与亮紫 #a855f7/浅紫 #c084fc/靛蓝 #6366f1 靠明度与色相拉开）
 }
 
 

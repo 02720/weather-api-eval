@@ -19,6 +19,8 @@
                                         （weather.cma.cn）起报（公开接口，无需凭据）
   python -m weather_eval fetch-forecast --source cma_gowfs  抓取中国气象数据网
                                         （data.cma.cn）智能网格预报起报（公开格点接口，无需凭据）
+  python -m weather_eval fetch-forecast --source zuimeitianqi 抓取最美天气起报
+                                        （网页接口，无需凭据，按行政区 cityCode 寻址）
   python -m weather_eval report                   用跨月累计窗口（最早可用数据 → 现在）
                                                   重建主报告 reports/index.html
   python -m weather_eval monthly [--month YYYY-MM] 生成月度归档报告 reports/monthly/YYYY-MM.html
@@ -75,7 +77,7 @@ from .forecast import (
     OpenMeteoProvider, CaiyunProvider, QWeatherProvider, TianjiProvider,
     FuxiC88Provider, FuxiDetProvider, FengWuProvider, GevisProvider,
     AccuWeatherProvider, MsnProvider, Ew4allProvider, CmaPublicProvider,
-    CmaGowfsProvider,
+    CmaGowfsProvider, ZuimeitianqiProvider,
 )
 from .forecast.caiyun import DEFAULT_NAME as CAIYUN_DEFAULT_MODEL
 from .forecast.qweather import DEFAULT_NAME as QWEATHER_DEFAULT_MODEL
@@ -89,6 +91,7 @@ from .forecast.msn import MODEL_NAME as MSN_MODEL
 from .forecast.ew4all import MODEL_SPECS as EW4ALL_MODEL_SPECS
 from .forecast.cma_public import MODEL_NAME as CMA_PUBLIC_MODEL
 from .forecast.cma_gowfs import MODEL_NAME as CMA_GOWFS_MODEL
+from .forecast.zuimeitianqi import MODEL_NAME as ZMTQ_MODEL
 from .report import write_live_report, write_monthly_report
 # 独立抓取源（非 Open-Meteo 模型）的登记处：source -> (模型集合, 提供方类)。
 # 单一数据源：模型集合与提供方类必须同步登记，此前分成两张表（SOURCE_MODELS 与
@@ -115,6 +118,9 @@ SOURCE_SPECS: dict[str, tuple[set[str], Any]] = {
     # 中国气象数据网 data.cma.cn 智能网格预报：公开格点接口，无凭据，按经纬度寻址
     # （与 cma_public 的 WMO 站号寻址是两套体系）；逐小时 10 天 + 逐日 30 天
     "cma_gowfs": ({CMA_GOWFS_MODEL}, lambda: CmaGowfsProvider()),
+    # 最美天气 PC 网页接口：无凭据，按行政区 cityCode 寻址（站点须配 zmtq_city_id）；
+    # 逐小时 24h（滚动窗口）+ 逐日 16 天（见 forecast/zuimeitianqi.py）
+    "zuimeitianqi": ({ZMTQ_MODEL}, lambda: ZuimeitianqiProvider()),
 }
 # 各独立源的模型集合（config 中按此过滤，防止把别家的模型传进去刷缺失警告）
 SOURCE_MODELS: dict[str, set[str]] = {s: ms for s, (ms, _) in SOURCE_SPECS.items()}
@@ -989,7 +995,7 @@ def main(argv=None):
         "--source", choices=["open_meteo", "caiyun", "qweather", "tianji",
                              "fuxi", "fuxi_data", "fengwu", "geovis",
                              "accuweather", "msn", "ew4all", "cma_public",
-                             "cma_gowfs"],
+                             "cma_gowfs", "zuimeitianqi"],
         default="open_meteo",
         help="预报源：open_meteo（默认）、caiyun（需 CAIYUN_TOKEN）、qweather"
              "（需 QWEATHER_API_KEY）、tianji（网页接口，无需凭据）、fuxi（伏羲中期"
@@ -1002,7 +1008,9 @@ def main(argv=None):
              "cma_public（中国气象局公众气象服务网 weather.cma.cn，无需凭据，"
              "以 WMO 站号寻址、站点须配 cma_id；3 小时分辨率，覆盖约 7 天）、"
              "cma_gowfs（中国气象数据网 data.cma.cn 智能网格预报，无需凭据，"
-             "以经纬度寻址；逐小时 10 天 + 逐日 30 天）",
+             "以经纬度寻址；逐小时 10 天 + 逐日 30 天）、"
+             "zuimeitianqi（最美天气 PC 网页接口，无需凭据，以行政区 cityCode "
+             "寻址、站点须配 zmtq_city_id；逐小时 360h/15 天 + 逐日 16 天）",
     )
     sub.add_parser("report")
     pm = sub.add_parser("monthly")

@@ -197,6 +197,7 @@ def test_all_providers_share_the_same_user_agent():
     modules = [
         "caiyun", "accuweather", "cma_public", "fuxi_data", "fengwu", "msn",
         "tianji", "open_meteo", "geovis", "fuxi", "qweather", "ew4all",
+        "zuimeitianqi",
     ]
     for name in modules:
         mod = importlib.import_module(f"weather_eval.forecast.{name}")

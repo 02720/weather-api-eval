@@ -62,6 +62,11 @@ models:
   - cma_gowfs_v1          # data.cma.cn/rest/gowfs/{hour,day}；逐小时 10 天（前 24h 原生逐小时、
                          # 其后 3h 后向累计均摊）+ 逐日 30 天（仅温度；日最低移一天取用）
                          # （--source cma_gowfs；降水分段口径见 forecast/cma_gowfs.py）
+  # —— 最美天气（2026-10 新增独立源；PC 网页接口，无需凭据，按行政区 cityCode 寻址）——
+  - zmtq_v1              # h5-api.zuimeitianqi.com/h5zh/api/pc/{actual,forecast}；逐小时 360h
+                         # （15 天，首点=当前整点；2026-10-25 由 /index 滚动 24h 换入 /actual）+
+                         # 逐日 16 天（spanDaysNew 15..0 为真预报，其余为历史日历/趋势填充必须排除）
+                         # （--source zuimeitianqi；城市回显哨兵与口径假设见 forecast/zuimeitianqi.py）
 
 stations:
   - id: wuzhou
@@ -70,24 +75,29 @@ stations:
     lon: 111.304
     obs_url: http://eia-data.com/%E6%A2%A7%E5%B7%9E%E6%B0%94%E8%B1%A1%E7%AB%99%E5%9F%BA%E6%9C%AC%E4%BF%A1%E6%81%AF/
     cma_id: 59265     # CMA 公众气象服务网（weather.cma.cn）的 WMO 站号
+    zmtq_city_id: "0101081307"   # 最美天气行政区码（万秀区；geo 接口按站坐标解析，2026-10-25 实测）。
+                         # 引号必须保留：带前导零的码不加引号会被 PyYAML 当八进制整数静默改值
   - id: bobai
     name: 博白气象站
     lat: 22.2981
     lon: 109.99
     obs_url: http://eia-data.com/%E5%8D%9A%E7%99%BD%E6%B0%94%E8%B1%A1%E7%AB%99%E5%9F%BA%E6%9C%AC%E4%BF%A1%E6%81%AF/
     cma_id: 59449     # CMA 公众气象服务网（weather.cma.cn）的 WMO 站号
+    zmtq_city_id: "0101081402"   # 最美天气行政区码（博白县；geo 接口按站坐标解析，2026-10-25 实测）
   - id: pingnan
     name: 平南气象站
     lat: 23.5431
     lon: 110.419
     obs_url: http://eia-data.com/%E5%B9%B3%E5%8D%97%E6%B0%94%E8%B1%A1%E7%AB%99%E5%9F%BA%E6%9C%AC%E4%BF%A1%E6%81%AF/
     cma_id: 59255     # CMA 公众气象服务网（weather.cma.cn）的 WMO 站号
+    zmtq_city_id: "ZT450821001000"   # 最美天气行政区码（平南街道；geo 接口按站坐标解析，2026-10-25 实测）
   - id: wanning
     name: 万宁气象站
     lat: 18.8006
     lon: 110.327
     obs_url: http://eia-data.com/%E4%B8%87%E5%AE%81%E6%B0%94%E8%B1%A1%E7%AB%99%E5%9F%BA%E6%9C%AC%E4%BF%A1%E6%81%AF/
     cma_id: 59951     # CMA 公众气象服务网（weather.cma.cn）的 WMO 站号
+    zmtq_city_id: "01011016"   # 最美天气行政区码（万宁市；geo 接口按站坐标解析，2026-10-25 实测）
 
 eval:
   temp_accuracy_limits: [1, 2]          # ±1°C、±2°C 准确率
