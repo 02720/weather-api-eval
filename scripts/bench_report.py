@@ -41,23 +41,43 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 EVAL_TARGETS = (
     "temp_metrics", "precip_metrics", "precip_binary_metrics", "temp_curve_metrics",
     "_n_eff_temp", "_n_eff_rain", "_n_eff_daily_temp",
+    "_n_eff_temp_columnar", "_n_eff_rain_columnar", "_n_eff_daily_temp_columnar",
     "_resolution_boards", "_compute_diagnostics", "collect", "_preload",
     "_build_heatmap", "_build_timeseries", "_coverage", "_build_board_rows",
+    "_track_lead_boards", "_combined_day_boards", "_board_menu", "_board_window",
+    "_build_row_facts", "_rain_evidence_by_model", "_valid_lead_days",
+    "_valid_rain_days", "_valid_daily_temp_days",
+    "_weight_sensitivity_champions", "_score_trend",
+    "_count_incomplete", "_issue_anchor_meta", "_model_status", "_snapshot_quality",
+    "_daily_error_lag1_rho_columnar", "_build_heatmap_columnar",
+    # evaluate 以 `from ... import` 直接绑定了这三个快照助手：包装模块属性拦不到
+    # 已绑定的引用，必须包装 evaluate 命名空间里的同名别名。
+    "sanitize_hourly_arrays", "snapshot_complete", "integrity_summary",
 )
 STATS_TARGETS = (
     "build_day_stat_tables", "aggregate_day_stats", "track_bucket_scores",
     "bucket_components",
     "day_block_bootstrap", "difficulty_adjusted", "two_way_adjust",
+    "daily_error_lag1_rho", "pairwise_corr_matrix", "source_corr_cluster",
 )
-
+DIAG_TARGETS = (
+    "compute_all", "iter_error_samples", "cross_source_correlation", "station_rho",
+    "fingerprint_drift", "bridge_and_jackknife", "corridor_sensitivity",
+    "score_slope_influence", "composite_dimension_share",
+)
 OUT_DIR = PROJECT_ROOT / ".work" / "bench"
 
 
 def _peak_rss_mb() -> float:
-    """峰值 RSS（MB）。Linux 的 ru_maxrss 单位是 KB。"""
+    """峰值 RSS（MB）。单位随平台不同：Linux 的 ru_maxrss 是 KB、macOS 是字节。
+
+    旧实现的两个分支完全相同（都除以 1024），在 macOS 上会把字节当 KB 报出
+    1024 倍的数字；按平台判别才是唯一正确的换算。
+    """
     rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    # macOS 上报字节、Linux 上报 KB；这里统一按"若数值小得不合理则当作 MB"处理
-    return round(rss / 1024.0, 1) if rss > 100_000 else round(rss / 1024.0, 1)
+    if sys.platform == "darwin":
+        return round(rss / (1024.0 * 1024.0), 1)
+    return round(rss / 1024.0, 1)
 
 
 def _code_sha() -> str:
@@ -74,11 +94,19 @@ def _code_sha() -> str:
 
 
 def _install_probes(acc: dict):
-    """把目标函数换成累加独占耗时的包装器。返回卸载函数。"""
+    """把目标函数换成累加**独占**耗时的包装器。返回卸载函数。
+
+    独占 = 本函数的总耗时减去其中被包装的嵌套调用耗时（维护一条调用栈）。
+    旧实现直接把总耗时记在父与子两个条目上，于是 `_resolution_boards` 13.9 s
+    里包含了 `day_block_bootstrap` 7.4 s——按这张表做优化会重复计算收益，也会
+    让各段占比之和超过 100%。这是测量工具的正确性缺陷，不是展示问题。
+    """
     import weather_eval.evaluate as E
     import weather_eval.stats as S
+    import weather_eval.report.diagnostics as D
 
     originals: list[tuple[object, str, object]] = []
+    stack: list[dict] = []
 
     def wrap(mod, name, prefix=""):
         fn = getattr(mod, name, None)
@@ -88,13 +116,19 @@ def _install_probes(acc: dict):
         originals.append((mod, name, fn))
 
         def probe(*a, _fn=fn, _key=key, **kw):
+            parent = stack[-1] if stack else None
+            slot = acc.setdefault(_key, {"calls": 0, "seconds": 0.0})
+            slot["calls"] += 1
+            stack.append(slot)
             t0 = time.perf_counter()
             try:
                 return _fn(*a, **kw)
             finally:
-                slot = acc.setdefault(_key, {"calls": 0, "seconds": 0.0})
-                slot["calls"] += 1
-                slot["seconds"] += time.perf_counter() - t0
+                dt = time.perf_counter() - t0
+                stack.pop()
+                slot["seconds"] += dt
+                if parent is not None:
+                    parent["seconds"] -= dt
 
         setattr(mod, name, probe)
 
@@ -102,6 +136,8 @@ def _install_probes(acc: dict):
         wrap(E, n)
     for n in STATS_TARGETS:
         wrap(S, n, "stats.")
+    for n in DIAG_TARGETS:
+        wrap(D, n, "diagnostics.")
 
     def uninstall():
         for mod, name, fn in originals:

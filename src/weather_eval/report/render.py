@@ -41,7 +41,8 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 
 from ..evaluate import (_DAILY_TEMP_VIEW_KEYS, PRECIP_SCORE_PARTS,
-                        TEMP_SCORE_PARTS, apply_score_slopes,
+                        TEMP_SCORE_PARTS, apply_composite_gain,
+                        apply_score_index_gain, apply_score_slopes,
                         daily_temp_score, score_map_text)
 from ..timeutil import now_beijing
 
@@ -265,6 +266,15 @@ def _slim_report(report_data: dict) -> dict:
     """
     meta = report_data.get("meta", {})
     lbs = report_data.get("leaderboards", {})
+    # 渲染是**纯函数**（归档页随代码重求值的前提）：评分换算尺不能依赖"调用方
+    # 恰好在此进程里先跑过 build_report"。从 meta 回放当期冻结值——报告自己
+    # 携带了它（score_slopes / score_index_gain / score_composite_gain），
+    # 缺字段时回到代码缺省。此前在独立进程里渲染月度结论摘要会因为全局尺还是
+    # 默认值而触发 P2 复算不变量报错（发布分 74.2 vs 复算 63.1）。
+    apply_score_slopes(meta.get("score_slopes"))
+    apply_score_index_gain(meta.get("score_index_gain"), meta.get("score_index_center"))
+    apply_composite_gain(meta.get("score_composite_gain"),
+                         meta.get("score_index_center"))
 
     board = []
     for i, row in enumerate(lbs.get("all") or [], 1):
@@ -767,15 +777,8 @@ def render_report_html(report_data: dict, title: str | None = None,
     station_labels：站点 id → 中文名（如 wuzhou → 梧州气象站），缺省时页面显示 id。
     """
     tpl = env.get_template("report.html.j2")
-    # 评分斜率回放必须发生在**任何复算之前**（时序缺陷修复）：_slim_report 里的
-    # _verify_daily_temp_halves 会沿 daily_temp_score 同一把尺复算发布的分半值，
-    # 而那把尺是 evaluate 模块级的 SCORE_SLOPES——在调用时读取，不在构建时绑定。
-    # 旧实现把 apply_score_slopes 放在 _slim_report 之后：正常管线中 build_report
-    # 入口已装载 config 斜率、恰好相等，把时序问题掩盖了；但 summary.json 重放路径
-    # （月度归档重建 ②，进程没跑过 build_report）下全局还是代码缺省——归档的
-    # meta.score_slopes 与当期标定一旦不同（季度重标定后必然如此），校验就用错了
-    # 尺子、AssertionError 把整条月度刷新链炸断。装载必须先行，谁先消费谁先装。
-    apply_score_slopes((report_data.get("meta") or {}).get("score_slopes"))
+    # 评分斜率/缩放的回放统一由 _slim_report 入口负责（必须先于任何复算，
+    # 见该函数内的注释）——这里不再重复装载，避免"两处各自决定用哪把尺"。
     slim_json = _js_json(_slim_report(report_data))
     labels_json = _js_json(MODEL_LABELS)
     colors_json = _js_json(MODEL_COLORS)

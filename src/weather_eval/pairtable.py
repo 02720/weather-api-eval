@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from .timeutil import minute_index
+
 
 def _names_in_code_order(code: dict[str, int]) -> list[str]:
     """编码 → 站名列表（按编码升序，即首次出现顺序）。"""
@@ -74,39 +76,36 @@ class PairTable:
 
     # ------------------------------------------------------------------ 逐小时
     def _build_hourly(self, hourly, day_code):
-        n = len(hourly)
-        self.h_model = np.empty(n, dtype=np.int32)
-        self.h_bucket = np.empty(n, dtype=np.int16)
-        self.h_station = np.empty(n, dtype=np.int16)
-        self.h_day = np.empty(n, dtype=np.int32)
-        self.h_lead = np.empty(n, dtype=np.int32)
-        self.h_valid = np.empty(n, dtype="U19")
-        self.h_temp_o = np.full(n, np.nan)
-        self.h_temp_f = np.full(n, np.nan)
-        self.h_rain_o = np.full(n, np.nan)
-        self.h_rain_f = np.full(n, np.nan)
-        # I4 的权威判据：显式记录"这一对是否两侧都有值"
-        self.h_temp_ok = np.zeros(n, dtype=bool)
-        self.h_rain_ok = np.zeros(n, dtype=bool)
         sc = self.station_code_h
         mc = self.model_code
-        for i, r in enumerate(hourly):
-            self.h_model[i] = mc.get(r["model"], -1)
-            self.h_bucket[i] = r["bucket"]
-            self.h_station[i] = sc[r["station"]]
-            self.h_day[i] = day_code.get(r["valid_iso"][:10], -1)
-            self.h_lead[i] = r["lead"]
-            self.h_valid[i] = r["valid_iso"]
-            o, f = r["temp_obs"], r["temp_fcst"]
-            if o is not None:
-                self.h_temp_o[i] = o
-            if f is not None:
-                self.h_temp_f[i] = f
-            o, f = r["rain_obs"], r["rain_fcst"]
-            if o is not None:
-                self.h_rain_o[i] = o
-            if f is not None:
-                self.h_rain_f[i] = f
+        # 列式化用列表推导逐列生成，再由 numpy 一次性转数组：逐元素 `arr[i] =`
+        # 的 14×N 次 Python 下标写入是构建期最大的纯解释器开销（实测 5.7 s）。
+        # 列表推导仍是 O(N) Python 级，但每个元素只做一次 dict 取值，随后交给
+        # C 层转换——列之间的 dtype 校验由 numpy 完成，不会引入第二套语义。
+        self.h_model = np.array([mc.get(r["model"], -1) for r in hourly], dtype=np.int32)
+        self.h_bucket = np.array([r["bucket"] for r in hourly], dtype=np.int16)
+        self.h_station = np.array([sc[r["station"]] for r in hourly], dtype=np.int16)
+        self.h_day = np.array([day_code.get(r["valid_iso"][:10], -1)
+                               for r in hourly], dtype=np.int32)
+        self.h_lead = np.array([r["lead"] for r in hourly], dtype=np.int32)
+        # 时间键：分钟序号（int32）代替定长 U19 字符串列。旧列 2.75M × 76 B
+        # ≈ 209 MB，而所有消费者只需要"同一时刻相等 + 按时间排序"这两个性质；
+        # 定长 ISO 的字典序与分钟序完全一致（timeutil.minute_index 的等价性已
+        # 单独论证），故整数键逐位等价。时间轴若非定长 ISO（minute_index 返回
+        # None），整列退回字符串——绝不用一个猜测的整数键替代真实时刻。
+        minutes = [minute_index(r["valid_iso"]) for r in hourly]
+        if None in minutes:
+            self.h_time = np.array([r["valid_iso"] for r in hourly], dtype="U19")
+        else:
+            self.h_time = np.array(minutes, dtype=np.int32)
+        self.h_temp_o = np.array([np.nan if r["temp_obs"] is None else r["temp_obs"]
+                                  for r in hourly], dtype=np.float64)
+        self.h_temp_f = np.array([np.nan if r["temp_fcst"] is None else r["temp_fcst"]
+                                  for r in hourly], dtype=np.float64)
+        self.h_rain_o = np.array([np.nan if r["rain_obs"] is None else r["rain_obs"]
+                                  for r in hourly], dtype=np.float64)
+        self.h_rain_f = np.array([np.nan if r["rain_fcst"] is None else r["rain_fcst"]
+                                  for r in hourly], dtype=np.float64)
         # 入样判定**向量化**且不依赖 NaN 语义：两侧都必须是**有限**值。
         # 未写过的格子是 NaN，写了 NaN/inf 的也算缺测——于是 NaN 在这里只有一个
         # 含义（"没有值"），永远不会被下游当成 0.0 参与比较（I4）。
@@ -150,47 +149,32 @@ class PairTable:
 
     # ------------------------------------------------------------------ 按天
     def _build_daily(self, daily, day_code):
-        n = len(daily)
-        self.d_model = np.empty(n, dtype=np.int32)
-        self.d_offset = np.empty(n, dtype=np.int16)
-        self.d_station = np.empty(n, dtype=np.int16)
-        self.d_day = np.empty(n, dtype=np.int32)
-        self.d_valid = np.empty(n, dtype="U10")
-        self.d_max_o = np.full(n, np.nan)
-        self.d_max_f = np.full(n, np.nan)
-        self.d_min_o = np.full(n, np.nan)
-        self.d_min_f = np.full(n, np.nan)
-        self.d_rain_o = np.full(n, np.nan)
-        self.d_rain_f = np.full(n, np.nan)
+        sc = self.station_code_d
+        mc = self.model_code
+        # 与逐小时同款：列式列表推导 + 一次转换。日轨的时间键直接用天编码
+        # （`days` 由 eval_days 按字符串升序给出，编码升序 == 自然日升序），
+        # 旧的 U10 字符串列因此完全不需要存在。
+        self.d_model = np.array([mc.get(r["model"], -1) for r in daily], dtype=np.int32)
+        self.d_offset = np.array([r["offset"] for r in daily], dtype=np.int16)
+        self.d_station = np.array([sc[r["station"]] for r in daily], dtype=np.int16)
+        self.d_day = np.array([day_code.get(r["valid_day"], -1)
+                               for r in daily], dtype=np.int32)
+        self.d_time = self.d_day
+        self.d_max_o = np.array([np.nan if r["temp_max_obs"] is None else r["temp_max_obs"]
+                                 for r in daily], dtype=np.float64)
+        self.d_max_f = np.array([np.nan if r["temp_max_fcst"] is None else r["temp_max_fcst"]
+                                 for r in daily], dtype=np.float64)
+        self.d_min_o = np.array([np.nan if r["temp_min_obs"] is None else r["temp_min_obs"]
+                                 for r in daily], dtype=np.float64)
+        self.d_min_f = np.array([np.nan if r["temp_min_fcst"] is None else r["temp_min_fcst"]
+                                 for r in daily], dtype=np.float64)
+        self.d_rain_o = np.array([np.nan if r["rain_obs"] is None else r["rain_obs"]
+                                  for r in daily], dtype=np.float64)
+        self.d_rain_f = np.array([np.nan if r["rain_fcst"] is None else r["rain_fcst"]
+                                  for r in daily], dtype=np.float64)
         # 日温度维的两个量**各自**记录是否成对：旧实现是"两个量里至少一个成对
         # 就取这一条，值取成对的那些量的平均"。混合成一个 bool 会把"只有最高成对"
         # 的样本丢掉，n_eff 立刻对不上。
-        self.d_tmax_ok = np.zeros(n, dtype=bool)
-        self.d_tmin_ok = np.zeros(n, dtype=bool)
-        self.d_rain_ok = np.zeros(n, dtype=bool)
-        sc = self.station_code_d
-        mc = self.model_code
-        for i, r in enumerate(daily):
-            self.d_model[i] = mc.get(r["model"], -1)
-            self.d_offset[i] = r["offset"]
-            self.d_station[i] = sc[r["station"]]
-            self.d_day[i] = day_code.get(r["valid_day"], -1)
-            self.d_valid[i] = r["valid_day"]
-            o, f = r["temp_max_obs"], r["temp_max_fcst"]
-            if o is not None:
-                self.d_max_o[i] = o
-            if f is not None:
-                self.d_max_f[i] = f
-            o, f = r["temp_min_obs"], r["temp_min_fcst"]
-            if o is not None:
-                self.d_min_o[i] = o
-            if f is not None:
-                self.d_min_f[i] = f
-            o, f = r["rain_obs"], r["rain_fcst"]
-            if o is not None:
-                self.d_rain_o[i] = o
-            if f is not None:
-                self.d_rain_f[i] = f
         self.d_tmax_ok = np.isfinite(self.d_max_o) & np.isfinite(self.d_max_f)
         self.d_tmin_ok = np.isfinite(self.d_min_o) & np.isfinite(self.d_min_f)
         self.d_rain_ok = np.isfinite(self.d_rain_o) & np.isfinite(self.d_rain_f)
@@ -211,18 +195,22 @@ class PairTable:
         return self._d_order[lo:hi]
 
 
-def min_lead_select(station: np.ndarray, time_str: np.ndarray, lead: np.ndarray,
+def min_lead_select(station: np.ndarray, time_key: np.ndarray, lead: np.ndarray,
                     valid: np.ndarray):
     """按 (站, 时刻) 取 lead 最小的那条记录，返回 `(sel, sel_st, keep)`。
 
     sel：选中记录在**过滤后数组**里的下标（已按"站序 → 时刻升序"排好）；
     sel_st：选中记录的站编码；keep：`valid` 的下标（调用方据此取自己的值列）。
 
+    time_key 可以是整数分钟序号（PairTable 的常规路径）或定长 ISO 字符串
+    （非标准时间轴的退化路径）。两种键的排序次序一致——定长 ISO 的字典序
+    == 时刻序，分钟序 == 时刻序——所以下面的去重与排序逻辑对两者完全相同。
+
     与旧 dict 实现逐位对齐的四条语义（差一条 n_eff 就会漂）：
       * 只保留 `valid` 为真的记录（旧代码 `if o is None or f is None: continue`）；
       * 同一 (站, 时刻) 留 lead 最小者，**并列时取最先出现的那条**——旧代码用的是
         `if cur is None or lead < cur[0]`（严格小于），故用**稳定排序**保留原序；
-      * 每个站内部的时刻按字符串升序（旧代码 `sorted(d.items())`）；
+      * 每个站内部的时刻按时间升序（旧代码 `sorted(d.items())`）；
       * 站序按首次出现（旧代码 `defaultdict` 的插入顺序）——由编码顺序保证。
 
     无任何有效记录时返回 `(None, None, None)`（旧代码 `if not by: return None`）。
@@ -232,8 +220,8 @@ def min_lead_select(station: np.ndarray, time_str: np.ndarray, lead: np.ndarray,
     keep = np.flatnonzero(valid)
     st = station[keep]
     ld = lead[keep]
-    ts = time_str[keep]
-    # 时刻编码：np.unique 按字符串升序给出编码，于是 code 顺序 == sorted() 顺序
+    ts = time_key[keep]
+    # 时刻编码：np.unique 按 time_key 升序给出编码，于是 code 顺序 == sorted() 顺序
     _u, tcode = np.unique(ts, return_inverse=True)
     # lexsort：末位是主键，稳定排序保留上一轮顺序
     #   → (站, 时刻) 组内按 lead 升序；lead 并列时保留原始出现顺序

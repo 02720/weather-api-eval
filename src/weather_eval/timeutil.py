@@ -254,9 +254,6 @@ def minute_index(s: str) -> int | None:
     因此额外加一道容量上界：满了就整表丢弃重建，而不是让它单调增长。上界取
     单次运行实测键数（约 9,600）的 4 倍——正常路径永远撞不到，只有"确实没人
     清理"时才兜底，且丢弃只是重算一次 strptime，不产生错误结果。
-
-    **返回 None 时调用方必须回退 datetime 路径**——绝不把"解析不了"当成 0，
-    那是把缺测伪装成数值的同一种错误。
     """
     v = _MINUTE_INDEX.get(s, _MISSING)
     if v is not _MISSING:

@@ -767,3 +767,46 @@ def test_render_replays_score_slopes_before_any_recompute():
     # 回放语义：渲染把归档斜率装进全局，同一进程内的后续渲染同尺
     assert ev.SCORE_SLOPES["rmse"] == slopes["rmse"]
     apply_score_slopes(None)
+
+
+def test_render_replays_score_gains_in_fresh_process():
+    """缩放回放与斜率同一条纪律：渲染不得依赖"同进程里先跑过 build_report"。
+
+    场景与上一条相同（summary.json 重放），但缺的是 score_index_gain /
+    score_composite_gain。旧实现只回放斜率：进程全局仍是代码缺省 gain，
+    复算出的日温度分与归档发布值不符 → P2 复算不变量 AssertionError。
+    """
+    import weather_eval.evaluate as ev
+    import weather_eval.stats as st
+    from weather_eval.evaluate import (_DAILY_TEMP_VIEW_KEYS, apply_composite_gain,
+                                       apply_score_index_gain, daily_temp_score)
+    from weather_eval.report.render import _slim_report
+
+    center = 50.0
+    try:
+        apply_score_index_gain(2.0, center)
+        apply_composite_gain(1.5, center)
+        lb, lbtemp, expect = _half_case()
+        keys = list(_DAILY_TEMP_VIEW_KEYS)
+        assert round(daily_temp_score({
+            "max": dict(zip(keys, lbtemp["1"][0]["mx"])),
+            "min": dict(zip(keys, lbtemp["1"][0]["mn"])),
+        }), 1) == round(expect, 1)
+        lb["daily"]["1"][0][2] = round(expect, 1)
+    finally:
+        apply_score_index_gain(1.0, center)
+        apply_composite_gain(1.0, center)
+    report = {
+        "meta": {"score_slopes": None, "score_index_gain": 2.0,
+                 "score_index_center": center, "score_composite_gain": 1.5},
+        "leaderboards": {**lb, "all": []},
+        "score_trend": {}, "timeseries": {}, "temp_hourly": {},
+        "precip_hourly": {}, "temp_daily": {}, "precip_daily": {},
+        "per_station": {}, "coverage": {"first_obs": "2026-08-01"},
+    }
+    _slim_report(report)                        # 旧代码在此 AssertionError
+    assert st.SCORE_INDEX_GAIN == 2.0
+    assert st.SCORE_COMPOSITE_GAIN == 1.5
+    apply_score_index_gain(None)
+    apply_composite_gain(None)
+    assert st.SCORE_INDEX_GAIN == ev.DEFAULT_SCORE_INDEX_GAIN

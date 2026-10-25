@@ -169,7 +169,7 @@ from cyeva.core.statistic import (
 from . import stats as _stats
 from .config import DEFAULT_EVAL
 from .graded import precip_graded_metrics
-from .pairtable import PairTable, grouped_by_station, min_lead_select
+from .pairtable import PairTable, min_lead_select
 from .provenance import provenance
 from .stats import (
     GROUP_MIN_N,
@@ -724,40 +724,52 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                         rec_o = obs_get(tstr)
                         ot = rec_o.get("temp") if rec_o else None
                         op = rec_o.get("rain") if rec_o else None
-                        has_t = i < lt and arr_t[i] is not None
-                        has_p = i < lp and arr_p[i] is not None
+                        # 只取一次值、只做一次越界判定：旧写法 `has_t` 与聚合体
+                        # 各取一次 arr_t[i]，并把 8 次内置 max/min 调用留在这条
+                        # 270 万次 × 每模型的内层循环里。直接比较与 max/min 在
+                        # NaN 上的行为一致（比较恒 False，保留原值），语义不变。
+                        v = arr_t[i] if i < lt else None
+                        p = arr_p[i] if i < lp else None
                         # 该小时是否进入共同集合：两侧都有值，且在封存门槛内
                         # （df is None ⟺ require_frozen 且该小时未封存）
                         common = df is not None
-                        if common and has_t and ot is not None:
+                        if common and v is not None and ot is not None:
                             if c_cur is None:
                                 c_cur = _common_bucket(fc, day)
                             c = c_cur
-                            c["max_temp"] = max(c["max_temp"], arr_t[i])
-                            c["min_temp"] = min(c["min_temp"], arr_t[i])
-                            c["obs_max_temp"] = max(c["obs_max_temp"], ot)
-                            c["obs_min_temp"] = min(c["obs_min_temp"], ot)
+                            if v > c["max_temp"]:
+                                c["max_temp"] = v
+                            if v < c["min_temp"]:
+                                c["min_temp"] = v
+                            if ot > c["obs_max_temp"]:
+                                c["obs_max_temp"] = ot
+                            if ot < c["obs_min_temp"]:
+                                c["obs_min_temp"] = ot
                             c["n_temp"] += 1
-                        if common and has_p and op is not None:
+                        if common and p is not None and op is not None:
                             if c_cur is None:
                                 c_cur = _common_bucket(fc, day)
                             c = c_cur
-                            c["sum_rain"] += arr_p[i]
+                            c["sum_rain"] += p
                             c["obs_sum_rain"] += op
                             c["n_rain"] += 1
-                        if has_t:
-                            d["max_temp"] = max(d["max_temp"], arr_t[i])
-                            d["min_temp"] = min(d["min_temp"], arr_t[i])
+                        if v is not None:
+                            if v > d["max_temp"]:
+                                d["max_temp"] = v
+                            if v < d["min_temp"]:
+                                d["min_temp"] = v
                             d["n_temp"] += 1
                             if df is not None:
-                                df["max_temp"] = max(df["max_temp"], arr_t[i])
-                                df["min_temp"] = min(df["min_temp"], arr_t[i])
+                                if v > df["max_temp"]:
+                                    df["max_temp"] = v
+                                if v < df["min_temp"]:
+                                    df["min_temp"] = v
                                 df["n_temp"] += 1
-                        if has_p:
-                            d["sum_rain"] += arr_p[i]
+                        if p is not None:
+                            d["sum_rain"] += p
                             d["n_rain"] += 1
                             if df is not None:
-                                df["sum_rain"] += arr_p[i]
+                                df["sum_rain"] += p
                                 df["n_rain"] += 1
                     # 源自带的逐日预报块（可缺省）：与逐小时聚合按自然日合并成双轨
                     dblock = daily_block_of(snap, m) if daily_source_fallback else {}
@@ -1787,7 +1799,8 @@ def _n_eff_temp(recs: list[dict]) -> int | None:
 
 def _rain_evidence_by_model(models: list[str], by_model: dict[str, list[dict]],
                             daily_by_model: dict[str, list[dict]],
-                            thr_hourly: float, thr_daily: float) -> dict[str, dict]:
+                            thr_hourly: float, thr_daily: float,
+                            *, pt: "PairTable | None" = None) -> dict[str, dict]:
     """每个源的降水事件证据量（P8 第 3 条的落地，2026-10-23）。
 
     为什么不能拿 n_eff 当证据量：`_n_eff_rain` 数的是"雨/无雨判定"的**自相关
@@ -1802,26 +1815,54 @@ def _rain_evidence_by_model(models: list[str], by_model: dict[str, list[dict]],
                   "rain_days_fcst_d": 预报日雨量 ≥thr_daily 的独立站-日数}}
     """
     out: dict[str, dict] = {}
-    for m in models:
+    # 列式快路径：事件计数只依赖 (站, 时刻) 的唯一性，正好是 PairTable 的列能
+    # 直接给出的事实。旧实现对 270 万条记录做了 4 次全量集合推导（3.1 s），
+    # 换成年份无关的 np.unique 后逐模型一次排序即可。
+    use_pt = pt is not None and pt.h_time.dtype.kind in ("i", "u")
+
+    def _n_uniq(st, tk, mask) -> int:
+        """站编码 << 32 | 时刻键 → 唯一（站, 时刻）对数；时刻键恒小于 2^32。"""
+        return int(np.unique((st[mask] << 32) | tk[mask]).size)
+
+    for mi, m in enumerate(models):
         # 只数**两侧都有值**的配对事件：观测有雨但该源没有预报值的时刻，不构成
         # "这个源被验证到的一场雨"的证据（与评分入样的配对口径一致）。
-        paired_h = [r for r in by_model.get(m, [])
-                    if r.get("bucket", 0) >= 1
-                    and r.get("rain_obs") is not None
-                    and r.get("rain_fcst") is not None]
-        obs_h = {(r["station"], r["valid_iso"]) for r in paired_h
-                 if r["rain_obs"] >= thr_hourly}
-        fc_h = {(r["station"], r["valid_iso"]) for r in paired_h
-                if r["rain_fcst"] >= thr_hourly}
-        paired_d = [r for r in daily_by_model.get(m, [])
-                    if r.get("rain_obs") is not None
-                    and r.get("rain_fcst") is not None]
-        obs_d = {(r["station"], r["valid_day"]) for r in paired_d
-                 if r["rain_obs"] >= thr_daily}
-        fc_d = {(r["station"], r["valid_day"]) for r in paired_d
-                if r["rain_fcst"] >= thr_daily}
-        out[m] = {"rain_events_h": len(obs_h), "rain_events_fcst_h": len(fc_h),
-                  "rain_days_d": len(obs_d), "rain_days_fcst_d": len(fc_d)}
+        if use_pt:
+            h_idx = pt.hourly_scored(mi)
+            h_ok = pt.h_rain_ok[h_idx]
+            h_idx = h_idx[h_ok]
+            st_h = pt.h_station[h_idx].astype(np.int64)
+            t_h = pt.h_time[h_idx].astype(np.int64)
+            o_h = pt.h_rain_o[h_idx]
+            f_h = pt.h_rain_f[h_idx]
+            d_all = pt.daily_model(mi)
+            d_idx = d_all[pt.d_rain_ok[d_all]]
+            st_d = pt.d_station[d_idx].astype(np.int64)
+            t_d = pt.d_day[d_idx].astype(np.int64)
+            o_d = pt.d_rain_o[d_idx]
+            f_d = pt.d_rain_f[d_idx]
+            obs_h = _n_uniq(st_h, t_h, o_h >= thr_hourly)
+            fc_h = _n_uniq(st_h, t_h, f_h >= thr_hourly)
+            obs_d = _n_uniq(st_d, t_d, o_d >= thr_daily)
+            fc_d = _n_uniq(st_d, t_d, f_d >= thr_daily)
+        else:
+            paired_h = [r for r in by_model.get(m, [])
+                        if r.get("bucket", 0) >= 1
+                        and r.get("rain_obs") is not None
+                        and r.get("rain_fcst") is not None]
+            obs_h = len({(r["station"], r["valid_iso"]) for r in paired_h
+                         if r["rain_obs"] >= thr_hourly})
+            fc_h = len({(r["station"], r["valid_iso"]) for r in paired_h
+                        if r["rain_fcst"] >= thr_hourly})
+            paired_d = [r for r in daily_by_model.get(m, [])
+                        if r.get("rain_obs") is not None
+                        and r.get("rain_fcst") is not None]
+            obs_d = len({(r["station"], r["valid_day"]) for r in paired_d
+                         if r["rain_obs"] >= thr_daily})
+            fc_d = len({(r["station"], r["valid_day"]) for r in paired_d
+                        if r["rain_fcst"] >= thr_daily})
+        out[m] = {"rain_events_h": obs_h, "rain_events_fcst_h": fc_h,
+                  "rain_days_d": obs_d, "rain_days_fcst_d": fc_d}
     return out
 
 
@@ -1876,14 +1917,14 @@ def _n_eff_temp_columnar(pt: "PairTable", idx: np.ndarray) -> int | None:
     并由 `test_neff_columnar_matches_dict` 在真实数据上按整数零容差锁定。
     """
     sel, sel_st, keep = min_lead_select(
-        pt.h_station[idx], pt.h_valid[idx], pt.h_lead[idx], pt.h_temp_ok[idx])
+        pt.h_station[idx], pt.h_time[idx], pt.h_lead[idx], pt.h_temp_ok[idx])
     if sel is None:
         return None
     err = (pt.h_temp_f[idx][keep] - pt.h_temp_o[idx][keep])[sel]
-    times = pt.h_valid[idx][keep][sel]
-    return _stats.n_eff_from_station_series(
-        grouped_by_station(sel_st, err, pt.station_names_h),
-        grouped_by_station(sel_st, times, pt.station_names_h))
+    times = pt.h_time[idx][keep][sel]
+    return _stats.n_eff_from_station_arrays(
+        _station_arrays(sel_st, err, pt.station_names_h),
+        _station_arrays(sel_st, times, pt.station_names_h))
 
 
 def _n_eff_rain_columnar(pt: "PairTable", idx: np.ndarray, thr: float,
@@ -1895,12 +1936,12 @@ def _n_eff_rain_columnar(pt: "PairTable", idx: np.ndarray, thr: float,
     样本选出的是同一条记录。
     """
     if daily:
-        station, valid_t, lead, ok = (pt.d_station[idx], pt.d_valid[idx],
+        station, valid_t, lead, ok = (pt.d_station[idx], pt.d_time[idx],
                                       pt.d_offset[idx], pt.d_rain_ok[idx])
         names = pt.station_names_d
         o_arr, f_arr = pt.d_rain_o[idx], pt.d_rain_f[idx]
     else:
-        station, valid_t, lead, ok = (pt.h_station[idx], pt.h_valid[idx],
+        station, valid_t, lead, ok = (pt.h_station[idx], pt.h_time[idx],
                                       pt.h_lead[idx], pt.h_rain_ok[idx])
         names = pt.station_names_h
         o_arr, f_arr = pt.h_rain_o[idx], pt.h_rain_f[idx]
@@ -1910,9 +1951,10 @@ def _n_eff_rain_columnar(pt: "PairTable", idx: np.ndarray, thr: float,
     o = o_arr[keep][sel]
     f = f_arr[keep][sel]
     ind = np.where((o >= thr) != (f >= thr), 1.0, 0.0)
-    return _stats.n_eff_from_station_series(
-        grouped_by_station(sel_st, ind, names),
-        grouped_by_station(sel_st, valid_t[keep][sel], names))
+    times = valid_t[keep][sel]
+    return _stats.n_eff_from_station_arrays(
+        _station_arrays(sel_st, ind, names),
+        _station_arrays(sel_st, times, names))
 
 
 def _n_eff_daily_temp_columnar(pt: "PairTable", idx: np.ndarray) -> int | None:
@@ -1926,7 +1968,7 @@ def _n_eff_daily_temp_columnar(pt: "PairTable", idx: np.ndarray) -> int | None:
     pmin = pt.d_tmin_ok[idx]
     any_ok = pmax | pmin
     sel, sel_st, keep = min_lead_select(
-        pt.d_station[idx], pt.d_valid[idx], pt.d_offset[idx], any_ok)
+        pt.d_station[idx], pt.d_time[idx], pt.d_offset[idx], any_ok)
     if sel is None:
         return None
     pmax_k, pmin_k = pmax[keep][sel], pmin[keep][sel]
@@ -1941,9 +1983,23 @@ def _n_eff_daily_temp_columnar(pt: "PairTable", idx: np.ndarray) -> int | None:
     den = pmax_k.astype(float) + pmin_k.astype(float)
     with np.errstate(invalid="ignore"):
         vals = np.where(den > 0, (emax + emin) / np.where(den > 0, den, 1.0), np.nan)
-    return _stats.n_eff_from_station_series(
-        grouped_by_station(sel_st, vals, pt.station_names_d),
-        grouped_by_station(sel_st, pt.d_valid[idx][keep][sel], pt.station_names_d))
+    return _stats.n_eff_from_station_arrays(
+        _station_arrays(sel_st, vals, pt.station_names_d),
+        _station_arrays(sel_st, pt.d_time[idx][keep][sel], pt.station_names_d))
+
+
+def _station_arrays(sel_st: np.ndarray, values: np.ndarray,
+                    station_names: list[str]) -> dict[str, np.ndarray]:
+    """按站切段成 {站名: 数组}（站序 = 编码升序 = 首次出现顺序）。
+
+    与 `pairtable.grouped_by_station` 逐位同序，但不做 `.tolist()` 往返：
+    列式调用方接下来要交给 `stats.n_eff_from_station_arrays`，转成 Python list
+    再转回 np.ndarray 只是白付一次分配与拷贝。
+    """
+    out: dict[str, np.ndarray] = {}
+    for code in np.unique(sel_st):
+        out[station_names[int(code)]] = values[sel_st == code]
+    return out
 
 
 def _station_groups(recs: list[dict], ka: str, kb: str) -> list[tuple[list, list]]:
@@ -2350,7 +2406,7 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
                                    obs_maps=obs_maps, snapshots=snapshots)
 
     # ---- 热力图：各日 × 各模型 温度（±2°C/RMSE）与逐小时晴雨（≥1mm TS/ETS） ----
-    heatmap = _build_heatmap(models, hourly, limits, min_sample, thr_hourly)
+    heatmap = _build_heatmap(models, hourly, limits, min_sample, thr_hourly, pt=pt)
 
     # ---- 覆盖率 ----
     coverage = _coverage(station_ids, start_dt, end_dt, obs_maps=obs_maps)
@@ -2368,7 +2424,9 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     # 块长（P1-1）：块长 1 天只捕获日内相关，块间相关被当成独立 ⇒ CI 偏窄。
     # 由日尺度温度误差的 lag-1 自相关推出去相关时间，再受"块数下限"约束。
     n_boot_days = len(eval_days_list)
-    boot_rho = _stats.daily_error_lag1_rho(hourly)
+    # 列式路径只在 PairTable 存在时可用；没有记录时两者都返回 None。
+    boot_rho = (_daily_error_lag1_rho_columnar(pt) if pt is not None
+                else _stats.daily_error_lag1_rho(hourly))
     block_days = _stats.resolve_block_days(n_boot_days, bootstrap_block_days, boot_rho)
 
     # Holm 校正的有效检验数（审查 P1-3）：此处必须先于 bootstrap 算，因为
@@ -2950,11 +3008,15 @@ def _build_timeseries(station_ids, models, ts_start, end_dt, *,
                       obs_maps=None, snapshots=None) -> dict:
     """最近 72h 的"预报 vs 实况"叠图数据。
 
-    预报线的取值口径：对每个时刻，取**当时已发布的最新一版预报**（按起报时间
-    升序遍历快照，后发布的覆盖同一时刻的旧值；时效即处于 1~24h 内）。
-    只使用"发布时间不晚于窗口末尾"的快照——月度归档时排除归档之后新抓的
-    快照，保证归档页与当时可见的预报一致、且时间轴有交集（若始终取全局
-    最新快照，归档页的预报线会整段缺失）。
+    预报线的取值口径：对每个时刻，取**该时刻之前已发布的最新一版预报**（按起报
+    时间升序遍历快照，后发布的覆盖同一时刻的旧值）。
+
+    两条门槛缺一不可：
+      * 起报必须**早于有效时刻**（至少提前 1 小时）。否则一个 10-14 20:00 的
+        模式轮次会把 10-13 20:00 的回算值画成"预报"——那是事后取数，正是本
+        项目"预报必须在实况之前封存"要排除的东西；
+      * 起报不得晚于窗口末尾：月度归档时排除归档之后新抓的快照，保证归档页与
+        当时可见的预报一致（若始终取全局最新快照，归档页的预报线会整段缺失）。
     """
     def r2(v):
         return None if v is None else round(float(v), 2)
@@ -2980,7 +3042,8 @@ def _build_timeseries(station_ids, models, ts_start, end_dt, *,
                      else list_forecast_snapshots(sid, m))
             tmap: dict[str, tuple] = {}
             for snap in snaps:
-                if parse_iso(snap["issue_iso"]) > end_dt:
+                issue_dt = parse_iso(snap["issue_iso"])
+                if issue_dt > end_dt:
                     continue
                 # 数据键按沿袭解析：接替 id 的系列包含旧 id 目录归并来的存档，
                 # 其物理键仍是旧 id（payload_sha256 锚定，读取侧不改写）
@@ -2991,7 +3054,18 @@ def _build_timeseries(station_ids, models, ts_start, end_dt, *,
                     continue
                 arr_t = snap["data"][key]["temperature_2m"]
                 arr_p = snap["data"][key]["precipitation"]
-                for i, t in enumerate(snap["hourly_time"]):
+                # 只铺窗口内的点：绘图只查 ts_start..end_dt 这几个时刻，旧实现
+                # 却把每条 400 点时间轴整条写进 tmap（11008 份快照 ≈ 190 万次
+                # 字典写入）。定界与 collect 共用 timeutil 的二分，逐点等价。
+                times = snap["hourly_time"]
+                lo = lower_split(times, ts_start)
+                hi = upper_split(times, end_dt)
+                for i in range(lo, hi):
+                    t = times[i]
+                    # 只让"在该时刻之前发布"的起报参与：起报晚于有效时刻的快照
+                    # 对这个点而言是回算值，不是预报（lead ≥ 1h）
+                    if issue_dt >= parse_iso(t):
+                        continue
                     # 数组越界按缺测处理（畸形存档不拖垮报告）
                     tmap[t] = (arr_t[i] if i < len(arr_t) else None,
                                arr_p[i] if i < len(arr_p) else None)  # 后发布的覆盖同刻旧值
@@ -3007,7 +3081,8 @@ def _build_timeseries(station_ids, models, ts_start, end_dt, *,
     return out
 
 
-def _build_heatmap(models, hourly, limits, min_sample, thr_hourly) -> list[dict]:
+def _build_heatmap(models, hourly, limits, min_sample, thr_hourly,
+                   *, pt: "PairTable | None" = None) -> list[dict]:
     """返回 rows: 每天一行；每模型温度（±1/±2°C、RMSE/MAE/|MBE|）与逐小时晴雨
     （≥thr_hourly 的 TS/ETS/晴雨准确率/POD/FAR）。用于 ECharts 热力图的温度/降水
     两要素视图——指标下拉与 §03 的两族指标同集合（|MBE| 取绝对值：热力图只表达
@@ -3018,6 +3093,8 @@ def _build_heatmap(models, hourly, limits, min_sample, thr_hourly) -> list[dict]
     降水样本不足 min_sample 的格子置 None（空白 = 数据不足，与温度格一致）。
     指标经 _fin 落值：NaN（如干日的 POD 0/0）与 None 一样按缺测显示 —，
     绝不让 NaN 混进页面内联数据。"""
+    if pt is not None:
+        return _build_heatmap_columnar(models, pt, min_sample, thr_hourly)
     by_day_model: dict[str, dict[str, tuple]] = defaultdict(
         lambda: defaultdict(lambda: ([], [], [], [])))
     for r in hourly:
@@ -3056,6 +3133,59 @@ def _build_heatmap(models, hourly, limits, min_sample, thr_hourly) -> list[dict]
     return cells
 
 
+def _build_heatmap_columnar(models, pt: "PairTable", min_sample: int,
+                            thr_hourly: float) -> list[dict]:
+    """`_build_heatmap` 的列式路径：同样的格子、同样的指标、同样的顺序。
+
+    dict 路径要先对 270 万条记录做 Python 级 append（4 列 × 270 万次），再把每个
+    (日, 模型) 的 list 转数组（实测 2.6 s）。PairTable 已经有这四列，只需一次
+    （模型, 日）稳定排序即可零拷贝切出每个格子——稳定排序保证格内记录顺序与
+    dict 路径一致，`temp_core_numpy` 的求和顺序因此逐位不变。
+    """
+    if not models or pt.h_day.size == 0:
+        return []
+    day_codes = np.unique(pt.h_day)
+    span = int(day_codes.max()) + 1
+    key = pt.h_model.astype(np.int64) * span + pt.h_day
+    order = np.argsort(key, kind="stable")
+    key_sorted = key[order]
+
+    def _cell_idx(mi: int, dc: int) -> np.ndarray:
+        target = mi * span + dc
+        lo = int(np.searchsorted(key_sorted, target, side="left"))
+        hi = int(np.searchsorted(key_sorted, target, side="right"))
+        return order[lo:hi]
+
+    cells = []
+    for dc in day_codes:
+        d = pt.days[int(dc)]
+        for mi, m in enumerate(models):
+            idx = _cell_idx(mi, int(dc))
+            to, tf = pt.h_temp_o[idx], pt.h_temp_f[idx]
+            ro, rf = pt.h_rain_o[idx], pt.h_rain_f[idx]
+            tc = temp_core_numpy(to, tf)
+            t_ok = tc["n"] >= min_sample
+            mbe = _fin(tc["mbe"], 3)
+            cell = {"date": d, "model": m,
+                    "acc2": _fin(tc["acc2"], 3) if t_ok else None,
+                    "acc1": _fin(tc["acc1"], 3) if t_ok else None,
+                    "rmse": _fin(tc["rmse"], 3) if t_ok else None,
+                    "mae": _fin(tc["mae"], 3) if t_ok else None,
+                    "mbe": (abs(mbe) if mbe is not None else None) if t_ok else None,
+                    "n": tc["n"],
+                    "ts": None, "ets": None, "acc": None,
+                    "pod": None, "far": None, "n_rain": 0}
+            n_rain = _valid_n(ro, rf)
+            cell["n_rain"] = n_rain
+            if n_rain >= min_sample and n_rain > 0:
+                h, fa, mi_, c = binary_counts(ro, rf, thr_hourly)
+                bm = binary_metrics_from_counts(h, fa, mi_, c)
+                for k in ("ts", "ets", "acc", "pod", "far"):
+                    cell[k] = _fin(bm.get(k), 3)
+            cells.append(cell)
+    return cells
+
+
 def _coverage(station_ids, start_dt, end_dt, *, obs_maps=None) -> dict:
     """观测覆盖率。分母按"该站实际已有观测的时段"截断：观测开始前/月初尚不存在
     的时段计入分母只会稀释数字、误导读者（样本不是缺失，而是尚不存在）。
@@ -3068,8 +3198,13 @@ def _coverage(station_ids, start_dt, end_dt, *, obs_maps=None) -> dict:
     for sid in station_ids:
         obs_map = obs_maps[sid] if obs_maps is not None and sid in obs_maps \
             else load_obs(sid)
-        times_in_window = [parse_iso(t) for t in obs_map
-                           if start_dt <= parse_iso(t) <= end_dt]
+        # 每个键只解析一次：旧写法在列表推导的条件与表达式里各调一次 parse_iso，
+        # 分母截断与计数读的是同一批时刻，没有任何理由解析两遍。
+        times_in_window = []
+        for t in obs_map:
+            dt = parse_iso(t)
+            if start_dt <= dt <= end_dt:
+                times_in_window.append(dt)
         got += len(times_in_window)
         if obs_map:
             latest = max(obs_map)
@@ -3446,6 +3581,55 @@ def _segment_board(S: np.ndarray, W: np.ndarray | None, cols: list[int],
     return {i: float(adj["scores"][i]) for i in range(sub.shape[0])}
 
 
+def _daily_error_lag1_rho_columnar(pt: "PairTable") -> float | None:
+    """`stats.daily_error_lag1_rho` 的列式等价实现（同一批样本、同一套合并）。
+
+    旧实现对 270 万条记录做 Python 级分组，只为得到"每站每日的平均误差"这一条
+    时间序列（实测 3.6 s）。这里用 PairTable 的列做同样的事：
+      * 只取两侧都有值的小时（h_temp_ok），与旧实现的 `o is None or f is None`
+        入样判据同源（上游清洗已保证存档里没有 NaN）；
+      * 按（站, 日）稳定排序后逐组 `np.mean`——组内顺序与旧实现按记录顺序
+        append 的列表完全一致，因此均值逐位相同；
+      * 站序按**首个有效样本**的出现顺序重排（不是 PairTable 的全记录站序）：
+        旧实现 `by` 只收录有效样本，Fisher-z 的合并顺序取决于它，两者必须一致。
+    """
+    idx = np.flatnonzero(pt.h_temp_ok)
+    if idx.size < 4:
+        return None
+    st = pt.h_station[idx]
+    day = pt.h_day[idx]
+    err = pt.h_temp_f[idx] - pt.h_temp_o[idx]
+    # 旧实现的站序 = 该站在第一条**有效**记录中的出现顺序
+    uniq, first = np.unique(st, return_index=True)
+    station_order = uniq[np.argsort(first, kind="stable")]
+    code = np.searchsorted(station_order, st)
+    order = np.lexsort((day, code))
+    code_s, day_s, err_s = code[order], day[order], err[order]
+    change = np.empty(code_s.size, dtype=bool)
+    change[0] = True
+    change[1:] = (code_s[1:] != code_s[:-1]) | (day_s[1:] != day_s[:-1])
+    starts = np.flatnonzero(change)
+    ends = np.r_[starts[1:], code_s.size]
+    means = np.array([float(np.mean(err_s[a:b]))
+                      for a, b in zip(starts, ends)])
+    rs: list[float] = []
+    ns: list[int] = []
+    group_station = code_s[starts]
+    for c in range(station_order.size):
+        groups = np.flatnonzero(group_station == c)
+        if groups.size < 4:
+            continue
+        series = means[groups]
+        rho = _stats.pearson_r(series[:-1], series[1:])
+        if rho is None:
+            continue
+        rs.append(max(-0.999, min(0.999, rho)))
+        ns.append(len(series) - 1)
+    if not rs:
+        return None
+    return _stats.fisher_z_combine(rs, ns)
+
+
 def _n_eff_daily_temp(recs: list[dict]) -> int | None:
     """日温度维的有效样本量：每个（站, 日）取最高/最低两个偏差的平均作一个误差值。
 
@@ -3642,7 +3826,7 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
     # 参与排名。事件门直接数独立（站,时刻）/（站,日）事件，未达标者标"样本
     # 积累中"，分数保留为参考值。
     rain_evidence = _rain_evidence_by_model(
-        models, by_model, daily_by_model, thr_hourly, thr_daily)
+        models, by_model, daily_by_model, thr_hourly, thr_daily, pt=pt)
     board_neff = {
         "hourly": (neff_t_hourly, neff_r_hourly),
         "daily": (neff_t_daily, neff_r_daily),
@@ -3914,31 +4098,51 @@ def _build_row_facts(scored: list[dict], all_recs: list[dict],
     同一模型的记录只扫描一次；榜单各自选择小时或日计数，统计口径不变。
     缓存由 _resolution_boards 局部持有，独立调用 _build_board_rows 时仍可重建。
     """
-    n_temp_h = sum(1 for r in scored
-                   if r["temp_obs"] is not None and r["temp_fcst"] is not None)
-    n_rain_h = sum(1 for r in scored
-                   if r["rain_obs"] is not None and r["rain_fcst"] is not None)
-    n_temp_d = sum(1 for r in daily_recs
-                   if r["temp_max_obs"] is not None and r["temp_max_fcst"] is not None)
-    n_rain_d = sum(1 for r in daily_recs
-                   if r["rain_obs"] is not None and r["rain_fcst"] is not None)
+    # 同一批记录只扫一遍：此前这里对 scored / daily_recs 各做了 4~5 次全量推导
+    # （2.7M 条 × 32 个模型），每一次都在回答同一个问题——"哪些记录两侧都有值"。
+    # 计数、验证日集合与按维覆盖时效在语义上互不依赖，合并扫描不改变任何口径。
+    n_temp_h = n_rain_h = 0
+    days_temp: set[str] = set()
+    h_temp_max = h_rain_max = -1
+    for r in scored:
+        if r["temp_obs"] is not None and r["temp_fcst"] is not None:
+            n_temp_h += 1
+            days_temp.add(r["valid_iso"][:10])
+            if r["lead"] > h_temp_max:
+                h_temp_max = r["lead"]
+        if r["rain_obs"] is not None and r["rain_fcst"] is not None:
+            n_rain_h += 1
+            if r["lead"] > h_rain_max:
+                h_rain_max = r["lead"]
+    n_temp_d = n_rain_d = 0
+    days_rain: set[str] = set()
+    d_temp_max = d_rain_max = -1
+    for r in daily_recs:
+        if r["rain_obs"] is not None and r["rain_fcst"] is not None:
+            n_rain_d += 1
+            days_rain.add(r["valid_day"])
+            if r["offset"] > d_rain_max:
+                d_rain_max = r["offset"]
+        if (r["temp_max_obs"] is not None and r["temp_max_fcst"] is not None):
+            n_temp_d += 1
+        # 日温度维要求最高/最低两对同时成立（缺一即该天没有温度维结论）
+        if (r["temp_max_obs"] is not None and r["temp_max_fcst"] is not None
+                and r["temp_min_obs"] is not None and r["temp_min_fcst"] is not None):
+            if r["offset"] > d_temp_max:
+                d_temp_max = r["offset"]
     # 全 lead 的配对数（含起报当日 bucket=0）：明细口径核对用，不参与名次
     n_all_leads = sum(1 for r in all_recs
                       if r["temp_obs"] is not None and r["temp_fcst"] is not None)
-    days_temp = {r["valid_iso"][:10] for r in scored
-                 if r["temp_obs"] is not None and r["temp_fcst"] is not None}
-    days_rain = {r["valid_day"] for r in daily_recs
-                 if r["rain_obs"] is not None and r["rain_fcst"] is not None}
     return {
         "n_temp_h": n_temp_h, "n_rain_h": n_rain_h,
         "n_temp_d": n_temp_d, "n_rain_d": n_rain_d,
         "n_all_leads": n_all_leads,
         "n_issues": len({r.get("issue_iso") for r in all_recs if r.get("issue_iso")}),
         "days_temp": days_temp, "days_rain": days_rain,
-        "h_temp": _valid_lead_days(scored, "temp_obs", "temp_fcst"),
-        "h_rain": _valid_lead_days(scored, "rain_obs", "rain_fcst"),
-        "d_temp": _valid_daily_temp_days(daily_recs),
-        "d_rain": _valid_rain_days(daily_recs),
+        "h_temp": math.ceil(h_temp_max / 24) if h_temp_max >= 0 else None,
+        "h_rain": math.ceil(h_rain_max / 24) if h_rain_max >= 0 else None,
+        "d_temp": d_temp_max if d_temp_max >= 0 else None,
+        "d_rain": d_rain_max if d_rain_max >= 0 else None,
     }
 
 
@@ -3962,21 +4166,6 @@ def _build_board_rows(models, name, design, *, by_model,
     cell_valid = np.asarray(adj["cell_valid"], dtype=bool)
     neff_t_map, neff_r_map = neff_pair
 
-    def _aligned(matrix: np.ndarray) -> np.ndarray:
-        """用本榜同一张设计（同一批格子、同一组权重）归总成一个数。
-
-        valid=cell_valid 是 P1-3 的核心：派生列（±2°C / RMSE / TS / ETS）也要
-        逐格同集，否则页面上的两列来自两批不同的格子，"所有数字列走同一张设计"
-        就只是 row/col 掩码层面的半真话。
-        """
-        return _stats.difficulty_adjusted(
-            matrix[None, ...], row_keep, col_keep,
-            weights=(W_cell[None, ...] if W_cell is not None else None),
-            # ridge 与本榜的实际设计一致（第四轮 P2-11）：派生列若用无收缩拟合
-            # 而综合分用收缩拟合，同一行的两列数字就来自两个不同的估计量
-            ridge=float(design["gate_params"]["ridge"]),
-            valid=cell_valid[None, ...])[0]
-
     # 榜面显示列与综合分走**同一张设计**（同一批格子、同一组权重、同一收缩）：
     # P1-3 的口径纪律从 4 列扩到两维全部已评测指标——页面上任何两列都不允许
     # 来自两批不同的格子。
@@ -3984,7 +4173,20 @@ def _build_board_rows(models, name, design, *, by_model,
                      "acc2", "rmse", "acc1", "mae", "mbe", "r", "slope",
                      "mbe_bdisp", "ts", "ets", "accr", "pod", "far", "bias",
                      "amt_mae", "amt_bias", "grade_ets")
-    aligned = {k: _aligned(mat[k]) for k in _ALIGNED_KEYS}
+    # 19 个派生列共享同一套 row/col/权重/掩膜，唯一不同的是待劈分的分数矩阵。
+    # 旧实现逐个调用 difficulty_adjusted，等于把同一套 300 轮 ALS 的 Python
+    # 开销重复 19 次（三张榜 ≈ 6 s）。two_way_fit 本来就支持 (r, m, b) 批量，
+    # 把指标堆成 r 维一次拟合：每行的迭代只读自己的切片，结果与逐列调用逐位
+    # 相同，只是 NumPy 调用次数从 19×N 降到 N。
+    stack = np.stack([mat[k] for k in _ALIGNED_KEYS])
+    aligned_mat = _stats.difficulty_adjusted(
+        stack, row_keep, col_keep,
+        weights=(W_cell[None, ...] if W_cell is not None else None),
+        # ridge 与本榜的实际设计一致（第四轮 P2-11）：派生列若用无收缩拟合
+        # 而综合分用收缩拟合，同一行的两列数字就来自两个不同的估计量
+        ridge=float(design["gate_params"]["ridge"]),
+        valid=cell_valid[None, ...])
+    aligned = {k: aligned_mat[i] for i, k in enumerate(_ALIGNED_KEYS)}
     rows: list[dict] = []
     for i, m in enumerate(models):
         # 行级派生量的跨榜共享（性能轮）：下面这批计数、验证日集合与按维覆盖时效

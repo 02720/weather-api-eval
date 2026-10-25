@@ -96,3 +96,33 @@ def test_compute_all_rejects_half_paired_inputs():
     with pytest.raises(ValueError, match="同时给或同时不给"):
         compute_all(report, __import__("pathlib").Path("/nonexistent"),
                     snapshots={("s1", "m"): [_snap("2026-08-01T00:00")]})
+
+
+def test_station_rho_int_sample_keys_match_tuple_keys():
+    """样本键压成整数后，站对相关必须与旧三元组键给出同一张配对表。
+
+    回归锁：站编码在 bit 56+，若站对相关不先剥掉它，两个站永远没有公共键，
+    `station_rho` 会静默返回 available=False（实测首次改造后 pairs 从 6 变 0）。
+    """
+    import math
+
+    from weather_eval.report.diagnostics import _sample_key, station_rho
+    from weather_eval.timeutil import minute_index
+
+    stations = ["a", "b"]
+    tuple_series: dict = {"m": {}}
+    int_series: dict = {"m": {}}
+    for code, sid in enumerate(stations):
+        for i in range(40):
+            t = f"2026-08-{1 + i // 24:02d}T{i % 24:02d}:00"
+            lead = 1
+            v = 0.9 * math.sin(i / 3.0) + code * 0.4
+            tuple_series["m"][(sid, t, lead)] = v
+            int_series["m"][_sample_key(code, minute_index(t), lead)] = v
+
+    old = station_rho(tuple_series)
+    new = station_rho(int_series, station_names=stations)
+    assert old["available"] is True and new["available"] is True
+    assert new["pairs"] == old["pairs"]
+    assert new["mean_rho"] == old["mean_rho"]
+    assert new["k_eff"] == old["k_eff"]

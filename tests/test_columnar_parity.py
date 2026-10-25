@@ -153,6 +153,33 @@ def test_daystats_columnar_matches_dict():
         assert np.array_equal(t_a[name], t_b[name]), f"{name} 数值不一致"
 
 
+def test_report_fast_paths_match_dict_path():
+    """报告装配层的三条列式快路径与 dict 路径逐位同值。
+
+    `_build_heatmap` / `_rain_evidence_by_model` / `_daily_error_lag1_rho_columnar`
+    都从"逐条 Python 扫描"换成了 PairTable 列；它们各自有一个可对照的 dict 实现
+    （后者的对照在 stats.daily_error_lag1_rho），必须给出完全相同的对象。
+    """
+    from weather_eval.evaluate import (
+        _build_heatmap,
+        _daily_error_lag1_rho_columnar,
+        _rain_evidence_by_model,
+    )
+    from weather_eval.stats import daily_error_lag1_rho
+
+    hourly, daily, days, pt = _build()
+    by_model = {m: [r for r in hourly if r["model"] == m] for m in MODELS}
+    daily_by_model = {m: [r for r in daily if r["model"] == m] for m in MODELS}
+
+    assert _daily_error_lag1_rho_columnar(pt) == daily_error_lag1_rho(hourly)
+
+    assert _build_heatmap(MODELS, hourly, [1, 2], 3, 1.0) == \
+        _build_heatmap(MODELS, hourly, [1, 2], 3, 1.0, pt=pt)
+
+    assert _rain_evidence_by_model(MODELS, by_model, daily_by_model, 1.0, 1.0) == \
+        _rain_evidence_by_model(MODELS, by_model, daily_by_model, 1.0, 1.0, pt=pt)
+
+
 def test_missing_stays_missing():
     """I4：缺测绝不因列式化变成 0.0。
 

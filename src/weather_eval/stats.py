@@ -200,6 +200,76 @@ def n_eff_from_station_series(series_by_station: dict[str, list[float]],
     return max(1, int(round(corrected)))
 
 
+def _cross_station_rho_arrays(series_by_station: dict[str, np.ndarray],
+                              times_by_station: dict[str, np.ndarray],
+                              min_overlap: int = CROSS_STATION_MIN_OVERLAP,
+                              ) -> float | None:
+    """`cross_station_rho` 的数组路径：时间键已按升序且严格唯一。
+
+    通用实现为每一对站建两个 dict 再做键集合交与排序；在 1,696 个 (源, 天桶)
+    格子上这是 n_eff 的最大单项开销。时间键升序时，公共键的交集就是一次
+    `np.intersect1d(assume_unique=True)`（免排序），值按同一顺序取出——与
+    `sorted(common)` 逐位同序，相关系数因此完全一致。
+    """
+    ids = [sid for sid in series_by_station
+           if series_by_station[sid].size > 0]
+    if len(ids) < 2:
+        return None
+    rs: list[float] = []
+    ns: list[int] = []
+    for i in range(len(ids)):
+        for j in range(i + 1, len(ids)):
+            ti, tj = times_by_station[ids[i]], times_by_station[ids[j]]
+            common, ia, ib = np.intersect1d(ti, tj, assume_unique=True,
+                                            return_indices=True)
+            if common.size < min_overlap:
+                continue
+            r = pearson_r(series_by_station[ids[i]][ia],
+                          series_by_station[ids[j]][ib])
+            if r is not None:
+                rs.append(r)
+                ns.append(int(common.size))
+    if not rs:
+        return None
+    rho = fisher_z_combine(rs, ns)
+    return None if rho is None else float(rho)
+
+
+def n_eff_from_station_arrays(series_by_station: dict[str, np.ndarray],
+                              times_by_station: dict[str, np.ndarray]) -> int:
+    """`n_eff_from_station_series` 的数组等价实现（列式调用方的快路径）。
+
+    数组不满足"升序且严格唯一"时**退回通用 dict 实现**而不是给一个未经论证的
+    交集——时间键可能来自任意调用方，绝不让性能优化改变 n_eff 的整数结果。
+    """
+    total = 0
+    for vals in series_by_station.values():
+        total += effective_n(vals)
+    k = sum(1 for vals in series_by_station.values() if vals.size > 0)
+    if k < 2 or total <= 0:
+        return total
+    ordered = True
+    for sid, vals in series_by_station.items():
+        t = times_by_station.get(sid)
+        if t is None or t.size != vals.size:
+            ordered = False
+            break
+        if t.size > 1 and not bool(np.all(t[1:] > t[:-1])):
+            ordered = False
+            break
+    if ordered:
+        rho_bar = _cross_station_rho_arrays(series_by_station, times_by_station)
+    else:
+        rho_bar = cross_station_rho(
+            {sid: vals.tolist() for sid, vals in series_by_station.items()},
+            {sid: t.tolist() for sid, t in times_by_station.items()})
+    if rho_bar is None or rho_bar <= 0:
+        return total
+    rho_bar = min(rho_bar, RHO_CLAMP)
+    corrected = total / (1.0 + (k - 1) * rho_bar)
+    return max(1, int(round(corrected)))
+
+
 # ------------------------------------------------------------------ 站内 r/slope 合并
 def fisher_z_combine(rs: list[float], ns: list[int]) -> float | None:
     """站内相关系数按 Fisher-z 变换加权平均：r = tanh(Σ nᵢ·z(rᵢ) / Σ nᵢ)。

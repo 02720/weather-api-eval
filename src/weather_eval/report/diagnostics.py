@@ -49,6 +49,22 @@ logger = logging.getLogger(__name__)
 # 参与跨源相关的提前天数区间：与总榜的入榜时效范围一致（1~10 天），
 # 超出这个区间的格子只有极少数源覆盖，相关估计会被个别源的缺测模式主导。
 CROSS_SOURCE_LEAD_DAYS = (1, 10)
+# 样本键的位布局：站编码在 bit 56+，低 56 位是"时刻键 << 8 | 提前天数"。
+# 站对相关必须只用低 56 位对齐（见 station_rho），跨源相关用整键。
+_KEY_STATION_SHIFT = 56
+_KEY_LOW_MASK = (1 << _KEY_STATION_SHIFT) - 1
+
+
+def _sample_key(station_idx: int, time_code: int, lead_days: int) -> int:
+    """(站, 时刻编码, 提前天数) → 单个整数样本键（纯标识，不含排序语义）。
+
+    时刻编码是分钟序号（< 2^25）或非标准时刻的合成编码（≥ 2^40），两者
+    在 56 位内互不碰撞；提前天数落在 1..10，偏移 128 后恰好占低 8 位。
+    """
+    return ((station_idx << _KEY_STATION_SHIFT) | (time_code << 8)
+            | (lead_days + 128))
+
+
 # 指纹漂移比对的时间分界：把周期切成前后两半，比较两半的契约字段众数
 FINGERPRINT_SPLIT_FRACTION = 0.5
 
@@ -110,11 +126,13 @@ def iter_error_samples(forecasts_root: Path, obs_by_station: dict[str, dict],
                        end: str | None = None,
                        snapshots: dict[tuple[str, str], list[dict]] | None = None,
                        with_rain: bool = False,
-                       ) -> tuple[dict[str, dict[tuple, float]],
-                                   dict[str, dict[tuple, float]]]:
+                       ) -> tuple[dict[str, dict[int, float]],
+                                   dict[str, dict[int, float]]]:
     """遍历全部冻结快照，重建"逐样本误差"。
 
-    返回 ``(temp_err, rain_err)``，结构均为 ``{model: {(station, valid_time, lead_day): error}}``。
+    返回 ``(temp_err, rain_err)``，结构均为 ``{model: {sample_key: error}}``。
+    ``sample_key`` 是站点编码、分钟序号（非标准时刻用合成编码）与提前天数压成的
+    单个整数；键只用于"同一物理样本"的配对，结构见 `station_rho` 的解码。
     ``with_rain=False``（默认）时 rain_err 恒为空 dict：当前的三个消费者
     （cross_source_correlation / station_rho / Holm k_eff）全部只吃温度误差，
     降水分支算完即弃（实测白占诊断层内层循环约一半工作量）。需要降水分列的
@@ -133,11 +151,17 @@ def iter_error_samples(forecasts_root: Path, obs_by_station: dict[str, dict],
     传入的必须同样是"未过滤"的全量快照——顺手把被评估排除的剔掉，会让
     `cross_source_correlation` / `fingerprint_drift` 的口径静默改变。
     """
-    temp_err: dict[str, dict[tuple, float]] = {}
-    rain_err: dict[str, dict[tuple, float]] = {}
+    temp_err: dict[str, dict[int, float]] = {}
+    rain_err: dict[str, dict[int, float]] = {}
     lo, hi = CROSS_SOURCE_LEAD_DAYS
     t_start = _parse_iso(start) if start else None
     t_end = _parse_iso(end) if end else None
+    # 样本键压成单个整数（见 _sample_key）：诊断层要为每个 (模型, 站点, 时刻,
+    # 提前天数) 存一个误差，三元组字符串键在百万级下既占内存又拖慢哈希/排序。
+    # 站点编码在一次调用内固定，时刻用分钟序号（非标准格式退回互不冲突的
+    # 合成编码），提前天数只用低 8 位。整键仍是纯标识，不改变任何配对。
+    station_code = {sid: i for i, sid in enumerate(obs_by_station)}
+    synthetic_time: dict[str, int] = {}
 
     if snapshots is not None:
         pairs = [(station, model, snap)
@@ -171,6 +195,7 @@ def iter_error_samples(forecasts_root: Path, obs_by_station: dict[str, dict],
         obs = obs_by_station.get(station) or {}
         if not obs:
             continue
+        station_idx = station_code[station]
         t_map = temp_err.setdefault(model, {})
         r_map = rain_err.setdefault(model, {}) if with_rain else None
         issue_iso = snap.get("issue_iso") or ""
@@ -236,7 +261,16 @@ def iter_error_samples(forecasts_root: Path, obs_by_station: dict[str, dict],
                     if vt is None:
                         continue
                     lead_days = int((vt - issue) // timedelta(days=1))
-                key = (station, t_iso, lead_days)
+                t_code = minute_index(t_iso)
+                if t_code is None:
+                    # 非标准时间格式：给一个只在本次调用内有效的合成编码。
+                    # 起点远高于分钟序号可能达到的量级，两类编码永不碰撞；
+                    # 键只用于配对，不参与按时间排序的语义判断。
+                    t_code = synthetic_time.get(t_iso)
+                    if t_code is None:
+                        t_code = (1 << 40) + len(synthetic_time)
+                        synthetic_time[t_iso] = t_code
+                key = _sample_key(station_idx, t_code, lead_days)
                 if idx < len(temps) and rec.get("temp") is not None:
                     fv = temps[idx]
                     if isinstance(fv, (int, float)) and abs(float(fv)) < 900:
@@ -267,22 +301,46 @@ def cross_source_correlation(temp_err: dict[str, dict[tuple, float]],
 
 
 # ------------------------------------------------------------------ P1-4 站对相关
-def station_rho(temp_err: dict[str, dict[tuple, float]],
-                min_overlap: int = st.CROSS_STATION_MIN_OVERLAP) -> dict[str, Any]:
+def station_rho(temp_err: dict[str, dict[Any, float]],
+                min_overlap: int = st.CROSS_STATION_MIN_OVERLAP,
+                station_names: list[str] | None = None) -> dict[str, Any]:
     """按站对披露 ρ̄：逐源算再按 Fisher-z 合并，而不是把所有源混成一个序列。
 
     混成一个序列会让"某源在某站缺测"变成噪声；逐源算、再合并，才是"站间冗余"
     这个量的正确口径（与 cross_station_rho 的既有口径一致）。
+
+    station_names：`iter_error_samples` 把样本键压成整数后（bit 56 以上为站编码），
+    站名由这张编码表还原；键仍是旧三元组的调用方无需传它。
     """
-    stations = sorted({k[0] for s in temp_err.values() for k in s})
+    int_keys = False
+    for series in temp_err.values():
+        sample = next(iter(series), None)
+        if sample is not None:
+            int_keys = isinstance(sample, int)
+            break
+    if int_keys and station_names is None:
+        raise ValueError("整数样本键需要 station_names 才能还原站点名")
+    if int_keys:
+        stations = sorted({station_names[k >> _KEY_STATION_SHIFT]  # type: ignore[index]
+                           for s in temp_err.values() for k in s})
+    else:
+        stations = sorted({k[0] for s in temp_err.values() for k in s})
     if len(stations) < 2:
         return {"available": False, "reason": "站点数不足 2", "stations": stations}
 
     acc: dict[tuple[str, str], list[tuple[float, int]]] = {}
     for model, series in temp_err.items():
-        by_station: dict[str, dict[tuple, float]] = {}
-        for (sta, t, lead), v in series.items():
-            by_station.setdefault(sta, {})[(t, lead)] = v
+        by_station: dict[str, dict[Any, float]] = {}
+        if int_keys:
+            for k, v in series.items():
+                # 站对相关必须在**去掉站编码**后对齐：同一时刻/时效的键在
+                # 不同站之间必须相等，否则交集恒为空（这正是首次改造后
+                # station_rho 全空的根因）。低 56 位 = 时刻键 + 提前天数。
+                by_station.setdefault(
+                    station_names[k >> _KEY_STATION_SHIFT], {})[k & _KEY_LOW_MASK] = v  # type: ignore[index]
+        else:
+            for (sta, t, lead), v in series.items():                      # type: ignore[misc]
+                by_station.setdefault(sta, {})[(t, lead)] = v
         res = st.station_rho_matrix(by_station, min_overlap=min_overlap)
         for pair in res["pairs"]:
             if pair["rho"] is None:
@@ -1050,7 +1108,7 @@ def compute_all(report: dict, data_root: Path, months: list[str] | None = None,
             fc_root, obs_by_station, months, start=start or None, end=end or None,
             snapshots=snapshots)
         out["source_correlation"] = cross_source_correlation(temp_err, families=families)
-        out["station_rho"] = station_rho(temp_err)
+        out["station_rho"] = station_rho(temp_err, station_names=list(obs_by_station))
         out["_debug"] = {"models_with_series": len(temp_err),
                          "samples": sum(len(s) for s in temp_err.values())}
         if with_fingerprint:

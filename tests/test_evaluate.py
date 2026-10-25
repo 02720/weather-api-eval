@@ -2188,3 +2188,33 @@ def test_min_board_cells_gate_excludes_thin_sources(tmp_path, monkeypatch):
     assert "入设计格子不足" in (hrows["thin"]["evidence_note"] or "")
     assert hrows["mid"]["qualified"] is False
     assert hrows["wide"]["qualified"] is True
+
+
+def test_timeseries_uses_only_forecasts_issued_before_valid_time():
+    """§05 叠图只能画"当时已经发布"的预报（封存纪律在图表层同样成立）。
+
+    旧实现按快照发布时间升序覆盖同一时刻，却不检查"起报是否晚于该时刻"：
+    一个 10-14 20:00 的轮次会把 10-13 20:00 的回算值画成预报。这里用两份快照
+    锁死门槛——晚发布的那份只能覆盖严格晚于其起报时刻的点。
+    """
+    from weather_eval.evaluate import _build_timeseries
+    from weather_eval.timeutil import parse_iso
+
+    obs_times = ["2026-08-01T01:00", "2026-08-01T02:00", "2026-08-01T03:00"]
+    obs_map = {t: {"temp": 20.0, "rain": 0.0} for t in obs_times}
+    times = ["2026-08-01T00:00"] + obs_times
+
+    def snap(issue: str, base: float) -> dict:
+        return {"issue_iso": issue, "hourly_time": times,
+                "data": {"m": {"temperature_2m": [base + i for i in range(4)],
+                               "precipitation": [0.0] * 4}}}
+
+    out = _build_timeseries(
+        ["s1"], ["m"], parse_iso("2026-08-01T00:00"), parse_iso("2026-08-01T03:00"),
+        obs_maps={"s1": obs_map},
+        snapshots={("s1", "m"): [snap("2026-08-01T00:00", 10.0),
+                                 snap("2026-08-01T02:00", 90.0)]})
+    temps = [p["temp"] for p in out["s1"]["models"]["m"]]
+    # 01:00 / 02:00：晚发布的快照起报时刻 >= 有效时刻，不得覆盖（取早报的 11/12）；
+    # 03:00：02:00 的起报早于有效时刻，按"后发布覆盖"取 93。
+    assert temps == [11.0, 12.0, 93.0]
