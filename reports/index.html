@@ -11,7 +11,7 @@
 <!-- 视图指纹：本页由「代码的哪个版本」渲染。数据冻结、视图随代码重建——
      月榜据此自判是否过期（见 render.view_fingerprint / __main__.refresh_monthly_archives）。
      本行属于产物契约，勿删。 -->
-<meta name="wx-render-fp" content="f377050aaae26b91">
+<meta name="wx-render-fp" content="879c7aba169b749c">
 <!-- ECharts 使用仓库内本地副本（避免 CDN 不可达）。加载失败时图表区会显示
      兜底提示，服务端渲染的榜单与结论不受影响。 -->
 <script src="./vendor/echarts.min.js"></script>
@@ -2795,7 +2795,7 @@
         <p class="why"><b>MSN天气</b>：最近城市吸附：定位到距站点平均约 3.7 km 的各站最近城市（bobai、pingnan、wanning、万秀），样本代表该城市而非站点格点，雨温气候可能与站点本地不同。名次请结合这一差异解读。</p>
 <p class="why"><b>从未产出数据</b>（多为需要凭据/尚未接入，榜上无分 ≠ 报得差）：
 伏羲确定性 (FuXi-Det)。</p><p class="why"><b>有残缺快照</b>（序列不完整的存档，样本对时间覆盖更薄）：
-中科天机 T2-Early 88/480 份、中科天机 T2 24/488 份、中科天机 T1-AI 8/488 份、中科天机 T1H-AI 28/484 份、MSN天气 22/674 份、最美天气 4/8 份。</p>        <p class="why">各源被验证的自然日数相差较大（48~66 天）——
+中科天机 T2-Early 88/480 份、中科天机 T2 24/488 份、中科天机 T1-AI 8/488 份、中科天机 T1H-AI 28/484 份、MSN天气 22/674 份、最美天气 4/12 份。</p>        <p class="why">各源被验证的自然日数相差较大（48~66 天）——
           新源只在自己入榜之后的日子里受检，请结合「覆盖时效」列解读。</p>
       </div>
     </details>
@@ -3379,11 +3379,11 @@ MSN天气 20 份）。⑧
           </div>
         </details>
         <h3>存档完整性（可自行核验）</h3>
-        <p class="why">本轮 12213 份存档内容的哈希被聚合成一个 Merkle 根：
-          <code style="word-break:break-all">421f0cf9e027ed6ac5f21d24742ff26d5312e7dcf3820058a92069f285a1b099</code>。
+        <p class="why">本轮 12217 份存档内容的哈希被聚合成一个 Merkle 根：
+          <code style="word-break:break-all">1e8f07904380c631c166fa87ea0132a60307c5ee55cb73e6c99704b76177fb96</code>。
           任何人克隆仓库后运行 <code>python -m weather_eval verify</code> 即可重算比对。
           <b>能力的边界要一并说清</b>：校验会比对"重算的内容哈希"与"封存时盖下的
-          内嵌哈希"（8118 份带内嵌哈希），
+          内嵌哈希"（8122 份带内嵌哈希），
           因此误操作编辑、git 冲突残留、工具链自动格式化都能被抓到；
           但"改内容 + 正确重算哈希 + 重跑报告刷新清单"这条完整攻击链<b>抓不到</b>——
           堵住它需要仓库之外的不可变锚点（根另行留档或签名），本项目目前没有做。</p>
@@ -3758,11 +3758,11 @@ MSN天气 20 份）。⑧
 </div>
 
 <footer>
-  生成时间：2026-10-31 09:29（北京时）｜ 预报源：Open-Meteo（多模型）· 彩云天气 · 和风天气 · 中科天机 · 伏羲 · 风乌 ·
+  生成时间：2026-10-31 09:47（北京时）｜ 预报源：Open-Meteo（多模型）· 彩云天气 · 和风天气 · 中科天机 · 伏羲 · 风乌 ·
   中科星图 · AccuWeather ｜ 实况：环境气象数据服务平台 eia-data.com<br>
   本页由 GitHub Actions 自动生成，每天 3 次更新；仅供学习参考，出行请以官方气象部门预报为准。
-<div class="merkle">Merkle root 421f0cf9e027ed6ac5f21d24742ff26d5312e7dcf3820058a92069f285a1b099</div>  <div class="merkle">
-    复现凭据：code 881c3f30655d（无法判定工作区是否干净：git 不可用，未验证）    ｜ 依赖锁 uv.lock#c14f57bf92903d95    ｜ bootstrap 种子 20260906 ｜ Python 3.12.6
+<div class="merkle">Merkle root 1e8f07904380c631c166fa87ea0132a60307c5ee55cb73e6c99704b76177fb96</div>  <div class="merkle">
+    复现凭据：code b3b4ffcb0d3c（无法判定工作区是否干净：git 不可用，未验证）    ｜ 依赖锁 uv.lock#c14f57bf92903d95    ｜ bootstrap 种子 20260906 ｜ Python 3.12.6
     ｜ numpy 2.1.2 · pandas 2.3.3 · cyeva 0.2.3
   </div>
 </footer>
