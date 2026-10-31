@@ -1,0 +1,168 @@
+name: 诊断 · 最美天气源 404（临时）
+
+# 临时诊断任务，判完即删。
+#
+# 背景（2026-10-30 排查留档）：zmtq 源自 2026-10-25 17:30 提交后，在 Actions 上
+# 从未成功过，四站每轮全部报
+#   HTTP 404 body='<html>\r\n<head><title>404 Not Found</title></head>\r\n
+#   <body>\r\n<center><h1>404 Not Found</h1></center>\r\n</body>\r\n</html>\r\n'
+# 而同一条 URL 从境内出口实测 200（code=0、cityInfo 回显一致、360 点 + 16 天，
+# 数据为当小时新鲜值）。两边看到的东西不一样，说明失效不在"接口"这一层。
+#
+# 已查明的链路事实：
+#   h5-api.zuimeitianqi.com
+#     → CNAME h5-api.zuimeitianqi.com.146f6e09.cdnhwchcg02.com
+#     → CNAME hcdnw120.vip.global.cdnhwctnm107.com（权威 NS ns1.huaweicloud-dns.org）
+#     → A 记录 TTL 2 秒，境内/境外两组节点池完全不同：
+#         境内：36.159.107.x / 111.45.26.x / 120.240.164.x（广州·移动）
+#         境外：128.14.165.x（墨西哥）/ 23.251.120.x、87.119.3.x（新加坡）等 53 个
+#   且三种 404 的 body 形态互不相同，可以用它反推响应来自哪一层：
+#     本域名 CDN 边缘对未知路径 → 404 + 空 body
+#     源站（根域未接入 CDN，121.37.150.245）→ 404 + Tomcat 页
+#     Actions 实际收到的             → 404 + nginx 默认页
+#   → 即请求落到了一台"没有本域名配置"的 nginx 上。
+#
+# 剩下的唯一不确定性，也是本任务的判定目标：
+#   * 节点级：境外 PoP 上根本没配这个域名 → 把连接钉到境内节点 IP 就能拿到 200，
+#             ⇒ 存在零基础设施的纯代码方案；
+#   * 地域级：节点上域名配置齐全，只是按来源 IP 拒绝境外 → 钉 IP 也没用，
+#             ⇒ 必须换请求的发出位置（境内 runner / 境内代理 / 摘除该源）。
+# 判定依据 = 「钉境内 IP 直连是否返回 200」。
+#
+# 旁证（倾向于地域级，但未实测）：从境内出口直连那 53 个境外节点，全部返回 200
+# 且是本域名的真实数据——说明域名配置是齐全的，不是"节点没配"。
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TZ: Asia/Shanghai
+      HOSTNAME_ZMTQ: h5-api.zuimeitianqi.com
+      # 梧州万秀区；四个站点的 cityId 见 config/stations.yaml 的 zmtq_city_id
+      URL: https://h5-api.zuimeitianqi.com/h5zh/api/pc/actual?cityId=0101081307
+    steps:
+      - name: 1 · 本 runner 的出口 IP 与归属地
+        # 对照组：先钉死"境外出口"这个前提。若这里显示不在境外，整套推论作废。
+        run: |
+          echo -n "出口 IP: "; curl -s --max-time 15 https://api.ipify.org || echo "(获取失败)"
+          echo
+          echo -n "归属:    "; curl -s --max-time 15 "http://ip-api.com/json/?fields=status,countryCode,city,org" || echo "(获取失败)"
+          echo
+
+      - name: 2 · 按 runner 的 DNS 解析本域名（境外视角）
+        # getent 走的是 runner 的系统解析器（Azure），即 CDN 眼中 Actions 的视角。
+        # 重复 5 次是因为 A 记录 TTL 只有 2 秒且多值轮询，一次采样看不全。
+        run: |
+          echo "-- getent --"
+          getent ahostsv4 "$HOSTNAME_ZMTQ" | awk '{print $1}' | sort -u || true
+          echo "-- 5 次采样去重 --"
+          for i in 1 2 3 4 5; do
+            getent ahostsv4 "$HOSTNAME_ZMTQ" 2>/dev/null | awk '{print $1}' | sort -u
+            sleep 1
+          done | sort -u | tee /tmp/native_ips.txt
+          # getent 在极简镜像里可能缺 ahosts 数据库，退化到 Python 再取一次
+          if [ ! -s /tmp/native_ips.txt ]; then
+            python3 -c "
+          import socket
+          print('\n'.join(sorted({a[4][0] for a in socket.getaddrinfo('$HOSTNAME_ZMTQ', 443, socket.AF_INET)})))" \
+              > /tmp/native_ips.txt
+          fi
+          echo "-- 共 $(wc -l < /tmp/native_ips.txt) 个 --"
+
+      - name: 3 · 默认路径请求（复现故障，并抓响应头）
+        # 响应头是关键证据：Server / X-Cache / Via 之类的头部能指认应答者是谁；
+        # -D - 把响应头打到 stdout。失败也要继续（set +e），诊断不该自己先红。
+        run: |
+          set +e
+          for p in actual forecast; do
+            u="https://$HOSTNAME_ZMTQ/h5zh/api/pc/$p?cityId=0101081307"
+            echo "=== /$p ==="
+            curl -sS -D - -o /tmp/body_$p.txt \
+              -w "[status=%{http_code} remote_ip=%{remote_ip} time=%{time_total}s]\n" \
+              --max-time 25 "$u" 2>&1 | head -40
+            echo "--- body 前 300 字节 ---"
+            head -c 300 /tmp/body_$p.txt | tr -d '\r'
+            echo
+          done
+
+      - name: 4 · 逐个直连 runner 解析到的节点（节点级 vs 地域级，第一轮）
+        # 对每个节点单独发一次请求，固定 Host/SNI，看是否所有境外节点都 404。
+        # 若"有的 200 有的 404"，说明是节点间配置不齐 → 换节点即可修复。
+        run: |
+          set +e
+          while read -r ip; do
+            [ -z "$ip" ] && continue
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 \
+              --resolve "$HOSTNAME_ZMTQ:443:$ip" "$URL" 2>/dev/null)
+            echo "  $ip → $code"
+          done < /tmp/native_ips.txt
+
+      - name: 5 · 取境内节点池（境内视角）+ 钉 IP 直连（决定性判定）
+        # 这一步是整个诊断的落点：用 EDNS 客户端子网伪装成境内来源，向阿里 DoH
+        # 问这个 CDN 域名"给境内用户的是哪些节点"，再从本 runner 直接连这些 IP。
+        # 若直连返回 200 → 节点级问题，钉 IP 就是可用方案（虽脆弱，但零基础设施）；
+        # 若仍 404   → 地域级问题，钉 IP 无效，必须换出口位置。
+        run: |
+          set +e
+          : > /tmp/cn_ips.txt
+          for sub in 223.104.3.0/24 116.179.32.0/24 117.181.243.0/24; do
+            curl -s --max-time 20 \
+              "https://dns.alidns.com/resolve?name=hcdnw120.vip.global.cdnhwctnm107.com&type=A&ecs=$sub&edns_client_subnet=$sub" \
+              | grep -oE '"data":"[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+"' \
+              | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' >> /tmp/cn_ips.txt
+          done
+          sort -u /tmp/cn_ips.txt -o /tmp/cn_ips.txt
+          # DoH 不可达时退化到 2026-10-30 实测留档的境内节点池，保证这一步一定有结论
+          if [ ! -s /tmp/cn_ips.txt ]; then
+            echo "(DoH 取境内视角失败，改用留档的境内节点池)"
+            printf '%s\n' 36.159.107.38 36.159.107.41 111.45.26.82 120.240.164.141 > /tmp/cn_ips.txt
+          fi
+          echo "境内视角节点（$(wc -l < /tmp/cn_ips.txt) 个）:"
+          cat /tmp/cn_ips.txt
+          echo "=== 钉 IP 直连结果 ==="
+          while read -r ip; do
+            [ -z "$ip" ] && continue
+            code=$(curl -s -o /tmp/pin.txt -w "%{http_code}" --max-time 20 \
+              --resolve "$HOSTNAME_ZMTQ:443:$ip" "$URL" 2>/dev/null)
+            echo "  $ip → $code  $(head -c 60 /tmp/pin.txt | tr -d '\r\n')"
+          done < /tmp/cn_ips.txt
+
+      - name: 6 · 根域与源站直连（未接入 CDN 的对照）
+        # 根域 zuimeitianqi.com 不走 CDN，直指源站 121.37.150.245。拿它对照，
+        # 是为了确认"源站本身是活的"，把嫌疑彻底锁在 CDN 这一层。
+        run: |
+          set +e
+          echo "-- 根域解析 --"
+          getent ahostsv4 zuimeitianqi.com | awk '{print $1}' | sort -u || true
+          echo "-- 默认路径请求根域 --"
+          curl -s -o /tmp/apex.txt -w "  [status=%{http_code}]\n" --max-time 20 \
+            "https://zuimeitianqi.com/h5zh/api/pc/actual?cityId=0101081307"
+          head -c 120 /tmp/apex.txt | tr -d '\r'; echo
+
+      - name: 7 · 用仓库真实代码复现（拿到最终异常形态）
+        # 前几步都是 curl 层的探测；这一步确认 provider 实际抛出的错误与日志一致，
+        # 排除"只是 curl 的用法差异"。不安装依赖，只验证解析出的节点与连通性。
+        run: |
+          set +e
+          python3 - <<'PY'
+          import socket, ssl, json, urllib.request
+          host = "h5-api.zuimeitianqi.com"
+          url = "https://" + host + "/h5zh/api/pc/actual?cityId=0101081307"
+          try:
+              print("解析结果:", sorted({a[4][0] for a in socket.getaddrinfo(host, 443, socket.AF_INET)}))
+          except Exception as e:
+              print("解析失败:", e)
+          req = urllib.request.Request(url, headers={"User-Agent": "weather-api-eval/0.1 (+https://github.com/)"})
+          try:
+              with urllib.request.urlopen(req, timeout=25) as r:
+                  body = r.read(120)
+                  print("urllib:", r.status, body[:120])
+          except urllib.error.HTTPError as e:
+              print("urllib HTTPError:", e.code, repr(e.read(160)))
+          except Exception as e:
+              print("urllib 失败:", type(e).__name__, e)
+          PY
