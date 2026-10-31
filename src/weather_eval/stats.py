@@ -1653,6 +1653,196 @@ def two_way_adjust(S2: np.ndarray,
             "fit_weights": (W3[0] if W3 is not None else None)}
 
 
+# ------------------------------------------------ 分块模型的经验贝叶斯收缩
+def eb_shrink(alpha: np.ndarray, resid_block: np.ndarray, block_weight: np.ndarray,
+              present: np.ndarray) -> tuple[np.ndarray, dict]:
+    """把行效应 α 按**有效块数**向面板均值收缩（经验贝叶斯，2026-10-31）。
+
+    第一性原理：一个只覆盖 1 个 7 天块的源，它的 α 是**一次天气抽签**的产物；
+    与覆盖 9 个块的老源放进同一张榜，前者更容易靠运气冲到榜首。这里用标准的
+    分层模型估计：
+
+        α_m ~ N(μ, τ²)                （源间真实差异）
+        e_{m,k} = α_m + 块级噪声，Var = σ²_block   （源 × 时段交互）
+
+    其中 n_m = 该源实际覆盖的块数（独立天气抽签数），收缩系数
+    B_m = τ² / (τ² + σ²_block / n_m)，α_shrunk = μ + B_m (α_m − μ)。
+    σ²_block 由拟合残差在**块级**上的离散度估计（不是格子级——同一块内相邻
+    时效共享同一场天气，格子级方差会把证据量高估一个数量级）；τ² 用矩估计
+    （观测到的 α 方差减去平均估计方差）。n_m=0 的源不收缩也不出分。
+
+    参数形状：
+      alpha        (..., M)
+      resid_block  (..., M, K)  每个（源, 块）的加权平均残差；无格子的块为 NaN
+      block_weight (..., M, K)  该块残差的权重（格子权重之和）
+      present      (..., M, K)  该块是否有可评格子
+    返回 (alpha_shrunk, info)；info 里 sigma2/tau2/n_blocks/shrink 供披露与
+    bootstrap 复用。**点估计与每次重采样用同一个函数**，区间中心不会漂。
+    """
+    alpha = np.asarray(alpha, dtype=float)
+    resid_block = np.asarray(resid_block, dtype=float)
+    block_weight = np.asarray(block_weight, dtype=float)
+    present = np.asarray(present, dtype=bool) & np.isfinite(resid_block)
+    # 统一成 (R, M, K)：点估计 R=1，bootstrap R=runs。最后两维仍是（源, 块）。
+    lead = resid_block.shape[:-2]
+    M, K = resid_block.shape[-2], resid_block.shape[-1]
+    R = int(np.prod(lead)) if lead else 1
+    R3 = np.asarray(resid_block, dtype=float).reshape((R, M, K))
+    W3 = np.asarray(block_weight, dtype=float).reshape((R, M, K))
+    P3 = np.asarray(present, dtype=bool).reshape((R, M, K))
+    A = np.asarray(alpha, dtype=float).reshape((R, M))
+    W = np.where(P3, W3, 0.0)
+    Res = np.where(P3, R3, 0.0)
+    n_block = P3.sum(axis=-1)                       # (R, M)
+    sw = W.sum(axis=(1, 2))                         # (R,)
+    mean_e = np.where(sw > 0, (W * Res).sum(axis=(1, 2)
+                                            ) / np.where(sw > 0, sw, 1.0), 0.0)
+    var_e = np.where(
+        sw > 0,
+        (W * (Res - mean_e[:, None, None]) ** 2).sum(axis=(1, 2)
+                                                    ) / np.where(sw > 0, sw, 1.0),
+        0.0)
+    sigma2 = var_e
+    # 面板均值/方差：以 n_block 为权重（块数才是独立的证据单位）
+    we = np.where(n_block > 0, n_block, 0.0).astype(float)   # (R, M)
+    swe = we.sum(axis=1)                                     # (R,)
+    # 没有格子的源 alpha 可能是 NaN；权重为 0 时它不得通过 0*NaN 污染全局面板均值
+    A0 = np.where(np.isfinite(A) & (we > 0), A, 0.0)
+    mu_a = np.where(swe > 0, (we * A0).sum(axis=1) / np.where(swe > 0, swe, 1.0), 0.0)
+    var_a = np.where(
+        swe > 0,
+        (we * (A0 - mu_a[:, None]) ** 2).sum(axis=1) / np.where(swe > 0, swe, 1.0),
+        0.0)
+    inv_n = np.where(n_block > 0, 1.0 / np.maximum(n_block, 1), 0.0)
+    avg_inv = np.where(swe > 0, (we * inv_n).sum(axis=1) / np.where(swe > 0, swe, 1.0),
+                       0.0)
+    tau2 = np.maximum(0.0, var_a - sigma2 * avg_inv)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        denom = tau2[:, None] + sigma2[:, None] / np.maximum(n_block, 1)
+        B = np.where((n_block > 0) & (denom > 0),
+                     tau2[:, None] / np.where(denom > 0, denom, 1.0), 0.0)
+    # 退化保护：τ²=0（源间没有可分辨差异）→ 全部收缩到面板均值；
+    # σ²=0（块间完全一致）→ 不收缩。两者都是极限情形，不能除零。
+    B = np.where(np.isfinite(B), B, 0.0)
+    A1 = np.where(np.isfinite(A), A, mu_a[:, None])
+    alpha_shrunk = mu_a[:, None] + B * (A1 - mu_a[:, None])
+    back = (lambda v: v.reshape(lead)) if lead else (lambda v: v.reshape(()))
+    shrink_back = (lambda v: v.reshape(lead + (M,))) if lead \
+        else (lambda v: v.reshape((M,)))
+    return shrink_back(alpha_shrunk), {
+        "sigma2": back(sigma2), "tau2": back(tau2),
+        "n_blocks": shrink_back(n_block), "shrink": shrink_back(B),
+        "mu": back(mu_a)}
+
+
+def block_residuals(resid: np.ndarray, weights: np.ndarray,
+                    block_of_col: np.ndarray, n_blocks: int) -> tuple[np.ndarray, np.ndarray]:
+    """按列所属块把残差聚成 (..., M, K) 的块级均值与权重。
+
+    resid / weights 形如 (..., M, C)；block_of_col 是 (C,) 的块号。
+    同一块内不同时效共享一场天气，必须先在块内平均再进 σ²_block 的估计。
+    """
+    resid = np.asarray(resid, dtype=float)
+    weights = np.asarray(weights, dtype=float)
+    out_r = np.full(resid.shape[:-1] + (n_blocks,), np.nan)
+    out_w = np.zeros(resid.shape[:-1] + (n_blocks,))
+    for k in range(n_blocks):
+        sel = block_of_col == k
+        if not sel.any():
+            continue
+        w = weights[..., sel]
+        r = resid[..., sel]
+        den = w.sum(axis=-1)
+        num = (w * r).sum(axis=-1)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            out_r[..., k] = np.where(den > 0, num / np.where(den > 0, den, 1.0), np.nan)
+        out_w[..., k] = den
+    return out_r, out_w
+
+
+def block_bootstrap_scores(S: np.ndarray, W: np.ndarray,
+                           row_keep: np.ndarray, col_keep: np.ndarray,
+                           block_cols: list[np.ndarray], *,
+                           runs: int = 500, seed: int = 20260906,
+                           ridge: float = 0.0, max_iter: int = 50,
+                           tol: float = 1e-4, chunk: int = 100) -> np.ndarray:
+    """按 **7 天块**重采样 + 重拟合 + 经验贝叶斯收缩，返回 (runs, M) 行分。
+
+    为什么不是按天重采样（旧 `day_block_bootstrap`）：分块模型的行效应由
+    "跨了多少个块"决定精度，按天重采样会把同一块的多个时效当成独立信息，
+    区间偏窄。这里整块重采样（块内所有时效/两条轨道一起进），每次重新拟合
+    行/列效应并重新收缩——与点估计同一个估计量。
+
+    S/W 是 (M, C) 的点估计面板（已按点估计设计掩膜/薄格门槛处理），
+    block_cols 是每个块的列下标列表（各块列数必须相同；块内列顺序保持），
+    runs 次重采样在内部按 chunk 分批，峰值内存与总列数无关。
+    """
+    S = np.asarray(S, dtype=float)
+    W = np.asarray(W, dtype=float)
+    row_keep = np.asarray(row_keep, dtype=bool)
+    col_keep = np.asarray(col_keep, dtype=bool)
+    M, C = S.shape
+    K = len(block_cols)
+    if K == 0:
+        return np.full((runs, M), np.nan)
+    L = len(block_cols[0])
+    if any(len(c) != L for c in block_cols):
+        raise ValueError("每个分块的列数必须相同（列布局按块等长构造）")
+    V0 = np.isfinite(S) & row_keep[:, None] & col_keep[None, :]
+    W0 = np.where(V0, W, 0.0)
+    col_of_block = np.repeat(np.arange(K), L)
+    bc = np.stack([np.asarray(c, dtype=int) for c in block_cols])
+    rng = np.random.default_rng(seed)
+    out = np.full((runs, M), np.nan)
+    for lo in range(0, runs, chunk):
+        hi = min(runs, lo + chunk)
+        r = hi - lo
+        picks = rng.integers(0, K, size=(r, K))
+        idx = bc[picks].reshape(r, K * L)          # (r, C)
+        S_b = np.take(S, idx, axis=1).transpose(1, 0, 2)
+        W_b = np.take(W0, idx, axis=1).transpose(1, 0, 2)
+        V_b = np.take(V0, idx, axis=1).transpose(1, 0, 2)
+        alpha, beta = two_way_fit(S_b, V_b, weights=W_b, ridge=ridge,
+                                  max_iter=max_iter, tol=tol)
+        present_col = V_b.any(axis=1)             # (r, C)
+        ncol = present_col.sum(axis=1)
+        shift = np.where(ncol > 0, (beta * present_col).sum(axis=1)
+                         / np.maximum(ncol, 1), 0.0)
+        alpha = alpha + shift[:, None]
+        beta = beta - shift[:, None]
+        resid = np.where(V_b, S_b - alpha[:, :, None] - beta[:, None, :], 0.0)
+        wsum = W_b.sum(axis=(1, 2))
+        mu = np.where(wsum > 0, (W_b * resid).sum(axis=(1, 2))
+                      / np.where(wsum > 0, wsum, 1.0), np.nan)
+        # 块级残差（重采样布局：每个采样位置由 L 列组成，块内先平均）
+        resid_pos, w_pos = block_residuals(resid, W_b, col_of_block, K)
+        present_pos = np.isfinite(resid_pos)
+        # 同一个原始块可能被抽中多次：按原始块去重后再进 σ²/ n_block 估计，
+        # 重复抽样是 bootstrap 的机制，不是额外证据。
+        onehot = np.zeros((r, K, K), dtype=bool)
+        rr = np.arange(r)[:, None]
+        jj = np.arange(K)[None, :]
+        onehot[rr, jj, picks] = True
+        present_orig = np.einsum("rmj,rjp->rmp",
+                                 present_pos.astype(float), onehot.astype(float)) > 0.5
+        num_orig = np.einsum("rmj,rmj,rjp->rmp",
+                             np.where(present_pos, resid_pos, 0.0),
+                             np.where(present_pos, w_pos, 0.0),
+                             onehot.astype(float))
+        den_orig = np.einsum("rmj,rjp->rmp",
+                             np.where(present_pos, w_pos, 0.0),
+                             onehot.astype(float))
+        with np.errstate(invalid="ignore", divide="ignore"):
+            resid_orig = np.where(den_orig > 0, num_orig / np.where(den_orig > 0, den_orig, 1.0),
+                                  0.0)
+        a_shrunk, info = eb_shrink(alpha, resid_orig, den_orig, present_orig)
+        scores = mu[:, None] + a_shrunk
+        scores = np.where(info["n_blocks"] > 0, scores, np.nan)
+        scores[:, ~row_keep] = np.nan
+        out[lo:hi] = scores
+    return out
+
+
 # ------------------------------------------------ 加法假设的量化与名次稳定性
 def variance_decomposition(S: np.ndarray, row_keep: np.ndarray,
                            col_keep: np.ndarray,

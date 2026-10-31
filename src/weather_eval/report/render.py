@@ -848,9 +848,9 @@ def write_live_report(report_data: dict, station_labels: dict[str, str] | None =
     root = _reports_root()
     root.mkdir(parents=True, exist_ok=True)
     out = root / "index.html"
-    _atomic_write_text(out, render_report_html(report_data, base="./",
-                                               archives=_list_archives(root),
-                                               station_labels=station_labels))
+    _atomic_write_text(out, render_report_html(
+        report_data, base="./", archives=_list_archives(root),
+        station_labels=station_labels))
     return out
 
 

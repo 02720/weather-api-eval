@@ -11,8 +11,13 @@ n_eff 数的是"雨/无雨判定"，干燥小时占绝对多数：一个只覆�
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
+from weather_eval import storage
 from weather_eval.config import DEFAULT_EVAL, load_config
-from weather_eval.evaluate import _rain_evidence_by_model, _rain_evidence_note
+from weather_eval.evaluate import (_rain_evidence_by_model, _rain_evidence_note,
+                                   build_report)
+from weather_eval.timeutil import iso
 
 
 def _h(station, valid, obs, fcst, bucket=1, model="m"):
@@ -69,8 +74,89 @@ def test_shortfall_note_reports_the_actual_event_counts():
 
 def test_thresholds_are_registered_in_default_and_yaml():
     """阈值只此一处声明：代码缺省与仓库配置同值，且可被 eval 段覆盖。"""
-    assert DEFAULT_EVAL["min_board_rain_events"] == 30
-    assert DEFAULT_EVAL["min_board_rain_days"] == 8
+    assert DEFAULT_EVAL["min_board_rain_events"] == 8
+    assert DEFAULT_EVAL["min_board_rain_days"] == 3
     cfg = load_config(None)
-    assert cfg.eval["min_board_rain_events"] == 30
-    assert cfg.eval["min_board_rain_days"] == 8
+    assert cfg.eval["min_board_rain_events"] == 8
+    assert cfg.eval["min_board_rain_days"] == 3
+    assert cfg.eval["board_block_min_rain_events"] == 8
+    assert cfg.eval["board_block_min_rain_days"] == 3
+    assert cfg.eval["board_min_qualified_days"] == 7
+    assert cfg.eval["board_block_min_days"] == 5
+    assert cfg.eval["board_block_min_cells"] == 3
+
+
+def _perfect_snap(model: str, start: datetime, issue_day: int,
+                  horizon_h: int, bias: float = 0.0) -> dict:
+    """完美预报（可选择温度偏置）：用于让不同源有真实的技巧差异。"""
+    issue = start + timedelta(days=issue_day)
+    times = [iso(issue + timedelta(hours=h)) for h in range(1, horizon_h + 1)]
+    temp = [20.0 + ((issue_day * 24 + h) % 5) + bias
+            for h in range(1, horizon_h + 1)]
+    rain = [2.0 if (issue_day * 24 + h) % 6 == 0 else 0.0
+            for h in range(1, horizon_h + 1)]
+    return {"issue_iso": iso(issue), "station_id": "s1", "source": "test",
+            "models": [model], "grid_lat": 23.0, "grid_lon": 111.0,
+            "elevation": 50, "hourly_time": times,
+            "data": {model: {"temperature_2m": temp, "precipitation": rain}}}
+
+
+def test_new_source_gets_official_score_after_seven_days(tmp_path, monkeypatch):
+    """方案 A 的核心验收：7 天块模型让后加入的源在 7 天后拿**正式**分数。
+
+    old 从 09-07 起连续 28 天；new 从 09-27 起（有效样本覆盖 09-28~10-04
+    共 7 天）；too_new 从 09-30 起只有 5 天。窗口 = 4 个周一锚定的 7 天块。
+    new 只有 1 个块，靠经验贝叶斯收缩向面板均值靠拢；它仍必须有
+    score / rk / CI，而不是"参考分"。
+    """
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    start = datetime(2026, 9, 7, 0, 0)        # 周一
+    window_days = 28
+    obs = []
+    for h in range((window_days + 7) * 24):
+        t = start + timedelta(hours=h)
+        obs.append({"time": iso(t), "temp": 20.0 + ((h) % 5),
+                    "rain": 2.0 if h % 6 == 0 else 0.0})
+    storage.save_obs("s1", obs)
+    for day in range(window_days):
+        storage.save_forecast_snapshot(
+            "s1", "old", _perfect_snap("old", start, day, 168, bias=0.0))
+    for day in range(20, window_days):        # 09-27 起，有效日覆盖 09-28~10-04
+        storage.save_forecast_snapshot(
+            "s1", "new", _perfect_snap("new", start, day, 168, bias=0.5))
+    for day in range(23, window_days):        # 09-30 起，共 5 天
+        storage.save_forecast_snapshot(
+            "s1", "too_new", _perfect_snap("too_new", start, day, 168, bias=1.0))
+
+    cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
+           "rain_daily_threshold_mm": 1.0, "rain_hourly_threshold_mm": 1.0,
+           "hourly_lead_days": 16, "daily_max_offset_days": 16,
+           "min_sample": 1, "min_cell_neff": 1,
+           "board_cell_weighting": "equal", "board_min_col_frac": 0.0,
+           "bootstrap_runs": 60, "sensitivity_runs": 30,
+           "score_index_gain": 1.0, "score_composite_gain": 1.0}
+    end = start + timedelta(hours=window_days * 24 - 1)
+    data = build_report(["s1"], ["old", "new", "too_new"], cfg, start, end,
+                        "2026-09 ~ 10")
+    rows = {r["model"]: r for r in data["leaderboards"]["all"]}
+    assert rows["old"]["qualified"] is True
+    assert rows["new"]["qualified"] is True
+    assert rows["new"]["score"] is not None
+    assert rows["new"]["rk"] is not None
+    assert rows["new"]["ci90"] is not None
+    assert rows["new"]["gate_days"] == 7
+    assert rows["new"]["gate_valid_block"] == "2026-09-28"
+    # 证据量差异如实披露：新源 1 个块、老源 4 个块；单块新源的收缩不弱于老源
+    eb = data["meta"]["difficulty_window"]["all"]["eb"]
+    assert eb["n_blocks"]["new"] == 1 and eb["n_blocks"]["old"] == 4
+    assert eb["shrink"]["new"] <= eb["shrink"]["old"]
+
+    too = rows["too_new"]
+    assert too["qualified"] is False
+    assert too["score"] is None
+    assert too["rk"] is None
+    assert "样本积累中" in (too["evidence_note"] or "")
+    # 小时榜同样给 new 正式分（两轨各自独立入围）
+    hrows = {r["model"]: r for r in data["leaderboards"]["hourly"]}
+    assert hrows["new"]["qualified"] is True and hrows["new"]["score"] is not None
+

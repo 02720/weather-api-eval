@@ -494,6 +494,8 @@ def refresh_monthly_archives(cfg) -> int:
     return rebuilt
 
 
+
+
 def _update_live_report(cfg):
     """用跨月累计窗口（数据起点 → 现在）重建主报告 reports/index.html（覆盖写）。
 

@@ -16,7 +16,11 @@ from weather_eval.__main__ import _live_window
 from weather_eval.timeutil import iso, now_beijing
 
 MIN_CFG = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
-           "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 5}
+           "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 5,
+           # 窗口语义用例不考察分块入围门槛；夹具只有几天样本
+           "board_min_qualified_days": 1, "board_block_min_days": 1,
+           "board_block_min_rain_events": 1, "board_block_min_rain_days": 1,
+           "board_block_min_cells": 1}
 
 
 # --------------------------------------------------------------- 窗口探测

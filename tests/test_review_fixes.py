@@ -240,16 +240,15 @@ def test_long_tail_buckets_are_separated_not_mixed(tmp_path, monkeypatch):
     data = build_report(["s1"], ["a", "b", "c"], cfg, start,
                         start + timedelta(hours=10 * 24 - 1), "2026-08")
     dw = data["meta"]["difficulty_window"]["all"]
+    # 分块模型的真实列是 (块 × 天桶)：长尾列按块标签披露；`buckets` 仍保留
+    # 全窗口分时效键（诊断层重建设计用），两者是不同的布局，不能混为一谈。
     assert dw["excluded_long_tail_buckets"], dw
-    assert not set(dw["excluded_long_tail_buckets"]) & set(dw["buckets"])
+    assert all("@" in b for b in dw["excluded_long_tail_buckets"])
     assert dw["long_tail"]["buckets"] == dw["excluded_long_tail_buckets"]
     assert "不参与总榜名次" in dw["long_tail"]["note"]
-    # 总榜的名次只用主流桶（a 的分数不应等于含长尾桶的平均）。
-    # 2026-09 跨分辨率重构后总榜的列是 (天桶 × 分辨率) 的笛卡尔积：三家共同
-    # 覆盖的小时榜与日榜各 3 桶进主设计，更远的长尾桶单独成参考榜。
-    assert dw["buckets"] == ["hourly:1d", "hourly:2d", "hourly:3d",
-                             "daily:1d", "daily:2d", "daily:3d"]
-    assert dw["bucket_indices"] == [1, 2, 3, 1, 2, 3]   # 天桶号按各自分辨率计
+    assert dw["buckets"] == ([f"hourly:{b}d" for b in range(1, 17)]
+                             + [f"daily:{b}d" for b in range(1, 17)])
+    assert dw["bucket_indices"] == list(range(1, 17)) * 2
 
 
 def test_board_gate_scale_is_consistent(tmp_path, monkeypatch):

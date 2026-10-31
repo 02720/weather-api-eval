@@ -979,6 +979,32 @@ def save_metrics(period: str, name: str, obj: Any) -> None:
     _atomic_write_json(_root() / "metrics" / period / f"{name}.json", obj)
 
 
+def block_cells_path(block_start: str, block_end: str) -> Path:
+    """7 天分块单元缓存的落点（data/metrics/blocks/{起}_{止}.json）。
+
+    键含**实际裁剪后的起止日期**：月初/月末与周一不重合时，块会被窗口裁剪；
+    同一日历块在不同窗口里的有效样本不同，缓存绝不能跨窗口混用。
+    """
+    return _root() / "metrics" / "blocks" / f"{block_start}_{block_end}.json"
+
+
+def load_block_cells(block_start: str, block_end: str) -> dict | None:
+    """读分块单元缓存；不存在或不可读一律返回 None（调用方重算）。"""
+    path = block_cells_path(block_start, block_end)
+    if not path.is_file():
+        return None
+    data = _load_json(path)
+    return data if isinstance(data, dict) else None
+
+
+def save_block_cells(block_start: str, block_end: str, obj: dict) -> Path:
+    """原子写分块单元缓存；返回落点。"""
+    path = block_cells_path(block_start, block_end)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_json(path, obj)
+    return path
+
+
 def period_summary_path(period: str) -> Path:
     """某月结论摘要的落点（data/metrics/{period}/summary.json）。"""
     return _root() / "metrics" / period / "summary.json"

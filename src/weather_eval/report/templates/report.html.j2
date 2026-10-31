@@ -701,7 +701,7 @@
         {% set c = model_colors.get(r.model, '#64748b') %}
         <tr class="{% if r.get('is_top') %}is-top {% endif %}{% if not r.get('qualified') %}is-weak{% endif %}"
             data-m="{{ r.model }}"
-            data-rk="{{ loop.index }}"
+            data-rk="{{ r.get('rk') if r.get('rk') is not none else '' }}"
             data-score="{{ r.get('score') if r.get('score') is not none else '' }}"
             data-temp="{{ r.get('temp_score') if r.get('temp_score') is not none else '' }}"
             data-precip="{{ r.get('precip_score') if r.get('precip_score') is not none else '' }}"
@@ -726,7 +726,7 @@
             data-rain-events="{{ r.get('rain_events_h') if r.get('rain_events_h') is not none else '' }}"
             data-rain-days="{{ r.get('rain_days_d') if r.get('rain_days_d') is not none else '' }}"
             data-neff-rain="{{ r.get('n_eff_rain_hourly') if r.get('n_eff_rain_hourly') is not none else '' }}">
-          <td class="c-rk num">{{ loop.index }}</td>
+          <td class="c-rk num">{{ r.get('rk') if r.get('rk') is not none else '—' }}</td>
           <td class="l c-name"><i class="dot" style="background:{{ c }}"></i><b>{{ model_labels.get(r.model, r.model) }}</b>
             {%- if r.get('sig_vs_top') is sameas false %}<sup class="dagger" title="与第一名的差距经 max-T（族内极值）多重比较校正后仍不显著：前后名次更多是抽样运气">†</sup>{% endif -%}
             {%- if r.get('disputed') %}<span class="warn-badge" title="{{ (r.get('disputed_reasons') or [])|join('；') }}">⚠️</span>{% endif -%}
@@ -894,10 +894,16 @@
 
     <details class="fold"><summary>📏 「能报 3 天的和能报 15 天的」为什么能同榜：难度对齐与名次的稳健性</summary>
       <div class="fold-body">
-        <p class="why">越往后越难报，而各家能报的天数差很多：直接平均"自己覆盖的那几档"，
-          只报近几天的源白拿简单档的分。本页用<b>双向加法劈分</b>——把「（源 × 档位）」看成
-          <b>分数 = 这家水平 + 这一档难度 + 噪声</b>，用全部格子一起估出行、列效应，
-          数据一格不扔，也不要求各家覆盖一致。</p>
+        <p class="why">越往后越难报，而各家能报的天数差很多；更麻烦的是<b>不同时段</b>的天气
+          整体难度也不同——新源只覆盖最近几天、老源跨了整个季节。本页用<b>分块双向加法劈分</b>：
+          把时间按周一锚定的 7 天块切开，列 = <b>(块 × 天桶)</b>，模型是
+          <b>分数 = 这家水平 + 这一列（时段 × 档位）难度 + 噪声</b>。老源在每个块都有格子，
+          新源只在自己的块里有格子，两者的水平被拉到同一把"所有块 × 所有天桶的平均难度"的尺子上。
+          只覆盖少数块的新源会做<b>经验贝叶斯收缩</b>（证据越少越向面板均值靠拢），并得到更宽的
+          bootstrap 区间——这不是参考分，而是同一张榜上的正式分数。</p>
+        <p class="why"><b>绝对分数会变</b>：参考难度现在含"时段"轴，干燥时段可能整体更难，
+          因此总榜的绝对分（尤其降水分）可能低于旧的累计榜；名次与相对差距仍可与旧榜对照
+          （实测同一批源的 Spearman 0.93~0.97）。</p>
         {% if dw.get('degraded') %}
         <p class="why">⚠️ 本份报告已降级为"各源可用天桶的等权平均"（可用格子凑不出能横向比较的表），
           请结合「覆盖时效」列解读。</p>
@@ -906,10 +912,12 @@
           ① 格子按 √(有效样本量) 加权，过薄格子剔除{% if dw.get('dropped_thin_cells') %}（本轮剔除 {{ dw.dropped_thin_cells }} 个）{% endif %}；
           {% if rs.get('spearman') is not none %}② 换成等权口径重算，名次 Spearman = <b>{{ '%.2f'|format(rs.spearman) }}</b>{% if rs.get('top10_changed') is not none %}（前十换 {{ rs.top10_changed }} 家）{% endif %}；
           {% endif %}{% if dw.get('variance') and dw['variance'].get('residual_share') is not none %}③ 分数方差拆解：源间
-          {{ '%.0f%%'|format(dw['variance']['row_share'] * 100) }} · 档位难度
+          {{ '%.0f%%'|format(dw['variance']['row_share'] * 100) }} · 时段/档位难度
           {{ '%.0f%%'|format(dw['variance']['col_share'] * 100) }} · 交互与噪声
           {{ '%.0f%%'|format(dw['variance']['residual_share'] * 100) }}——残差占比越高，"一个数字排座次"抹掉的真实差异越多；
-          {% endif %}④ 有效样本量已扣除时间自相关与跨站相关（相邻站由同一批天气系统驱动，直接相加会高估约 1.7 倍）。</p>
+          {% endif %}④ 有效样本量已扣除时间自相关与跨站相关（相邻站由同一批天气系统驱动，直接相加会高估约 1.7 倍）。
+          {% if dw.get('eb') %}⑤ 经验贝叶斯收缩：σ_block={{ dw.eb.sigma_block }}、τ={{ dw.eb.tau }}；
+          只覆盖少数块的源收缩更强（页面数据里逐源给出 shrink 与 n_blocks）。{% endif %}</p>
       </div>
     </details>
 
@@ -2055,9 +2063,9 @@ function leadRow(m, rk, a) {
         `<span class="tube"><b style="--v:${thermoV(a[i])}%"></b></span></div></div>` +
         `<b class="score-num">${fmtCell("n1", a[i])}</b></td>`
       : `<td class="${col}" data-label="${lab || tsLab}">${fmtCell(kind, a[i])}</td>`).join("");
-  return `<tr class="${cls}" data-m="${escHtml(m)}" data-rk="${rk}"` +
+  return `<tr class="${cls}" data-m="${escHtml(m)}" data-rk="${weak ? "" : rk}"` +
     ` data-score="${s ?? ""}"${dataAttrs} data-lead="">` +
-    `<td class="c-rk num">${rk}</td>` +
+    `<td class="c-rk num">${weak ? "—" : rk}</td>` +
     `<td class="l c-name"><i class="dot" style="background:${c}"></i>` +
     `<b>${escHtml(labelOf(m))}</b>${weak ? '<span class="mid">· 样本积累中</span>' : ""}` +
     `<span class="mid" title="${escHtml(m)}">${escHtml(m)}</span></td>` +
@@ -2073,11 +2081,20 @@ function leadRow(m, rk, a) {
  * 会并排出现（维度页签引入第二条排序键后，这个不变式必须显式维持）。
  * key 决定"榜首"的判定值：维度重排传该维分数，列头排序传被点列。 */
 function lbRefreshRanks(tbody, key = "score") {
-  Array.from(tbody.rows).forEach((tr, i) => {
-    const rk = i + 1;
-    tr.dataset.rk = rk;
+  // 名次只给合格行：未达标行（降水证据不足 / 样本积累中）停在参考区，# 列保持
+  // 「—」。旧实现按行序重新编号，把参考区的 28/29/30 也写成竞技名次，与页面
+  // "不参与名次"的承诺直接矛盾。合格行内部仍按当前视图顺序连续编号。
+  let rank = 0;
+  Array.from(tbody.rows).forEach(tr => {
+    const weak = tr.classList.contains("is-weak");
+    let rk = null;
+    if (!weak) {
+      rank += 1;
+      rk = rank;
+    }
+    tr.dataset.rk = rk === null ? "" : rk;
     const cell = tr.querySelector(".c-rk");
-    if (cell) cell.textContent = rk;
+    if (cell) cell.textContent = rk === null ? "—" : rk;
     const v = tr.dataset[key];
     tr.classList.toggle("is-top", rk === 1 && v !== "" && v !== undefined);
   });

@@ -72,6 +72,10 @@ BOARD_FIELDS = (
     # 否则"某源为何未达标"在基线上不可复核
     "n_cells_hourly_design", "n_cells_daily_design", "n_cells_design",
     "min_board_cells", "cells_short",
+    # 7 天分块门槛（2026-10-31）：为何未达标的直接凭据，必须随基线冻结
+    "gate_days", "gate_best_days", "gate_best_cells", "gate_best_events",
+    "gate_valid_block", "gate_need_days", "gate_need_block_days",
+    "gate_need_events", "gate_need_rain_days",
 )
 SCORECARD_FIELDS = ("n", "n_eff", "rmse", "mae", "mbe", "acc1", "acc2", "r",
                     "slope", "acc", "pod", "far", "ts", "ets", "bias")

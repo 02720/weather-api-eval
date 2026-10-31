@@ -114,7 +114,10 @@ def test_read_board_note_always_includes_sitting_champion(tmp_path, monkeypatch)
         {"model": "msn_v1", "pct": 33.0}]
     note = note_of(render_report_html(data))
     assert "现榜冠军 ECMWF IFS HRES 9km 51.4%" in note
-    assert note.count("ECMWF IFS HRES 9km") == 1
+    # 只锁"夺冠频率展示集合"里不重复；宏观权重端点冠军是另一段披露，
+    # 它同样可以点名同一个源（总榜对 α=30%/70% 都不敏感时出现两次是正常的）。
+    freq_part = note.split("宏观权重", 1)[0]
+    assert freq_part.count("ECMWF IFS HRES 9km") == 1
 
 
 def test_inline_json_is_slim(tmp_path, monkeypatch):

@@ -6,6 +6,59 @@
 不写这份记录，基线就会退化成一个每次红灯就重生成一遍的文件——那等于没有基线。
 
 ---
+## 2026-10-31 · 第十三次重冻结（7 天分块模型 + 经验贝叶斯收缩）
+
+重冻结原因：**口径变更**（方案 A：单榜 + 7 天日历块 + EB 收缩）。冻结窗口与
+第十二版**逐位相同**（2026-08-01T00:00 ~ 2026-10-14T23:00，`--end` 显式指定）。
+
+### A. 列轴从"天桶"扩成"(块 × 天桶)"
+
+`S(m, 块×天桶) = μ + 技巧_m + 难度_(块,天桶) + 噪声`。块 = 周一锚定的 7 天日历块；
+块效应吸收"这段天气整体更难/更易"的差异，使只覆盖最近 7 天的新源与跨整个季节
+的老源在同一把"所有块 × 所有天桶的平均难度"尺子上比较。该模型替换了旧的
+"天桶×分辨率"两轴设计；分块面板的绝对分（尤其降水分）低于旧榜，但同一批源
+的名次 Spearman 实测 0.93（总榜）/ 0.97（小时榜）/ 0.94（日榜）。
+
+### B. 经验贝叶斯收缩
+
+`α_shrunk = μ + B_m(α_m − μ)`，`B_m = τ²/(τ² + σ²_block/n_m)`。`n_m` = 该源覆盖
+的块数；σ²_block 由块级残差估计；τ² 矩估计。老源 B≈0.9~1.0，单块新源
+B≈0.5~0.8。点估计与每次 bootstrap 重采样用同一个 `stats.eb_shrink`。
+
+### C. bootstrap 改为整块重采样
+
+`stats.block_bootstrap_scores`：每轮按 7 天块有放回抽样、重拟合、重新收缩；
+同一块的各时效/两轨一起进出。旧的按天/自相关块长路径退出主榜（`stats.resolve_block_days`
+保留为独立工具，供测试与离线分析）。`meta.bootstrap_block_days` 现在报告 7 天块长，
+`meta.bootstrap_blocks` 报告日历块数；`bootstrap_daily_rho` 退出 meta。
+
+### D. 入围门槛
+
+旧 `min_board_neff*` 门槛退出入围判定（仍留 meta 供诊断走廊披露）。新门槛：
+总验证日 ≥7、至少一个有效块（块内 ≥5 天、小时轨 ≥8 个 ≥1mm/h 事件 / 日轨 ≥3 个
+≥1mm 雨日、每轨 ≥3 个综合格）。未达标源**不发布分数**（删除参考分通道），
+`rk=None`；温度/降水分仍作为描述性诊断可见。
+
+### 名次与字段影响
+
+- 榜单行新增 `gate_days` / `gate_best_days` / `gate_best_cells` /
+  `gate_best_events` / `gate_valid_block` / `gate_need_*`；`min_board_cells`
+  现在报告有效块内的格子门槛。
+- `meta` 新增 `board_block_days`、`board_min_qualified_days`、
+  `board_block_min_*`、`blocks`、`block_fingerprint`；
+  `meta.bootstrap_block_days` / `bootstrap_blocks` 的语义改为 7 天日历块。
+- `difficulty_window` 新增 `panel_columns` / `blocks` / `eb` /
+  `evidence_excluded_blocks`；`buckets` 仍是全窗口分时效键（诊断层重建用），
+  与分块列不是同一布局。
+- 冻结窗口、观测输入指纹、评分斜率与展示增益**未变**；变化全部来自模型与门槛。
+
+### 凭什么认为其它字段没变
+
+窗口 `window.json` 逐位不变；`test_frozen_inputs_unchanged` 绿。榜单的
+`n` / `n_eff` / `n_days` / 覆盖时效与评分卡指标未变；只有分数、名次、CI、
+门槛判定、`difficulty_window` 结构与上述新字段变化。
+
+---
 ## 2026-10-31 · 第十二次重冻结（BIAS 去冗余 + 族权重重构 + 展示层缩放）
 
 重冻结原因：**口径变更**（第一性原理调研报告的四条落地）。冻结窗口与第十一版
