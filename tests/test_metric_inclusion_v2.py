@@ -213,9 +213,10 @@ def test_new_dims_move_scores_in_the_right_direction():
     assert precip_score(dict(p, grade_ets=None)) == precip_score(p)
 
 
-def test_weights_still_sum_to_one_and_descend():
-    """权重和恒为 1；PRECIP 表保持权重降序（ETS 首位的设计意图）。"""
+def test_weights_still_sum_to_one_and_ets_leads():
+    """权重和恒为 1；ETS 仍是降水维最大单项（族结构不改变"晴雨为主"的设计意图）。"""
     for parts in (TEMP_SCORE_PARTS, PRECIP_SCORE_PARTS):
         assert abs(sum(w for _k, w, *_ in parts) - 1.0) < 1e-9
-    ws = [w for _k, w, *_ in PRECIP_SCORE_PARTS]
-    assert ws == sorted(ws, reverse=True)
+    w = {k: weight for k, weight, *_ in PRECIP_SCORE_PARTS}
+    assert max(w, key=w.get) == "ets"
+    assert w["pod"] == w["far"]

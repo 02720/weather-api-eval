@@ -644,7 +644,8 @@ def _half_case(mb_max=-1.22, mb_min=0.32):
     mbe 刻意取**异号**——那正是 P2 的病根（显示列取均值会让两半偏差相消，
     分数不会），异号时"用均值复算"必然对不上，用分半复算才对得上。
     """
-    from weather_eval.evaluate import _DAILY_TEMP_VIEW_KEYS, daily_temp_score
+    from weather_eval.evaluate import (_DAILY_TEMP_VIEW_KEYS, daily_temp_score,
+                                       display_dim_score)
     mx = {"acc2": 80.4, "acc1": 45.2, "rmse": 1.63, "mae": 1.29,
           "mbe": mb_max, "r": 0.71, "slope": 0.96, "mbe_bdisp": 0.42}
     mn = {"acc2": 91.7, "acc1": 61.3, "rmse": 1.05, "mae": 0.86,
@@ -654,7 +655,7 @@ def _half_case(mb_max=-1.22, mb_min=0.32):
         {"daily": {"1": [[0, None, None, None] + [None] * 17]},
          "hourly": {}},                                   # 行占位，仅第 2 列(温度分)参与
         {"1": [{"mx": [mx[k] for k in keys], "mn": [mn[k] for k in keys]}]},
-        daily_temp_score({"max": mx, "min": mn}),
+        display_dim_score(daily_temp_score({"max": mx, "min": mn})),
     )
 
 
@@ -733,7 +734,8 @@ def test_render_replays_score_slopes_before_any_recompute():
     同一份分半值在其发布斜率下逐位自洽。
     """
     from weather_eval.evaluate import (DEFAULT_SCORE_SLOPES, _DAILY_TEMP_VIEW_KEYS,
-                                       apply_score_slopes, daily_temp_score)
+                                       apply_score_slopes, daily_temp_score,
+                                       display_dim_score)
     import weather_eval.evaluate as ev
     from weather_eval.report.render import render_report_html
     # 选一个与代码缺省显著不同的斜率（rmse 的换算斜率 ×5）
@@ -746,10 +748,10 @@ def test_render_replays_score_slopes_before_any_recompute():
         lb["daily"]["1"][0][2] = round(expect, 1)
         halves = lbtemp
         keys = list(_DAILY_TEMP_VIEW_KEYS)
-        assert round(daily_temp_score({
+        assert round(display_dim_score(daily_temp_score({
             "max": dict(zip(keys, halves["1"][0]["mx"])),
             "min": dict(zip(keys, halves["1"][0]["mn"])),
-        }), 1) == round(expect, 1)
+        })), 1) == round(expect, 1)
     finally:
         apply_score_slopes(None)               # 还原进程缺省（重放路径的起点状态）
     # ⚠️ 经模块属性读取：apply_score_slopes 是**整体重绑**模块全局，
@@ -779,7 +781,8 @@ def test_render_replays_score_gains_in_fresh_process():
     import weather_eval.evaluate as ev
     import weather_eval.stats as st
     from weather_eval.evaluate import (_DAILY_TEMP_VIEW_KEYS, apply_composite_gain,
-                                       apply_score_index_gain, daily_temp_score)
+                                       apply_score_index_gain, daily_temp_score,
+                                       display_dim_score)
     from weather_eval.report.render import _slim_report
 
     center = 50.0
@@ -788,10 +791,10 @@ def test_render_replays_score_gains_in_fresh_process():
         apply_composite_gain(1.5, center)
         lb, lbtemp, expect = _half_case()
         keys = list(_DAILY_TEMP_VIEW_KEYS)
-        assert round(daily_temp_score({
+        assert round(display_dim_score(daily_temp_score({
             "max": dict(zip(keys, lbtemp["1"][0]["mx"])),
             "min": dict(zip(keys, lbtemp["1"][0]["mn"])),
-        }), 1) == round(expect, 1)
+        })), 1) == round(expect, 1)
         lb["daily"]["1"][0][2] = round(expect, 1)
     finally:
         apply_score_index_gain(1.0, center)

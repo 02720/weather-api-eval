@@ -1310,16 +1310,18 @@ def precip_amount_metrics(obs_vals, fcst_vals, min_sample,
 #     于是 amt_mae ≈ |Σf−Σo|/Σo ≈ |amt_bias−1|，两者是同一个量的两种写法。
 #     amt_bias 的子分与降水分桶内相关仅 −0.106 / +0.132（日轨是反的），
 #     故**只保留 amt_mae 入分**（族权重 22.5% 不缩水），amt_bias 留在明细列。
-#   C 拒收：TS、晴雨准确率 acc、漏报率、空报频率 POFD。**这四个与 ETS/POD/FAR
-#     同源于同一张 2×2 列联表（h, fa, mi, c）**：给定 n，列联表只有 3 个自由度，
-#     而 {ETS, POD, FAR} 恰好撑满它——审计用 (ETS,POD,FAR,n) 反解列联表重建
-#     acc/ts，中位相对误差 8e−4 / 1.3e−3（全是舍入）。附带的两条恒等式：
-#     **BIAS = POD/(1−FAR)**（实测残差 ≤3e−3）、**漏报率 = 100 − POD**（精确）。
-#     所以再往里加 acc/ts/POFD 不增加任何信息，只会把基率污染请回来（acc 在
+#   C 拒收：TS、晴雨准确率 acc、漏报率、空报频率 POFD、**频率偏差 BIAS**。
+#     这五个与 ETS/POD/FAR 同源于同一张 2×2 列联表（h, fa, mi, c）：给定 n，
+#     列联表只有 3 个自由度，而 {ETS, POD, FAR} 恰好撑满它——审计用
+#     (ETS,POD,FAR,n) 反解列联表重建 acc/ts/BIAS，中位相对误差 8e−4 / 1.3e−3 /
+#     ≤3e−3（全是舍入）。BIAS 曾是唯一"知道是函数却仍占 9% 权重"的项，还制造了
+#     "多一个空报反而加分"的单调性反例（见族结构注释），故 2026-10-31 退出评分。
+#     再往里加 acc/ts/POFD/BIAS 不增加任何信息，只会把基率污染请回来（acc 在
 #     无雨日占 70%+ 的气候下"全答无雨"即得高分；ts 是未做基率校正的 ETS）。
 #   * 雨量 RMSE（C 拒收）：与 mae 桶内 ρ=0.97~0.98（同族），且平方刻度让跨桶
 #     尺度离散度比 mae 翻一倍（实测 sd 的 P90/P10：8.2 vs 3.8），由 mae 代表更稳。
-#   POD 权重（0.135）仍低于 FAR+BIAS（0.135+0.09=0.225）：评分不奖励"多报占便宜"。
+#   POD 与 FAR 等权（各 12.5%）：不预设"宁可多报/宁可漏报"的方向偏好；任何新增
+#   空报都会降低 FAR 子分，任何新增漏报都会降低 POD 子分。
 
 # 换算说明模板：{lam}=当期斜率、{per}=每扣 1 分的偏差量、{sat}=记 0 分的饱和线。
 # 数字在渲染期由 score_map_text() 按 SCORE_SLOPES 填入——同一份表驱动评分、
@@ -1377,10 +1379,10 @@ DEFAULT_PRECIP_MIN_WEIGHT: float = float(DEFAULT_EVAL["precip_min_surviving_weig
 
 def apply_score_index_gain(gain: float | None = None,
                            center: float | None = None) -> None:
-    """装载综合分技能指数缩放（config → stats 层，与 apply_score_slopes 同模式）。
+    """装载**展示层**维度分增益（config → stats 层，与 apply_score_slopes 同模式）。
 
-    None = 回到代码内缺省（config 冻结值）。必须在任何评分计算之前调用；点估计
-    与 bootstrap 共用 stats 的同一个全局，故两处自动同尺，meta 留痕供渲染回放。
+    None = 回到代码内缺省（config 冻结值）。必须在装配榜面/趋势图之前调用；
+    评分、CI、名次与显著性都不读这个全局。meta 留痕供渲染回放。
     """
     _stats.apply_score_index_gain(
         DEFAULT_SCORE_INDEX_GAIN if gain is None else gain,
@@ -1389,11 +1391,10 @@ def apply_score_index_gain(gain: float | None = None,
 
 def apply_composite_gain(gain: float | None = None,
                          center: float | None = None) -> None:
-    """装载综合分第二层缩放（config eval.score_composite_gain → stats 全局）。
+    """装载**展示层**综合分总增益（config eval.score_composite_gain → stats 全局）。
 
-    None = 回到代码内缺省（config 冻结值）。必须在任何评分计算之前调用；点估计
-    （evaluate._composite_score）与 bootstrap（stats.track_bucket_scores）共用
-    stats 的同一个全局，故两处自动同尺，meta 留痕供渲染回放。
+    None = 回到代码内缺省（config 冻结值）。必须在装配榜面/趋势图之前调用；
+    评分、CI、名次与显著性都不读这个全局。meta 留痕供渲染回放。
     """
     _stats.apply_composite_gain(
         DEFAULT_SCORE_COMPOSITE_GAIN if gain is None else gain,
@@ -1492,51 +1493,98 @@ def _conv_log(key: str):
     return conv
 
 
-# 族内等权 = 把族权重在成员间平分（等价证明见上"全部指标都入分"注释的 B 类）：
-#   加权和里两条 0.15625 的 acc1/acc2 = 0.3125 × 两者子分的均值；且任一项缺失时
-#   现有的"缺项按剩余权重归一"自动变成"族内按剩余成员归一"。不引入族对象，
-#   评分表结构（键/权重/标签/说明/换算）与所有下游消费者保持不变。
-TEMP_SCORE_PARTS = (
-    ("acc2", 0.15625, "±2°C 准确率（命中轮廓族）",
-     SCORE_MAP_TEMPLATES["acc2"], _conv_pct("acc2")),
-    ("acc1", 0.15625, "±1°C 准确率（命中轮廓族）",
-     SCORE_MAP_TEMPLATES["acc1"], _conv_pct("acc1")),
-    ("rmse", 0.15625, "RMSE 误差换算分（误差幅度族）",
-     SCORE_MAP_TEMPLATES["rmse"], _conv_dev("rmse")),
-    ("mae", 0.15625, "MAE 误差换算分（误差幅度族）",
-     SCORE_MAP_TEMPLATES["mae"], _conv_dev("mae")),
-    # r 从 0.1875 → 0.125：让出的 0.0625 给新族「站间一致性」。理由不是"r 不重要"，
-    # 而是 r 与 slope 本就测同一件事的两个侧面、占着第二大权重，而站间一致性补的
-    # 正是 r 看不到的维度（实测与 |mbe| 相关仅 0.115）。**这是新的价值判断**，
-    # 记进 CHANGELOG；权重和仍为 1.00。
-    ("r", 0.125, "相关系数 r", SCORE_MAP_TEMPLATES["r"], _conv_pct("r")),
-    ("mbe", 0.125, "偏差换算分", SCORE_MAP_TEMPLATES["mbe"], _conv_dev("mbe")),
-    ("slope", 0.0625, "回归斜率换算分", SCORE_MAP_TEMPLATES["slope"], _conv_log("slope")),
-    ("mbe_bdisp", 0.0625, "站间一致性换算分（空间一致性族）",
-     SCORE_MAP_TEMPLATES["mbe_bdisp"], _conv_dev("mbe_bdisp")),
+# 评分表按**族**组织（2026-10-31 第一性原理复核）。族权重是价值判断，成员是族内
+# 的独立证据；下面两张 PARTS 表是族结构的**扁平化落地**（有效权重 = 族权重 ×
+# 族内份额），算术与"族内先平均、再按族权重入分"严格等价，所以 bootstrap、敏感性、
+# 诊断与页面这些下游消费者不需要认识"族"这个对象。
+#
+# 温度从"8 项并列权重"改为 4 族：总体误差 40%（RMSE/MAE）＞阈值命中 25%
+# （acc2/acc1）＞系统偏差 20%（|MBE|/站间离散度）＞形态 15%（r/slope）。
+# 理由：MSE 的三分解（偏差²、幅度差、相关差）说明 r/slope/rmse/mbe 是同一组误差
+# 的不同侧面，不是四份独立证据；温度首先得"报得可用"（误差与阈值），其次才是
+# "形态像不像"。旧表把阈值与误差各给 31.25%、偏差只给 12.5%，是"命中率优先"
+# 的默认画像；新表把偏差抬到 20%，因为系统偏差可被单一订正量修正、业务价值不同。
+#
+# 降水从"6 项并列"改为 3 族：晴雨判别 55%（ETS 30 / POD 12.5 / FAR 12.5）＞
+# 雨量精度 25%（amt_mae）＞雨强分辨力 20%（grade_ets）。
+# **BIAS 退出评分表（2026-10-31）**：它是 POD/(1−FAR) 的确定性函数——2×2 列联表
+# 只有 3 个自由度，{ETS, POD, FAR} 已撑满，给 BIAS 独立权重就是同一份证据计两遍。
+# 它此前还制造了一个方向性反例：h=0、fa 从 1 增到 2（多一个空报）时，FAR 恒为
+# 100%、POD/ETS 恒为 0，但 BIAS 从 0.05→0.10 的"靠近 1"奖励让降水分反而升高
+# 1.68 分（实测）。FAR 明细列照旧发布，频率偏差不再占权重。
+TEMP_SCORE_FAMILIES = (
+    ("总体误差", 0.40, ("rmse", "mae")),
+    ("阈值命中", 0.25, ("acc2", "acc1")),
+    ("系统偏差", 0.20, ("mbe", "mbe_bdisp")),
+    ("形态/幅度", 0.15, ("r", "slope")),
 )
-# 2026-10-06「雨强分辨力」入分（w=0.10）：原 6 项 ×0.9 **等比缩放**保持既有配比
-# （ETS 首位、晴雨 vs 雨量的相对话语权都不动），新开的槽位由缩放出来的空间承担。
-# 为什么是 0.10：对拍实测 Spearman 0.988、冠军换人 2/30、平均名次位移 0.57 位，
-# 与上一次扩表（2026-10-06 温度 5→7、降水 4→6）的扰动同量级；加到 0.20 时冠军
-# 换人跳到 6/30、最低 Spearman 掉到 0.82，越过"扰动可接受"的线。
-PRECIP_SCORE_PARTS = (
-    ("ets", 0.315, "晴雨 ETS 评分", SCORE_MAP_TEMPLATES["ets"], _conv_pct("ets")),
-    # 雨量精度族（原 22.5% = amt_mae 13.5% + amt_bias 9%）**并入 amt_mae 一项**
-    # （2026-10-25，第一性原理复核 P3）：两者在桶内跨源空间的原始相关实测
-    # **+0.995（小时）/ +1.000（日）**——Σ|f−o| 被"预报有雨而实况无雨"的空报量
-    # 主导，于是 amt_mae ≈ |Σf−Σo|/Σo ≈ |amt_bias−1|，退化为同一个量。
-    # 保留 amt_mae（子分与降水分桶内相关 +0.545/+0.633）而剔除 amt_bias
-    # （−0.106/+0.132，日轨甚至是反的）：同一份证据只给一个槽位，族权重不缩水。
-    ("amt_mae", 0.225, "雨量量级误差换算分（雨量精度族）",
-     SCORE_MAP_TEMPLATES["amt_mae"], _conv_dev("amt_mae")),
-    ("pod", 0.135, "命中率 POD", SCORE_MAP_TEMPLATES["pod"], _conv_pct("pod")),
-    ("far", 0.135, "空报率换算分", SCORE_MAP_TEMPLATES["far"], _conv_dev("far")),
-    # （表内按权重降序排列：ETS 首位是原设计意图，测试锁 "list(w) == 权重降序"）
-    ("grade_ets", 0.10, "雨强分辨力换算分（中雨/大雨档 ETS）",
-     SCORE_MAP_TEMPLATES["grade_ets"], _conv_pct("grade_ets")),
-    ("bias", 0.09, "频率偏差换算分", SCORE_MAP_TEMPLATES["bias"], _conv_log("bias")),
+PRECIP_SCORE_FAMILIES = (
+    ("晴雨判别", 0.55, ("ets", "pod", "far")),
+    ("雨量精度", 0.25, ("amt_mae",)),
+    ("雨强分辨力", 0.20, ("grade_ets",)),
 )
+# 族内成员份额：同族内的"哪个侧面更重要"仍是价值判断，这里取可解释的整数比。
+# 阈值命中：±2°C 命中是"可用温度"的主定义，给 60%；±1°C 是靠近中心的补充，40%。
+# 系统偏差：池化 |MBE| 75%，站间离散度 25%（后者是前者的补充而非替代，实测跨源
+# 相关仅 0.115）。形态：r 与 slope 各半。
+_TEMP_FAMILY_MEMBER_SHARES = {
+    "总体误差": {"rmse": 0.50, "mae": 0.50},
+    "阈值命中": {"acc2": 0.60, "acc1": 0.40},
+    "系统偏差": {"mbe": 0.75, "mbe_bdisp": 0.25},
+    "形态/幅度": {"r": 0.50, "slope": 0.50},
+}
+# 晴雨判别：ETS 是基率校正后的综合技巧（主项 30/55）；POD 与 FAR 等权各 12.5%，
+# 不预设"宁可多报"或"宁可漏报"的方向偏好——任何新增空报都会降低 FAR 子分，
+# 任何新增漏报都会降低 POD 子分，评分对两类错误对称。
+_PRECIP_FAMILY_MEMBER_SHARES = {
+    "晴雨判别": {"ets": 30 / 55, "pod": 12.5 / 55, "far": 12.5 / 55},
+    "雨量精度": {"amt_mae": 1.0},
+    "雨强分辨力": {"grade_ets": 1.0},
+}
+
+
+_TEMP_METRIC_SPECS = {
+    "rmse": ("RMSE 误差换算分", SCORE_MAP_TEMPLATES["rmse"], _conv_dev("rmse")),
+    "mae": ("MAE 误差换算分", SCORE_MAP_TEMPLATES["mae"], _conv_dev("mae")),
+    "acc2": ("±2°C 准确率", SCORE_MAP_TEMPLATES["acc2"], _conv_pct("acc2")),
+    "acc1": ("±1°C 准确率", SCORE_MAP_TEMPLATES["acc1"], _conv_pct("acc1")),
+    "mbe": ("偏差换算分", SCORE_MAP_TEMPLATES["mbe"], _conv_dev("mbe")),
+    "mbe_bdisp": ("站间一致性换算分", SCORE_MAP_TEMPLATES["mbe_bdisp"],
+                  _conv_dev("mbe_bdisp")),
+    "r": ("相关系数 r", SCORE_MAP_TEMPLATES["r"], _conv_pct("r")),
+    "slope": ("回归斜率换算分", SCORE_MAP_TEMPLATES["slope"], _conv_log("slope")),
+}
+_PRECIP_METRIC_SPECS = {
+    "ets": ("晴雨 ETS 评分", SCORE_MAP_TEMPLATES["ets"], _conv_pct("ets")),
+    "pod": ("命中率 POD", SCORE_MAP_TEMPLATES["pod"], _conv_pct("pod")),
+    "far": ("空报率换算分", SCORE_MAP_TEMPLATES["far"], _conv_dev("far")),
+    "amt_mae": ("雨量量级误差换算分", SCORE_MAP_TEMPLATES["amt_mae"],
+                _conv_dev("amt_mae")),
+    "grade_ets": ("雨强分辨力换算分（中雨/大雨档 ETS）",
+                  SCORE_MAP_TEMPLATES["grade_ets"], _conv_pct("grade_ets")),
+}
+
+
+def _build_score_parts(families, shares, specs):
+    """族结构 → 评分表（扁平 5 元组，键/有效权重/标签/说明/换算函数）。
+
+    有效权重 = 族权重 × 族内份额。族内份额之和必须为 1，族权重之和也必须为 1；
+    两条都由 `test_score_parts_contract` 锁定——新增族或成员时，权重不会因为
+    "新开一个槽位"而悄悄稀释既有族。
+    """
+    parts = []
+    for family, family_w, members in families:
+        for key in members:
+            label, mp, fn = specs[key]
+            parts.append((key, family_w * shares[family][key],
+                          f"{label}（{family}族）", mp, fn))
+    return tuple(parts)
+
+
+TEMP_SCORE_PARTS = _build_score_parts(
+    TEMP_SCORE_FAMILIES, _TEMP_FAMILY_MEMBER_SHARES, _TEMP_METRIC_SPECS)
+PRECIP_SCORE_PARTS = _build_score_parts(
+    PRECIP_SCORE_FAMILIES, _PRECIP_FAMILY_MEMBER_SHARES, _PRECIP_METRIC_SPECS)
 
 
 def _clamp100(v: float) -> float | None:
@@ -1577,11 +1625,11 @@ def _weighted_score(parts, metrics: dict,
         return None
     if min_weight_frac is not None and den < min_weight_frac * total:
         return None            # 存活证据不足门槛：整维缺测，绝不重归一（P8）
-    # 维度分 = 子分加权平均后再施加技能指数缩放（见 stats.index_gain）：与
-    # bootstrap 的 stats._score_from_parts 同一把尺子。daily_temp_score / overall_score
-    # 都在此之上取两个已缩放量的均值——仿射映射保序、保均值，故综合分=(温度分+降水分)/2
-    # 在缩放后依然成立。
-    return round(float(_stats.index_gain(num / den)), 2)
+    # **未缩放的原始维度分**：名次、显著性、bootstrap 全在这把尺上算。
+    # 0~100 的"看起来拉开"由展示层统一施加（display_dim_score），不再混进评分
+    # 管道——缩放若在缺项归一/截断/维度合成之前施加，一旦截断就不再是"纯展示"，
+    # 可能改变名次（2026-10-31 第一性原理复核 P0-3）。
+    return round(float(num / den), 2)
 
 
 def _mean_or_none(vals: list[float]) -> float | None:
@@ -1599,11 +1647,34 @@ def _mean2(a: float | None, b: float | None) -> float | None:
     return round((a + b) / 2, 2) if a is not None and b is not None else None
 
 
-def _composite_from_raw(raw: float | None) -> float | None:
-    """已合成的原始综合分 → 第二层技能指数缩放后的展示值（None 原样传播）。"""
+def display_dim_score(raw: float | None) -> float | None:
+    """原始维度分 → 展示分值（**只用于展示**，不参与名次/显著性/CI 计算）。
+
+    gain 由 config `eval.score_index_gain` 标定（P99.5 → 软上限 98），截断在
+    [0,100] 只影响展示；名次始终由 `temp_score` / `precip_score` 的原始值决定。
+    """
+    if raw is None:
+        return None
+    return round(float(_stats.index_gain(raw)), 2)
+
+
+def display_composite_score(raw: float | None) -> float | None:
+    """原始综合分 → 展示分值（**只用于展示**）；排名与 CI 走未缩放原始分。
+
+    `score_composite_gain` 是**总**展示增益（2026-10-31 起把原来的"维度 gain
+    × 综合分 gain"两层合并到这一层），靶点是综合分 P99.5 → 98。
+    """
     if raw is None:
         return None
     return round(float(_stats.composite_gain(raw)), 2)
+
+
+def display_ci(ci: list[float] | tuple[float, ...] | None) -> list[float] | None:
+    """bootstrap 的原始 CI 端点 → 展示刻度（与 display_composite_score 同一增益）。"""
+    if not ci:
+        return None
+    return [None if v is None else round(float(_stats.composite_gain(v)), 2)
+            for v in ci]
 
 
 def _track_mean(a: float | None, b: float | None,
@@ -1620,19 +1691,17 @@ def _track_mean(a: float | None, b: float | None,
 
 
 def _composite_score(ts: float | None, ps: float | None) -> float | None:
-    """综合分：两维各半 → 再施加**第二层**技能指数缩放（stats.composite_gain）。
+    """原始综合分：两维各半，**未缩放**。缺一即缺（任一维 None → None）。
 
-    为什么不是直接 `_mean2`（2026-10-25 复核 P4）：两维均值差 40+ 分，平均后
-    综合分的上端被整段砍掉（维度 P99.5 已到 98，综合分 P99.5 只有 ~80）。
-    第二层仿射只放大综合分、不碰维度分——把靶点直接改到维度分会让温度维一半
-    的格子撞顶（2026-10-18 修掉的旧缺陷），那是把问题挪了个位置。
-    缺一即缺的语义不变：任一维 None → None（缩放不改变缺测判定）。
+    展示层的区分度放大由 `display_composite_score` 单独做；把缩放留在评分管道
+    里会让它先于缺项归一、两维合成与双向对齐发生，一旦撞到 0/100 就破坏单调性，
+    名次与显著性都可能被"展示参数"改变（2026-10-31 复核 P0-3）。
     """
-    return _composite_from_raw(_mean2(ts, ps))
+    return _mean2(ts, ps)
 
 
 def temp_score(t: dict) -> float | None:
-    """温度得分(0~100)：8 项指标按 TEMP_SCORE_PARTS 权重加权，缺项按剩余权重归一。"""
+    """温度得分（原始 0~100）：4 族 8 项按 TEMP_SCORE_PARTS 权重加权，缺项按剩余权重归一。"""
     return _weighted_score(TEMP_SCORE_PARTS, t)
 
 
@@ -1706,27 +1775,27 @@ def daily_temp_halves_view(md: dict) -> dict:
 
 
 def precip_score(p: dict) -> float | None:
-    """降水分(0~100)：6 项指标按 PRECIP_SCORE_PARTS 权重加权，缺项按剩余权重归一——
-    但整维存活权重低于 **precip_min_surviving_weight**（缺省 0.5，config 可调）
-    的格判缺测（None），不重归一。
+    """降水分（原始 0~100）：3 族 5 项按 PRECIP_SCORE_PARTS 权重加权，缺项按剩余
+    权重归一——但整维存活权重低于 **precip_min_surviving_weight**（缺省 0.5，
+    config 可调）的格判缺测（None），不重归一。
 
     **两种缺失必须分开处理（score_review_proposal §2 P8，2026-10-18 修）**：
 
     1. "这项指标对该源不存在"——例如某个源没跑雨强分档。重归一是对的：该指标
        对谁都没提供证据，剩下指标各归其位。
-    2. "这一整批指标都因为**该桶没有可评降水事件**而算不出来"——6 项里的
-       ets/pod/far/bias/grade_ets（共 0.775 权重）需要真实降水事件（命中/漏报/
+    2. "这一整批指标都因为**该桶没有可评降水事件**而算不出来"——5 项里的
+       ets/pod/far/grade_ets（共 0.75 权重）需要真实降水事件（命中/漏报/
        空报、各雨强档），amt_mae 只需要 Σ实况雨量 > 0。一个"整桶只有
-       一两场不达标小雨"的格，5 个事件指标集体缺席、只剩 0.225 权重的雨量精度
+       一两场不达标小雨"的格，4 个事件指标集体缺席、只剩 0.25 权重的雨量精度
        被重归一成 100% 话语权——这不是"指标不存在"，是**证据**不存在；重归一
        等于把半个证据当整个用（_mean2 对温度两侧"缺一即缺"的同一原理，MSN
        教训在指标层面的复现）。实测它把没有降水可评能力格送上了分时效榜
        第 1/2 名（P8）。修法就是本门槛：存活权重占比 < 0.5 ⇒ None。
 
-    在评分轨道上 gbounds/kind 恒传入、6 项恒以同一份样本计算，故**任何缺项
+    在评分轨道上 gbounds/kind 恒传入、5 项恒以同一份样本计算，故**任何缺项
     都是证据性缺项**——不存在"结构性不存在"的指标；缺项几乎总是聚集在事件
-    五项上，权重占比门槛恰好把这两类情形分开（缺 grade_ets 一项 → 0.90 存活，
-    照旧归一；缺事件五项 → 0.225 存活，判缺测）。门槛实现在 _weighted_score，
+    四项上，权重占比门槛恰好把这两类情形分开（缺 grade_ets 一项 → 0.80 存活，
+    照旧归一；缺事件四项 → 0.25 存活，判缺测）。门槛实现在 _weighted_score，
     并与 bootstrap 的 stats._score_from_parts 共用同一全局门槛值（同一把尺）。
     """
     return _weighted_score(PRECIP_SCORE_PARTS, p,
@@ -1734,13 +1803,13 @@ def precip_score(p: dict) -> float | None:
 
 
 def overall_score(t: dict, p: dict) -> float | None:
-    """综合得分：温度分与降水分的均分（再过第二层技能指数缩放），**缺一即缺**。
+    """原始综合分：温度分与降水分的均分，**缺一即缺**（未缩放）。
 
     2026-10-05 起改用 _mean2 语义（第一性原理审查 P3-6）：旧实现 _mean_or_none
     会在缺一维时把另一维**原样**当综合分返回——那正是 MSN"纯温度分当综合分"
     的老洞。当前三处榜单调用点都显式传 score= 覆盖，洞未实际触发，但本函数是
     _board_row 的默认值，未来任何新调用点忘了覆盖就会复活。堵在源头。
-    2026-10-25：均分之后再施加 `composite_gain`（只作用于综合分，不碰维度分）。
+    2026-10-31：展示层增益移出评分管道（display_composite_score 单独施加）。
     """
     return _composite_score(temp_score(t), precip_score(p))
 
@@ -1764,8 +1833,7 @@ def track_cells(track: str, t: dict, p: dict) -> tuple[float | None, ...]:
     ps = precip_score(p)
     if ts is None or ps is None:
         return (None, None, None)
-    # 此处 ts/ps 均非 None；综合分 = 两维各半再过第二层技能指数缩放
-    # （_composite_score 内部仍走 _mean2，缺一即缺的措辞在所有合成点统一）
+    # 此处 ts/ps 均非 None；综合分 = 两维各半，未缩放（展示层再施加增益）。
     return (_composite_score(ts, ps), ts, ps)
 
 
@@ -2539,17 +2607,18 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
             "rain_daily_threshold_mm": thr_daily,
             # 小时榜的降水阈值（0.1mm 口径被毛毛雨偏差主导，见配置注释）
             "rain_hourly_threshold_mm": thr_hourly,
-            # 评分换算斜率（当期实际生效值）：话语权 = 权重×斜率×离散度，斜率是
-            # 季度标定的冻结值——披露当期值，读者才能把"评分构成"表对回配置
+            # 评分换算斜率（当期实际生效值）：局部敏感度 = 权重×斜率×离散度；
+            # 斜率是季度标定的冻结值——披露当期值，读者才能把"评分构成"表对回配置
             "score_slopes": dict(SCORE_SLOPES),
-            # 综合分技能指数缩放（当期实际生效值）：读者读的 0~100 综合分 = 子分
-            # 加权平均后再做一次仿射缩放 g(s)=center+gain·(s−center)，使桶内跨源
-            # sd = 8 分（见 config eval.score_index_gain）。披露当期值以便对账。
+            # 展示层维度分增益（当期生效值）：**只作用于展示**。名次、难度对齐、
+            # CI 与显著性都在未缩放原始分上算（2026-10-31 复核 P0-3）。
             "score_index_gain": float(_stats.SCORE_INDEX_GAIN),
             "score_index_center": float(_stats.SCORE_INDEX_CENTER),
-            # 综合分第二层缩放（2026-10-25，复核 P4）：只作用于两维平均之后的
-            # 综合分，靶点是综合分 P99.5 → 98；维度分各自的 gain 不受影响。
+            # 综合分视图的**总**展示增益（原两层合并）：只作用于榜面综合分与
+            # 其 CI 端点的展示映射，不改名次。
             "score_composite_gain": float(_stats.SCORE_COMPOSITE_GAIN),
+            # 展示缩放口径标记：渲染层与读者据此知道"分数拉开"不参与统计判定。
+            "score_scale_mode": "display_only",
             # 降水分"最小存活权重"门槛（当期实际生效值，P8 修法披露）：降水维
             # 存活子分权重低于名义总权重 × 该比例的格判缺测。与点估计/bootstrap
             # 共用同一全局，读者据此能复算"哪些格应该消失"。
@@ -3262,6 +3331,11 @@ def _board_row(m: str, t: dict, p: dict, **extra) -> dict:
     """榜单行：得分（与趋势图同一套公式，榜单与曲线永不分叉）
     + 榜面直接可读的关键指标（±2°C 准确率 / RMSE / TS / ETS / 样本数）。
 
+    传入的 score/temp_score/precip_score 一律是**未缩放的原始分**；本函数在
+    装配行时统一施加展示层增益（`display_*`）。名次、CI、显著性在调用方仍用
+    原始分——展示增益是仿射单调映射，只拉开展示刻度，不参与任何统计判定
+    （2026-10-31 复核 P0-3）。
+
     2026-10 起关键指标扩到两维全部已评测指标（总榜 §01 的温度/降水页签）：
     传入的 t/p 里有什么就透传什么，缺的键为 None（页面显示 —）—— hourly/daily
     分榜的行来自原始桶字典（全量指标自动带上），all:Nd 综合天榜的行来自
@@ -3282,6 +3356,11 @@ def _board_row(m: str, t: dict, p: dict, **extra) -> dict:
         "n": t.get("n", 0), "n_precip": p.get("n", 0),
     }
     row.update(extra)
+    # 展示层一次映射：原始分 → 0~100 的"拉开"刻度。必须在 extra 合并之后做，
+    # 否则显式传入的 score 会把展示值覆盖回原始值。
+    row["score"] = display_composite_score(row.get("score"))
+    row["temp_score"] = display_dim_score(row.get("temp_score"))
+    row["precip_score"] = display_dim_score(row.get("precip_score"))
     return row
 
 
@@ -3385,12 +3464,11 @@ def _combined_day_boards(models, track_sources, days: int,
             # 不该连两轨都齐备的降水维一起陪葬。
             ts_h, ps_h = temp_score(t_h), precip_score(p_h)
             ts_d, ps_d = daily_temp_score(t_d), precip_score(p_d)
-            # 格子综合分：两维齐备（与 track_cells 同式，缩放申请一次且只在
-            # 两轨合成**之后**施加，不能对每一轨各缩一次）
+            # 格子综合分：两维齐备（与 track_cells 同式，原始分；展示增益
+            # 在 _board_row 装配时统一施加，两轨合成前后都不缩放）
             comp_h = _mean2(ts_h, ps_h)
             comp_d = _mean2(ts_d, ps_d)
-            score = _composite_from_raw(
-                _track_mean(comp_h, comp_d, daily_track_weight))
+            score = _track_mean(comp_h, comp_d, daily_track_weight)
             t_s = _track_mean(ts_h, ts_d, daily_track_weight)
             p_s = _track_mean(ps_h, ps_d, daily_track_weight)
             v_d = daily_temp_view(t_d)
@@ -4000,7 +4078,9 @@ def _resolution_boards(models, track_sources, hourly_lead_days, daily_max_offset
             # 行内已有分数作参考值，但一个由 1 次命中撑起的区间会让读者误以为
             # 这个名次有统计精度。事件门槛的判定在 _qualified 里，这里只读取。
             rankable = bool(r.get("qualified")) and r.get("score") is not None
-            r["ci90"] = b.get("ci90") if rankable else None
+            # CI 由 bootstrap 在**原始分**上算；这里只把端点映射到展示刻度。
+            # 名次与显著性（sig_vs_top / p_vs_top）仍由原始分决定，不受展示增益影响。
+            r["ci90"] = display_ci(b.get("ci90")) if rankable else None
             # 冠军频率保留原始值（未达标行恒为 0，权重敏感性/冠军卡要它）；
             # 只把"与第一名比较"的显著性藏掉——未达标行不比名次。
             r["champion_pct"] = b.get("champion_pct")
@@ -4545,14 +4625,16 @@ def _score_trend(models, track_sources, hourly_lead_days,
                 p = precip_src[m].get(bk) or {}
                 ts = daily_temp_score(t) if track == "daily" else temp_score(t)
                 ps = precip_score(p)
-                block["temp"][m][bk] = ts
-                block["precip"][m][bk] = ps
+                # 趋势图是展示层：与榜单行同一套 display_* 映射，两者永不分叉。
+                block["temp"][m][bk] = display_dim_score(ts)
+                block["precip"][m][bk] = display_dim_score(ps)
                 # 缺一即缺，与 track_cells 同纪律（审查 P1-5）。
                 # 这里必须是 _mean2 而不是 _mean_or_none：后者在降水维缺测时会把
                 # 温度分原样输出成"综合分"，于是榜单写"无结论"的那一格，趋势图上
                 # 却画出一条 86 分的综合曲线——恰好是本项目反复批判的"半个证据当
                 # 整个用"。docstring 承诺"榜单与趋势图永不分叉"，靠的就是这一行。
-                block["overall"][m][bk] = _composite_score(ts, ps)
+                block["overall"][m][bk] = display_composite_score(
+                    _composite_score(ts, ps))
         trend[track] = block
 
     # 综合口径（"all"）：与 _combined_day_boards 逐桶同式——维度分按维度合成
@@ -4569,9 +4651,11 @@ def _score_trend(models, track_sources, hourly_lead_days,
             ps_h = precip_score(h_src["precip"][m].get(bk) or {})
             ts_d = daily_temp_score(d_src["temp"][m].get(bk) or {})
             ps_d = precip_score(d_src["precip"][m].get(bk) or {})
-            block["temp"][m][bk] = _track_mean(ts_h, ts_d, daily_track_weight)
-            block["precip"][m][bk] = _track_mean(ps_h, ps_d, daily_track_weight)
-            block["overall"][m][bk] = _composite_from_raw(_track_mean(
+            block["temp"][m][bk] = display_dim_score(
+                _track_mean(ts_h, ts_d, daily_track_weight))
+            block["precip"][m][bk] = display_dim_score(
+                _track_mean(ps_h, ps_d, daily_track_weight))
+            block["overall"][m][bk] = display_composite_score(_track_mean(
                 _mean2(ts_h, ps_h), _mean2(ts_d, ps_d), daily_track_weight))
     trend["all"] = block
     return trend

@@ -93,10 +93,10 @@ ITEMS = (
     ("ets", "precip", "pct", False),
     ("pod", "precip", "pct", False),
     ("far", "precip", "dev", False),
-    ("bias", "precip", "log", True),
     ("amt_mae", "precip", "dev", False),   # 雨量量级（相对口径）
-    ("amt_bias", "precip", "log", True),   # 雨量总量比（log 对称）
     ("grade_ets", "precip", "pct", False), # 雨强分辨力（2026-10-06 入分）
+    # bias / amt_bias 已于 2026-10-31 / 10-25 退出评分表：它们是列联表/amt_mae 的
+    # 函数，只作明细列，不再需要换算斜率，故不参与标定。
 )
 
 

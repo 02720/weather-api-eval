@@ -43,7 +43,7 @@ from jinja2 import Environment, FileSystemLoader
 from ..evaluate import (_DAILY_TEMP_VIEW_KEYS, PRECIP_SCORE_PARTS,
                         TEMP_SCORE_PARTS, apply_composite_gain,
                         apply_score_index_gain, apply_score_slopes,
-                        daily_temp_score, score_map_text)
+                        daily_temp_score, display_dim_score, score_map_text)
 from ..timeutil import now_beijing
 
 logger = logging.getLogger(__name__)
@@ -243,9 +243,9 @@ def _verify_daily_temp_halves(lb: dict, lbtemp: dict) -> None:
             pub, mxs, mns = row[2], hal["mx"], hal["mn"]
             if all(v is None for v in mxs + mns):
                 continue    # 分半字段整体缺席（旧数据）：无可对账，不得误伤
-            recon = daily_temp_score({
+            recon = display_dim_score(daily_temp_score({
                 "max": dict(zip(_DAILY_TEMP_VIEW_KEYS, mxs)),
-                "min": dict(zip(_DAILY_TEMP_VIEW_KEYS, mns))})
+                "min": dict(zip(_DAILY_TEMP_VIEW_KEYS, mns))}))
             if not _recon_ok(recon, pub):
                 # 显式 raise 而非 assert（-O 会剥离 assert，让这道"发布不变量锁"
                 # 在优化模式下静默消失——锁必须与运行模式无关）
@@ -687,8 +687,8 @@ def _atomic_write_text(path: Path, text: str) -> None:
 def _split_map(text: str) -> tuple[str, str]:
     """把一条换算白话拆成「主式」与「括注」两段。
 
-    SCORE_MAP_TEMPLATES 里 9 条的形状都是 ``主式（括注说明）``——表格里主式要
-    一眼可读、括注是次要说明。混成一整行既难扫（9 行长句连成一片），也难换行
+    SCORE_MAP_TEMPLATES 的条目形状都是 ``主式（括注说明）``——表格里主式要
+    一眼可读、括注是次要说明。混成一整行既难扫（十几行长句连成一片），也难换行
     （长句是把表格顶出卡片的元凶之一）。不符合该形状的原样整段进主式，信息不丢。
     """
     if "（" in text and text.endswith("）"):

@@ -99,20 +99,20 @@ def test_synthetic_amt_only_bucket_is_missing_not_full_score():
 def test_two_kinds_of_missing_are_distinguished():
     """证据还够半数 → 照旧重归一；缺一半以上 → 判缺测（P8 的语义分界）。"""
     _set_gate(0.5)
-    # 事件五项全在、缺 amt 两维（0.775 存活）：照旧归一（amt 是真没数据）
+    # 事件四项全在、缺雨量精度（0.75 存活）：照旧归一（amt 是真没数据）
     p = {k: v for k, v in FULL.items() if k not in ("amt_mae", "amt_bias")}
     assert precip_score(p) == pytest.approx(
         _weighted_raw(PRECIP_SCORE_PARTS, p), abs=5e-3)
-    # 只缺 grade_ets（0.10 权重）→ 存活 0.90，照旧归一（该档没下雨≠无可评事件）
+    # 只缺 grade_ets（0.20 权重）→ 存活 0.80，照旧归一（该档没下雨≠无可评事件）
     p = {k: v for k, v in FULL.items() if k != "grade_ets"}
     assert precip_score(p) is not None
-    # 缺 ets（0.315 权重，最大单权重）→ 存活 0.685 ≥ 0.5，照旧归一
+    # 缺 ets（0.30 权重，最大单权重）→ 存活 0.70 ≥ 0.5，照旧归一
     p = {k: v for k, v in FULL.items() if k != "ets"}
     assert precip_score(p) is not None
-    # [ets, far] 在位（0.45 < 0.5）→ 判缺测：半截证据不能当整个用
+    # [ets, far] 在位（0.425 < 0.5）→ 判缺测：半截证据不能当整个用
     assert precip_score({"ets": 0.2, "far": 30.0}) is None
-    # 干桶误报形态：实况全域无降水（h=mi=0）→ amt/pod/bias 缺，只剩 ets+far
-    # （0.45）→ 判缺测，而不是重归一出一个"0 分惩罚"
+    # 干桶误报形态：实况全域无降水（h=mi=0）→ amt/pod 缺，只剩 ets+far
+    # （0.425）→ 判缺测，而不是重归一出一个"0 分惩罚"
     assert precip_score({"ets": 0.0, "far": 100.0}) is None
     # 全量在位必有分；全缺必 None（既有纪律不变）
     assert precip_score(FULL) is not None
@@ -176,8 +176,8 @@ def test_point_and_bootstrap_paths_agree_on_the_gate():
     for frac in (0.85, 0.95):
         _set_gate(frac)
         assert precip_score(FULL) is not None, frac
-        p90 = {k: v for k, v in FULL.items() if k != "grade_ets"}   # 存活 0.90
-        assert (precip_score(p90) is None) == (frac > 0.9), frac
+        p90 = {k: v for k, v in FULL.items() if k != "grade_ets"}   # 存活 0.80
+        assert (precip_score(p90) is None) == (frac > 0.80), frac
         # 聚合路径缺省（不显式传门槛）跟同一全局走：amt-only 聚合格判缺测
         out = st._rain_scores_from_aggregate(_synthetic_aggregate(True),
                                              PRECIP_SCORE_PARTS, min_sample=5)

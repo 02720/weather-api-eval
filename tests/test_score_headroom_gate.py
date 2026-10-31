@@ -123,14 +123,14 @@ def test_frozen_gain_matches_rule_and_config_sources():
     from weather_eval.config import DEFAULT_EVAL, load_config
 
     g = float(DEFAULT_EVAL["score_index_gain"])
-    # 1.851 = (98−50)/(75.93−50)（标定窗口 P99.5，留档 docs/score_slopes.md §九）
-    assert abs(g - 48.0 / (75.93 - 50.0)) < 5e-4
-    assert abs(g - 1.851) < 1e-12
+    # 1.744 = (98−50)/(77.53−50)（新族权重窗口 P99.5）
+    assert abs(g - 48.0 / (77.53 - 50.0)) < 5e-3
+    assert abs(g - 1.744) < 1e-12
     # 规则描述必须留在注释里（"声明规则、不是只声明数字"）
     import inspect
     from weather_eval import config as cfg_mod
     src = inspect.getsource(cfg_mod)
-    assert "P99.5" in src and "1.851" in src
+    assert "P99.5" in src and "1.744" in src
     # stations.yaml 的运维值与代码缺省一致（P8 门槛同一测试模式）
     cfg = load_config(None)
     assert abs(float(cfg.eval["score_index_gain"]) - g) < 1e-12

@@ -800,23 +800,19 @@ def build_day_stat_tables_columnar(pt, models: list[str],
     return days, tables
 
 
-# ------------------------------------------------- 综合分"技能指数"缩放（2026-10-18）
-# 见 config.eval.score_index_gain 与 evaluate._weighted_score（同一把尺子）。
-# 子分各自标定到"桶内跨源 sd = 8 分"，但综合分是权重合计为 1 的加权平均 → 互不
-# 完全相关的子分一平均，sd 收缩到 ≈ 8·√(Σw²)·ρ修正 ≈ 2.8，整榜被压进 ~10 分带。
-# 这里在**子分加权平均之后**施加一次仿射缩放 g(s)=center+gain·(s−center)，把读者
-# 读的综合分的桶内跨源 sd 拉回 8 分（与子分同名量纲）。gain 是**冻结常数**、仿射
-# 且单调 ⇒ 名次与显著性判定不变；CI 宽度按同因子放大（显示层，见 README §5）。
+# ------------------------------------------------- 展示层"技能指数"缩放（2026-10-31）
+# **只用于展示**：名次、难度对齐、bootstrap CI 与显著性都在未缩放原始分上算。
+# 子分各自标定到"桶内跨源 sd = 8 分"，但维度分是权重合计为 1 的加权平均 → 互不
+# 完全相关的子分一平均，sd 收缩到 ≈2.8，整榜被压进 ~10 分带。展示时施加仿射
+# g(s)=center+gain·(s−center)，把读者看到的分数拉开；gain 由 P99.5→98 反解，
+# 截断只影响屏幕上的数字，不进入任何统计判定（2026-10-31 复核 P0-3）。
 SCORE_INDEX_GAIN: float = 1.0
 SCORE_INDEX_CENTER: float = 50.0
 
-# 综合分的**第二层**技能指数缩放（2026-10-25，第一性原理复核 P4 的正确落点）。
-# 上面的 SCORE_INDEX_GAIN 作用于**维度分**（温度/降水各自）；读者读的是两维
-# 平均后的综合分。两维均值差 40+ 分，一平均就把上端整段砍掉：维度 P99.5 已到
-# 98，综合分 P99.5 只有 ~80。复核建议"把靶点从维度分改到综合分、重解 gain"是
-# **错的**——那会把维度分放大到上限以外、把温度维一半格子 clip 成 100（正是
-# 2026-10-18 修掉的旧缺陷）。正确做法是分层：维度分保持自己的 gain，在综合分
-# 上再施加一次冻结仿射。gain=1.0 时走恒等快路，旧调用点逐位不变。
+# 综合分的展示增益（2026-10-31 把原来的"维度 gain × 综合分 gain"两层合并为
+# 一层**总**展示增益）。读者读的是两维平均后的综合分；它的 P99.5 与维度分不同，
+# 所以用独立的 `score_composite_gain` 把综合分视图的 P99.5 映到 98。两个增益都
+# 只在展示层施加，综合分不再经过两次缩放。gain=1.0 时走恒等快路。
 SCORE_COMPOSITE_GAIN: float = 1.0
 SCORE_COMPOSITE_CENTER: float = 50.0
 
@@ -850,11 +846,10 @@ def apply_precip_weight_floor(frac: float) -> None:
 
 def apply_score_index_gain(gain: float | None = None,
                            center: float | None = None) -> None:
-    """装载综合分缩放（config eval.score_index_gain → 模块级）。
+    """装载**展示层**维度分缩放（config eval.score_index_gain → 模块级）。
 
-    传 None = 回到代码内缺省（gain=1.0 恒等，任何旧调用点逐位不变）。与
-    `evaluate.apply_score_slopes` 同模式：必须在任何评分计算之前装载一次，
-    点估计与 bootstrap 走同一个全局，meta 留痕、渲染层回放。
+    传 None = 回到代码内缺省（gain=1.0 恒等，任何旧调用点逐位不变）。必须在
+    任何展示装配之前装载一次；评分/CI/名次不读这个全局。
     """
     global SCORE_INDEX_GAIN, SCORE_INDEX_CENTER
     SCORE_INDEX_GAIN = 1.0 if gain is None else float(gain)
@@ -864,10 +859,9 @@ def apply_score_index_gain(gain: float | None = None,
 
 def apply_composite_gain(gain: float | None = None,
                          center: float | None = None) -> None:
-    """装载综合分第二层缩放（config eval.score_composite_gain → 模块级）。
+    """装载**展示层**综合分总增益（config eval.score_composite_gain → 模块级）。
 
-    与 `apply_score_index_gain` 同模式：必须在任何评分计算之前装载一次，点估计
-    与 bootstrap 走同一个全局。传 None = 回到代码内缺省（gain=1.0 恒等快路）。
+    传 None = 回到代码内缺省（gain=1.0 恒等快路）。评分/CI/名次不读这个全局。
     """
     global SCORE_COMPOSITE_GAIN, SCORE_COMPOSITE_CENTER
     SCORE_COMPOSITE_GAIN = 1.0 if gain is None else float(gain)
@@ -876,11 +870,11 @@ def apply_composite_gain(gain: float | None = None,
 
 
 def composite_gain(x):
-    """综合分第二层仿射缩放：g(x)=center+gain·(x−center)，截断 [0,100]，NaN 传播。
+    """**展示层**综合分缩放：g(x)=center+gain·(x−center)，截断 [0,100]，NaN 传播。
 
-    只作用于**两维平均之后**的综合分，不作用于维度分。gain=1.0 走恒等快路
-    （未装载配置的一切旧调用点逐位不变）。与 `index_gain` 同一纪律：冻结常数、
-    仿射单调 ⇒ 名次与显著性判定不变，CI 宽度按同因子放大。
+    只由 evaluate.display_composite_score / display_ci 在装配榜面时调用；评分
+    管道（`_score_from_parts` / `track_bucket_scores` / 双向对齐 / bootstrap）
+    一律使用未缩放原始分——名次与显著性不受展示参数影响。
     """
     arr = np.asarray(x, dtype=float)
     if SCORE_COMPOSITE_GAIN == 1.0:
@@ -894,18 +888,11 @@ def composite_gain(x):
 
 
 def index_gain(x):
-    """仿射技能指数缩放：g(x)=center+gain·(x−center)，截断 [0,100]，NaN 传播。
+    """**展示层**维度分缩放：g(x)=center+gain·(x−center)，截断 [0,100]，NaN 传播。
 
-    标量与 numpy 数组通用（bootstrap 每天重算走数组路径）。gain=1.0 时走**恒等
-    快路**（见下），保证未装载配置时一切旧调用点逐位不变。截断 [0,100] 是量表的
-    物理边界：接近满分的**单桶**经放大后可能顶到上限（触及时该桶饱和、是"封顶"
-    语义而非错误）。**gain 由留白规则反解**（标定脚本 §1.6）：取标定窗口全部维度分
-    的 P99.5 映到软上限 98，gain=(98−50)/(P99.5−50)——当前冻结值 1.851（标定窗口
-    2026-08-01~10-14，P99.5=75.93），按构造撞顶格 ≤0.5%（实测 2/1541 格、无同桶
-    并列）。上一版 gain=2.66 按"桶内 sd=8"反解、未检查上端留白，把 >68.8 的维度分
-    全部钉在 100（1d/2d 温度维各 11/29 家钉顶，短时效区分度整段抹平）——
-    docs/score_review_proposal.md §2 P1 的评分缺陷，2026-10-18 随 P3 重标定一并
-    修复（上端饱和门限 + 留白规则 + 换基准，留档 docs/score_slopes.md §九）。
+    只由 evaluate.display_dim_score / 报告页复算入口调用；评分管道一律原始分。
+    gain 由留白规则反解（标定脚本 §1.6）：取标定窗口全部维度分的 P99.5 映到软
+    上限 98，gain=(98−50)/(P99.5−50)。截断只影响屏幕数字，不参与名次判定。
     """
     arr = np.asarray(x, dtype=float)
     if SCORE_INDEX_GAIN == 1.0:
@@ -951,15 +938,16 @@ def _score_from_parts(values: dict[str, np.ndarray], parts,
         den = w * valid if den is None else den + w * valid
     if num is None:
         return np.full(next(iter(values.values())).shape if values else (), np.nan)
-    # 子分加权平均之后施加技能指数缩放（见文件头 SCORE_INDEX_GAIN）：与点估计
-    # 路径 evaluate._weighted_score 同一把尺子，bootstrap 的 CI 才不会与榜面数字分叉。
+    # 子分加权平均 = **未缩放的原始维度分**。展示层增益（config score_index_gain）
+    # 不在这里施加：bootstrap 的 CI、难度对齐与名次必须与点估计同用原始尺
+    # （2026-10-31 复核 P0-3）。
     score = np.where(den > 0, num / np.where(den > 0, den, 1.0), np.nan)
     if min_weight_frac is not None:
         # 证据门槛：存活权重不足名义总权重的该比例 ⇒ 整维缺测（NaN）。
         # fsum 与点估计逐位一致（两侧权重集合相同、比较表达式相同）。
         total_w = math.fsum(w for _k, w, *_r in parts)
         score = np.where(den < min_weight_frac * total_w, np.nan, score)
-    return index_gain(score)
+    return score
 
 
 def between_station_mbe_sd(n: np.ndarray, se: np.ndarray) -> np.ndarray:
@@ -2189,17 +2177,16 @@ def track_bucket_scores(tables: dict[str, np.ndarray],
         valid_h, valid_d = bv[:, :b], bv[:, b:]
     else:
         valid_h, valid_d = tv_h & rv_h, tv_d & rv_d
-    # 综合分 = 两维平均后再施加第二层技能指数缩放（见 SCORE_COMPOSITE_GAIN）。
-    # 与点估计 evaluate._composite_score 同一把尺子：bootstrap 的 CI 中心才不会
-    # 与榜面数字分叉。缩放只作用于综合分，不碰维度分。
-    h_scores = composite_gain(np.where(
+    # 综合分 = 两维平均，**未缩放原始分**。展示层增益只作用于榜面/趋势图，
+    # 名次、CI 与显著性都在这把原始尺上算（2026-10-31 复核 P0-3）。
+    h_scores = np.where(
         valid_h,
         _nanmean_stack([np.where(tv_h, t_h, np.nan),
-                        np.where(rv_h, r_h, np.nan)]), np.nan))
-    d_scores = composite_gain(np.where(
+                        np.where(rv_h, r_h, np.nan)]), np.nan)
+    d_scores = np.where(
         valid_d,
         _nanmean_stack([np.where(tv_d, daily_t, np.nan),
-                        np.where(rv_d, r_d, np.nan)]), np.nan))
+                        np.where(rv_d, r_d, np.nan)]), np.nan)
     # 必须用 concatenate(axis=-1) 而不是 hstack：hstack 对 ndim≥2 的数组沿
     # **axis 1** 拼接，而这里的倒数第二维是"模型"，天桶才是最后一维——用 hstack
     # 会把两条轨道沿着模型维拼起来，形状变成 (run, 2m, b) 还不报错。
@@ -2389,14 +2376,15 @@ def macro_champion_at_alpha(temp_sub: np.ndarray, precip_sub: np.ndarray,
             weights=(None if adj_w is None
                      else np.asarray(adj_w, dtype=float)[None, ...]),
             ridge=adj_ridge)[0]
-    # 与榜面同尺：第二层综合分缩放也要施加（仿射不改 argmax，但披露的 score
-    # 必须能和榜上的数字对照，否则读者会以为端点冠军只有 55 分）
-    scores = composite_gain(scores)
+    # 名次在**原始分**上定（展示增益是仿射单调，不改 argmax）；返回给披露的
+    # score 才映射到展示刻度，读者才能和榜上的数字对照（否则会以为端点冠军
+    # 只有 47 分）。
     finite = np.isfinite(scores)
     if not finite.any():
         return None
     best = int(np.where(finite, np.round(scores, 6), -np.inf).argmax())
-    return {"index": best, "score": round(float(scores[best]), 2)}
+    shown = composite_gain(scores[best])
+    return {"index": best, "score": round(float(shown), 2)}
 
 
 # ================================================================== 跨源相关（对抗式审查 P0-1）

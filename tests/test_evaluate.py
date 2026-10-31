@@ -7,8 +7,8 @@ from weather_eval import storage
 from weather_eval.evaluate import (
     build_report, collect, temp_metrics, precip_metrics,
     temp_score, precip_score, overall_score, daily_temp_score, _mean_or_none,
-    _combined_day_boards, _track_mean, _composite_from_raw,
-    track_cells, PRECIP_SCORE_PARTS, _weighted_score,
+    _combined_day_boards, _track_mean, display_composite_score,
+    display_dim_score, track_cells, PRECIP_SCORE_PARTS, _weighted_score,
 )
 from weather_eval.timeutil import iso
 
@@ -110,11 +110,13 @@ def test_scores_weighted_multi_metric():
     import weather_eval.evaluate as ev
     from weather_eval.evaluate import (PRECIP_SCORE_PARTS, SCORE_SLOPES,
                                        TEMP_SCORE_PARTS)
-    # 温度分：只有 acc2/rmse 时（命中轮廓族与误差幅度族各只剩一个成员，
-    # 两族权重 0.15625 各半 → 缺项按剩余权重归一后两者仍是均分）
+    # 温度分：只有 acc2/rmse 时，缺项按剩余权重归一——两者的有效权重不再是
+    # 旧口径的 0.15625 各半，而是新族结构里的 0.15 : 0.20。
     t = {"acc2": 90.0, "rmse": 1.0}
     a, r = 90.0 * SCORE_SLOPES["acc2"], 100.0 - 1.0 * SCORE_SLOPES["rmse"]
-    assert temp_score(t) == round((a + r) / 2, 2)
+    w_t = {k: w for k, w, *_ in TEMP_SCORE_PARTS}
+    assert temp_score(t) == round(
+        (w_t["acc2"] * a + w_t["rmse"] * r) / (w_t["acc2"] + w_t["rmse"]), 2)
     # 全项在位：按 TEMP_SCORE_PARTS 权重加权（子分 = 指标 × 各自标定斜率）
     t_full = {"acc2": 80, "acc1": 55, "rmse": 2.0, "mae": 1.6,
               "r": 0.9, "mbe": 0.5, "slope": 1.1, "mbe_bdisp": 0.3}
@@ -178,40 +180,53 @@ def test_scores_weighted_multi_metric():
 
 def test_score_parts_contract():
     # 权重表契约：指标键、权重和为 1、每项带白话标签与换算函数
-    from weather_eval.evaluate import PRECIP_SCORE_PARTS, TEMP_SCORE_PARTS
+    from weather_eval.evaluate import (PRECIP_SCORE_FAMILIES,
+                                       PRECIP_SCORE_PARTS,
+                                       TEMP_SCORE_FAMILIES, TEMP_SCORE_PARTS,
+                                       _PRECIP_FAMILY_MEMBER_SHARES,
+                                       _TEMP_FAMILY_MEMBER_SHARES)
     for parts, keys in (
         (TEMP_SCORE_PARTS, {"acc2", "acc1", "rmse", "mae", "r", "mbe", "slope",
                             "mbe_bdisp"}),
-        (PRECIP_SCORE_PARTS, {"ets", "pod", "far", "bias", "amt_mae",
-                              "grade_ets"}),
+        (PRECIP_SCORE_PARTS, {"ets", "pod", "far", "amt_mae", "grade_ets"}),
     ):
         assert {k for k, *_ in parts} == keys
         assert abs(sum(w for _k, w, *_ in parts) - 1.0) < 1e-9
         for _k, _w, label, mp, fn in parts:
             assert label and mp and callable(fn)
-    # 全指标审计的**拒收契约**（2026-10-06）：这些指标照算、明细表照列，但绝不
-    # 回到加权和里——它们数学上是入分项的函数（χ²=RMSE²、RSS=n·χ²、ts/acc/
-    # 漏报率/POFD 与 ETS/POD/FAR 同源同一张 2×2 列联表）或样本量的函数。
-    # 恒等式与残差留档 docs/metric_coverage.md、脚本 scripts/audit_metric_redundancy.py。
+    # 族结构契约（2026-10-31）：族权重和=1、族内份额和=1、成员有效权重
+    # = 族权重 × 族内份额——"新开一个槽位"不能悄悄稀释既有族。
+    for families, shares, parts in (
+        (TEMP_SCORE_FAMILIES, _TEMP_FAMILY_MEMBER_SHARES, TEMP_SCORE_PARTS),
+        (PRECIP_SCORE_FAMILIES, _PRECIP_FAMILY_MEMBER_SHARES, PRECIP_SCORE_PARTS),
+    ):
+        assert abs(sum(fw for _f, fw, _m in families) - 1.0) < 1e-9
+        w = {k: weight for k, weight, *_ in parts}
+        for family, fw, members in families:
+            assert abs(sum(shares[family][k] for k in members) - 1.0) < 1e-9
+            assert abs(sum(w[k] for k in members) - fw) < 1e-9
+    # 全指标审计的**拒收契约**（2026-10-06；2026-10-31 补 BIAS）：这些指标照算、
+    # 明细表照列，但绝不回到加权和里——它们数学上是入分项的函数（χ²=RMSE²、
+    # RSS=n·χ²、ts/acc/漏报率/POFD/BIAS 与 ETS/POD/FAR 同源同一张 2×2 列联表）
+    # 或样本量的函数。恒等式与残差留档 docs/metric_coverage.md、
+    # 脚本 scripts/audit_metric_redundancy.py。
     scored = {k for k, *_ in (*TEMP_SCORE_PARTS, *PRECIP_SCORE_PARTS)}
-    assert not {"chi2", "rss", "ts", "acc", "miss", "farate"} & scored
-    # 族内等权：两个"命中轮廓"成员与两个"误差幅度"成员权重必须相等
+    assert not {"chi2", "rss", "ts", "acc", "miss", "farate", "bias"} & scored
+    # 同族平等契约：rmse/mae 与 r/slope 各半（这是分析选择，不是"更重要"）
     w_t = {k: w for k, w, *_ in TEMP_SCORE_PARTS}
-    assert w_t["acc1"] == w_t["acc2"] and w_t["rmse"] == w_t["mae"]
-    # 雨量精度族与雨强分辨力的比例契约（2026-10-25）：雨量精度族 0.225
-    # （amt_bias 退役后全部归 amt_mae，族权重不缩水）、grade_ets 0.10
+    assert w_t["rmse"] == w_t["mae"] and w_t["r"] == w_t["slope"]
+    # 雨量精度族与雨强分辨力的比例契约（2026-10-31）：25% / 20%
     w_p = {k: w for k, w, *_ in PRECIP_SCORE_PARTS}
-    assert abs(w_p["amt_mae"] - 0.225) < 1e-9
-    assert abs(w_p["grade_ets"] - 0.10) < 1e-9
-    # 去冗余契约：amt_bias 永不回到评分表（与 amt_mae 桶内相关 0.995/1.000）
-    assert "amt_bias" not in w_p
-    # P0-3 契约：acc 不入分（气候基率主导）；ETS 权重首位；
-    # FAR+BIAS 权重之和不低于 POD（不奖励"多报占便宜"）
+    assert abs(w_p["amt_mae"] - 0.25) < 1e-9
+    assert abs(w_p["grade_ets"] - 0.20) < 1e-9
+    # 去冗余契约：amt_bias / bias 永不回到评分表
+    assert "amt_bias" not in w_p and "bias" not in w_p
+    # P0-3 契约：acc 不入分（气候基率主导）；ETS 是降水维最大单项；
+    # POD 与 FAR 等权（不预设超报/欠报方向偏好）
     keys = [k for k, *_ in PRECIP_SCORE_PARTS]
     assert "acc" not in keys
-    w = {k: weight for k, weight, *_ in PRECIP_SCORE_PARTS}
-    assert list(w) == sorted(w, key=w.get, reverse=True)   # ETS 权重最大
-    assert w["far"] + w["bias"] >= w["pod"]
+    assert max(w_p, key=w_p.get) == "ets"
+    assert w_p["far"] == w_p["pod"]
 
 
 def test_score_slopes_frozen_and_log_symmetric():
@@ -219,8 +234,9 @@ def test_score_slopes_frozen_and_log_symmetric():
 
     三条纪律（第一性原理审查 P1-1/P1-2）：
     * 斜率来自 config 的标定冻结值（DEFAULT_EVAL.score_slopes），不在代码里散落；
-    * BIAS/斜率的超报与欠报在 log₂ 尺度上同罚（|log₂k| 相等）——旧线性式
-      "超报 2 倍 = 0 分、欠报一半 = 50 分"的不对称必须回不来；
+    * 斜率（以及已退出评分的 BIAS 旧口径）的超报与欠报在 log₂ 尺度上同罚
+      （|log₂k| 相等）——旧线性式"超报 2 倍 = 0 分、欠报一半 = 50 分"的不对称
+      必须回不来；
     * v≤0 是"该维度的最大错误"而不是缺项，不得借缺项归一把它洗成中性分。
     """
     import weather_eval.evaluate as ev
@@ -229,12 +245,8 @@ def test_score_slopes_frozen_and_log_symmetric():
         assert ev.SCORE_SLOPES == DEFAULT_EVAL["score_slopes"]
         assert set(ev.SCORE_SLOPES) == {k for k, *_ in
                                        (*ev.TEMP_SCORE_PARTS, *ev.PRECIP_SCORE_PARTS)}
-        # log 口径对称：偏 k 倍与偏 1/k 同罚（换算语义对照走门槛关闭通道）
-        assert _precip_raw({"bias": 2.0}) == _precip_raw({"bias": 0.5})
+        # log 口径对称：偏 k 倍与偏 1/k 同罚
         assert temp_score({"slope": 1.4}) == temp_score({"slope": 1 / 1.4})
-        # 超报 2 倍不再是悬崖：旧口径 0 分、日轨 57% 格子被压死在 0
-        assert 30.0 < _precip_raw({"bias": 2.0}) < 100.0
-        assert _precip_raw({"bias": 0.0}) == 0.0        # 从未报雨 = 最大错误
         assert temp_score({"slope": -0.5}) == 0.0       # 幅度关系反向 = 最大错误
         # config 覆盖即时生效（换算函数在调用时读当期斜率）
         ev.apply_score_slopes({"rmse": 10.0})
@@ -255,10 +267,10 @@ def test_score_clamps_and_dimension_conventions():
     assert temp_score({"mbe": -2.5}) == temp_score({"mbe": 2.5})   # |MBE| 双向对称
     assert _precip_raw({"ets": 0.0}) == 0.0         # ETS=0 不因截断变 None
     assert _precip_raw({"ets": -0.5}) == 0.0        # ETS 负值记 0 分
-    assert _precip_raw({"bias": 1.0}) == 100.0      # 频率偏差恰为 1 -> 满分
-    # BIAS 极端值按 log 口径逐档递减（悬崖推到 2^(100/λ) 倍之外），不再一刀 0
-    assert _precip_raw({"bias": 4.6}) == round(
-        max(0.0, 100 - abs(math.log2(4.6)) * SCORE_SLOPES["bias"]), 2)
+    # BIAS 已退出评分表：即使传入也不再改变降水分（只作为明细列发布）
+    base_p = {"ets": 0.2, "pod": 50.0, "far": 30.0, "amt_mae": 0.5}
+    assert _precip_raw(dict(base_p, bias=1.0)) == _precip_raw(base_p)
+    assert _precip_raw(dict(base_p, bias=4.6)) == _precip_raw(base_p)
     # far 是百分比(0~100)的关键约定：100 − (100/3)×λ；
     # 若上游漂移成比值(0~1)，这里会得到 ≈100 分，即暴露量纲回归
     assert abs(_precip_raw({"far": 100.0 / 3})
@@ -268,18 +280,34 @@ def test_score_clamps_and_dimension_conventions():
         0.2 * SCORE_SLOPES["ets"], 2)
 
 
-def test_score_index_gain_affine_monotone_and_frozen():
-    """综合分技能指数缩放（2026-10-18 留白规则重标定）：仿射、严格保序、端点不动、config 冻结。
+def test_bias_removed_and_extra_false_alarm_never_raises_precip_score():
+    """P0-2 单调性回归：多一个空报不得提高降水分（BIAS 退役的直接理由）。
 
-    第一性原理（区分度）：15 个子分各自标定到"桶内跨源 sd = 8 分"，但综合分是
-    权重和为 1 的加权平均 → 互不完全相关的子分一平均，sd 收缩到 ≈3.6，整榜被压进
-    ~20 分带。根因是标定靶点打低了一层（打在子分，读者读维度分）。此处把维度分
-    做一次仿射缩放 g(s)=center+gain·(s−center)。**gain 的取值规则**（不是拍数）：
-    取标定窗口全部维度分的 P99.5 映到软上限 98（留 2 分可见边），
-    gain=(98−50)/(P99.5−50)=1.851（P99.5=75.93）。旧口径按"sd=8"反解得 2.66，
-    却把 >68.8 的维度分全部钉在 100（1d/2d 温度维各 11/29 家钉顶，
-    score_review_proposal §2 P1）——留白优先是本轮的规则。仿射且单调 ⇒ 名次与
-    显著性不变；gain 冻结、不按当期 μ/σ 自适应 ⇒ 若各家真一样就保持一样。
+    构造 h=0、mi=20 的极端欠报格：把 1 个正确否定改成 1 个空报，FAR 恒 100%、
+    POD/ETS 恒 0，唯一变化是 BIAS 0.05→0.10。旧表因 BIAS 的"靠近 1"奖励让
+    降水分 +1.68 分；BIAS 退出后两者必须逐位相等（FAR 没变、其余项没变）。
+    """
+    base = {"ets": 0.0, "pod": 0.0, "far": 100.0, "bias": 0.05,
+            "amt_mae": 1.0, "grade_ets": 0.0}
+    extra_fa = dict(base, bias=0.10)
+    assert _precip_raw(extra_fa) == _precip_raw(base)
+    # 有命中时多一个空报：FAR 变差，降水分必须严格下降（方向性不得翻转）
+    hit_base = {"ets": 0.2, "pod": 50.0, "far": 10.0, "amt_mae": 0.5,
+                "grade_ets": 0.1}
+    hit_extra = dict(hit_base, far=20.0)
+    assert _precip_raw(hit_extra) < _precip_raw(hit_base)
+
+
+def test_score_index_gain_is_display_only_and_frozen():
+    """展示层技能指数缩放：仿射、严格保序、端点不动、config 冻结。
+
+    2026-10-31 第一性原理复核 P0-3：缩放**只作用于展示**，评分管道（temp_score /
+    precip_score / overall_score / 双向对齐 / bootstrap）一律用未缩放原始分。
+    否则缩放先于缺项归一、截断与维度合成发生，一旦撞到 0/100 就不再是单调映射，
+    名次与显著性都可能被展示参数改变。
+
+    gain 的取值规则（不是拍数）：取标定窗口全部维度分的 P99.5 映到软上限 98，
+    gain=(98−50)/(P99.5−50)=1.744（P99.5=77.53，新族权重窗口）。
     """
     import weather_eval.evaluate as ev
     from weather_eval import stats as st
@@ -291,7 +319,7 @@ def test_score_index_gain_affine_monotone_and_frozen():
         assert st.index_gain(raw) == raw
         # 装载 config 冻结值：gain = (98 − 50) / (P99.5 − 50)（留白规则）
         g = float(DEFAULT_EVAL["score_index_gain"])
-        assert abs(g - 1.851) < 1e-12
+        assert abs(g - 1.744) < 1e-12
         ev.apply_score_index_gain(None, None)
         assert st.SCORE_INDEX_GAIN == g
         assert st.SCORE_INDEX_CENTER == 50.0
@@ -299,12 +327,14 @@ def test_score_index_gain_affine_monotone_and_frozen():
         assert abs(st.index_gain(60.0) - (50.0 + g * 10.0)) < 1e-9
         assert st.index_gain(0.0) == 0.0 and st.index_gain(100.0) == 100.0
         assert st.index_gain(55.0) > st.index_gain(45.0)
-        # 规则锚点：标定窗口 P99.5=75.93 的维度分映到软上限 98（±0.01 内为
-        # 3 位截断误差；撞顶线 = 50+50/g ≈ 77.01，与留档一致）
-        assert abs(st.index_gain(75.93) - 98.0) < 0.01
-        assert abs((50.0 + 50.0 / g) - 77.01) < 0.01
-        # 综合分仍等于两维缩放后的均值（仿射 ⇒ 保均值；P8 门槛下 precip dict
-        # 需 ≥0.5 存活权重，这里用 ets+pod+far 三件套）
+        # 规则锚点：P99.5=77.53 的维度分映到软上限 98（3 位小数的 gain 与
+        # 精确反解值差 ≤0.02 分）
+        assert abs(st.index_gain(77.53) - 98.0) < 0.02
+        # **展示缩放不进入评分**：换一个 gain，原始分逐位不变
+        ev.apply_score_index_gain(2.0, 50.0)
+        assert temp_score({"acc2": 80, "rmse": 2.0}) == raw
+        ev.apply_score_index_gain(None, None)
+        # 综合分 = 两维原始分的均值（未缩放）；展示层再各自映射
         pd = {"ets": 0.2, "pod": 50.0, "far": 30.0}
         t = temp_score({"acc2": 80, "rmse": 2.0})
         p = precip_score(pd)
@@ -350,9 +380,9 @@ def test_build_report_end_to_end(tmp_path, monkeypatch):
            # 单站夹具的格子 n_eff≈1：薄格门槛与格子数门相应下调（本用例考察
            # 报告装配本身，格子数门由专门用例锁定）
            "min_cell_neff": 1, "min_board_cells": 1,
-           # 本用例断言"综合分 = 加权轨道均值"的原始量表；第二层缩放由
-           # test_score_index_gain_* 与 test_composite_gain_* 专门锁定
-           "score_composite_gain": 1.0}
+           # 本用例断言原始量表；展示增益由
+           # test_score_index_gain_* / test_composite_gain_* 专门锁定
+           "score_index_gain": 1.0, "score_composite_gain": 1.0}
     data = build_report(["s1"], ["ecmwf_ifs"], cfg, start, end, "2026-08")
 
     # 逐小时 24h 桶：lead 1..24 共 24 对，且预报=观测+1 -> 误差恒为 1 -> ±2°C 准确率 100%，RMSE=1
@@ -398,9 +428,10 @@ def test_build_report_end_to_end(tmp_path, monkeypatch):
     # 日榜同一提前天数：温度=日最高/最低、降水=日累计，全部来自 daily 那一族
     lb1d = data["leaderboards"]["daily:1d"]
     rowd = next(r for r in lb1d if r["model"] == "ecmwf_ifs")
-    assert rowd["temp_score"] == daily_temp_score(data["temp_daily"]["ecmwf_ifs"]["1d"])
-    assert rowd["precip_score"] == precip_score(
-        data["precip_score_daily"]["ecmwf_ifs"]["1d"])
+    assert rowd["temp_score"] == display_dim_score(
+        daily_temp_score(data["temp_daily"]["ecmwf_ifs"]["1d"]))
+    assert rowd["precip_score"] == display_dim_score(
+        precip_score(data["precip_score_daily"]["ecmwf_ifs"]["1d"]))
     # 分辨率层三张榜与菜单齐备
     for key in ("all", "hourly", "daily"):
         assert data["leaderboards"][key], key
@@ -424,10 +455,14 @@ def test_build_report_end_to_end(tmp_path, monkeypatch):
     # 不是旧的各半均值（2026-10-25 复核 P1）
     assert rowa["score"] == round(
         (lb1[0]["score"] + 0.5 * rowd["score"]) / 1.5, 2)
-    assert rowa["temp_score"] == round(
-        (lb1[0]["temp_score"] + 0.5 * rowd["temp_score"]) / 1.5, 2)
-    assert rowa["precip_score"] == round(
-        (lb1[0]["precip_score"] + 0.5 * rowd["precip_score"]) / 1.5, 2)
+    # 展示层增益在**合成之后**施加一次：先按 2:1 合原始维度分，再映射；
+    # 不能拿两个已展示（可能被截断）的轨道分再加权，否则截断会让顺序不可交换。
+    assert rowa["temp_score"] == display_dim_score(_track_mean(
+        temp_score(t1), daily_temp_score(data["temp_daily"]["ecmwf_ifs"]["1d"]),
+        0.5))
+    assert rowa["precip_score"] == display_dim_score(_track_mean(
+        precip_score(p1),
+        precip_score(data["precip_score_daily"]["ecmwf_ifs"]["1d"]), 0.5))
     assert rowa["qualified"] is True
     # 诊断列（±2°C）也是两轨各半：逐小时 100%、日最高/最低两量取均值
     assert rowa["acc2"] == round((t1["acc2"] + rowd["acc2"]) / 2, 2)
@@ -1534,7 +1569,9 @@ def test_bootstrap_ci_deterministic_and_honest(tmp_path, monkeypatch):
            "min_board_neff_daily": 1,
            # 单站夹具每个（源,天桶）格子的 n_eff≈1：薄格门槛与格子数门相应下调，
            # 本用例考察 CI 机制本身
-           "min_cell_neff": 1, "min_board_cells": 1}
+           "min_cell_neff": 1, "min_board_cells": 1,
+           # CI 宽度在**原始尺**上断言（展示增益会把高分往 100 截断）
+           "score_index_gain": 1.0, "score_composite_gain": 1.0}
     d1 = build_report(["s1"], ["noisy_a", "noisy_b"], cfg, start,
                       start + timedelta(hours=16 * 24 - 2), "2026-08")
     d2 = build_report(["s1"], ["noisy_a", "noisy_b"], cfg, start,
@@ -1627,16 +1664,14 @@ def test_bootstrap_rain_sample_size_counts_all_cells_not_hits():
         stats.aggregate_day_stats(W, T), TEMP_SCORE_PARTS)[0, 0, 0])
     rain = float(stats._rain_scores_from_aggregate(
         stats.aggregate_day_stats(W, R), PRECIP_SCORE_PARTS)[0, 0, 0])
-    # 降水分 = 各子分按权重加权（2026-10-05 新口径）。本桶 h=2 / fa=0 / mi=6 /
-    # c=24 的人工可算期望：ets=0.2 记 0.2×114≈22.8 分、pod=25%（百分比口径）
-    # 记 14.2 分、far=0 记 100 分、bias=0.25 记 100−|log₂0.25|×16.5≈67 分
-    # （欠报两倍不是悬崖——旧线性式这里会记 0 分）。
+    # 降水分 = 各子分按权重加权（2026-10-31 三族口径）。本桶 h=2 / fa=0 / mi=6 /
+    # c=24 的人工可算期望：ets=0.2 记 0.2×120.4≈24.1 分、pod=25%（百分比口径）
+    # 记 15.8 分、far=0 记 100 分；BIAS 已退出评分表，不再参与。
     from weather_eval.evaluate import SCORE_SLOPES
     w_p = {k: w for k, w, *_ in PRECIP_SCORE_PARTS}
     sub = {"ets": min(100.0, 0.2 * SCORE_SLOPES["ets"]),
            "pod": 25.0 * SCORE_SLOPES["pod"],
            "far": 100.0,
-           "bias": 100.0 - 2.0 * SCORE_SLOPES["bias"],
            # 雨量精度（2026-10-25：amt_bias 已并入 amt_mae、不再入分）：
            # 相对量级误差 = Σ|误差|/Σ实况 = 6/8 = 0.75
            "amt_mae": 100.0 - 0.75 * SCORE_SLOPES["amt_mae"]}
@@ -1697,7 +1732,9 @@ def test_degenerate_bootstrap_reproduces_point_estimate(tmp_path, monkeypatch):
                 "data": {model: {"temperature_2m": vals, "precipitation": rains}}})
     cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
            "hourly_lead_days": 16, "daily_max_offset_days": 16, "min_sample": 5,
-           "bootstrap_runs": 60, "sensitivity_runs": 30}
+           "bootstrap_runs": 60, "sensitivity_runs": 30,
+           # 对拍原始尺：展示增益会把高分截断，不能用来验证 bootstrap=点估计
+           "score_index_gain": 1.0, "score_composite_gain": 1.0}
     end = start + timedelta(hours=n_days * 24 - 1)
     data = build_report(["s1", "s2"], models, cfg, start, end, "2026-08")
     hourly, daily = collect(["s1", "s2"], models, start, end, 16, 16, 20, True)
@@ -2124,9 +2161,9 @@ def test_combined_day_boards_use_daily_track_weight():
     d = _mean_or_none([daily_temp_score(t_d), precip_score(p)])
     assert h is not None and d is not None and h != d
     row = _combined_day_boards(["m"], src, 1, daily_track_weight=0.5)["all:1d"][0]
-    assert row["score"] == _composite_from_raw(_track_mean(h, d, 0.5))
+    assert row["score"] == display_composite_score(_track_mean(h, d, 0.5))
     old = _combined_day_boards(["m"], src, 1, daily_track_weight=1.0)["all:1d"][0]
-    assert old["score"] == _composite_from_raw(_mean_or_none([h, d]))
+    assert old["score"] == display_composite_score(_mean_or_none([h, d]))
     assert row["score"] != old["score"]       # 2:1 与 1:1 必须给出不同数字
 
 
