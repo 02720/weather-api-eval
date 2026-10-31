@@ -111,23 +111,47 @@ locationInfoService geo 接口（share-inner.zuimeitianqi.com，
     聚合路径为主、日块只补首尾两天的边角——报告的 daily_source_mix 会如实
     披露该构成。
 
+14. ── 域名解析是地理感知的，境外视角下该路由 404（2026-10-31 线上诊断）──
+    h5-api.zuimeitianqi.com 的 DNS 按"查询方视角"返回不同边缘：境内用户解析到
+    境内 CDN 节点（接口 200），GitHub Actions 等境外环境解析到 CloudFront
+    边缘——后者对 /h5zh/api/pc/* 一律 404（x-router-code: 40000、server: elb、
+    nginx 默认 404 页；钉 IP 逐个验证 4 个 CloudFront 节点同结果）。这不是 IP
+    封禁（钉境内 IP 用默认 curl 头即 200），也不是参数问题（同一 URL 境内
+    200）——是国际线路侧根本没部署这条路由。处置：HTTP 层 4xx 被拒时自动回退
+    "境内视角 DoH（EDNS Client Subnet）解析 + 钉 IP 直连"（SNI/Host/证书校验
+    仍按真实域名，curl --resolve 同款语义），节点池 DoH 优先、当日实测留档节点
+    兜底；回退成功后实例闩进 geo 模式。该回退只在 4xx 被拒时触发——响应形态
+    类错误（城市回显不符等）换视角也没用，维持响亮失败。
+
 已知风险：无官方契约的公开网页接口，改版即可能失效（失败只影响该源，不阻断
 其他源）；最危险的两个失效形态——"静默回退北京"（第 2 条）与"趋势填充项
-冒充预报"（第 6 条）——都已转为响亮失败/强制过滤，绝不静默落库。
+冒充预报"（第 6 条）——都已转为响亮失败/强制过滤，绝不静默落库。第 14 条的
+回退依赖 DoH 可达与节点池存续，两者同时失效时该源该轮响亮失败（可见、可
+复核），绝不静默降级。
 """
 from __future__ import annotations
 
+import json
+import inspect
 import logging
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlsplit
 
 import requests
+import urllib3
+
+try:  # certifi 是 requests 的硬依赖，正常环境必有；缺失则退回系统信任库
+    import certifi
+    _CA_BUNDLE: str | None = certifi.where()
+except Exception:  # noqa: BLE001
+    _CA_BUNDLE = None
 
 from .base import ForecastProvider
 from .http import ( DEFAULT_UA,
 DEFAULT_TIMEOUT as HTTP_DEFAULT_TIMEOUT, TimeBudget,
-                   request_with_retries)
+                   MAX_RESPONSE_BYTES, request_with_retries)
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +164,40 @@ FORECAST_PATH = "/forecast"  # 逐日列表（历史日历 + 真预报 + 趋势�
 HEADERS = {"User-Agent": DEFAULT_UA}
 SOURCE = "zuimeitianqi"
 MODEL_NAME = "zmtq_v1"
+
+# ── 地理路由回退（契约第 14 条，2026-10-31 线上诊断留档）──────────────────
+# 域名的 DNS 是地理感知的：境外视角解析到 CloudFront 边缘而该路由只在境内
+# CDN 部署。下列机制让境外环境也能按"境内视角"完成同一次请求。
+GEO_HOST = urlsplit(BASE_URL).hostname or ""  # 钉 IP 连接时的 SNI/Host（随 BASE_URL 联动）
+# 境内视角 DoH 端点：ECS（EDNS Client Subnet）是唯一能在任意网络位置显式声明
+# "请按境内用户的视角回答"的标准机制——直接问任何公共解析器，得到的仍是
+# 查询方视角的答案（境外即 CloudFront）。alidns 已在 GH Actions 实测可达。
+_GEO_DOH_ENDPOINTS = ("https://dns.alidns.com/resolve",
+                      "https://doh.pub/dns-query")
+# 三个运营商子网做 ECS（诊断工作流实测：三子网合并可得 8 个境内节点，跨
+# 运营商取点避免单运营商视角的节点偏置）
+_GEO_ECS_SUBNETS = ("223.104.3.0/24",   # 中国移动
+                    "116.179.32.0/24",  # 中国联通
+                    "117.181.243.0/24")  # 中国电信
+# DoH 全军覆没时的最后兜底：2026-10-31 诊断实测可用的境内节点留档
+# （202.6.202.62 当日超时被剔除）。CDN 节点池会随时间漂移，此列表必然过期
+# ——它只是"DoH 也挂了"这一极小概率事件下的尽力而为，优先级永远在 DoH 之后。
+_GEO_ARCHIVE_IPS = ("36.159.107.38", "36.159.107.41", "221.204.34.77",
+                    "221.204.65.187", "221.204.65.77", "111.13.18.36",
+                    "60.221.72.135")
+# 候选节点上限：钉 IP 尝试逐个失败的最坏耗时受 TimeBudget 夹住
+_GEO_MAX_CANDIDATES = 10
+# DoH 解析出这么多节点就够轮换了，省掉剩余查询的延迟
+_GEO_ENOUGH_IPS = 6
+# DoH 查询超时：解析是抓取的前置旁路而非数据请求，必须短超时快速失败、转入
+# 留档节点（DoH 卡死绝不允许吃掉 TimeBudget）——因此有意不套用数据请求的
+# 统一超时 http.DEFAULT_TIMEOUT（(5, 8) 的短窗对 150KB 级天气响应是不够的，
+# 对几百字节的 DoH 应答则绰绰有余）。
+_GEO_DOH_TIMEOUT = (5, 8)
+# urllib3 2.x 才有 server_hostname 参数（钉 IP 时保真实 SNI/证书校验）；
+# 1.26 不支持——显式暴露这个能力边界，而不是带病运行
+_GEO_SNI_OVERRIDE_OK = "server_hostname" in inspect.signature(
+    urllib3.connection.HTTPSConnection.__init__).parameters
 
 # 北京时区：dateFmt 声明 +08:00，epoch 锚按此换算（契约第 3 条）
 _BJ = timezone(timedelta(hours=8))
@@ -172,6 +230,16 @@ class ZmtqCityEchoError(ZmtqPayloadError):
 
     实测（契约第 2 条）：无效/缺失 cityId 返回 HTTP 200 + 业务码 0 + 北京市
     的完整数据。这类"看起来成功"的错误数据绝不能入库，必须响亮失败。
+    """
+
+
+class ZmtqHttpRejectionError(ZmtqPayloadError):
+    """HTTP 层被拒（4xx 确定性失败）——可能只是**解析视角**错了。
+
+    与"响应形态漂移"区分开：4xx 被拒未必是数据源的问题，也可能是境外 DNS
+    把域名解析到未部署该路由的 CloudFront 边缘（契约第 14 条）——换个解析
+    视角重试就能改变结果，故 _request 捕获它触发地理路由回退。响应形态类
+    错误（本类之外的 ZmtqPayloadError）重试与换视角都无意义，不触发。
     """
 
 
@@ -384,6 +452,71 @@ def extract_daily_block(payload: Any, city_id: str, issue_day: str,
     return sorted(days.items())
 
 
+def _doh_cn_ips(host: str, session: Any,
+                timeout: Any = _GEO_DOH_TIMEOUT) -> list[str]:
+    """境内视角解析 host 的 A 记录：DoH + EDNS Client Subnet（契约第 14 条）。
+
+    地理感知 DNS 的"视角"由查询方（或 ECS 声明）决定：GitHub Actions 等
+    境外环境直接问任何公共解析器，得到的仍是"境外视角"答案（CloudFront
+    边缘，该路由 404）。查询串按诊断工作流实测的形态逐字构造（ECS 子网
+    里的 / 不做百分号编码）。任何失败都返回 []（调用方走留档节点兜底），
+    绝不让解析层把抓取层拖死。
+    """
+    ips: list[str] = []
+    seen: set[str] = set()
+    for endpoint in _GEO_DOH_ENDPOINTS:
+        for subnet in _GEO_ECS_SUBNETS:
+            try:
+                r = session.get(
+                    f"{endpoint}?name={host}&type=A&edns_client_subnet={subnet}",
+                    timeout=timeout)
+                answers = (r.json() or {}).get("Answer") or []
+            except Exception as e:  # noqa: BLE001  DoH 不可达不是抓取失败
+                logger.debug("DoH %s（%s）查询失败: %s", endpoint, subnet, e)
+                continue
+            for ans in answers:
+                # type 1 = A 记录；CNAME(5)/AAAA(28) 等一律不要（本回退只钉 IPv4）
+                if (isinstance(ans, dict) and ans.get("type") == 1
+                        and isinstance(ans.get("data"), str)
+                        and ans["data"] and ans["data"] not in seen):
+                    seen.add(ans["data"])
+                    ips.append(ans["data"])
+            if len(ips) >= _GEO_ENOUGH_IPS:
+                return ips
+    return ips
+
+
+def _pinned_https_get(ip: str, path: str, city_id: str, headers: dict,
+                      timeout: Any) -> tuple[int, str]:
+    """钉 IP 的 HTTPS 请求：连指定节点，SNI/Host/证书校验仍按真实域名。
+
+    `path` 是端点后缀（如 /actual），完整路径前缀取自 BASE_URL（/h5zh/api/pc）
+    ——只发后缀会被源站判 404（实测 2026-10-31，Tomcat 404 页）。查询串按
+    诊断工作流实测的形态逐字构造（cityId 恒为字母数字，无需编码）。
+
+    urllib3 2.x 的 server_hostname 参数把"连接目标"与"TLS 身份"解耦——
+    正是 curl --resolve 的语义（诊断工作流同款）。连接池一次性用完即弃
+    （每节点一条连接），绝不跨候选节点复用。
+    """
+    if not _GEO_SNI_OVERRIDE_OK:
+        raise RuntimeError("urllib3 版本过旧（<2.0，无 server_hostname 参数），"
+                           "无法在钉 IP 连接时保持真实域名的 SNI 与证书校验")
+    if isinstance(timeout, tuple):
+        t = urllib3.Timeout(connect=timeout[0], read=timeout[1])
+    else:
+        t = urllib3.Timeout(total=float(timeout))
+    base_path = urlsplit(BASE_URL).path.rstrip("/")
+    url = f"{base_path}{path}?cityId={city_id}"
+    pool = urllib3.HTTPSConnectionPool(
+        ip, 443, server_hostname=GEO_HOST, ca_certs=_CA_BUNDLE)
+    try:
+        resp = pool.request("GET", url, headers={"Host": GEO_HOST, **headers},
+                            retries=False, redirect=False, timeout=t)
+        return resp.status, resp.data.decode("utf-8", "replace")
+    finally:
+        pool.close()   # 连接池一次性用完即弃（PoolManager.clear() 不适用于裸池）
+
+
 class ZuimeitianqiProvider(ForecastProvider):
     """最美天气 PC 网页接口快照器：无需凭据，单模型快照 dict（逐小时+逐日块）。"""
 
@@ -393,6 +526,12 @@ class ZuimeitianqiProvider(ForecastProvider):
         self.retries = retries
         self.session = session or requests.Session()
         self._budget = TimeBudget()  # 单源单轮总预算（第四轮 P1-7）
+        # 地理路由回退状态（契约第 14 条）。fetch-forecast 的 provider 只构造
+        # 一次、跨站点串行复用，进入 geo 模式后同轮后续请求直接境内直连，不再
+        # 重复烧 404；观测链并行路径是每站独立实例，无共享竞争。
+        self._geo_mode = False               # 已闩进"境内直连"模式
+        self._geo_ips: list[str] | None = None  # 候选节点缓存（DoH 优先 + 留档兜底）
+        self._geo_original_error = ""        # 首次被拒的原始错误（兜底失败时透出根因）
 
     # ------------------------------------------------------------------ 对外
     def fetch_snapshot(self, station: Any, models: list[str] | None = None) -> dict:
@@ -522,7 +661,15 @@ class ZuimeitianqiProvider(ForecastProvider):
 
     # ------------------------------------------------------------------ 内部
     def _request(self, path: str, city_id: str) -> Any:
-        """抓取并校验响应外壳（退避/熔断统一走共享助手）。"""
+        """抓取并校验响应外壳（退避/熔断统一走共享助手）。
+
+        默认路径被 4xx 拒绝时触发一次**地理路由回退**（契约第 14 条）：这类
+        "确定性失败"的根因是解析视角而非数据源——境内视角下同样的请求就是
+        200，换个视角能改变结果，正是该重试的情形。回退成功后实例闩进 geo
+        模式；回退也失败则把原始错误与逐节点结果一并响亮抛出。
+        """
+        if self._geo_mode:
+            return self._request_geo(path, city_id)
         url = f"{BASE_URL}{path}"
 
         def _classify(resp: Any) -> tuple[str, Any]:
@@ -538,14 +685,70 @@ class ZuimeitianqiProvider(ForecastProvider):
             except Exception:  # noqa: BLE001
                 pass
             if isinstance(status, int) and 400 <= status < 500 and status != 429:
-                return "fatal", ZmtqPayloadError(
+                return "fatal", ZmtqHttpRejectionError(
                     f"最美天气请求被拒: HTTP {status} body={digest!r}")
             return "retry", f"HTTP {status} body={digest!r}"
 
-        return request_with_retries(
-            self.session, url, params={"cityId": city_id}, headers=HEADERS,
-            timeout=self.timeout, retries=self.retries, source="最美天气",
-            classify=_classify, budget=self._budget)
+        try:
+            return request_with_retries(
+                self.session, url, params={"cityId": city_id}, headers=HEADERS,
+                timeout=self.timeout, retries=self.retries, source="最美天气",
+                classify=_classify, budget=self._budget)
+        except ZmtqHttpRejectionError as e:
+            self._geo_mode = True
+            self._geo_original_error = str(e)
+            logger.warning(
+                "最美天气默认解析路径被拒（%s）——疑似境外 DNS 将 %s 解析到 "
+                "CloudFront 边缘而该路由仅在境内 CDN 部署（诊断留档 2026-10-31），"
+                "改用境内视角解析并钉 IP 直连（契约第 14 条）", e, GEO_HOST)
+            return self._request_geo(path, city_id)
+
+    def _request_geo(self, path: str, city_id: str) -> Any:
+        """境内直连抓取：DoH（境内视角）解析节点池 → 逐节点钉 IP 尝试。
+
+        节点冗余本身就是这里的"重试"（诊断实测 8 节点里 7 个可用、1 个超时）
+        ——对单个死节点做退避重试毫无意义，换下一个节点才有意义。全部候选
+        耗尽才失败，失败信息必须同时携带原始被拒错误（根因）与逐节点结果
+        （证据），绝不静默吞掉任何一个。
+        """
+        if self._geo_ips is None:
+            resolved = _doh_cn_ips(GEO_HOST, self.session)
+            extras = [ip for ip in _GEO_ARCHIVE_IPS if ip not in resolved]
+            candidates = (resolved + extras)[:_GEO_MAX_CANDIDATES]
+            if not candidates:
+                raise ZmtqPayloadError(
+                    "最美天气境内视角解析失败（DoH 不可达且无可用留档节点），"
+                    f"原始错误: {self._geo_original_error}")
+            self._geo_ips = candidates
+            logger.info("最美天气境内直连候选节点 %d 个: %s",
+                        len(candidates), ", ".join(candidates))
+        outcomes: list[str] = []
+        for ip in self._geo_ips:
+            if self._budget.expired():
+                outcomes.append("（总预算耗尽，剩余候选未尝试）")
+                break
+            try:
+                status, body = _pinned_https_get(
+                    ip, path, city_id, HEADERS, self.timeout)
+            except Exception as e:  # noqa: BLE001  该节点死了就换下一个
+                outcomes.append(f"{ip}: {type(e).__name__}: {e}")
+                continue
+            if len(body) > MAX_RESPONSE_BYTES:
+                outcomes.append(f"{ip}: HTTP {status} body 超限")
+                continue
+            if status == 200:
+                try:
+                    payload = json.loads(body)
+                except ValueError:
+                    outcomes.append(f"{ip}: HTTP 200 但非 JSON")
+                    continue
+                logger.info("最美天气经境内节点 %s 直连成功"
+                            "（默认解析路径被地理路由拒绝）", ip)
+                return payload
+            outcomes.append(f"{ip}: HTTP {status} body={body[:80]!r}")
+        raise ZmtqPayloadError(
+            f"最美天气境内直连全部候选失败（{len(self._geo_ips)} 个节点），"
+            f"原始错误: {self._geo_original_error}；逐节点: {'; '.join(outcomes)}")
 
     @staticmethod
     def _warn_health(station: Any, points, temp_col, precip_col, stats,

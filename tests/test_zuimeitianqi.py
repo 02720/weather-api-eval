@@ -429,3 +429,140 @@ def test_station_config_carries_zmtq_city_id():
     assert by_id["wuzhou"].zmtq_city_id == "0101081307"
     assert by_id["wanning"].zmtq_city_id == "01011016"
     assert MODEL_NAME in cfg.models
+
+
+# ------------------------------------------------------------------ 地理路由回退（契约第 14 条）
+# 2026-10-31 线上诊断：该域名 DNS 是地理感知的，境外（GH Actions）解析到
+# CloudFront 边缘而对 /h5zh/api/pc/* 一律 404（x-router-code: 40000），境内
+# 视角节点 200。DoH(ECS) 解析与钉 IP 传输都是网络动作，单测里整体替换；
+# 这里钉住的是**回退的触发条件、节点轮换语义与失败留痕**。
+
+from weather_eval.forecast import zuimeitianqi as zmtq_mod  # noqa: E402
+
+
+class _DoHSession:
+    """返回固定 DoH JSON 的假会话，记录查询串供 ECS 形态断言。"""
+
+    def __init__(self, answers, error=None):
+        self.answers = answers
+        self.error = error
+        self.urls: list[str] = []
+
+    def get(self, url, **kw):
+        self.urls.append(url)
+        if self.error is not None:
+            raise self.error
+        return FakeResp(json.dumps({"Status": 0, "Answer": self.answers}))
+
+
+def test_doh_cn_ips_keeps_only_a_records_dedup():
+    """DoH Answer 只取 type=1（A）记录且去重；CNAME/AAAA 一律不要。"""
+    s = _DoHSession([
+        {"name": zmtq_mod.GEO_HOST, "type": 5, "data": "cdn.example.com"},
+        {"name": zmtq_mod.GEO_HOST, "type": 1, "data": "36.159.107.38"},
+        {"name": zmtq_mod.GEO_HOST, "type": 28, "data": "2408:8756::1"},
+        {"name": zmtq_mod.GEO_HOST, "type": 1, "data": "36.159.107.38"},  # 重复
+        {"name": zmtq_mod.GEO_HOST, "type": 1, "data": "36.159.107.41"},
+    ])
+    ips = zmtq_mod._doh_cn_ips(zmtq_mod.GEO_HOST, s)
+    assert ips == ["36.159.107.38", "36.159.107.41"]
+    # ECS 子网必须逐字出现在查询串（与诊断工作流实测形态一致，/ 不做编码）
+    assert "edns_client_subnet=223.104.3.0/24" in s.urls[0]
+
+
+def test_doh_cn_ips_early_exits_with_enough_nodes():
+    s = _DoHSession([{"type": 1, "data": f"10.0.0.{i}"} for i in range(6)])
+    assert len(zmtq_mod._doh_cn_ips(zmtq_mod.GEO_HOST, s)) == 6
+    assert len(s.urls) == 1   # 第一个子网已凑够，不再发起剩余查询
+
+
+def test_doh_cn_ips_swallows_resolver_failures():
+    """DoH 不可达只返回 []（走留档节点兜底），绝不把解析层失败变成崩溃。"""
+    s = _DoHSession([], error=OSError("unreachable"))
+    assert zmtq_mod._doh_cn_ips(zmtq_mod.GEO_HOST, s) == []
+
+
+def test_geo_fallback_recovers_from_geo_404(monkeypatch):
+    """境外视角 404（诊断留档形态）→ 境内直连成功，且闩进 geo 模式。"""
+    monkeypatch.setattr(zmtq_mod, "_doh_cn_ips",
+                        lambda host, session, timeout=(5, 8): ["203.0.113.10"])
+    actual_payload = _index_payload(_happy_hours())
+    forecast_payload = _forecast_payload(_happy_days("2026-10-25"))
+    calls: list[tuple[str, str, str]] = []
+
+    def fake_pin(ip, path, city_id, headers, timeout):
+        calls.append((ip, path, city_id))
+        body = actual_payload if path.endswith("/actual") else forecast_payload
+        return 200, json.dumps(body)
+
+    monkeypatch.setattr(zmtq_mod, "_pinned_https_get", fake_pin)
+    session = RoutingSession(lambda url: (404, "<html>404 Not Found</html>"))
+    prov = ZuimeitianqiProvider(session=session, retries=0)
+    snap = prov.fetch_snapshot(Station, [MODEL_NAME])
+    assert snap["issue_iso"] == "2026-10-25T15:00" and snap["city_code"] == CITY
+    # 默认路径只烧了一次 404（/actual）；/forecast 闩锁生效后直接走境内直连
+    assert len(session.calls) == 1 and session.calls[0].endswith("/actual")
+    assert [p for _, p, _ in calls] == ["/actual", "/forecast"]
+    assert calls[0] == ("203.0.113.10", "/actual", CITY)
+    assert prov._geo_mode is True
+    # 候选缓存 = DoH 结果 + 留档节点兜底（DoH 节点永远排在前面）
+    assert prov._geo_ips[0] == "203.0.113.10"
+    assert set(zmtq_mod._GEO_ARCHIVE_IPS) <= set(prov._geo_ips)
+
+
+def test_geo_fallback_exhausted_raises_with_original_error(monkeypatch):
+    """全部候选失败：最终错误必须同时携带原始被拒错误（根因）与逐节点证据。"""
+    monkeypatch.setattr(zmtq_mod, "_doh_cn_ips", lambda *a, **k: ["203.0.113.1"])
+    monkeypatch.setattr(zmtq_mod, "_pinned_https_get",
+                        lambda *a, **k: (404, "<html>404 Not Found</html>"))
+    prov = ZuimeitianqiProvider(session=RoutingSession(
+        lambda url: (404, "<html>404 Not Found</html>")), retries=0)
+    with pytest.raises(ZmtqPayloadError, match="请求被拒.*203\\.0\\.113\\.1.*HTTP 404"):
+        prov.fetch_snapshot(Station, [MODEL_NAME])
+
+
+def test_geo_falls_back_to_archive_nodes_when_doh_empty(monkeypatch):
+    """DoH 全挂 → 留档节点兜底（顺序在 DoH 结果之后，这里即队首）。"""
+    monkeypatch.setattr(zmtq_mod, "_doh_cn_ips", lambda *a, **k: [])
+    seen_ips: list[str] = []
+
+    def fake_pin(ip, path, city_id, headers, timeout):
+        seen_ips.append(ip)
+        return 200, json.dumps(_index_payload(_happy_hours()))
+
+    monkeypatch.setattr(zmtq_mod, "_pinned_https_get", fake_pin)
+    prov = ZuimeitianqiProvider(session=RoutingSession(
+        lambda url: (404, "404")), retries=0)
+    snap = prov.fetch_snapshot(Station, [MODEL_NAME])
+    assert snap["city_code"] == CITY
+    assert seen_ips and seen_ips[0] in zmtq_mod._GEO_ARCHIVE_IPS
+
+
+def test_geo_skips_node_returning_non_json(monkeypatch):
+    """钉 IP 返回 200 但非 JSON：该节点计败、换下一个（绝不把坏节点当成功）。"""
+    monkeypatch.setattr(zmtq_mod, "_doh_cn_ips",
+                        lambda *a, **k: ["203.0.113.1", "203.0.113.2"])
+    plan = [(200, "<html>not json</html>"),
+            (200, json.dumps(_index_payload(_happy_hours())))]
+
+    def fake_pin(ip, path, city_id, headers, timeout):
+        return plan.pop(0)
+
+    monkeypatch.setattr(zmtq_mod, "_pinned_https_get", fake_pin)
+    prov = ZuimeitianqiProvider(session=RoutingSession(
+        lambda url: (404, "404")), retries=0)
+    snap = prov.fetch_snapshot(Station, [MODEL_NAME])
+    assert snap["city_code"] == CITY
+
+
+def test_city_echo_error_does_not_trigger_geo(monkeypatch):
+    """响应形态类错误（回显不符）换视角也没用：不触发回退、原样响亮失败。"""
+    def _boom(*a, **k):
+        raise AssertionError("城市回显错误不应触发地理路由回退")
+
+    monkeypatch.setattr(zmtq_mod, "_doh_cn_ips", _boom)
+    prov = _provider(_routes(
+        _index_payload(_happy_hours(), city="01010101", name="北京市"),
+        _forecast_payload(_happy_days("2026-10-25"))))
+    with pytest.raises(ZmtqCityEchoError, match="北京市"):
+        prov.fetch_snapshot(Station, [MODEL_NAME])
