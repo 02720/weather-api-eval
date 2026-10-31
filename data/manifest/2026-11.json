@@ -1,0 +1,17 @@
+{
+  "n_snapshots": 12377,
+  "merkle_root": "09adc725a8e76873008339f4264a18ea7e94678bd88ee031288b22f658146900",
+  "fetched_first": "2026-09-19T21:50:42",
+  "fetched_last": "2026-11-01T00:58:46",
+  "n_without_fetched_at": 4095,
+  "n_hash_mismatch": 0,
+  "n_legacy_hash": 0,
+  "hash_mismatches": [],
+  "n_with_embedded_hash": 8282,
+  "period_label": "2026-11",
+  "generated_at": "2026-11-01 01:00",
+  "window": {
+    "start": "2026-08-01 00:00",
+    "end": "2026-11-01 01:00"
+  }
+}
