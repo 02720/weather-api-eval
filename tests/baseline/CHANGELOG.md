@@ -1,5 +1,22 @@
 
 ---
+## 2026-11-01 · 第十八次重冻结（EW4ALL 接入 CMA-GFS：榜单 32 → 33 行）
+
+重冻结原因：**结构变更（新增模型）**，非口径变更。EW4ALL 独立源新增第三个模型
+`cma_gfs_ew4all`（`mode=GRAPESGLOBAL`，CMA-GFS 全球；温度逐 3 小时线性插值补全、
+降水 `HOURTPE`/3h 后向窗口平铺；契约证据见 docs/ew4all_cma_gfs_vs_open_meteo.md）。
+
+- 基线重冻前后逐榜比对：51 张榜全部 32 → 33 行，**仅新增** `cma_gfs_ew4all`
+  一行（零样本、`comparable=false`、"样本积累中"门控），原有 32 行的顺序与
+  全部数值逐位不变（数值漂移 0）。
+- 连带刷新 `data/metrics/blocks/*`（分块缓存指纹含模型清单，随口径失效重建），
+  与 CI 报告重建路径产出的内容一致。
+- 同批工程变更（不影响任何指标数值）：ci.yml 与 report.yml 合并为单一工作流；
+  eval.yml 的 setup-python 从钉死的 3.12.6 放宽到 3.12，并把收尾步骤闸在
+  `steps.install.outcome` 上（2026-11-01 run #223 引导失败曾以
+  "No module named numpy" 级联红掉 20 步）。
+
+---
 ## 2026-11-01 · 第十七次重冻结（skill-v4：有界技能 / 参照同批 / 校准扣分 / 有序多阈值）
 
 重冻结原因：**评分口径变更**。skill-v3 的三处口径缺陷与 P2 新增一起落地：

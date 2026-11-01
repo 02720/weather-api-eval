@@ -1,4 +1,4 @@
-"""Ew4allProvider（EW4ALL / CMA-NDFS / 风清AI模式）接入测试。
+"""Ew4allProvider（EW4ALL / CMA-NDFS / 风清AI模式 / CMA-GFS）接入测试。
 
 mock 契约来自 2026-09-12 线上实测 + 前端 bundle 逆向（见 forecast/ew4all.py docstring）：
 - GET  {BASE}/api/modelTimeList?data_type&element
@@ -219,9 +219,11 @@ def _routes(*, runs=("2026091200", "2026091112"), code=200, tem_missing=()):
             if dt in tem_missing and el == "TEM":
                 return 200, json.dumps({"code": 200, "data": []})
             if el == "TEM":
-                step = 1 if mode == "GDFS5KM" else 6
-                n = 4 if mode == "GDFS5KM" else 2
-                rows = _rows("TEM", run + timedelta(hours=step), n, step,
+                # 采样形态与线上一致：GDFS5KM 逐小时（首点 +1h）、NMCFENGQING 逐 6 小时
+                # （首点 +6h）、GRAPESGLOBAL 逐 3 小时（首点 +0h，0–240h 共 81 点）
+                first, step, n = {"GDFS5KM": (1, 1, 4), "NMCFENGQING": (6, 6, 2),
+                                  "GRAPESGLOBAL": (0, 3, 4)}[mode]
+                rows = _rows("TEM", run + timedelta(hours=first), n, step,
                              lambda i: 20.0 + i)
             elif el == "ONETPE":                       # 原生 1 小时降水：+1h 起逐小时
                 rows = _rows(el, run + timedelta(hours=1), 4, 1, lambda i: 0.5)
@@ -442,6 +444,47 @@ def test_all_runs_with_null_precip_raise():
     with pytest.raises(RuntimeError) as ei:
         prov.fetch_snapshot(Station, ["cma_ndfs"])
     assert "没有任何一轮" in str(ei.value)
+
+
+def test_cma_gfs_spec_pins_the_grapesglobal_contract():
+    """回归守卫：CMA-GFS 用 GRAPESGLOBAL 模式；降水必须是 HOURTPE/3h，绝不透传 TPE。
+
+    契约证据见 docs/ew4all_cma_gfs_vs_open_meteo.md（2026-10-07 线上对照）：`TPE`
+    是"自起报累计"（实测单调不减、首步恒 0），直接透传会把降水放大到 7000+ mm
+    量级；`HOURTPE` 与 TPE 逐 3h 差分逐点吻合（≤0.1mm 舍入），才是逐窗口量。
+    与 Open-Meteo 的 cma_grapes_global 是"同一模式、不同加工"，不得互相替代。"""
+    g = MODEL_SPECS["cma_gfs_ew4all"]
+    assert g.mode == "GRAPESGLOBAL"
+    assert g.precip_1h_element is None              # 无 1 小时产品（实测 ONETPE 为空）
+    assert g.precip_element == "HOURTPE" and g.precip_window_hours == 3
+    assert g.native_step_hours == 3
+    # 温度首点 = 起报 +0h、末点 = +240h（81 个原生点）→ 逐小时轴 241 点
+    # （expected_points 按"温度末时次 − 首时次 + 1"计，同 GDFS5KM 的口径）
+    assert g.expected_points == 241
+
+
+def test_cma_gfs_snapshot_starts_at_issue_and_interpolates_hourly():
+    """CMA-GFS：温度首点 = 起报 +0h（lead 0，由评估引擎统一口径丢弃），3h 采样
+    线性插值补全到逐小时；降水按 3h 后向窗口平铺、总量守恒。"""
+    prov = Ew4allProvider(session=RoutingSession(_routes()))
+    snap = prov.fetch_snapshot(Station, ["cma_gfs_ew4all"])[0]
+    assert snap["issue_iso"] == "2026-09-12T08:00"   # UTC 00Z → 北京时 08:00
+    assert snap["run_label_utc"] == "2026091200"
+    assert snap["resolution_hours"] == 3
+    assert snap["precip_1h_until"] is None           # 无 1 小时产品，不留虚假交接点
+    axis = [datetime.strptime(t, "%Y-%m-%dT%H:%M") for t in snap["hourly_time"]]
+    issue = datetime.strptime(snap["issue_iso"], "%Y-%m-%dT%H:%M")
+    assert axis[0] == issue                          # 首点 = 起报 +0h（非 +1h）
+    # fixture：TEM 4 点（+0/3/6/9h，值 20..23）→ 逐小时轴 10 点，两端原生、中间插值
+    T = snap["data"]["cma_gfs_ew4all"]["temperature_2m"]
+    assert len(T) == len(axis) == 10
+    assert T[0] == 20.0 and T[-1] == 23.0
+    assert T[1] == pytest.approx(20.0 + 1 / 3)
+    # 降水 = HOURTPE（UTC 03:00/06:00 各 3.0）平铺：每个覆盖小时 3.0/3 = 1.0
+    P = snap["data"]["cma_gfs_ew4all"]["precipitation"]
+    covered = [v for v in P if v is not None]
+    assert covered and all(abs(v - 1.0) < 1e-9 for v in covered)
+    assert "HOURTPE/3h spread" in snap["expansion"]
 
 
 def test_health_warns_on_missing_precip_window(caplog):

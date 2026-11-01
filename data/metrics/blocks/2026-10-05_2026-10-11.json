@@ -1,6 +1,6 @@
 {
   "schema": 4,
-  "fingerprint": "77924b1f4890e9ea",
+  "fingerprint": "b0caf89ce0260e94",
   "block": {
     "start": "2026-10-05",
     "end": "2026-10-11",
@@ -36,6 +36,7 @@
     "msn_v1",
     "cma_ndfs",
     "fengqing_ai",
+    "cma_gfs_ew4all",
     "cma_public_v1",
     "cma_gowfs_v1",
     "zmtq_v1"
@@ -70,6 +71,7 @@
     "msn_v1": 17256,
     "cma_ndfs": 11932,
     "fengqing_ai": 17284,
+    "cma_gfs_ew4all": 0,
     "cma_public_v1": 8400,
     "cma_gowfs_v1": 0,
     "zmtq_v1": 0
@@ -104,6 +106,7 @@
     "msn_v1": 719,
     "cma_ndfs": 528,
     "fengqing_ai": 752,
+    "cma_gfs_ew4all": 0,
     "cma_public_v1": 392,
     "cma_gowfs_v1": 0,
     "zmtq_v1": 0
@@ -138,6 +141,7 @@
     "msn_v1": 7,
     "cma_ndfs": 7,
     "fengqing_ai": 7,
+    "cma_gfs_ew4all": 0,
     "cma_public_v1": 7,
     "cma_gowfs_v1": 0,
     "zmtq_v1": 0
@@ -172,6 +176,7 @@
     "msn_v1": 7,
     "cma_ndfs": 7,
     "fengqing_ai": 7,
+    "cma_gfs_ew4all": 0,
     "cma_public_v1": 7,
     "cma_gowfs_v1": 0,
     "zmtq_v1": 0
@@ -206,6 +211,7 @@
     "msn_v1": 37,
     "cma_ndfs": 37,
     "fengqing_ai": 37,
+    "cma_gfs_ew4all": 0,
     "cma_public_v1": 37,
     "cma_gowfs_v1": 0,
     "zmtq_v1": 0
@@ -240,6 +246,7 @@
     "msn_v1": 4,
     "cma_ndfs": 4,
     "fengqing_ai": 4,
+    "cma_gfs_ew4all": 0,
     "cma_public_v1": 4,
     "cma_gowfs_v1": 0,
     "zmtq_v1": 0

@@ -110,8 +110,8 @@ SOURCE_SPECS: dict[str, tuple[set[str], Any]] = {
     # AccuWeather：需 ACCUWEATHER_API_KEY（Enterprise 入口）
     "accuweather": ({ACCUWEATHER_MODEL}, lambda: AccuWeatherProvider()),
     "msn": ({MSN_MODEL}, lambda: MsnProvider()),                # MSN 天气：无凭据，底层中国天气网
-    # EW4ALL（云上早期预警支撑系统）：网页接口，无凭据；一次抓取返回两个模型
-    # 各自的独立快照（起报轮次发布进度不同步，见 forecast/ew4all.py）
+    # EW4ALL（云上早期预警支撑系统）：网页接口，无凭据；一次抓取返回各模型
+    # 独立的快照（起报轮次发布进度不同步，见 forecast/ew4all.py）
     "ew4all": (set(EW4ALL_MODEL_SPECS), lambda: Ew4allProvider()),
     # 中国气象局公众气象服务网：公开 JSON 接口，无凭据（站点须配 cma_id = WMO 站号）
     "cma_public": ({CMA_PUBLIC_MODEL}, lambda: CmaPublicProvider()),
@@ -1006,7 +1006,8 @@ def main(argv=None):
              "时效）、geovis（中科星图，需 GEVIS_TOKEN）、accuweather（AccuWeather"
              " Enterprise，需 ACCUWEATHER_API_KEY）、msn（MSN 天气/中国天气网，"
              "无需凭据，时效上限约 9.3 天）、ew4all（CMA 云上早期预警支撑系统，"
-             "无需凭据，含 CMA-NDFS 与 风清AI模式；温度 10/15 天，降水 10 天）、"
+             "无需凭据，含 CMA-NDFS、风清AI模式与 CMA-GFS；温度 10/15 天，"
+             "降水 10 天）、"
              "cma_public（中国气象局公众气象服务网 weather.cma.cn，无需凭据，"
              "以 WMO 站号寻址、站点须配 cma_id；3 小时分辨率，覆盖约 7 天）、"
              "cma_gowfs（中国气象数据网 data.cma.cn 智能网格预报，无需凭据，"

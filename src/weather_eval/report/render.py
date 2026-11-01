@@ -100,6 +100,7 @@ MODEL_LABELS = {
     "msn_v1": "MSN天气",
     "cma_ndfs": "CMA-NDFS",
     "fengqing_ai": "风清AI模式",
+    "cma_gfs_ew4all": "CMA-GFS（EW4ALL）",
     "cma_public_v1": "中国气象局公众网",
     "cma_gowfs_v1": "中国气象数据网",
     "zmtq_v1": "最美天气",
@@ -132,7 +133,7 @@ MODEL_FAMILIES = [
         "fuxi_c88", "fuxi_det", "fengwu_ghr_9km", "geovis_v1",
     ]},
     {"icon": "🇨🇳", "name": "中国气象局（CMA）", "models": [
-        "cma_ndfs", "fengqing_ai", "cma_public_v1", "cma_gowfs_v1",
+        "cma_ndfs", "fengqing_ai", "cma_gfs_ew4all", "cma_public_v1", "cma_gowfs_v1",
     ]},
 ]
 
@@ -169,6 +170,9 @@ MODEL_COLORS = {
     "msn_v1": "#4d7c0f",         # 橄榄绿（与既有亮绿/黄绿拉开明度与色相）
     "cma_ndfs": "#1e3a8a",       # 深海军蓝（明显暗于既有各蓝）
     "fengqing_ai": "#c026d3",    # 洋红（与亮紫/品红拉开明度）
+    # 与 cma_grapes_global（#dc2626 深红）同源模式：EW4ALL 加工版用同族更暗一档的
+    # 砖红，保留"同一模式"的视觉亲缘，又足以在图上区分两条序列
+    "cma_gfs_ew4all": "#991b1b",  # 深砖红（cma_grapes_global 深红的暗档同族色）
     "cma_public_v1": "#0e7490",  # 深青（CMA 家族色：与 cma_ndfs 深海军蓝同族；与 #06b6d4/#14b8a6 靠明度拉开）
     "cma_gowfs_v1": "#7c2d12",   # 深赭（CMA 家族第三色：与深海军蓝/深青拉开色相，暗于既有棕橙 #b45309）
     "zmtq_v1": "#7e22ce",        # 深紫（与亮紫 #a855f7/浅紫 #c084fc/靛蓝 #6366f1 靠明度与色相拉开）

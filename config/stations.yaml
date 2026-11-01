@@ -55,6 +55,11 @@ models:
   # —— EW4ALL 云上早期预警支撑系统（2026-09 新增独立源；网页接口，无需凭据）——
   - cma_ndfs             # CMA-NDFS 中国气象局智能数字天气预报系统（--source ew4all；温度 10 天，降水 3 小时累计平铺）
   - fengqing_ai          # 风清AI模式（--source ew4all；温度 15 天逐 6 小时、降水 10 天，6 小时累计平铺）
+  - cma_gfs_ew4all       # CMA-GFS 全球（2026-11 接入；--source ew4all，mode=GRAPESGLOBAL。
+                         # 温度 10 天逐 3 小时、线性插值补全到逐小时；降水 3 小时累计平铺。
+                         # 与 Open-Meteo 的 cma_grapes_global 是"同一模式、不同加工"
+                         # （docs/ew4all_cma_gfs_vs_open_meteo.md）：不能互相替代/校验，
+                         # 也不能当两个独立模式计权）
   # —— 中国气象局公众气象服务网（2026-09 新增独立源；公开 JSON 接口，无需凭据）——
   - cma_public_v1        # weather.cma.cn/api/hourly，按 WMO 站号取站；3 小时分辨率、覆盖约 7 天
                          # （--source cma_public；降水为后向 3 小时累计，见 forecast/cma_public.py）

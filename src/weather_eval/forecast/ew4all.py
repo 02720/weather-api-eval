@@ -16,9 +16,11 @@
 关键契约（改动前必须重新实测复核）
 ─────────────────────────────────────────────────────────────────────
 1. 模型标识：`mode` 取前端枚举值——`GDFS5KM`=CMA-NDFS（中国气象局智能数字天气预报
-   系统）、`NMCFENGQING`=风清AI模式。页面上另标 `CMA_GDFS`→"CMA-NDFS"、
-   `FENGQING`→"风清AI模式"，即同一产品的两套代号。**一次请求只接受一个 `elements`
-   值**（实测传 "TEM,ONETPE" 或数组均返回空/422），故温度与降水各发一次请求。
+   系统）、`NMCFENGQING`=风清AI模式、`GRAPESGLOBAL`=CMA-GFS 全球（前端 bundle
+   `DataType` 枚举：`CMA`→`GRAPESGLOBAL`，页面显示名 `model.CMA = "CMA-GFS"`；
+   枚举另含 `CMA_GDFS`→"CMA-NDFS"、`FENGQING`→"风清AI模式"，即同一产品的两套
+   代号）。**一次请求只接受一个 `elements` 值**（实测传 "TEM,ONETPE" 或数组均返回
+   空/422），故温度与降水各发一次请求。
 2. ── 时间语义：`Datetime` 与 `dataTime` 同为 **UTC**（非北京时）。本条的判定证据
    必须保留，因为"错 8 小时"这种偏差不会报错、只会静默污染全部样本：
      a) 日变化相位：梧州站点 240h 的 TEM 日变化与 4 站 12 天观测的日变化做互相关，
@@ -40,7 +42,7 @@
    该源在一轮内部是分要素先后出数的（实测标注 12Z 的 GDFS5KM 在其后一两小时内
    只有 `TEM`、降水要素仍为空，下一轮 00Z 才两者齐备），故按轮次由新到旧回退，
    取第一个"温度与降水同时有数据"的轮次作为起报锚点（MAX_ISSUE_FALLBACK 轮）。
-4. 各模型要素与时效（2026-09-12 实测）：
+4. 各模型要素与时效（2026-09-12 / 2026-10-07 实测）：
 
    | 模型 | mode | 温度 | 降水 | 逐小时上限 |
    |---|---|---|---|---|
@@ -48,6 +50,23 @@
    | `ONETPE`（1 小时累计）0–72h ＋ `HOURTPE`（3 小时累计）全时效 | 240h（10 天） |
    | 风清AI模式 | NMCFENGQING | `TEM` 逐 6 小时（+6h 起） |
    | `SIXTPE`（6 小时累计，逐 6 小时） | 温度 360h（15 天）/ 降水 240h（10 天） |
+   | CMA-GFS | GRAPESGLOBAL | `TEM` 逐 3 小时（+0h 起，0–240h 共 81 点） |
+   | `HOURTPE`（3 小时累计）全时效；`TPE` 是**自起报累计、禁用** | 240h（10 天） |
+
+   CMA-GFS 补充契约（2026-10-07 线上对照，全文见 docs/ew4all_cma_gfs_vs_open_meteo.md）：
+   - 可用轮次 00/12 UTC，`modelTimeList` 保留近 14 轮；时间戳语义与本源既有契约
+     一致（`Datetime` 与 `dataTime` 同为 UTC，相位扫描零平移最优——无 CMA-NDFS
+     那类 8 小时坑）。
+   - 温度首点 = 起报 +0h（不是 +1h）：逐小时轴从 issue 时刻起共 241 点；lead 0
+     样本由评估引擎的统一口径（lead ≤ 0 不入对）处理，无需本源特判。
+   - 逐小时补全方式与既有两模型一致：温度线性插值（3h → 1h，温度场平滑、插值
+     误差可忽略），降水按 3h 后向窗口平铺均摊（对累计曲线线性插值后逐小时差分，
+     任意完整跨度求和恒等于原始累计总量）。
+   - **与 Open-Meteo 的 `cma_grapes_global` 是"同一模式、不同加工"**：同模式系统、
+     同起报、同初始场，但 lead≥6h 的预报场不是同一份数据（500hPa 位势高度差
+     1–3 gpm，为本地网格尺度的 3–6 倍），降水口径与时效覆盖也不同。二者不能
+     互相替代/校验，也不能当两个独立模式计权——榜单解读时按"同源模式、不同
+     加工"对待（README 口径表已标注）。
 
 5. ── 降水口径：**优先用原生 1 小时产品，其余按累计窗口展开为逐小时** ──
    该源的降水要素是一族后向累计：`ONETPE`(1h)/`HOURTPE`(3h)/`SIXTPE`(6h)/
@@ -175,6 +194,13 @@ MODEL_SPECS: dict[str, ModelSpec] = {
     # 风清AI模式：温度/降水均逐 6 小时；无 1 小时降水产品，全程 SIXTPE/6
     "fengqing_ai": ModelSpec("fengqing_ai", "NMCFENGQING", "SIXTPE", 6, None, 355,
                              native_step_hours=6),
+    # CMA-GFS 全球（GRAPESGLOBAL，2026-10-07 接入）：温度 TEM 逐 3 小时、首点 = 起报
+    # +0h，0–240h 共 81 点 → 逐小时轴 241 点（温度经线性插值补全到逐小时）。降水无
+    # 1 小时产品；**严禁用 `TPE`**——它是"自起报累计"（实测单调不减、首步恒 0，
+    # 直接透传会把降水放大到 7000+ mm 量级），必须用 HOURTPE/3h 后向窗口平铺。
+    # 与 Open-Meteo 的 cma_grapes_global 同模式不同加工（docs/ew4all_cma_gfs_vs_open_meteo.md）。
+    "cma_gfs_ew4all": ModelSpec("cma_gfs_ew4all", "GRAPESGLOBAL", "HOURTPE", 3, None,
+                                241, native_step_hours=3),
 }
 
 
@@ -271,7 +297,7 @@ def build_series(tem: list[tuple[datetime, float | None]],
 class Ew4allProvider(ForecastProvider):
     """EW4ALL 快照器：**按模型返回独立快照列表**。
 
-    两个模型的起报轮次发布进度独立（实测风清的最新轮次常晚于 CMA-NDFS 出数），
+    各模型的起报轮次发布进度独立（实测风清的最新轮次常晚于 CMA-NDFS 出数），
     故各自解析起报锚点并各返回一份快照（各自 issue_iso 与时间轴），保证时效（lead）
     分组不被跨模式错位污染——与中科天机同属 base.py 契约的第 2 种返回形态。
     """
