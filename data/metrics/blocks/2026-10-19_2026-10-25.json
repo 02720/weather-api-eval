@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "fingerprint": "db12e56c9af8c7ac",
+  "fingerprint": "a38ca51461f20cf5",
   "block": {
     "start": "2026-10-19",
     "end": "2026-10-25",
@@ -2896,17 +2896,17 @@
           "mbe_bdisp": 0.83
         },
         "p": {
-          "n": 336.0,
-          "n_eff": 292.0,
-          "acc": 98.214,
+          "n": 348.0,
+          "n_eff": 304.0,
+          "acc": 98.276,
           "pod": 80.0,
           "far": 55.556,
           "ts": 0.4,
           "ets": 0.392,
           "bias": 1.8,
-          "amt_mae": 1.235,
-          "amt_bias": 0.741,
-          "grade_ets": -0.003
+          "amt_mae": 1.272,
+          "amt_bias": 0.704,
+          "grade_ets": -0.002
         }
       },
       "9": {
@@ -2923,16 +2923,16 @@
           "mbe_bdisp": 0.741
         },
         "p": {
-          "n": 651.0,
-          "n_eff": 537.0,
-          "acc": 98.771,
+          "n": 660.0,
+          "n_eff": 546.0,
+          "acc": 98.788,
           "pod": 0.0,
           "far": 100.0,
           "ts": 0.0,
           "ets": -0.003,
           "bias": 0.6,
-          "amt_mae": 1.511,
-          "amt_bias": 0.633,
+          "amt_mae": 1.538,
+          "amt_bias": 0.606,
           "grade_ets": null
         }
       },
@@ -2950,16 +2950,16 @@
           "mbe_bdisp": 0.846
         },
         "p": {
-          "n": 651.0,
-          "n_eff": 522.0,
-          "acc": 98.157,
+          "n": 660.0,
+          "n_eff": 531.0,
+          "acc": 98.182,
           "pod": 80.0,
           "far": 73.333,
           "ts": 0.25,
           "ets": 0.245,
           "bias": 3.0,
-          "amt_mae": 1.59,
-          "amt_bias": 1.19,
+          "amt_mae": 1.618,
+          "amt_bias": 1.162,
           "grade_ets": -0.001
         }
       },
@@ -3031,16 +3031,16 @@
           "mbe_bdisp": 0.397
         },
         "p": {
-          "n": 657.0,
-          "n_eff": 542.0,
-          "acc": 99.239,
+          "n": 660.0,
+          "n_eff": 545.0,
+          "acc": 99.242,
           "pod": 0.0,
           "far": null,
           "ts": 0.0,
           "ets": 0.0,
           "bias": 0.0,
-          "amt_mae": 1.303,
-          "amt_bias": 0.523,
+          "amt_mae": 1.312,
+          "amt_bias": 0.514,
           "grade_ets": null
         }
       },
@@ -3058,16 +3058,16 @@
           "mbe_bdisp": 0.687
         },
         "p": {
-          "n": 657.0,
-          "n_eff": 580.0,
-          "acc": 99.239,
+          "n": 660.0,
+          "n_eff": 583.0,
+          "acc": 99.242,
           "pod": 60.0,
           "far": 50.0,
           "ts": 0.375,
           "ets": 0.371,
           "bias": 1.2,
-          "amt_mae": 1.217,
-          "amt_bias": 0.511,
+          "amt_mae": 1.226,
+          "amt_bias": 0.502,
           "grade_ets": null
         }
       },
@@ -3112,16 +3112,16 @@
           "mbe_bdisp": 0.687
         },
         "p": {
-          "n": 654.0,
-          "n_eff": 539.0,
-          "acc": 99.236,
+          "n": 660.0,
+          "n_eff": 545.0,
+          "acc": 99.242,
           "pod": 0.0,
           "far": null,
           "ts": 0.0,
           "ets": 0.0,
           "bias": 0.0,
-          "amt_mae": 1.165,
-          "amt_bias": 0.373,
+          "amt_mae": 1.183,
+          "amt_bias": 0.355,
           "grade_ets": null
         }
       },
@@ -14180,8 +14180,8 @@
           "ts": 0.2,
           "ets": 0.151,
           "bias": 2.0,
-          "amt_mae": 1.376,
-          "amt_bias": 0.615,
+          "amt_mae": 1.385,
+          "amt_bias": 0.606,
           "grade_ets": null
         }
       },
@@ -14221,8 +14221,8 @@
           "ts": 0.5,
           "ets": 0.462,
           "bias": 2.0,
-          "amt_mae": 0.471,
-          "amt_bias": 1.19,
+          "amt_mae": 0.498,
+          "amt_bias": 1.162,
           "grade_ets": null
         }
       },
@@ -14385,8 +14385,8 @@
           "ts": 0.667,
           "ets": 0.641,
           "bias": 1.5,
-          "amt_mae": 0.85,
-          "amt_bias": 0.511,
+          "amt_mae": 0.841,
+          "amt_bias": 0.502,
           "grade_ets": null
         }
       },
@@ -14467,8 +14467,8 @@
           "ts": 0.667,
           "ets": 0.641,
           "bias": 1.5,
-          "amt_mae": 0.893,
-          "amt_bias": 0.364,
+          "amt_mae": 0.902,
+          "amt_bias": 0.355,
           "grade_ets": null
         }
       },

@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "fingerprint": "db12e56c9af8c7ac",
+  "fingerprint": "a38ca51461f20cf5",
   "block": {
     "start": "2026-10-01",
     "end": "2026-10-04",
@@ -3054,16 +3054,16 @@
           "mbe_bdisp": 0.871
         },
         "p": {
-          "n": 369.0,
-          "n_eff": 215.0,
-          "acc": 92.412,
+          "n": 384.0,
+          "n_eff": 225.0,
+          "acc": 92.708,
           "pod": 33.333,
           "far": 96.296,
           "ts": 0.035,
           "ets": 0.027,
           "bias": 9.0,
-          "amt_mae": 3.379,
-          "amt_bias": 2.515,
+          "amt_mae": 3.415,
+          "amt_bias": 2.48,
           "grade_ets": null
         }
       },
@@ -3081,16 +3081,16 @@
           "mbe_bdisp": 0.863
         },
         "p": {
-          "n": 378.0,
-          "n_eff": 58.0,
-          "acc": 93.386,
+          "n": 384.0,
+          "n_eff": 59.0,
+          "acc": 93.49,
           "pod": 33.333,
           "far": 95.833,
           "ts": 0.038,
-          "ets": 0.031,
+          "ets": 0.032,
           "bias": 8.0,
-          "amt_mae": 3.115,
-          "amt_bias": 2.241,
+          "amt_mae": 3.129,
+          "amt_bias": 2.227,
           "grade_ets": null
         }
       }
@@ -13727,8 +13727,8 @@
           "ts": 0.25,
           "ets": 0.077,
           "bias": 4.0,
-          "amt_mae": 2.358,
-          "amt_bias": 2.464,
+          "amt_mae": 2.37,
+          "amt_bias": 2.48,
           "grade_ets": 0.147
         }
       },
