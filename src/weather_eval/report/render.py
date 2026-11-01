@@ -288,9 +288,6 @@ def _slim_report(report_data: dict) -> dict:
             "n": row.get("n"), "ci": row.get("ci90"),
             "sig": row.get("sig_vs_top"), "disp": bool(row.get("disputed")),
             "ok": bool(row.get("qualified")),
-            # 绝对技能分（0=无技能、100=完美）：与排名分并列，不参与排名
-            "sk": row.get("skill_score"), "skt": row.get("skill_temp"),
-            "skp": row.get("skill_precip"),
             # bootstrap 分布中心与点估计的偏差（原始分），负值=重采样均值偏低
             "bcd": row.get("bootstrap_center_delta"),
         })

@@ -1958,114 +1958,6 @@ def overall_score(t: dict, p: dict) -> float | None:
     return _composite_score(temp_score(t), precip_score(p))
 
 
-# ----------------------------------------------------------------- 绝对技能分
-# 为什么需要第二把尺（2026-10-31 第一性原理复核）：现有 0~100 是**排序指数**，
-# 它的换算斜率按"桶内跨源 sd = 8 分"标定，不保证端点可解释——`acc2=100%` 只给
-# 65 分、`POD=100%` 只给 63 分，而 `ETS=1` 给 100 分。于是页面上同一个"分数"
-# 在不同指标里含义不同，读者无法回答"满分到底是什么意思"。
-#
-# 绝对技能分 `skill_*` 采用统一锚点：
-#   * **100 = 完美预报**（RMSE/MAE/MBE/站间离散=0、acc=100%、r=1、slope=1、
-#     POD=100%、FAR=0、ETS=1、雨量误差=0、雨强 ETS=1）；
-#   * **0 = 无技能或无可用信息**（超出该指标的饱和线：例如 RMSE ≥ 6.8°C、
-#     FAR=100%、ETS≤0、雨量误差 ≥ 该桶实况总量）。
-# 换算仍复用同一套 `SCORE_SLOPES`（所以排序与现有视图一致），只是把 pct 族的
-# 端点显式拉齐：acc/pod 以百分比 0~100 映射到 0~100，ETS/grade_ets 以 0~1
-# 映射到 0~100。**这会把 pct 族的局部斜率改成 1，从而改变绝对分和跨指标权重**，
-# 所以它只作为**并列披露**的 `skill_*` 字段，绝不能冒充现有排名分：
-# 名次仍由 `score`（已冻结排序尺）决定，读者若要用绝对技能分比较，必须接受
-# "等权技能"这一不同价值判断。两者同时给出，避免静默替换口径。
-SKILL_PCT_SCALE = {"acc1": 100.0, "acc2": 100.0, "pod": 100.0,
-                   "ets": 1.0, "grade_ets": 1.0}
-# dev 族里"0 误差=100"但现有函数会把 v=0 翻到 100 吗？
-# 只有 `_conv_log`（slope）是 100−|log₂v|·λ：v=1 → 100；`_conv_dev` 的 v=0 → 100。
-# 统一技能尺必须把"完美值"逐项显式锚到 100，而不是依赖现有 λ 恰好把 0 映到 100：
-#   * rmse/mae/mbe/mbe_bdisp：f(v)=100·max(0, 1−v/sat)，sat 取 100/λ（=现有 0 分线）
-#   * r：f(v)=100·clamp(v,0,1)（r=1 完美；负相关与无关同记 0，与排名口径一致）
-#   * slope：f(v)=100·exp(−|log₂v|·λ/100)?? 现有是 100−|log₂v|λ；要锚到 0/100，
-#     用 f(v)=100·max(0, 1−|log₂v|/(100/λ)) = 现有函数，但 100/λ≈5.6 倍才饱和；
-#     保持现有函数即可（v=1→100，v=2^(100/λ)→0）。
-#   * far：100−far·λ 已是 far=0→100；far=100 时若 λ<1 仍 >0（非统一端点）。
-# 统一技能的 FAR 必须显式 100·(1−far/100)=100−far。
-_SKILL_DEV_KEYS = {"rmse", "mae", "mbe", "mbe_bdisp", "amt_mae"}
-_SKILL_FAR_KEYS = {"far"}
-
-
-def _skill_conv(key: str, fn):
-    """把现有换算函数包成统一端点的技能换算。
-
-    统一锚点：100 = 完美，0 = 无技能/饱和线。pct 族按指标满量程缩放到 0~100；
-    dev 族按现有饱和线（λ 的 0 分线）缩放；FAR 显式 0~100；其余（r/slope）复用
-    现有函数但保证完美值=100（r=1、slope=1 已满足）。
-    """
-    scale = SKILL_PCT_SCALE.get(key)
-    if scale is not None:
-        def conv_pct(v):
-            arr = np.asarray(v, dtype=float)
-            out = np.clip(arr / scale * 100.0, 0.0, 100.0)
-            out = np.where(np.isnan(arr), np.nan, out)
-            return float(out) if np.ndim(out) == 0 else out
-        return conv_pct
-    if key in _SKILL_DEV_KEYS:
-        sat = 100.0 / SCORE_SLOPES[key]
-
-        def conv_dev(v):
-            arr = np.asarray(v, dtype=float)
-            out = np.clip(100.0 * (1.0 - np.abs(arr) / sat), 0.0, 100.0)
-            out = np.where(np.isnan(arr), np.nan, out)
-            return float(out) if np.ndim(out) == 0 else out
-        return conv_dev
-    if key in _SKILL_FAR_KEYS:
-        def conv_far(v):
-            arr = np.asarray(v, dtype=float)
-            out = np.clip(100.0 - arr, 0.0, 100.0)
-            out = np.where(np.isnan(arr), np.nan, out)
-            return float(out) if np.ndim(out) == 0 else out
-        return conv_far
-    if key == "r":
-        # r 的完美锚点是 1；现有排序尺 r×λ 在 100% 相关时只给 69.4（λ<1），
-        # 统一技能尺显式映射到 100，负相关与无关同记 0（与排名口径一致）。
-        def conv_r(v):
-            arr = np.asarray(v, dtype=float)
-            out = np.clip(arr * 100.0, 0.0, 100.0)
-            out = np.where(np.isnan(arr), np.nan, out)
-            return float(out) if np.ndim(out) == 0 else out
-        return conv_r
-    return fn
-
-
-def _skill_parts(parts):
-    """同一族权重、同一缺项纪律，只把换算式替换为统一端点技能尺。"""
-    return tuple((k, w, label, mp, _skill_conv(k, fn))
-                 for k, w, label, mp, fn in parts)
-
-
-TEMP_SKILL_PARTS = _skill_parts(TEMP_SCORE_PARTS)
-PRECIP_SKILL_PARTS = _skill_parts(PRECIP_SCORE_PARTS)
-
-
-def temp_skill_score(t: dict) -> float | None:
-    """温度维的**绝对技能分**（0=无技能，100=完美）；并列披露，不参与排名。"""
-    return _weighted_score(TEMP_SKILL_PARTS, t)
-
-
-def precip_skill_score(p: dict) -> float | None:
-    """降水维的**绝对技能分**（0=无技能，100=完美）；并列披露，不参与排名。"""
-    return _weighted_score(PRECIP_SKILL_PARTS, p,
-                           min_weight_frac=_stats.PRECIP_MIN_WEIGHT_FRAC)
-
-
-def daily_temp_skill_score(md: dict) -> float | None:
-    mx = (md or {}).get("max") or {}
-    mn = (md or {}).get("min") or {}
-    hi, lo = temp_skill_score(mx), temp_skill_score(mn)
-    return round((hi + lo) / 2, 2) if hi is not None and lo is not None else None
-
-
-def composite_skill_score(ts: float | None, ps: float | None) -> float | None:
-    """两维技能分各半；缺一即缺（与排名综合分同一条纪律）。"""
-    return _mean2(ts, ps)
-
 
 TRACKS = ("hourly", "daily")
 TRACK_LABELS = {"hourly": "小时榜", "daily": "日榜", "all": "总榜"}
@@ -2952,17 +2844,6 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
             "score_composite_gain": float(_stats.SCORE_COMPOSITE_GAIN),
             # 展示缩放口径标记：渲染层与读者据此知道"分数拉开"不参与统计判定。
             "score_scale_mode": "display_only",
-            # 两把并列的分尺（2026-11 复核）：
-            #   score  = 排序指数（λ 标定到跨源 sd=8；端点不统一，只保证排序）
-            #   skill_* = 绝对技能分（100=完美、0=无技能；按指标满量程/饱和线锚定）
-            # skill_* 只用于可解释披露，不参与名次、CI 或冠军判定。
-            "score_scales": {
-                "ranking": "score/temp_score/precip_score",
-                "skill": "skill_score/skill_temp/skill_precip",
-                "skill_anchors": {"perfect": 100.0, "no_skill": 0.0},
-                "ranking_note": "ranking 的换算斜率按桶内跨源 sd=8 标定，端点不统一",
-                "skill_note": "skill 按指标满量程/饱和线锚定，可直接与完美/无技能对照",
-            },
             # 降水分"最小存活权重"门槛（当期实际生效值，P8 修法披露）：降水维
             # 存活子分权重低于名义总权重 × 该比例的格判缺测。与点估计/bootstrap
             # 共用同一全局，读者据此能复算"哪些格应该消失"。
@@ -3746,14 +3627,6 @@ def _board_row(m: str, t: dict, p: dict, **extra) -> dict:
         "bias": p.get("bias"), "amt_mae": p.get("amt_mae"),
         "amt_bias": p.get("amt_bias"), "grade_ets": p.get("grade_ets"),
         "n": t.get("n", 0), "n_precip": p.get("n", 0),
-        # 绝对技能分（0=无技能、100=完美）：与排名分并列披露，不参与排名。
-        # 排名分是"排序指数"（λ 只保证跨源离散度），技能分是"绝对刻度"；
-        # 两者同族权重、同缺项纪律，读者可按目标选用，但绝不能把技能分
-        # 当作名次依据。`skill_score` 由两维技能分各半合成。
-        "skill_temp": temp_skill_score(t),
-        "skill_precip": precip_skill_score(p),
-        "skill_score": composite_skill_score(temp_skill_score(t),
-                                             precip_skill_score(p)),
     }
     row.update(extra)
     # 展示层一次映射：原始分 → 0~100 的"拉开"刻度。必须在 extra 合并之后做，

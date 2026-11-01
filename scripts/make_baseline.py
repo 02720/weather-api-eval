@@ -65,9 +65,6 @@ SETTLE_HOURS = 48
 # 不含内部中间量（它们有 1e-9 容差，且不在页面上）。
 BOARD_FIELDS = (
     "model", "score", "temp_score", "precip_score", "ci90", "champion_pct",
-    # 绝对技能分（0=无技能、100=完美）：与排名分并列冻结，防止 skill 口径
-    # 在无人注意时漂移；它不参与排名，但也是页面展示字段。
-    "skill_score", "skill_temp", "skill_precip",
     "sig_vs_top", "qualified", "comparable", "n", "n_precip", "n_eff",
     "n_eff_rain", "acc2", "rmse", "ts", "ets", "lead_days", "n_days",
     "track_gap", "hourly_score", "daily_score",
