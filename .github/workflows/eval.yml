@@ -298,7 +298,6 @@ jobs:
         # stderr（对抗式审查 P1-7）。现在：先 abort 掉半途的变基（把工作区恢复到
         # 变基前，当轮产物一个不丢），再以非零退出让作业如实变红。
         id: rebase
-        if: always()
         # 不设 continue-on-error（第四轮 P2-2）：旧值让步骤结论变 success、
         # 作业不变红——"以非零退出让作业如实变红"的注释落了空。开 Issue 的
         # 下游步骤用的是 steps.rebase.outcome（不受本值影响）。

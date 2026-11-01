@@ -103,6 +103,13 @@ jobs:
       contents: write     # 提交重建后的报告与衍生数据
       pages: write
       id-token: write     # deploy-pages 的 OIDC
+    # 仓库采用 src 布局，且未做 pip 打包；运行 python -m weather_eval 需把 src
+    # 加入导入路径（与 eval.yml、pyproject 的 pytest pythonpath 保持一致）。
+    # ⚠️ 此变量不可省：install.sh 的可编辑安装失败是被容忍的（不影响本用法），
+    # 2026-11-01 run #42 就是合并时漏搬了这个 env，verify 以
+    # "No module named weather_eval" 收场。
+    env:
+      PYTHONPATH: ${{ github.workspace }}/src
     concurrency:
       group: weather-eval
       cancel-in-progress: false
