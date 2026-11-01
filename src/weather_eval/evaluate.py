@@ -1302,15 +1302,22 @@ def precip_amount_metrics(obs_vals, fcst_vals, min_sample,
     fcst = np.asarray(fcst_vals, dtype=float)
     m = ~np.isnan(obs) & ~np.isnan(fcst)
     n = int(m.sum())
-    out = {"n": n, "n_eff": n_eff, "amt_mae": None, "amt_bias": None}
+    out = {"n": n, "n_eff": n_eff, "amt_mae": None, "amt_bias": None,
+           "amt_skill": None}
     if n < min_sample or n == 0 or (n_eff is not None and n_eff < min_sample):
         return out
     o, f = obs[m], fcst[m]
     so = float(o.sum())
     if so <= 0:                       # 实况无降水：相对口径无定义
         return out
+    mae = float(np.abs(f - o).sum()) / n
+    mae_ref = so / n                  # “永远报零雨”的 MAE
     out["amt_mae"] = _r(float(np.abs(f - o).sum()) / so)
     out["amt_bias"] = _r(float(f.sum()) / so)
+    # skill-v3：对数雨量技能。MAE=参照 → 0；完美 → 1；更差 → 负但被压缩。
+    if mae_ref > 0:
+        out["amt_skill"] = round(
+            1.0 - math.log1p(mae) / math.log1p(mae_ref), 4)
     return out
 
 
@@ -1691,6 +1698,125 @@ TEMP_SCORE_PARTS = _build_score_parts(
 PRECIP_SCORE_PARTS = _build_score_parts(
     PRECIP_SCORE_FAMILIES, _PRECIP_FAMILY_MEMBER_SHARES, _PRECIP_METRIC_SPECS)
 
+# ============================================================================
+# skill-v3（2026-11）：先算技能变量 s，再在维度/综合层映射一次。
+#
+# 与 slope-v2 的根本区别：
+#   * 每个指标不再用“离完美多远 × λ”的绝对扣分，而是相对**过去-only 气候参照**
+#     的技能：s=0 表示和参照一样，s=1 表示完美，s<0 表示比参照差；
+#   * 子分不在 0~100 上加权平均，而是先在 s 上加权，再在维度/综合层做一次映射；
+#   * 50=无技巧、100=完美；下半段用指数压缩，不硬触底，0 只留给极端尾部；
+#   * MBE / slope / bias / POD / FAR 等属性量退出主综合分，单列披露。
+# 旧 slope-v2 的表与函数原样保留，供归档月报回放（meta.score_scheme 分流）。
+# ============================================================================
+TEMP_SKILL_PARTS = (
+    ("rmse", 0.45, "RMSE 技能分",
+     "1 − RMSE/气候参照RMSE（0=与气候平均一样，1=完美）", None),
+    ("mae", 0.10, "MAE 技能分",
+     "1 − MAE/气候参照MAE（稳健复核）", None),
+    ("acc2", 0.20, "±2°C 命中技能",
+     "命中率相对气候参照：参照→0，全对→1，全错→−1", None),
+    ("acc1", 0.05, "±1°C 命中技能",
+     "±1°C 命中率相对气候参照", None),
+    ("r_anom", 0.20, "异常相关",
+     "预报异常与观测异常的相关：0=无技巧，1=完美", None),
+)
+PRECIP_SKILL_PARTS = (
+    ("ets", 0.60, "晴雨 ETS 技能",
+     "ETS：0=无技巧，1=完美", None),
+    ("amt_skill", 0.25, "对数雨量技能",
+     "1 − ln(1+MAE)/ln(1+参照MAE)；参照=永远报零雨", None),
+    ("grade_ets", 0.15, "雨强分辨力技能",
+     "中雨/大雨档 ETS：0=无技巧，1=完美", None),
+)
+TEMP_SKILL_ATTRIBUTES = ("mbe", "mbe_bdisp", "slope", "r")
+PRECIP_SKILL_ATTRIBUTES = ("pod", "far", "bias", "amt_bias", "amt_mae")
+
+SCORE_SCHEME = "slope-v2"
+SCORE_SKILL_K = 1.535
+SCORE_SKILL_CENTER = 50.0
+
+
+def apply_score_scheme(scheme: str | None) -> None:
+    """装载评分方案：`slope-v2`（归档旧报）或 `skill-v3`（新报）。"""
+    global SCORE_SCHEME
+    s = str(scheme or "slope-v2").strip().lower()
+    if s not in ("slope-v2", "skill-v3"):
+        raise ValueError(f"未知 score_scheme: {scheme!r}")
+    SCORE_SCHEME = s
+
+
+def apply_score_skill_k(k: float | None = None) -> None:
+    """装载 skill-v3 下半段压缩参数（config eval.score_skill_k）。"""
+    global SCORE_SKILL_K
+    SCORE_SKILL_K = 1.535 if k is None else max(0.0, float(k))
+
+
+def _skill_value(key: str, metrics: dict) -> float | None:
+    """指标字典 + 参照 → 技能变量 s；缺项/参照不可用 → None。"""
+    ref = metrics.get("ref") or {}
+    if key in ("rmse", "mae"):
+        m = metrics.get(key)
+        r = ref.get(f"{key}_ref")
+        if m is None or r is None or r <= 0:
+            return None
+        return float(1.0 - float(m) / float(r))
+    if key in ("acc1", "acc2"):
+        a = metrics.get(key)
+        ar = ref.get(f"{key}_ref")
+        if a is None or ar is None:
+            return None
+        a = float(a) / 100.0
+        ar = float(ar) / 100.0
+        if ar >= 1.0:
+            return 1.0 if a >= 1.0 else None
+        if a >= ar:
+            return float((a - ar) / (1.0 - ar))
+        return float((a - ar) / ar) if ar > 0 else None
+    if key == "r_anom":
+        v = metrics.get("r_anom")
+        if v is None:
+            v = ref.get("r_anom")
+        return None if v is None else max(-1.0, min(1.0, float(v)))
+    if key in ("ets", "grade_ets"):
+        v = metrics.get(key)
+        return None if v is None else max(-1.0, min(1.0, float(v)))
+    if key == "amt_skill":
+        v = metrics.get("amt_skill")
+        return None if v is None else float(v)
+    return None
+
+
+def _weighted_skill(parts, metrics: dict, require_key: str | None = None) -> float | None:
+    """技能变量加权平均 → 原始线性技能指数 `50 + 50·s`（可为负，不裁剪）。
+
+    `require_key`：降水维必须 ETS 存活；ETS 缺失（无雨事件）时整维缺测，
+    不允许“只剩 amount”凑一个降水分。
+    """
+    if require_key is not None and metrics.get(require_key) is None:
+        return None
+    num = den = 0.0
+    for key, w, *_rest in parts:
+        s = _skill_value(key, metrics)
+        if s is None:
+            continue
+        num += w * s
+        den += w
+    if not den:
+        return None
+    return float(50.0 + 50.0 * (num / den))
+
+
+def skill_display(x):
+    """skill-v3 展示映射：上半段原样，下半段指数压缩，NaN 传播。"""
+    arr = np.asarray(x, dtype=float)
+    with np.errstate(invalid="ignore"):
+        lower = 50.0 * np.exp(-SCORE_SKILL_K * (50.0 - arr) / 50.0)
+        out = np.where(arr >= 50.0, arr, lower)
+    out = np.clip(out, 0.0, 100.0)
+    out = np.where(np.isnan(arr), np.nan, out)
+    return float(out) if out.ndim == 0 else out
+
 
 def _clamp100(v: float) -> float | None:
     # 非有限值显式拒收（第四轮 P2-5）：Python 的 min/max 遇 NaN 会返回边界值
@@ -1756,29 +1882,36 @@ def _mean2(a: float | None, b: float | None) -> float | None:
 def display_dim_score(raw: float | None) -> float | None:
     """原始维度分 → 展示分值（**只用于展示**，不参与名次/显著性/CI 计算）。
 
-    gain 由 config `eval.score_index_gain` 标定（P99.5 → 软上限 98），截断在
-    [0,100] 只影响展示；名次始终由 `temp_score` / `precip_score` 的原始值决定。
+    slope-v2：gain 由 config `eval.score_index_gain` 标定（P99.5 → 软上限 98）。
+    skill-v3：上半段原样、下半段指数压缩；50=气候平均，100=完美。
     """
     if raw is None:
         return None
+    if SCORE_SCHEME == "skill-v3":
+        return round(float(skill_display(raw)), 2)
     return round(float(_stats.index_gain(raw)), 2)
 
 
 def display_composite_score(raw: float | None) -> float | None:
     """原始综合分 → 展示分值（**只用于展示**）；排名与 CI 走未缩放原始分。
 
-    `score_composite_gain` 是**总**展示增益（2026-10-31 起把原来的"维度 gain
-    × 综合分 gain"两层合并到这一层），靶点是综合分 P99.5 → 98。
+    slope-v2：`score_composite_gain` 总展示增益（P99.5 → 98）。
+    skill-v3：同 `skill_display`，50=两维平均无技巧。
     """
     if raw is None:
         return None
+    if SCORE_SCHEME == "skill-v3":
+        return round(float(skill_display(raw)), 2)
     return round(float(_stats.composite_gain(raw)), 2)
 
 
 def display_ci(ci: list[float] | tuple[float, ...] | None) -> list[float] | None:
-    """bootstrap 的原始 CI 端点 → 展示刻度（与 display_composite_score 同一增益）。"""
+    """bootstrap 的原始 CI 端点 → 展示刻度（与 display_composite_score 同一映射）。"""
     if not ci:
         return None
+    if SCORE_SCHEME == "skill-v3":
+        return [None if v is None else round(float(skill_display(v)), 2)
+                for v in ci]
     return [None if v is None else round(float(_stats.composite_gain(v)), 2)
             for v in ci]
 
@@ -1807,7 +1940,13 @@ def _composite_score(ts: float | None, ps: float | None) -> float | None:
 
 
 def temp_score(t: dict) -> float | None:
-    """温度得分（原始 0~100）：4 族 8 项按 TEMP_SCORE_PARTS 权重加权，缺项按剩余权重归一。"""
+    """温度原始分。
+
+    slope-v2：4 族 8 项按 `TEMP_SCORE_PARTS` 加权，缺项按剩余权重归一。
+    skill-v3：5 项技能变量先在 s 上加权，返回 `50+50s`（可为负，不裁剪）。
+    """
+    if SCORE_SCHEME == "skill-v3":
+        return _weighted_skill(TEMP_SKILL_PARTS, t)
     return _weighted_score(TEMP_SCORE_PARTS, t)
 
 
@@ -1930,6 +2069,10 @@ def precip_score(p: dict) -> float | None:
     照旧归一；缺事件四项 → 0.25 存活，判缺测）。门槛实现在 _weighted_score，
     并与 bootstrap 的 stats._score_from_parts 共用同一全局门槛值（同一把尺）。
     """
+    if SCORE_SCHEME == "skill-v3":
+        # ETS 是降水维的锚点：缺失（无雨事件）→ 整维 None，绝不允许
+        # “只剩 amount/grade”凑一个降水分。
+        return _weighted_skill(PRECIP_SKILL_PARTS, p, require_key="ets")
     gate = _stats.PRECIP_MIN_WEIGHT_FRAC
     if gate and gate > 0:
         # 独立证据族门槛（2026-11）：只看权重总和会把"ets+far 缺 pod"这种
@@ -2251,6 +2394,216 @@ def _station_groups(recs: list[dict], ka: str, kb: str) -> list[tuple[list, list
     return [([r[ka] for r in rs], [r[kb] for r in rs]) for _sid, rs in sorted(by.items())]
 
 
+class _ReferenceIndex:
+    """过去-only 的逐站气候参照 + 持续性对照（2026-11 skill-v3）。
+
+    参照使用**目标日之前**的 W 天观测：逐小时按"同一站、同一小时、前 W 天"求
+    平滑均值；日最高/最低按"同一站、前 W 天"的日极值求均值。严格不回退到目标
+    桶的样本均值——那会让"模型误差≈参照误差"恒等于 50 分，是自我实现而不是测量。
+
+    persistence 只作**对照**（不是主锚点）：逐小时取前一天同一小时；日极值取
+    前一天极值。报告单独披露"是否跑赢持续性"，不改变 50=气候平均的含义。
+    """
+
+    def __init__(self, station_ids, obs_maps, window_days: int = 15,
+                 min_days: int = 5):
+        self.window_days = max(1, int(window_days))
+        self.min_days = max(1, int(min_days))
+        self.has_daily_coverage = 20
+        self.hourly: dict[tuple[str, str], tuple[float | None, float | None]] = {}
+        self.daily: dict[tuple[str, str, str], tuple[float | None, float | None]] = {}
+        for sid in station_ids:
+            self._build_station(sid, (obs_maps or {}).get(sid) or {})
+
+    @staticmethod
+    def _day_of(iso: str) -> str:
+        return iso[:10]
+
+    @staticmethod
+    def _hour_of(iso: str) -> str:
+        return iso[11:13]
+
+    def _build_station(self, sid: str, obs_map: dict) -> None:
+        days: dict[str, list[tuple[str, float | None, float | None]]] = defaultdict(list)
+        for iso, rec in obs_map.items():
+            if not isinstance(iso, str) or len(iso) < 13:
+                continue
+            days[self._day_of(iso)].append(
+                (self._hour_of(iso), rec.get("temp"), rec.get("rain")))
+        day_keys = sorted(days)
+        daily_extremes: dict[str, tuple[float, float]] = {}
+        for day, rows in days.items():
+            temp_rows = [t for _h, t, _r in rows if t is not None]
+            if len(temp_rows) >= self.has_daily_coverage:
+                daily_extremes[day] = (max(temp_rows), min(temp_rows))
+
+        for i, day in enumerate(day_keys):
+            prev_days = day_keys[max(0, i - self.window_days):i]
+            prev_hourly: dict[str, list[float]] = defaultdict(list)
+            for pd in prev_days:
+                for hour, temp, _rain in days.get(pd, ()):
+                    if temp is not None:
+                        prev_hourly[hour].append(float(temp))
+            prev_extremes = [daily_extremes[pd] for pd in prev_days
+                             if pd in daily_extremes]
+            has_clim = len(prev_days) >= self.min_days
+            norm_max = norm_min = None
+            if has_clim and len(prev_extremes) >= self.min_days:
+                norm_max = sum(x[0] for x in prev_extremes) / len(prev_extremes)
+                norm_min = sum(x[1] for x in prev_extremes) / len(prev_extremes)
+            # 前一天（持续性）——只取紧邻的日历日，不跨过缺测日
+            prev_day = None
+            if i > 0 and (date.fromisoformat(day)
+                          - date.fromisoformat(day_keys[i - 1])).days == 1:
+                prev_day = day_keys[i - 1]
+            persist_max = persist_min = None
+            if prev_day is not None and prev_day in daily_extremes:
+                persist_max, persist_min = daily_extremes[prev_day]
+            if norm_max is not None:
+                self.daily[(sid, day, "max")] = (norm_max, persist_max)
+                self.daily[(sid, day, "min")] = (norm_min, persist_min)
+            else:
+                self.daily[(sid, day, "max")] = (None, persist_max)
+                self.daily[(sid, day, "min")] = (None, persist_min)
+
+            for hour, _temp, _rain in days.get(day, ()):
+                vals = prev_hourly.get(hour, ())
+                norm = (sum(vals) / len(vals)) if has_clim and len(vals) >= self.min_days else None
+                persist = None
+                if prev_day is not None:
+                    for h2, t2, _r2 in days.get(prev_day, ()):
+                        if h2 == hour and t2 is not None:
+                            persist = float(t2)
+                            break
+                self.hourly[(sid, f"{day}T{hour}:00")] = (norm, persist)
+
+    def hourly_ref(self, sid: str, iso: str) -> float | None:
+        return (self.hourly.get((sid, iso)) or (None, None))[0]
+
+    def hourly_persist(self, sid: str, iso: str) -> float | None:
+        return (self.hourly.get((sid, iso)) or (None, None))[1]
+
+    def daily_ref(self, sid: str, day: str, half: str) -> float | None:
+        return (self.daily.get((sid, day, half)) or (None, None))[0]
+
+    def daily_persist(self, sid: str, day: str, half: str) -> float | None:
+        return (self.daily.get((sid, day, half)) or (None, None))[1]
+
+
+def _build_reference_index(station_ids, obs_maps, window_days=15,
+                           min_days=5) -> _ReferenceIndex:
+    return _ReferenceIndex(station_ids, obs_maps, window_days=window_days,
+                           min_days=min_days)
+
+
+def _ref_stats(obs, ref, persist, limits, min_sample: int) -> dict:
+    """观测 vs 参照/持续性的误差统计；不足样本 → available=False（不出分）。"""
+    o = np.asarray(obs, dtype=float)
+    r = np.asarray(ref, dtype=float)
+    p = np.asarray(persist, dtype=float)
+    valid = np.isfinite(o) & np.isfinite(r)
+    n = int(valid.sum())
+    out = {"available": False, "ref_type": None, "n": n, "rmse_ref": None,
+           "mae_ref": None, "acc1_ref": None, "acc2_ref": None,
+           "persist_n": 0, "persist_rmse": None, "persist_mae": None,
+           "persist_acc1": None, "persist_acc2": None}
+    pv = np.isfinite(o) & np.isfinite(p)
+    pn = int(pv.sum())
+    out["persist_n"] = pn
+    if pn >= min_sample:
+        pe = o[pv] - p[pv]
+        out["persist_rmse"] = float(np.sqrt(np.mean(pe * pe)))
+        out["persist_mae"] = float(np.mean(np.abs(pe)))
+        for lim in limits:
+            out[f"persist_acc{lim}"] = float(100.0 * np.mean(np.abs(pe) <= lim))
+    if n >= min_sample:
+        e = o[valid] - r[valid]
+        out["rmse_ref"] = float(np.sqrt(np.mean(e * e)))
+        out["mae_ref"] = float(np.mean(np.abs(e)))
+        for lim in limits:
+            out[f"acc{lim}_ref"] = float(100.0 * np.mean(np.abs(e) <= lim))
+        out["available"] = True
+        out["ref_type"] = "climatology"
+        return out
+    # 气候参照尚未攒够（窗口头几天）→ 用持续性兜底，明确标 ref_type；
+    # 绝不回退到“该桶样本均值”（那会让分数恒等于 50）。
+    if pn >= min_sample:
+        out["rmse_ref"] = out["persist_rmse"]
+        out["mae_ref"] = out["persist_mae"]
+        for lim in limits:
+            out[f"acc{lim}_ref"] = out[f"persist_acc{lim}"]
+        out["available"] = True
+        out["ref_type"] = "persistence"
+    return out
+
+
+def _anomaly_corr(recs: list[dict], ref_vals, ka: str, kb: str,
+                  min_group_n: int = GROUP_MIN_N) -> float | None:
+    """预报异常与观测异常的站内相关，Fisher-z 合并。
+
+    异常 = 原始值 − 同一时刻的过去-only 气候参照。原始 r 混入季节均值与站点
+    气候差异，中长期会虚高；异常相关才是"起伏同步不同步"。
+    """
+    by: dict[str, list[tuple[float, float, float]]] = defaultdict(list)
+    for r, rv in zip(recs, ref_vals):
+        if rv is None or not np.isfinite(rv):
+            continue
+        o, f = r.get(ka), r.get(kb)
+        if o is None or f is None:
+            continue
+        by[r["station"]].append((float(o), float(f), float(rv)))
+    rs, ns = [], []
+    for _sid, rows in sorted(by.items()):
+        if len(rows) < min_group_n:
+            continue
+        o = np.asarray([x[0] - x[2] for x in rows], dtype=float)
+        f = np.asarray([x[1] - x[2] for x in rows], dtype=float)
+        if np.std(o) <= 0 or np.std(f) <= 0:
+            continue
+        rho = float(np.corrcoef(f, o)[0, 1])
+        if not np.isfinite(rho):
+            continue
+        rs.append(max(-0.999, min(0.999, rho)))
+        ns.append(len(rows))
+    if not rs:
+        # 站内样本不足时回退池化（日轨每站每格常只有 7 天，站内 30 条门槛
+        # 永远过不了；池化至少保留“异常起伏同步”的方向信息）。
+        all_rows = [row for rows in by.values() for row in rows]
+        if len(all_rows) < min_group_n:
+            return None
+        o = np.asarray([x[0] - x[2] for x in all_rows], dtype=float)
+        f = np.asarray([x[1] - x[2] for x in all_rows], dtype=float)
+        if np.std(o) <= 0 or np.std(f) <= 0:
+            return None
+        rho = float(np.corrcoef(f, o)[0, 1])
+        return max(-0.999, min(0.999, rho)) if np.isfinite(rho) else None
+    return _stats.fisher_z_combine(rs, ns)
+
+
+def _temp_reference_stats(recs: list[dict], ref_index: _ReferenceIndex,
+                          kind: str, half: str | None,
+                          limits, min_sample: int) -> dict:
+    """一个温度格子的参照统计 + 异常相关（点估计路径）。"""
+    if kind == "hourly":
+        ref_vals = [ref_index.hourly_ref(r["station"], r["valid_iso"]) for r in recs]
+        persist_vals = [ref_index.hourly_persist(r["station"], r["valid_iso"])
+                        for r in recs]
+        obs_key, fcst_key = "temp_obs", "temp_fcst"
+    else:
+        ref_vals = [ref_index.daily_ref(r["station"], r["valid_day"], half)
+                    for r in recs]
+        persist_vals = [ref_index.daily_persist(r["station"], r["valid_day"], half)
+                        for r in recs]
+        obs_key = "temp_max_obs" if half == "max" else "temp_min_obs"
+        fcst_key = "temp_max_fcst" if half == "max" else "temp_min_fcst"
+    obs = np.asarray([r.get(obs_key) for r in recs], dtype=float)
+    stats = _ref_stats(obs, ref_vals, persist_vals, limits, min_sample)
+    stats["r_anom"] = _anomaly_corr(
+        recs, ref_vals, obs_key, fcst_key,
+        min_group_n=5 if kind == "daily" else GROUP_MIN_N)
+    return stats
+
+
 # ----------------------------------------------------------------- 报告组装
 def _pool(records, keys, filt=None):
     o, f = [], []
@@ -2373,12 +2726,23 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
                                       DEFAULT_EVAL["board_block_days"]))
     # 小时:日 的宏观权重（2026-10-25，复核 P1）：日轨 0.5 = 2:1。
     daily_track_weight = float(eval_cfg.get("daily_track_weight", 0.5))
+    score_scheme_cfg = str(eval_cfg.get(
+        "score_scheme", DEFAULT_EVAL.get("score_scheme", "skill-v3")))
+    apply_score_scheme(score_scheme_cfg)
+    apply_score_skill_k(eval_cfg.get(
+        "score_skill_k", DEFAULT_EVAL.get("score_skill_k", 1.535)))
     require_complete = bool(eval_cfg.get("require_complete_snapshots", True))
     # 封存时点门槛（审查 P1-4）：默认开——"预报必须在实况之前封存"不该只是口号。
     # 关掉它可退回旧口径做对照，两份报告的差就是这一个开关的代价。
     require_frozen = bool(eval_cfg.get("require_frozen_samples", True))
 
     obs_maps, snapshots = _preload(station_ids, models)
+    ref_window = int(eval_cfg.get("score_ref_window_days",
+                                  DEFAULT_EVAL.get("score_ref_window_days", 15)))
+    ref_min = int(eval_cfg.get("score_ref_min_days",
+                               DEFAULT_EVAL.get("score_ref_min_days", 5)))
+    ref_index = _build_reference_index(station_ids, obs_maps,
+                                       window_days=ref_window, min_days=ref_min)
     excluded_incomplete = _count_incomplete(snapshots)
     collect_stats: dict = {}
     hourly, daily = collect(station_ids, models, start_dt, end_dt,
@@ -2414,12 +2778,15 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
     graded_backend = str(eval_cfg.get("graded_backend", DEFAULT_GRADED_BACKEND))
     jobs_temp: list[tuple[tuple, dict]] = []
     slots_temp: list[tuple[dict, str]] = []
+    refs_temp: list[dict | None] = []
     jobs_precip: list[tuple[tuple, dict]] = []
     slots_precip: list[tuple[dict, str]] = []
 
-    def add_temp(target: dict, key: str, args: tuple, kw: dict) -> None:
+    def add_temp(target: dict, key: str, args: tuple, kw: dict,
+                 ref: dict | None = None) -> None:
         jobs_temp.append((args, kw))
         slots_temp.append((target, key))
+        refs_temp.append(ref)
 
     def add_precip(target: dict, key: str, args: tuple, kw: dict) -> None:
         jobs_precip.append((args, kw))
@@ -2499,7 +2866,9 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
                     else _n_eff_rain(recs, thr, "valid_iso", "lead"))
             add_temp(temp_hourly[m], f"{b}d", (to, tf, limits, min_sample),
                      {"n_eff": ne_t,
-                      "groups": _station_groups(recs, "temp_obs", "temp_fcst")})
+                      "groups": _station_groups(recs, "temp_obs", "temp_fcst")},
+                     ref=_temp_reference_stats(recs, ref_index, "hourly", None,
+                                               limits, min_sample))
             add_precip(precip_hourly[m], f"{b}d", (ro, rf, thr, min_sample),
                        {"kind": "1h", "graded_levs": HOURLY_GRADED_LEVS,
                         "n_eff": ne_r, "graded_backend": graded_backend})
@@ -2602,12 +2971,16 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
                      (np.asarray(by_off[off]["max"][0], dtype=float),
                       np.asarray(by_off[off]["max"][1], dtype=float),
                       limits, min_sample),
-                     {"n_eff": neff_b, "groups": gmax})
+                     {"n_eff": neff_b, "groups": gmax},
+                     ref=_temp_reference_stats(sub, ref_index, "daily", "max",
+                                               limits, min_sample))
             add_temp(cell, "min",
                      (np.asarray(by_off[off]["min"][0], dtype=float),
                       np.asarray(by_off[off]["min"][1], dtype=float),
                       limits, min_sample),
-                     {"n_eff": neff_b, "groups": gmin})
+                     {"n_eff": neff_b, "groups": gmin},
+                     ref=_temp_reference_stats(sub, ref_index, "daily", "min",
+                                               limits, min_sample))
             add_precip(precip_daily[m], f"{off}d",
                        (np.asarray(by_off[off]["rain"][0], dtype=float),
                         np.asarray(by_off[off]["rain"][1], dtype=float),
@@ -2635,9 +3008,12 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
     # ---- 一次性分派：全部分时效格子走同一批调用（并行或串行由 parallel 决定）----
     from .parallel import map_metric_calls
 
-    for (target, key), res in zip(slots_temp,
-                                  map_metric_calls("temp_metrics", jobs_temp)):
+    for (target, key), res, ref in zip(
+            slots_temp, map_metric_calls("temp_metrics", jobs_temp), refs_temp):
         target[key] = res
+        if ref is not None:
+            target[key]["ref"] = ref
+            target[key]["r_anom"] = ref.get("r_anom")
     for (target, key), res in zip(slots_precip,
                                   map_metric_calls("precip_metrics", jobs_precip)):
         target[key] = res
@@ -2709,7 +3085,8 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
         limits=limits, min_sample=min_sample,
         thr_hourly=thr_hourly, thr_daily=thr_daily,
         gb_hourly=gb_hourly, gb_daily=gb_daily,
-        graded_backend=graded_backend, fingerprint=block_fp)
+        graded_backend=graded_backend, fingerprint=block_fp,
+        ref_index=ref_index)
     logger.info("分块面板就绪：%d 块（缓存 %d / 重算 %d），用时 %.1fs",
                 len(block_panel["blocks"]),
                 sum(1 for b in block_panel["blocks"] if b.get("cached")),
@@ -2771,6 +3148,8 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
             else:
                 r["rk"] = None
 
+    rain_no_skill = _rain_no_skill_buckets(leaderboards)
+
     # 日历跨度（日历维度）：入围源各自的验证日数差异有多大
     qdays = [r["n_days"] for r in leaderboards["all"]
              if r.get("qualified") and r.get("n_days")]
@@ -2825,6 +3204,11 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
             "generated_at": floor_to_hour(end_dt).strftime("%Y-%m-%d %H:%M"),
             "models": models,
             "stations": station_ids,
+            # 有效观测窗口：报告标签可能从 8/1 起，但原始观测只有 68 天；
+            # 参照/评分只能按实际有观测的天算，页面必须能看见这件事。
+            "effective_start": (min(eval_days_list) if eval_days_list else None),
+            "effective_end": (max(eval_days_list) if eval_days_list else None),
+            "effective_days": (len(eval_days_list) if eval_days_list else 0),
             "limits": limits,
             "hourly_lead_days": hourly_lead_days,
             "daily_max_offset_days": daily_max_offset,
@@ -2835,6 +3219,25 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
             # 评分换算斜率（当期实际生效值）：局部敏感度 = 权重×斜率×离散度；
             # 斜率是季度标定的冻结值——披露当期值，读者才能把"评分构成"表对回配置
             "score_slopes": dict(SCORE_SLOPES),
+            # skill-v3：评分方案 + 参照窗口 + 下半段压缩参数 + 主榜权重/属性清单。
+            # 归档渲染按 score_scheme 分流；旧月报继续用 slope-v2。
+            "score_scheme": SCORE_SCHEME,
+            "score_skill_k": float(SCORE_SKILL_K),
+            "score_ref_window_days": int(ref_window),
+            "score_ref_min_days": int(ref_min),
+            "score_skill_parts": {
+                "temp": [{"key": k, "weight": w, "label": lb}
+                         for k, w, lb, *_ in TEMP_SKILL_PARTS],
+                "precip": [{"key": k, "weight": w, "label": lb}
+                           for k, w, lb, *_ in PRECIP_SKILL_PARTS],
+            },
+            "score_skill_attributes": {
+                "temp": list(TEMP_SKILL_ATTRIBUTES),
+                "precip": list(PRECIP_SKILL_ATTRIBUTES),
+            },
+            # 本窗口“未检出降水技巧”的天桶（>60% 格 |ETS|≤0.05）：
+            # 50 分附近是“没有证据”，不是“表现中等”。
+            "rain_no_skill_buckets": rain_no_skill,
             # 展示层维度分增益（当期生效值）：**只作用于展示**。名次、难度对齐、
             # CI 与显著性都在未缩放原始分上算（2026-10-31 复核 P0-3）。
             "score_index_gain": float(_stats.SCORE_INDEX_GAIN),
@@ -3653,6 +4056,29 @@ def _rank_rows(rows: list[dict], keys: tuple[str, ...] = ("score",)) -> list[dic
     return sorted(rows, key=key)
 
 
+def _rain_no_skill_buckets(leaderboards: dict[str, list[dict]]) -> dict[str, list[str]]:
+    """标出“本窗口未检出降水技巧”的天桶（>60% 格 |ETS|≤0.05）。
+
+    50 分附近的降水分有两种读法：刻度修正后的“无技巧”与“表现中等”。这里把
+    前者显式标出来，避免读者把“没有证据”读成“大家都还行”。
+    """
+    out: dict[str, list[str]] = {}
+    for key, rows in (leaderboards or {}).items():
+        if ":" not in key:
+            continue
+        track, day = key.split(":", 1)
+        if track not in ("hourly", "daily"):
+            continue
+        vals = []
+        for r in rows:
+            v = r.get("ets")
+            if v is not None:
+                vals.append(abs(float(v)))
+        if len(vals) >= 3 and sum(1 for v in vals if v <= 0.05) / len(vals) >= 0.60:
+            out.setdefault(track, []).append(day)
+    return out
+
+
 def _track_lead_boards(models, track: str, src: dict, days: int) -> dict[str, list[dict]]:
     """某条轨道的分时效榜：{f"{track}:{b}d": 该提前天数的完整行}。
 
@@ -3946,13 +4372,13 @@ def _segment_board(S: np.ndarray, W: np.ndarray | None, cols: list[int],
 # 新源 7 天后拿到的就是正式分数、正式名次和正式 CI；证据量少带来的不确定性由
 # 经验贝叶斯收缩（stats.eb_shrink）与更宽的 bootstrap 区间如实披露。
 # ============================================================================
-_BLOCK_SCHEMA = 1
+_BLOCK_SCHEMA = 2
 
 # 分块缓存里只存入分/展示真正用到的字段（温度 8 项 + 样本量，降水 8 项 + 样本量）。
 _BLOCK_TEMP_KEYS = ("n", "n_eff", "rmse", "mae", "mbe", "acc1", "acc2", "r",
-                    "slope", "mbe_bdisp")
+                    "slope", "mbe_bdisp", "r_anom")
 _BLOCK_PRECIP_KEYS = ("n", "n_eff", "acc", "pod", "far", "ts", "ets", "bias",
-                      "amt_mae", "amt_bias", "grade_ets")
+                      "amt_mae", "amt_bias", "grade_ets", "amt_skill")
 
 
 def _seven_day_blocks(start_dt, end_dt, block_days: int = 7) -> list[dict]:
@@ -4055,8 +4481,9 @@ def _block_scoring_fingerprint(eval_cfg: dict, models: list[str],
         # 原始指标（temp_score/precip_score/所有诊断列），放进来会让每次
         # 调展示刻度就把 17 个历史块全部重算（实测 +40 s）。同理，
         # bootstrap_runs / sensitivity_runs / 渲染参数也不属于格子口径。
-        "score_slopes", "precip_min_surviving_weight", "graded_backend",
-        "require_complete_snapshots", "require_frozen_samples",
+        "score_scheme", "score_ref_window_days", "score_ref_min_days",
+        "score_skill_k", "score_slopes", "precip_min_surviving_weight",
+        "graded_backend", "require_complete_snapshots", "require_frozen_samples",
         "board_block_days", "board_block_min_days",
         "board_block_min_rain_events", "board_block_min_rain_days",
         "board_block_min_cells", "board_min_qualified_days",
@@ -4086,7 +4513,9 @@ def _cache_num(v) -> float | None:
 
 
 def _compact_temp(t: dict) -> dict:
-    return {k: _cache_num(t.get(k)) for k in _BLOCK_TEMP_KEYS}
+    out = {k: _cache_num(t.get(k)) for k in _BLOCK_TEMP_KEYS}
+    out["ref"] = t.get("ref")
+    return out
 
 
 def _compact_precip(p: dict) -> dict:
@@ -4174,7 +4603,7 @@ def _block_obs_digest(obs_maps, station_ids, start: str, end: str) -> str | None
 def _block_panel(models, blocks, hourly, daily, *, obs_maps, station_ids,
                  limits, min_sample, thr_hourly, thr_daily,
                  gb_hourly, gb_daily, graded_backend,
-                 fingerprint: str) -> dict:
+                 fingerprint: str, ref_index: _ReferenceIndex | None = None) -> dict:
     """算出/读出每个 7 天块的全部 (模型, 轨道, 天桶) 格子与证据量。
 
     结构：
@@ -4191,6 +4620,8 @@ def _block_panel(models, blocks, hourly, daily, *, obs_maps, station_ids,
     from . import storage as _storage
     from .parallel import map_metric_calls
 
+    if ref_index is None:
+        ref_index = _build_reference_index(station_ids, obs_maps)
     model_set = set(models)
     day_map: dict[str, str] = {}
     for b in blocks:
@@ -4283,6 +4714,7 @@ def _block_panel(models, blocks, hourly, daily, *, obs_maps, station_ids,
     # ---- 温度指标走并行批处理；降水评分格 numpy 路径直接算 ----
     jobs_t: list[tuple[tuple, dict]] = []
     slots_t: list[tuple[dict, str]] = []
+    refs_t: list[dict | None] = []
     computed: dict[str, dict] = {k: {"hourly": {}, "daily": {}} for k in need}
     for (k, m, b), recs in hgroups.items():
         cell: dict = {}
@@ -4294,6 +4726,8 @@ def _block_panel(models, blocks, hourly, daily, *, obs_maps, station_ids,
                        {"n_eff": ne_t,
                         "groups": _station_groups(recs, "temp_obs", "temp_fcst")}))
         slots_t.append((cell, "t"))
+        refs_t.append(_temp_reference_stats(recs, ref_index, "hourly", None,
+                                            limits, min_sample))
         cell["p"] = _precip_score_cell(ro, rf, thr_hourly, min_sample, ne_r, gb_hourly)
         computed[k]["hourly"].setdefault(m, {})[str(b)] = cell
     for (k, m, off), recs in dagroups.items():
@@ -4307,16 +4741,25 @@ def _block_panel(models, blocks, hourly, daily, *, obs_maps, station_ids,
                            {"n_eff": ne_t,
                             "groups": _station_groups(recs, oka, okb)}))
             slots_t.append((cell.setdefault(half, {}), "x"))  # 占位，见下方替换
+            refs_t.append(_temp_reference_stats(recs, ref_index, "daily", half,
+                                                limits, min_sample))
         ro, rf = _pool(recs, ("rain_obs", "rain_fcst"))
         cell["p"] = _precip_score_cell(ro, rf, thr_daily, min_sample, ne_r, gb_daily)
         computed[k]["daily"].setdefault(m, {})[str(off)] = cell
 
-    for (target, key), res in zip(slots_t, map_metric_calls("temp_metrics", jobs_t)):
+    for (target, key), res, ref in zip(
+            slots_t, map_metric_calls("temp_metrics", jobs_t), refs_t):
         if key == "x":
             target.clear()
             target.update(res)
+            if ref is not None:
+                target["ref"] = ref
+                target["r_anom"] = ref.get("r_anom")
         else:
             target[key] = res
+            if ref is not None:
+                target[key]["ref"] = ref
+                target[key]["r_anom"] = ref.get("r_anom")
 
     # 压缩到缓存/面板真正需要的字段
     for k in need:

@@ -41,10 +41,11 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 
 from ..evaluate import (_DAILY_TEMP_VIEW_KEYS, PRECIP_SCORE_PARTS,
-                        TEMP_SCORE_PARTS, apply_composite_gain,
-                        apply_score_index_gain, apply_score_slopes,
-                        daily_temp_score, display_dim_score, score_map_text,
-                        score_params_lock)
+                        PRECIP_SKILL_PARTS, TEMP_SCORE_PARTS, TEMP_SKILL_PARTS,
+                        apply_composite_gain, apply_score_index_gain,
+                        apply_score_skill_k, apply_score_scheme,
+                        apply_score_slopes, daily_temp_score,
+                        display_dim_score, score_map_text, score_params_lock)
 from ..timeutil import now_beijing
 
 logger = logging.getLogger(__name__)
@@ -216,7 +217,8 @@ def _recon_ok(recon, pub) -> bool:
                         rel_tol=0.0, abs_tol=1e-9)
 
 
-def _verify_daily_temp_halves(lb: dict, lbtemp: dict) -> None:
+def _verify_daily_temp_halves(lb: dict, lbtemp: dict,
+                              scheme: str = "slope-v2") -> None:
     """P2 复算不变量（score_review_proposal）：**发布**的分半指标必须能复算出
     **发布**的日温度分。
 
@@ -234,6 +236,11 @@ def _verify_daily_temp_halves(lb: dict, lbtemp: dict) -> None:
     * 分半字段整体缺席（旧结论摘要数据重渲染）时无事可对，跳过不误伤；
       一旦有任何分半值，对不上就是发布坏了，就地炸。
     """
+    if scheme == "skill-v3":
+        # skill-v3 的日温度分依赖每半的 ref/r_anom；lbtemp 只发布 8 个原始指标，
+        # 无法从发布字段逐位复算。v3 的“子分→维度”一致性由 evaluate 的
+        # 性质测试锁定；这里只保留 slope-v2 的发布契约检查。
+        return
     for day, hal_rows in (lbtemp or {}).items():
         lb_rows = ((lb or {}).get("daily") or {}).get(day) or []
         if len(hal_rows) != len(lb_rows):
@@ -272,10 +279,16 @@ def _slim_report(report_data: dict) -> dict:
     # 携带了它（score_slopes / score_index_gain / score_composite_gain），
     # 缺字段时回到代码缺省。此前在独立进程里渲染月度结论摘要会因为全局尺还是
     # 默认值而触发 P2 复算不变量报错（发布分 74.2 vs 复算 63.1）。
-    apply_score_slopes(meta.get("score_slopes"))
-    apply_score_index_gain(meta.get("score_index_gain"), meta.get("score_index_center"))
-    apply_composite_gain(meta.get("score_composite_gain"),
-                         meta.get("score_index_center"))
+    scheme = str(meta.get("score_scheme") or "slope-v2")
+    apply_score_scheme(scheme)
+    if scheme == "skill-v3":
+        apply_score_skill_k(meta.get("score_skill_k"))
+    else:
+        apply_score_slopes(meta.get("score_slopes"))
+        apply_score_index_gain(meta.get("score_index_gain"),
+                               meta.get("score_index_center"))
+        apply_composite_gain(meta.get("score_composite_gain"),
+                             meta.get("score_index_center"))
 
     board = []
     for i, row in enumerate(lbs.get("all") or [], 1):
@@ -437,7 +450,7 @@ def _slim_report(report_data: dict) -> dict:
     # 对齐关系），不是评分本身——评分路径从不读 lbtemp。旧数据没有 temp_halves
     # 字段时（结论摘要级的月度归档重渲染）无值可对，跳过不报错；一旦有分半值，
     # 对不上就是发布坏了，就地炸出来（不允许"悄悄复算不上"）。
-    _verify_daily_temp_halves(lb, lbtemp)
+    _verify_daily_temp_halves(lb, lbtemp, scheme=scheme)
 
     # 实况对比：每站最近 72 小时，全部压成数值数组（键名只出现一次）
     WIN = 72
@@ -474,10 +487,19 @@ def _slim_report(report_data: dict) -> dict:
         "period_label": meta.get("period_label"),
         "is_monthly": bool(meta.get("is_monthly")),
         "start": meta.get("start"), "end": meta.get("end"),
+        "effective_start": meta.get("effective_start"),
+        "effective_end": meta.get("effective_end"),
+        "effective_days": meta.get("effective_days"),
         "models": meta.get("models"), "stations": meta.get("stations"),
         "rain_threshold_mm": meta.get("rain_threshold_mm"),
         "rain_daily_threshold_mm": meta.get("rain_daily_threshold_mm"),
         "min_sample": meta.get("min_sample"),
+        # 评分口径：归档重渲染据此回放；skill-v3 还要 k/参照窗口。
+        "score_scheme": meta.get("score_scheme"),
+        "score_skill_k": meta.get("score_skill_k"),
+        "score_ref_window_days": meta.get("score_ref_window_days"),
+        "score_ref_min_days": meta.get("score_ref_min_days"),
+        "rain_no_skill_buckets": meta.get("rain_no_skill_buckets"),
     }
     return {"meta": slim_meta, "board": board, "lb": lb, "lbtemp": lbtemp,
             "trend": trend,
@@ -812,6 +834,11 @@ def render_report_html(report_data: dict, title: str | None = None,
     # 起报锚点披露：挂旗的源在前、其余按语义归组（见 _issue_anchor_rows 的 docstring）
     anchors = _issue_anchor_rows(report_data)
 
+    _scheme = str((report_data.get("meta") or {}).get("score_scheme")
+                  or "slope-v2")
+    _temp_parts = TEMP_SKILL_PARTS if _scheme == "skill-v3" else TEMP_SCORE_PARTS
+    _precip_parts = (PRECIP_SKILL_PARTS if _scheme == "skill-v3"
+                     else PRECIP_SCORE_PARTS)
     return tpl.render(
         report=report_data,
         diag=diag,
@@ -825,8 +852,8 @@ def render_report_html(report_data: dict, title: str | None = None,
         model_labels_json=labels_json,
         model_colors_json=colors_json,
         model_families_json=_js_json(MODEL_FAMILIES),
-        score_temp_parts=_score_parts_rows(TEMP_SCORE_PARTS),
-        score_precip_parts=_score_parts_rows(PRECIP_SCORE_PARTS),
+        score_temp_parts=_score_parts_rows(_temp_parts),
+        score_precip_parts=_score_parts_rows(_precip_parts),
         station_labels=station_labels or {},
         station_labels_json=_js_json(station_labels or {}),
         archives=archives or [],

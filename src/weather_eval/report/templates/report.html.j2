@@ -631,6 +631,7 @@
       </div>
       <div class="champ-score-box">
         {% if ns.fallback %}<div class="champ-ci">提前 1 天（小时口径）得分 · 数据积累中</div>
+        {% elif report.meta.get('score_scheme') == 'skill-v3' %}<div class="champ-ci">难度对齐技能分 · 50=气候平均 · 100=完美</div>
         {% else %}<div class="champ-ci">难度对齐综合分 · 0~100</div>{% endif %}
         <div class="champ-score">{{ num(champ.score) }}<small>分</small></div>
         {{ thermo(champ.score, champ.get('ci90'), 'lg') }}
@@ -651,7 +652,16 @@
     <p class="eyebrow">§01 · 证据</p>
     <h2>预报源总榜</h2>
     <p class="desc">「综合分」由温度 {{ score_temp_parts|length }} 项 + 降水 {{ score_precip_parts|length }} 项指标加权而成，先把每一档提前量的
-      难度统一扣掉再比——能报 3 天的和能报 15 天的同榜也公平。<b>指标页签即排序口径</b>：
+      难度统一扣掉再比——能报 3 天的和能报 15 天的同榜也公平。
+      {% if report.meta.get('score_scheme') == 'skill-v3' %}<b>50 = 与过去 {{ report.meta.get('score_ref_window_days') or 15 }} 天平滑气候平均一样（无技巧），100 = 完美；低于 50 = 比气候平均差。</b>{% endif %}
+      {% if report.meta.get('effective_days') %}<span class="only-wide">有效观测 <b>{{ report.meta.get('effective_days') }} 天</b>（{{ report.meta.get('effective_start') }} ~ {{ report.meta.get('effective_end') }}）；报告标签窗口含无观测的前置日期，参照与评分按有效窗口计算。</span>{% endif %}
+      {% set nsk = report.meta.get('rain_no_skill_buckets') or {} %}
+      {% if nsk.get('hourly') or nsk.get('daily') %}<span class="only-wide">⚠ 降水技巧未检出（该桶 >60% 格 |ETS|≤0.05）：
+        {% if nsk.get('hourly') %}小时 {{ nsk.get('hourly')|join('、') }}{% endif %}
+        {% if nsk.get('hourly') and nsk.get('daily') %}；{% endif %}
+        {% if nsk.get('daily') %}日 {{ nsk.get('daily')|join('、') }}{% endif %}。
+        这些桶的降水分约在 50 附近，含义是“没有证据”，不是“表现中等”。</span>{% endif %}
+      <b>指标页签即排序口径</b>：
       「🌡️ 温度」「🌧️ 降水」展开该维的全部分数与指标，并改按该维分数排序（总综合分只在「概览」显示）；
       页签在<b>所有榜单</b>下可用——总榜的单项与综合分同一批格子、同一套难度对齐，分时效榜则是该档的原始口径。
       <span class="only-wide">点任意列名可重新排序；
@@ -812,7 +822,7 @@
           <div>
             <h3>🌡️ 温度分（{{ score_temp_parts|length }} 项）<span class="sub">该维占综合分 50%</span></h3>
             <table class="plain">
-              <thead><tr><th class="l">指标</th><th class="w-col">权重</th><th class="l">0~100 换算</th></tr></thead>
+              <thead><tr><th class="l">指标</th><th class="w-col">权重</th><th class="l">换算/技能说明</th></tr></thead>
               <tbody>{% for p in score_temp_parts %}
                 <tr>
                   <td class="l">{{ p.label }}</td>
@@ -821,6 +831,14 @@
                 </tr>
               {% endfor %}</tbody>
             </table>
+            {% if report.meta.get('score_scheme') == 'skill-v3' %}
+            <p class="why"><b>温度维是“相对气候平均的技能分”</b>：总体误差 55%（RMSE 45% / MAE 10%）
+              ＞阈值命中 25%（±2°C 20% / ±1°C 5%）＞形态 20%（异常相关）。
+              <b>50 = 与过去 {{ report.meta.get('score_ref_window_days') or 15 }} 天平滑气候平均一样（无技巧）</b>；
+              100 = 完美；低于 50 = 比气候平均差。下半段用指数压缩，不会把“比参照差一点”直接压成 0。
+              MBE、站间离散度、回归斜率与原始 r 退出主分，移到“偏差与形态”属性列——它们是误差的
+              组成部分，不是独立技巧，和 RMSE 一起加权会把同一份误差数两遍。</p>
+            {% else %}
             <p class="why"><b>温度维按 4 族分配权重</b>：总体误差 40%（RMSE/MAE 各半）＞
               阈值命中 25%（±2°C 60% / ±1°C 40%）＞系统偏差 20%（|MBE| 75% / 站间离散度 25%）
               ＞形态 15%（r/slope 各半）。同族成员是同一组误差的不同侧面，不是独立证据；
@@ -828,11 +846,12 @@
               只记一遍族权重，但两处刻度都用上。<b>不入分</b>：RSS、χ²——它们
               <b>数学上就是</b> RMSE² 与 n×RMSE²（实测残差 ≤2e−3，χ² 与 RMSE 桶内斯皮尔曼
               ρ=1.00），入分即重复计权，且 RSS 还乘了样本量。</p>
+            {% endif %}
           </div>
           <div>
             <h3>🌧️ 降水分（{{ score_precip_parts|length }} 项）<span class="sub">该维占综合分 50% · 日雨量 ≥{{ report.meta.rain_daily_threshold_mm }}mm 口径</span></h3>
             <table class="plain">
-              <thead><tr><th class="l">指标</th><th class="w-col">权重</th><th class="l">0~100 换算</th></tr></thead>
+              <thead><tr><th class="l">指标</th><th class="w-col">权重</th><th class="l">换算/技能说明</th></tr></thead>
               <tbody>{% for p in score_precip_parts %}
                 <tr>
                   <td class="l">{{ p.label }}</td>
@@ -841,6 +860,15 @@
                 </tr>
               {% endfor %}</tbody>
             </table>
+            {% if report.meta.get('score_scheme') == 'skill-v3' %}
+            <p class="why"><b>降水维是“相对无技巧基准的技能分”</b>：晴雨 ETS 60%
+              ＞对数雨量技能 25%（MAE 与“永远报零雨”参照的对数比）＞雨强分辨力 15%。
+              <b>50 = 无技巧</b>（ETS=0 或雨量误差与“永远报零”一样）；100 = 完美。
+              <b>ETS 是必须项</b>：整桶没有可评雨事件时降水维判无结论，不允许只用雨量项凑分。
+              POD、FAR、频率偏差 BIAS、雨量总量比 amt_bias 只列明细，不再重复计权。
+              长时效若多数格 |ETS|≤0.05，页面标“本窗口未检出降水技巧”，50 分附近是“没证据”，
+              不是“大家都还行”。</p>
+            {% else %}
             <p class="why"><b>降水维按 3 族分配权重</b>：晴雨判别 55%（ETS 30% / POD 12.5% /
               FAR 12.5%）＞雨量精度 25%（amt_mae）＞雨强分辨力 20%（中雨/大雨档 ETS）。
               <b>不入分</b>：TS、晴雨准确率、漏报率、空报频率、频率偏差 BIAS——给定
@@ -854,12 +882,14 @@
               实测 0.995（小时）/ 1.000（日）——两者是同一个量的两种写法；且它的子分与
               降水分几乎不相关（-0.11 / +0.13）。雨量精度族 25% 的权重全部归 amt_mae，
               同一份证据不说两遍。</p>
+            {% endif %}
           </div>
         </div>
         <p class="why">某项缺数据时按<b>剩余权重</b>折算（缺数据 ≠ 差数据）；综合分 = 温度分与降水分各半。
           <b>小时榜与日榜之间按 2:1 合成</b>（<code>daily_track_weight</code>={{ '%.2f'|format(report.meta.get('daily_track_weight', 0.5)) }}）：
           日轨的日最高/最低、日累计降水对多数源是同一份逐小时预报重新分箱，独立证据有限，
           降为 1/3 可避免把"日极值"这一类信息计两遍；单轨榜与单维内合成不受影响。</p>
+        {% if report.meta.get('score_scheme') != 'skill-v3' %}
         <p class="why"><b>综合分是排序指数</b>：换算斜率按"桶内跨源 sd=8 分"标定，
           只保证排序，端点不统一（例如 ±2°C=100% 只给 65 分、ETS=1 给 100 分）。
           分数的绝对值不可跨榜、跨期解读；名次由这把尺决定，CI 与显著性也在
@@ -882,6 +912,19 @@
           要强行让方差份额也等于名义权重，需要 σ ∝ 1/√w；在 0~100 截断量表上这会让
           低权重项（r 7.5%）的 λ 膨胀到 100~150、子分饱和率跳到 30%~77%，是拿区分度
           换公式好看，故不做、只披露两种口径。</p>
+        {% else %}
+        <p class="why"><b>综合分是技能分，不是扣分制</b>：每个指标先相对“过去-only 气候参照”
+          归一化成技能 s（0=无技巧、1=完美），按权重在 s 上合成，再映射成
+          0~100：<b>50 = 两维平均与参照一样，100 = 完美</b>；低于 50 = 比参照差，
+          下半段用指数压缩，不会硬触底。名次、90% CI、显著性全部在原始 s 上算，
+          展示映射不改排序。</p>
+        <p class="why"><b>没有 λ 标定</b>：刻度由物理参照定义，权重才是价值判断。
+          MBE、站间离散度、回归斜率、原始 r、POD、FAR、频率偏差 BIAS、雨量总量比
+          amt_bias 只作属性列——它们是误差的组成部分或方向诊断，不是独立技巧；
+          和 RMSE/ETS 一起加权会把同一份误差数两遍。长时效降水若多数格 ETS≈0，
+          标“本窗口未检出降水技巧”，而不是把 50 分读成“表现不错”。</p>
+        {% endif %}
+        {% if report.meta.get('score_scheme') != 'skill-v3' %}
         {% set cs = diag.get('composite_share') or {} %}
         {% if cs.get('available') and cs.get('tracks') %}
         {% for trk, cvs in cs.tracks.items() %}
@@ -893,6 +936,7 @@
           50:50 是<b>名义</b>权重，名次上的实际话语权由两维离散度决定——
           温度:降水的宏观权重已在冠军频率敏感性里按 U(30%,70%) 扰动（{{ report.meta.macro_weight_range }}）。</p>
         {% endfor %}
+        {% endif %}
         {% endif %}
       </div>
     </details>
@@ -1375,7 +1419,7 @@
         <dl class="glossary">
           <div><dt>起报 / 起报快照</dt><dd>预报发布的那一刻叫"起报"。每次起报的"未来 16 天逐小时预报"原样存档封存，等真实天气发生后对账——预报不能事后改，检验才算数。</dd></div>
           <div><dt>时效（提前 N 天）</dt><dd>有效时刻 − 起报时刻 = "提前多久做的预报"，按日历天分桶；每个桶里同难度比较。</dd></div>
-          <div><dt>综合得分 / 温度分 / 降水分</dt><dd>多个指标压缩成 0~100：温度 8 项、降水 6 项加权（换算斜率按数据标定），综合 = 两者各半再过第二层技能指数缩放；缺项按剩余权重折算。分数只用于排序，绝对值不可跨榜、跨期解读。</dd></div>
+          <div><dt>综合得分 / 温度分 / 降水分</dt><dd>{% if report.meta.get('score_scheme') == 'skill-v3' %}技能分 0~100：温度 5 项、降水 3 项先在技能空间加权；<b>50 = 与过去 {{ report.meta.get('score_ref_window_days') or 15 }} 天平滑气候平均一样（无技巧）</b>，100 = 完美，低于 50 = 比气候平均差。综合 = 两维技能各半。MBE/slope/bias/POD/FAR 等属性单列。缺一维即缺，不做单维综合分。{% else %}多个指标压缩成 0~100：温度 8 项、降水 6 项加权（换算斜率按数据标定），综合 = 两者各半再过第二层技能指数缩放；缺项按剩余权重折算。分数只用于排序，绝对值不可跨榜、跨期解读。{% endif %}</dd></div>
           <div><dt>难度对齐（总榜）</dt><dd>先把每一档提前量有多难算出来、统一扣掉再比（双向加法模型），能报 3 天的和能报 15 天的同榜也不吃亏。</dd></div>
           <div><dt>覆盖时效</dt><dd>该源实际参与计算的样本最长覆盖到提前第几天。温度维与降水维分别核计：榜上数字取两维最远值，两维不一致时括注各自的天数（逐日预报块通常只延展温度维，如中科星图温度至 16 天、降水仍止于逐小时的 5 天）。可用时效越少，总榜平均所依据的"桶"越少。</dd></div>
           <div><dt>90% 置信区间与 †</dt><dd>对评估窗口内的<b>天</b>做分块重采样 {{ report.meta.bootstrap_runs }} 次重算榜单得到的波动范围。名字带 <b>†</b> = 与第一名的差距经 max-T（单步族内极值）多重比较校正后仍与 0 分不开——不宜过度解读名次先后。</dd></div>

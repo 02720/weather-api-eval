@@ -12,6 +12,12 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "stations
 
 # 评估默认参数（可被 stations.yaml 的 eval 段覆盖）
 DEFAULT_EVAL = {
+    "score_scheme": "slope-v2",       # 评分口径：stations.yaml 的生产配置显式设为
+                                       # skill-v3（2026-11，技能分）；代码内缺省保留
+                                       # slope-v2，供旧夹具/归档月报与直接调用回放。
+    "score_ref_window_days": 15,      # skill-v3 气候参照：只用目标日之前 W 天观测
+    "score_ref_min_days": 5,          # 参照最少历史天数；不足 → 参照不可用，不出分
+    "score_skill_k": 1.535,           # skill-v3 下半段指数压缩参数（50→0 的衰减）
     "temp_accuracy_limits": [1, 2],   # ±1°C、±2°C 准确率
     "rain_threshold_mm": 0.1,          # 有无降水阈值（国内业务：≥0.1mm 记为有降水）
     "rain_daily_threshold_mm": 1.0,    # 降水分（日榜·降水维）阈值：24h 累计 ≥1mm 记"有效降水日"

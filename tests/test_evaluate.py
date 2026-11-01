@@ -396,8 +396,10 @@ def test_build_report_end_to_end(tmp_path, monkeypatch):
            # 单站夹具的格子 n_eff≈1：薄格门槛与格子数门相应下调（本用例考察
            # 报告装配本身，格子数门由专门用例锁定）
            "min_cell_neff": 1, "min_board_cells": 1,
-           # 本用例断言原始量表；展示增益由
-           # test_score_index_gain_* / test_composite_gain_* 专门锁定
+           # 本用例断言旧绝对量表与报告装配；skill-v3 的技能分/参照语义
+           # 由专门用例锁定。显式钉在 slope-v2，避免口径默认值变化把
+           # “报告装配”测试变成“评分语义”测试。
+           "score_scheme": "slope-v2",
            "score_index_gain": 1.0, "score_composite_gain": 1.0, **GATE_OFF}
     data = build_report(["s1"], ["ecmwf_ifs"], cfg, start, end, "2026-08")
 

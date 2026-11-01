@@ -100,6 +100,13 @@ stations:
     zmtq_city_id: "01011016"   # 最美天气行政区码（万宁市；geo 接口按站坐标解析，2026-10-25 实测）
 
 eval:
+  # —— skill-v3（2026-11）技能分口径 ——
+  # 50 = 与过去-only 气候参照一样（无技巧）；100 = 完美；下半段指数压缩，
+  # 不硬触底。旧月报按 meta.score_scheme=slope-v2 回放，不受影响。
+  score_scheme: skill-v3
+  score_ref_window_days: 15             # 只用目标日之前 15 天观测做气候参照
+  score_ref_min_days: 5                 # 不足 5 天 → 参照不可用，不出分
+  score_skill_k: 1.535                  # 下半段压缩：50→5 约对应 -1.5 个技能单位
   temp_accuracy_limits: [1, 2]          # ±1°C、±2°C 准确率
   rain_threshold_mm: 0.1                 # 有无降水阈值（国内业务：≥0.1mm 记有降水；明细诊断口径）
   rain_daily_threshold_mm: 1.0           # 日榜·降水维阈值：24h 累计 ≥1mm 记"有效降水日"
