@@ -43,7 +43,8 @@ from jinja2 import Environment, FileSystemLoader
 from ..evaluate import (_DAILY_TEMP_VIEW_KEYS, PRECIP_SCORE_PARTS,
                         TEMP_SCORE_PARTS, apply_composite_gain,
                         apply_score_index_gain, apply_score_slopes,
-                        daily_temp_score, display_dim_score, score_map_text)
+                        daily_temp_score, display_dim_score, score_map_text,
+                        score_params_lock)
 from ..timeutil import now_beijing
 
 logger = logging.getLogger(__name__)
@@ -287,6 +288,11 @@ def _slim_report(report_data: dict) -> dict:
             "n": row.get("n"), "ci": row.get("ci90"),
             "sig": row.get("sig_vs_top"), "disp": bool(row.get("disputed")),
             "ok": bool(row.get("qualified")),
+            # 绝对技能分（0=无技能、100=完美）：与排名分并列，不参与排名
+            "sk": row.get("skill_score"), "skt": row.get("skill_temp"),
+            "skp": row.get("skill_precip"),
+            # bootstrap 分布中心与点估计的偏差（原始分），负值=重采样均值偏低
+            "bcd": row.get("bootstrap_center_delta"),
         })
 
     def _curve(track: dict) -> dict:
@@ -779,7 +785,10 @@ def render_report_html(report_data: dict, title: str | None = None,
     tpl = env.get_template("report.html.j2")
     # 评分斜率/缩放的回放统一由 _slim_report 入口负责（必须先于任何复算，
     # 见该函数内的注释）——这里不再重复装载，避免"两处各自决定用哪把尺"。
-    slim_json = _js_json(_slim_report(report_data))
+    # 锁住"回放 meta 参数 + 生成内联复算视图"：与 build_report 共用同一把锁，
+    # 防止同进程另一份报告在回放之后、复算之前把全局参数改掉。
+    with score_params_lock():
+        slim_json = _js_json(_slim_report(report_data))
     labels_json = _js_json(MODEL_LABELS)
     colors_json = _js_json(MODEL_COLORS)
 

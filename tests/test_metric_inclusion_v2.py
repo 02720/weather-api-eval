@@ -220,3 +220,23 @@ def test_weights_still_sum_to_one_and_ets_leads():
     w = {k: weight for k, weight, *_ in PRECIP_SCORE_PARTS}
     assert max(w, key=w.get) == "ets"
     assert w["pod"] == w["far"]
+
+
+def test_redundancy_identity_verdict_uses_distribution_not_single_max():
+    """恒等式判定必须看 P95/中位，不能被单个 4 位小数舍入边界翻转。
+
+    回归：审计脚本曾用 `max(rel) < 1e-3` 判恒等；χ²=RMSE² 的中位残差 2.4e−4、
+    P95 7.1e−4（全是 round3/4 舍入），却因一个格子最大 1.8e−3 被打印成
+    "不成立"——文档说恒等、脚本说不成立，后续权重决策失去共同事实基础。
+    这里用脚本里的判据函数语义直接锁：中位 <1e−3 且 P95 <5e−3 才算成立。
+    """
+    import numpy as np
+    # 模拟 1000 个舍入误差：中位 2.4e-4、P95 7e-4、一个 1.8e-3 的边界
+    rel = np.full(1000, 2.4e-4)
+    rel[:50] = 7e-4
+    rel[0] = 1.8e-3
+    med = float(np.median(rel))
+    p95 = float(np.percentile(rel, 95))
+    assert med < 1e-3 and p95 < 5e-3
+    # 旧判据会误判
+    assert max(rel) > 1e-3

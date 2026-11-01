@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "fingerprint": "db12e56c9af8c7ac",
+  "fingerprint": "a38ca51461f20cf5",
   "block": {
     "start": "2026-09-21",
     "end": "2026-09-27",
@@ -3027,16 +3027,16 @@
           "mbe_bdisp": 0.671
         },
         "p": {
-          "n": 666.0,
-          "n_eff": 433.0,
-          "acc": 97.748,
+          "n": 672.0,
+          "n_eff": 434.0,
+          "acc": 97.768,
           "pod": 0.0,
           "far": null,
           "ts": 0.0,
           "ets": 0.0,
           "bias": 0.0,
-          "amt_mae": 1.542,
-          "amt_bias": 0.646,
+          "amt_mae": 1.547,
+          "amt_bias": 0.642,
           "grade_ets": 0.0
         }
       },
@@ -13848,8 +13848,8 @@
           "ts": 0.471,
           "ets": 0.241,
           "bias": 1.778,
-          "amt_mae": 1.079,
-          "amt_bias": 0.644,
+          "amt_mae": 1.081,
+          "amt_bias": 0.642,
           "grade_ets": null
         }
       },

@@ -262,3 +262,27 @@ def test_daily_collect_uses_own_station_obs(tmp_path, monkeypatch):
         # 各站的日最高观测必须来自本站（30 vs 10 差异足够大，串站必被抓住）
         assert by_station["a"]["temp_max_obs"] == 30.0
         assert by_station["b"]["temp_max_obs"] == 10.0
+
+
+def test_block_cache_fingerprint_ignores_display_only_params(monkeypatch):
+    """分块缓存指纹不得包含**展示层**参数。
+
+    回归：指纹曾包含 score_index_gain / score_composite_gain。它们只改变屏幕
+    刻度（`display_*`），不改变格子的原始指标；放进指纹会让"调展示留白"触发
+    17 个历史块全部重算（实测 +40 s），而且会诱使开发者为了速度弱化缓存校验。
+    真正影响格子数值的分数斜率/缺项门槛/评分族仍在指纹里。
+    """
+    from weather_eval.config import load_config
+    from weather_eval.evaluate import _block_scoring_fingerprint
+
+    cfg = load_config(None)
+    base = _block_scoring_fingerprint(dict(cfg.eval), cfg.models, cfg.station_ids)
+    changed_display = _block_scoring_fingerprint(
+        dict(cfg.eval, score_index_gain=9.9, score_index_center=10.0,
+             score_composite_gain=9.9), cfg.models, cfg.station_ids)
+    assert base == changed_display
+    # 真正改变格子数值的参数必须移动指纹
+    changed_score = _block_scoring_fingerprint(
+        dict(cfg.eval, score_slopes={**cfg.eval["score_slopes"], "rmse": 99.0}),
+        cfg.models, cfg.station_ids)
+    assert changed_score != base

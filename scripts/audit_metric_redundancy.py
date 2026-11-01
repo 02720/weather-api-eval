@@ -162,10 +162,19 @@ def verify_identities(ts: dict, diag: dict) -> None:
                 errs.append(abs(v - pred))
                 rel.append(abs(v - pred) / pred)
         if rel:
+            med = float(np.median(rel))
+            p95 = float(np.percentile(rel, 95))
+            mx = float(max(rel))
             print(f"  {label:18s} 格子 {len(rel):5d} · 中位相对误差 "
-                  f"{np.median(rel):.2e} · P95 {np.percentile(rel, 95):.2e} "
-                  f"· 最大 {max(rel):.2e}")
-            print(f"    → {'恒等成立（差异仅来自 4 位小数舍入）' if max(rel) < 1e-3 else '不成立，需另行分析'}")
+                  f"{med:.2e} · P95 {p95:.2e} · 最大 {mx:.2e}")
+            # 判据必须看**分布**，不是被单个 4 位小数舍入边界决定的 max：
+            # 指标以 round(…,3~4) 发布，任何恒等式的相对误差 P95 都在 1e-3 量级。
+            # 旧脚本用 max<1e-3 判"成立"，于是 χ²/RMSE² 这种真正恒等式只因
+            # 一个格子的舍入边界就被打印成"不成立"——文档与脚本结论互相矛盾。
+            # 正确判据：中位与 P95 都在 1e-3 内 ⇒ 恒等成立；最大只作诊断列。
+            ok = med < 1e-3 and p95 < 5e-3
+            print(f"    → {'恒等成立（差异仅来自 3~4 位小数舍入）' if ok else '不成立，需另行分析'}"
+                  f"（判据：中位<1e-3 且 P95<5e-3；最大 {mx:.2e} 仅作诊断）")
 
     # --- 降水：BIAS = POD/(1−FAR) ---
     pc = {k: precip_cells(ts, k) for k in ("pod", "far", "bias")}

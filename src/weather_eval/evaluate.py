@@ -157,6 +157,7 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 from collections import defaultdict
 from datetime import date, timedelta
 from pathlib import Path
@@ -429,6 +430,7 @@ def _sanitize_hourly_arrays(snap: dict) -> dict:
 
 
 _SNAP_SANITIZE_CACHE: dict[int, dict | bool] = {}
+_SNAP_MISSING = object()
 
 
 def _snaps_for(sid: str, model: str, snapshots: dict | None,
@@ -450,12 +452,24 @@ def _snaps_for(sid: str, model: str, snapshots: dict | None,
              and (sid, model) in snapshots
              else list_forecast_snapshots(sid, model))
     ok: list[dict] = []
+    cache = _SNAP_SANITIZE_CACHE
     for s in snaps:
-        cached = _SNAP_SANITIZE_CACHE.get(id(s))
-        if cached is None:
-            cached = (_sanitize_hourly_arrays(s) if _snapshot_struct_valid(s)
-                      else False)
-            _SNAP_SANITIZE_CACHE[id(s)] = cached
+        # 用 dict.get 的一次哨兵对象判"未缓存"，而不是两次 get：后者在 12,285 次
+        # 调用上多一次哈希查找；语义相同（缓存值可能是 False）。
+        cached = cache.get(id(s), _SNAP_MISSING)
+        if cached is _SNAP_MISSING:
+            if not _snapshot_struct_valid(s):
+                cached = False
+            elif s.get("meta_schema") == 2:
+                # 2026-09 契约后的快照由 storage.save_forecast_snapshot 的落盘
+                # 闸门统一清洗并盖 meta_schema=2；读侧再扫一遍全部数组是纯重复
+                # 劳动（12k 份/窗口实测 5 s，占 collect 六成）。结构校验仍做；
+                # 数值口径由写入口保证。历史存档（无 schema 或旧 schema）继续
+                # 走全量清洗，绝不假设"没盖过章的数据是干净的"。
+                cached = s
+            else:
+                cached = _sanitize_hourly_arrays(s)
+            cache[id(s)] = cached
         if cached is False:
             if stats is not None:
                 stats["n_malformed_snaps"] = stats.get("n_malformed_snaps", 0) + 1
@@ -468,6 +482,31 @@ def _snaps_for(sid: str, model: str, snapshots: dict | None,
     if not require_complete:
         return ok
     return [s for s in ok if snapshot_complete(s)]
+
+
+def _integrity_summary_cached(snapshots: list[dict]) -> dict:
+    """`integrity_summary` 的进程内缓存：同一批快照对象只重算一次哈希。
+
+    读侧 `collect` 已经对每份快照做过结构校验与数值清洗；`integrity_summary` 又
+    对同一批对象做 `canonical_bytes → sha256`（12k 份 / 12 天窗口实测 2.7 s）。
+    两者都只依赖快照内容，且对象在本次报告构建期间不被改写。缓存键用 `id()`
+    与对象身份绑定，并同时保存对象引用，避免 `id()` 被回收复用后误命中：只要
+    缓存里还持有原对象，它的地址就不会被下一次分配复用。
+    """
+    global _INTEGRITY_CACHE
+    key = tuple(id(s) for s in snapshots)
+    hit = _INTEGRITY_CACHE.get(key)
+    if hit is not None:
+        return hit
+    out = integrity_summary(snapshots)
+    # 只保留最近若干批，避免一次长跑进程里缓存无界增长；每批报告通常只调用一次。
+    if len(_INTEGRITY_CACHE) >= 4:
+        _INTEGRITY_CACHE.clear()
+    _INTEGRITY_CACHE[key] = out
+    return out
+
+
+_INTEGRITY_CACHE: dict[tuple[int, ...], dict] = {}
 
 
 def _day_bucket(store: dict, day_key: str) -> dict:
@@ -795,6 +834,18 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                         # 观测侧退回全天聚合（≥daily_min_hours 门槛），其固有的
                         # ~1h 窗口边界差异沿用既有披露，不修正、不隐藏。
                         cday = fc.get(day)
+                        # 日产品补位也必须遵守**封存时点门槛**，但不能用"日窗口
+                        # 起点早于抓取时刻"一刀切：当天 20 个已封存小时聚合出的
+                        # 日预报是合法的（覆盖门槛已按封存小时计），把它整日丢掉
+                        # 会凭空抹掉真实样本。
+                        #
+                        # 正确规则：日产品块本身没有"封存"概念（它覆盖 00–24，
+                        # 抓取在日内时天然含已发生小时），因此**只在逐小时路径
+                        # 没有任何已封存小时可评时**（cday 为空）才使用日产品；
+                        # 且日产品必须用它所属起报的抓取时刻判断——若整日窗口
+                        # 都早于抓取（前一天的产品），该日产品是事后回填，不能
+                        # 用来补位。当天已开始但仍有已封存小时的日子由逐小时
+                        # 聚合优先，日产品不参与。
                         h_temp_ok = bool(cday and cday["n_temp"] >= daily_min_hours
                                          and cday["max_temp"] > -math.inf
                                          and cday["min_temp"] < math.inf)
@@ -806,23 +857,42 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                                     and oday["min_temp"] < math.inf else None)
                         o_rain_fd = (oday["sum_rain"]
                                      if oday["n_rain"] >= max(daily_min_hours, 1) else None)
+                        # 日产品只有在"该日 00:00 不早于抓取时刻"时才算封存后
+                        # 可见的预报；抓取在日内时，当天日产品含抓取前已发生
+                        # 的小时，不能补位（此时若 cday 无有效覆盖，就让该日缺测）。
+                        daily_product_frozen = True
+                        if require_frozen and fetched_dt is not None:
+                            day_start = parse_iso(f"{day}T00:00")
+                            daily_product_frozen = bool(
+                                day_start is not None and day_start >= fetched_dt)
                         if h_temp_ok:
                             f_temp, f_min, temp_src = cday["max_temp"], cday["min_temp"], "hourly"
                             o_temp, o_min = cday["obs_max_temp"], cday["obs_min_temp"]
-                        else:
+                        elif daily_product_frozen:
                             f_temp, f_min = db.get("temp_max"), db.get("temp_min")
                             temp_src = "daily" if (f_temp is not None or f_min is not None) else None
+                            o_temp, o_min = o_temp_fd, o_min_fd
+                        else:
+                            f_temp = f_min = None
+                            temp_src = None
                             o_temp, o_min = o_temp_fd, o_min_fd
                         if h_rain_ok:
                             f_rain, rain_src = cday["sum_rain"], "hourly"
                             o_rain = cday["obs_sum_rain"]
-                        else:
+                        elif daily_product_frozen:
                             f_rain = db.get("precipitation")
                             rain_src = "daily" if f_rain is not None else None
+                            o_rain = o_rain_fd
+                        else:
+                            f_rain = None
+                            rain_src = None
                             o_rain = o_rain_fd
                         if o_temp is None and o_min is None and o_rain is None \
                                 and f_temp is None and f_min is None and f_rain is None:
                             continue  # 该天无任何可用日聚合，不入样
+                        # 观测侧有值、但预报侧因封存/缺测全空的记录**保留**：
+                        # 它们参与覆盖与缺测披露，但不能进入任何指标（下游按
+                        # 两侧成对判定，f_* 全空自然被跳过）。
                         daily_records.append({
                             "station": sid, "model": series, "valid_day": day, "offset": offset,
                             "issue_iso": snap["issue_iso"],
@@ -1405,6 +1475,20 @@ def apply_composite_gain(gain: float | None = None,
         DEFAULT_SCORE_INDEX_CENTER if center is None else center)
 
 
+# 评分/展示参数是模块级全局（换算函数在调用时读取）。当前 CLI 单线程构建，
+# 但 `build_report`、`render_report_html` 与测试可在同一进程交替执行——两次
+# "装载参数 + 重算"交错会让一份报告用上另一份的 λ/gain，且无任何报错。
+# 用一把可重入锁把"装载 + 构建/渲染"串成临界区；单线程下只多一次无竞争锁，
+# 并发下把静默口径混合变成可预期的串行。迁移到显式 ScoreConfig 上下文之前，
+# 这是最小且可验证的正确性护栏。
+_SCORE_PARAMS_LOCK = threading.RLock()
+
+
+def score_params_lock() -> threading.RLock:
+    """返回评分参数的进程级锁（调用方用 ``with`` 包住装载+构建/渲染）。"""
+    return _SCORE_PARAMS_LOCK
+
+
 def apply_score_slopes(slopes: dict | None) -> None:
     """装载当期换算斜率（config eval.score_slopes → 模块级换算函数）。
 
@@ -1516,32 +1600,49 @@ def _conv_log(key: str):
 # 它此前还制造了一个方向性反例：h=0、fa 从 1 增到 2（多一个空报）时，FAR 恒为
 # 100%、POD/ETS 恒为 0，但 BIAS 从 0.05→0.10 的"靠近 1"奖励让降水分反而升高
 # 1.68 分（实测）。FAR 明细列照旧发布，频率偏差不再占权重。
+# 2026-11 权重再复核（按**精确方差贡献**与桶内相关，不再只看局部 sd）：
+# 旧表的同族成员被当成"独立证据"平分权重，但实测桶内相关显示它们高度同源：
+#   temp: mae↔rmse 0.76/0.79、acc1↔acc2 0.92、r↔slope 0.59/0.72；
+#   precip: far↔ets 0.85/0.91、pod↔ets 0.25（日轨 −0.19）。
+# 高度相关的两项各拿一份权重，等于把同一份证据放大两次；精确方差分解
+# （meta.diagnostics.exact_variance_contribution）显示 r/slope 只兑现 0.27~0.31、
+# 日轨 POD 只兑现 0.24 名义权重。因此把同族第二成员降为**小份额复核项**，
+# 主指标承担该族的大部分权重；族总权重保持不变（价值判断不缩水）：
+#   温度：总体误差 45%（RMSE 35 / MAE 10）·阈值 20%（acc2 16 / acc1 4）·
+#         系统偏差 20%（MBE 15 / 站间 5）·形态 15%（r 10 / slope 5）
+#   降水：晴雨 60%（ETS 50 / POD 5 / FAR 5）·雨量 25%·雨强 15%
+# 对拍（冻结 baseline_window、30 张 ≥4 家分桶榜）：Spearman 中位 0.980、
+# 最小 0.927，冠军换人 1/30，平均名次位移 0.72 位。属口径变更，前后不可直接比。
 TEMP_SCORE_FAMILIES = (
-    ("总体误差", 0.40, ("rmse", "mae")),
-    ("阈值命中", 0.25, ("acc2", "acc1")),
+    ("总体误差", 0.45, ("rmse", "mae")),
+    ("阈值命中", 0.20, ("acc2", "acc1")),
     ("系统偏差", 0.20, ("mbe", "mbe_bdisp")),
     ("形态/幅度", 0.15, ("r", "slope")),
 )
 PRECIP_SCORE_FAMILIES = (
-    ("晴雨判别", 0.55, ("ets", "pod", "far")),
+    ("晴雨判别", 0.60, ("ets", "pod", "far")),
     ("雨量精度", 0.25, ("amt_mae",)),
-    ("雨强分辨力", 0.20, ("grade_ets",)),
+    ("雨强分辨力", 0.15, ("grade_ets",)),
 )
 # 族内成员份额：同族内的"哪个侧面更重要"仍是价值判断，这里取可解释的整数比。
 # 阈值命中：±2°C 命中是"可用温度"的主定义，给 60%；±1°C 是靠近中心的补充，40%。
 # 系统偏差：池化 |MBE| 75%，站间离散度 25%（后者是前者的补充而非替代，实测跨源
 # 相关仅 0.115）。形态：r 与 slope 各半。
 _TEMP_FAMILY_MEMBER_SHARES = {
-    "总体误差": {"rmse": 0.50, "mae": 0.50},
-    "阈值命中": {"acc2": 0.60, "acc1": 0.40},
+    # 主指标承担 70~80%，第二成员只作"同族复核"（防止单一指标被异常值主导，
+    # 但不把同一份证据按两份独立权重计）。份额和仍严格=1。
+    "总体误差": {"rmse": 35 / 45, "mae": 10 / 45},
+    "阈值命中": {"acc2": 16 / 20, "acc1": 4 / 20},
     "系统偏差": {"mbe": 0.75, "mbe_bdisp": 0.25},
-    "形态/幅度": {"r": 0.50, "slope": 0.50},
+    "形态/幅度": {"r": 10 / 15, "slope": 5 / 15},
 }
 # 晴雨判别：ETS 是基率校正后的综合技巧（主项 30/55）；POD 与 FAR 等权各 12.5%，
 # 不预设"宁可多报"或"宁可漏报"的方向偏好——任何新增空报都会降低 FAR 子分，
 # 任何新增漏报都会降低 POD 子分，评分对两类错误对称。
 _PRECIP_FAMILY_MEMBER_SHARES = {
-    "晴雨判别": {"ets": 30 / 55, "pod": 12.5 / 55, "far": 12.5 / 55},
+    # ETS 是基率校正后的综合技巧（主指标 50/60）；POD/FAR 只各留 5% 作方向
+    # 诊断——它们与 ETS 桶内相关 0.25~0.91，独立信息有限，不应再各占 12.5%。
+    "晴雨判别": {"ets": 50 / 60, "pod": 5 / 60, "far": 5 / 60},
     "雨量精度": {"amt_mae": 1.0},
     "雨强分辨力": {"grade_ets": 1.0},
 }
@@ -1627,7 +1728,8 @@ def _weighted_score(parts, metrics: dict,
         den += w
     if not den:
         return None
-    if min_weight_frac is not None and den < min_weight_frac * total:
+    if (min_weight_frac is not None and min_weight_frac > 0
+            and den < min_weight_frac * total):
         return None            # 存活证据不足门槛：整维缺测，绝不重归一（P8）
     # **未缩放的原始维度分**：名次、显著性、bootstrap 全在这把尺上算。
     # 0~100 的"看起来拉开"由展示层统一施加（display_dim_score），不再混进评分
@@ -1778,6 +1880,32 @@ def daily_temp_halves_view(md: dict) -> dict:
     }
 
 
+def _precip_evidence_family_ok(parts, metrics: dict) -> bool:
+    """降水维是否拥有**足够独立的证据族**（P8 与结构缺失的分界）。
+
+    规则（先看族、再看权重）：
+      * 两族及以上有存活证据 → 可评；
+      * 只有一族：该族必须全员存活且成员数 ≥2（完整单族是"该源没有另一类
+        产品"的结构缺失）；否则是"半截证据"，判缺测。
+    这样 `{ets, far}`（缺 POD）与 `{amt_mae}`（只剩雨量一项）都被拒；
+    而 `ets+pod+far`（雨量族结构性缺席）与 `amt_mae+grade_ets` 仍可评。
+    """
+    families: dict[str, list[str]] = {}
+    for key, _w, _label, _map, _fn in parts:
+        fam = ("晴雨判别" if key in ("ets", "pod", "far")
+               else "雨量精度" if key == "amt_mae" else "雨强分辨力")
+        families.setdefault(fam, []).append(key)
+    alive = {fam: [k for k in keys if metrics.get(k) is not None]
+             for fam, keys in families.items()}
+    alive_fams = {fam: ks for fam, ks in alive.items() if ks}
+    if len(alive_fams) >= 2:
+        return True
+    if len(alive_fams) == 1:
+        fam, keys = next(iter(alive_fams.items()))
+        return len(keys) >= 2 and len(keys) == len(families[fam])
+    return False
+
+
 def precip_score(p: dict) -> float | None:
     """降水分（原始 0~100）：3 族 5 项按 PRECIP_SCORE_PARTS 权重加权，缺项按剩余
     权重归一——但整维存活权重低于 **precip_min_surviving_weight**（缺省 0.5，
@@ -1802,8 +1930,20 @@ def precip_score(p: dict) -> float | None:
     照旧归一；缺事件四项 → 0.25 存活，判缺测）。门槛实现在 _weighted_score，
     并与 bootstrap 的 stats._score_from_parts 共用同一全局门槛值（同一把尺）。
     """
-    return _weighted_score(PRECIP_SCORE_PARTS, p,
-                           min_weight_frac=_stats.PRECIP_MIN_WEIGHT_FRAC)
+    gate = _stats.PRECIP_MIN_WEIGHT_FRAC
+    if gate and gate > 0:
+        # 独立证据族门槛（2026-11）：只看权重总和会把"ets+far 缺 pod"这种
+        # **半截族**当成有效证据。这里显式检查：若只有一个族有存活证据，
+        # 该族必须成员完整且 ≥2 项，否则整维缺测。
+        fam_ok = _precip_evidence_family_ok(PRECIP_SCORE_PARTS, p)
+        if not fam_ok:
+            return None
+        # 族规则已通过时**不再叠加权重门槛**：结构性缺失（某个族整族没有
+        # 产品）会让存活权重天然偏低，但它不是"证据不足"。权重门槛只在
+        # 族规则无法判定时作为兜底——本函数已在上面用族规则给出结论，
+        # 因此这里传 0（关闭）避免两条判据互相打架。
+        return _weighted_score(PRECIP_SCORE_PARTS, p, min_weight_frac=0)
+    return _weighted_score(PRECIP_SCORE_PARTS, p, min_weight_frac=gate)
 
 
 def overall_score(t: dict, p: dict) -> float | None:
@@ -1816,6 +1956,115 @@ def overall_score(t: dict, p: dict) -> float | None:
     2026-10-31：展示层增益移出评分管道（display_composite_score 单独施加）。
     """
     return _composite_score(temp_score(t), precip_score(p))
+
+
+# ----------------------------------------------------------------- 绝对技能分
+# 为什么需要第二把尺（2026-10-31 第一性原理复核）：现有 0~100 是**排序指数**，
+# 它的换算斜率按"桶内跨源 sd = 8 分"标定，不保证端点可解释——`acc2=100%` 只给
+# 65 分、`POD=100%` 只给 63 分，而 `ETS=1` 给 100 分。于是页面上同一个"分数"
+# 在不同指标里含义不同，读者无法回答"满分到底是什么意思"。
+#
+# 绝对技能分 `skill_*` 采用统一锚点：
+#   * **100 = 完美预报**（RMSE/MAE/MBE/站间离散=0、acc=100%、r=1、slope=1、
+#     POD=100%、FAR=0、ETS=1、雨量误差=0、雨强 ETS=1）；
+#   * **0 = 无技能或无可用信息**（超出该指标的饱和线：例如 RMSE ≥ 6.8°C、
+#     FAR=100%、ETS≤0、雨量误差 ≥ 该桶实况总量）。
+# 换算仍复用同一套 `SCORE_SLOPES`（所以排序与现有视图一致），只是把 pct 族的
+# 端点显式拉齐：acc/pod 以百分比 0~100 映射到 0~100，ETS/grade_ets 以 0~1
+# 映射到 0~100。**这会把 pct 族的局部斜率改成 1，从而改变绝对分和跨指标权重**，
+# 所以它只作为**并列披露**的 `skill_*` 字段，绝不能冒充现有排名分：
+# 名次仍由 `score`（已冻结排序尺）决定，读者若要用绝对技能分比较，必须接受
+# "等权技能"这一不同价值判断。两者同时给出，避免静默替换口径。
+SKILL_PCT_SCALE = {"acc1": 100.0, "acc2": 100.0, "pod": 100.0,
+                   "ets": 1.0, "grade_ets": 1.0}
+# dev 族里"0 误差=100"但现有函数会把 v=0 翻到 100 吗？
+# 只有 `_conv_log`（slope）是 100−|log₂v|·λ：v=1 → 100；`_conv_dev` 的 v=0 → 100。
+# 统一技能尺必须把"完美值"逐项显式锚到 100，而不是依赖现有 λ 恰好把 0 映到 100：
+#   * rmse/mae/mbe/mbe_bdisp：f(v)=100·max(0, 1−v/sat)，sat 取 100/λ（=现有 0 分线）
+#   * r：f(v)=100·clamp(v,0,1)（r=1 完美；负相关与无关同记 0，与排名口径一致）
+#   * slope：f(v)=100·exp(−|log₂v|·λ/100)?? 现有是 100−|log₂v|λ；要锚到 0/100，
+#     用 f(v)=100·max(0, 1−|log₂v|/(100/λ)) = 现有函数，但 100/λ≈5.6 倍才饱和；
+#     保持现有函数即可（v=1→100，v=2^(100/λ)→0）。
+#   * far：100−far·λ 已是 far=0→100；far=100 时若 λ<1 仍 >0（非统一端点）。
+# 统一技能的 FAR 必须显式 100·(1−far/100)=100−far。
+_SKILL_DEV_KEYS = {"rmse", "mae", "mbe", "mbe_bdisp", "amt_mae"}
+_SKILL_FAR_KEYS = {"far"}
+
+
+def _skill_conv(key: str, fn):
+    """把现有换算函数包成统一端点的技能换算。
+
+    统一锚点：100 = 完美，0 = 无技能/饱和线。pct 族按指标满量程缩放到 0~100；
+    dev 族按现有饱和线（λ 的 0 分线）缩放；FAR 显式 0~100；其余（r/slope）复用
+    现有函数但保证完美值=100（r=1、slope=1 已满足）。
+    """
+    scale = SKILL_PCT_SCALE.get(key)
+    if scale is not None:
+        def conv_pct(v):
+            arr = np.asarray(v, dtype=float)
+            out = np.clip(arr / scale * 100.0, 0.0, 100.0)
+            out = np.where(np.isnan(arr), np.nan, out)
+            return float(out) if np.ndim(out) == 0 else out
+        return conv_pct
+    if key in _SKILL_DEV_KEYS:
+        sat = 100.0 / SCORE_SLOPES[key]
+
+        def conv_dev(v):
+            arr = np.asarray(v, dtype=float)
+            out = np.clip(100.0 * (1.0 - np.abs(arr) / sat), 0.0, 100.0)
+            out = np.where(np.isnan(arr), np.nan, out)
+            return float(out) if np.ndim(out) == 0 else out
+        return conv_dev
+    if key in _SKILL_FAR_KEYS:
+        def conv_far(v):
+            arr = np.asarray(v, dtype=float)
+            out = np.clip(100.0 - arr, 0.0, 100.0)
+            out = np.where(np.isnan(arr), np.nan, out)
+            return float(out) if np.ndim(out) == 0 else out
+        return conv_far
+    if key == "r":
+        # r 的完美锚点是 1；现有排序尺 r×λ 在 100% 相关时只给 69.4（λ<1），
+        # 统一技能尺显式映射到 100，负相关与无关同记 0（与排名口径一致）。
+        def conv_r(v):
+            arr = np.asarray(v, dtype=float)
+            out = np.clip(arr * 100.0, 0.0, 100.0)
+            out = np.where(np.isnan(arr), np.nan, out)
+            return float(out) if np.ndim(out) == 0 else out
+        return conv_r
+    return fn
+
+
+def _skill_parts(parts):
+    """同一族权重、同一缺项纪律，只把换算式替换为统一端点技能尺。"""
+    return tuple((k, w, label, mp, _skill_conv(k, fn))
+                 for k, w, label, mp, fn in parts)
+
+
+TEMP_SKILL_PARTS = _skill_parts(TEMP_SCORE_PARTS)
+PRECIP_SKILL_PARTS = _skill_parts(PRECIP_SCORE_PARTS)
+
+
+def temp_skill_score(t: dict) -> float | None:
+    """温度维的**绝对技能分**（0=无技能，100=完美）；并列披露，不参与排名。"""
+    return _weighted_score(TEMP_SKILL_PARTS, t)
+
+
+def precip_skill_score(p: dict) -> float | None:
+    """降水维的**绝对技能分**（0=无技能，100=完美）；并列披露，不参与排名。"""
+    return _weighted_score(PRECIP_SKILL_PARTS, p,
+                           min_weight_frac=_stats.PRECIP_MIN_WEIGHT_FRAC)
+
+
+def daily_temp_skill_score(md: dict) -> float | None:
+    mx = (md or {}).get("max") or {}
+    mn = (md or {}).get("min") or {}
+    hi, lo = temp_skill_score(mx), temp_skill_score(mn)
+    return round((hi + lo) / 2, 2) if hi is not None and lo is not None else None
+
+
+def composite_skill_score(ts: float | None, ps: float | None) -> float | None:
+    """两维技能分各半；缺一即缺（与排名综合分同一条纪律）。"""
+    return _mean2(ts, ps)
 
 
 TRACKS = ("hourly", "daily")
@@ -2165,8 +2414,8 @@ def _preload(station_ids: list[str], models: list[str]) -> tuple[dict, dict]:
     return obs_maps, snapshots
 
 
-def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
-                 period_label: str, is_monthly: bool = False) -> dict:
+def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
+                          period_label: str, is_monthly: bool = False) -> dict:
     # 模型列表先按沿袭表规范化：旧 id 折叠到接替 id 并去重（保序）。评估集合、
     # 分桶、榜单全部只认规范 id——归并进来的历史存档（物理键仍是旧 id）经
     # collect 的记录归属映射落到接替系列名下，绝不重复入样。
@@ -2703,6 +2952,17 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
             "score_composite_gain": float(_stats.SCORE_COMPOSITE_GAIN),
             # 展示缩放口径标记：渲染层与读者据此知道"分数拉开"不参与统计判定。
             "score_scale_mode": "display_only",
+            # 两把并列的分尺（2026-11 复核）：
+            #   score  = 排序指数（λ 标定到跨源 sd=8；端点不统一，只保证排序）
+            #   skill_* = 绝对技能分（100=完美、0=无技能；按指标满量程/饱和线锚定）
+            # skill_* 只用于可解释披露，不参与名次、CI 或冠军判定。
+            "score_scales": {
+                "ranking": "score/temp_score/precip_score",
+                "skill": "skill_score/skill_temp/skill_precip",
+                "skill_anchors": {"perfect": 100.0, "no_skill": 0.0},
+                "ranking_note": "ranking 的换算斜率按桶内跨源 sd=8 标定，端点不统一",
+                "skill_note": "skill 按指标满量程/饱和线锚定，可直接与完美/无技能对照",
+            },
             # 降水分"最小存活权重"门槛（当期实际生效值，P8 修法披露）：降水维
             # 存活子分权重低于名义总权重 × 该比例的格判缺测。与点估计/bootstrap
             # 共用同一全局，读者据此能复算"哪些格应该消失"。
@@ -2770,7 +3030,7 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
             # ---- 可审计性（§7.1）：本轮存档的哈希链根与抓取时刻范围 ----
             # 任何人拿仓库里的快照文件重算一遍，就能验证"这批预报确实在实况之前
             # 封存、且事后未被修改"——把项目最大的护城河从自律升级为可验证。
-            "integrity": integrity_summary(
+            "integrity": _integrity_summary_cached(
                 [s for lst in snapshots.values() for s in lst]),
             # 完整性门槛排除的快照数（P0-6）：残缺快照不再与完整快照同权进榜
             "excluded_incomplete": excluded_incomplete,
@@ -3486,6 +3746,14 @@ def _board_row(m: str, t: dict, p: dict, **extra) -> dict:
         "bias": p.get("bias"), "amt_mae": p.get("amt_mae"),
         "amt_bias": p.get("amt_bias"), "grade_ets": p.get("grade_ets"),
         "n": t.get("n", 0), "n_precip": p.get("n", 0),
+        # 绝对技能分（0=无技能、100=完美）：与排名分并列披露，不参与排名。
+        # 排名分是"排序指数"（λ 只保证跨源离散度），技能分是"绝对刻度"；
+        # 两者同族权重、同缺项纪律，读者可按目标选用，但绝不能把技能分
+        # 当作名次依据。`skill_score` 由两维技能分各半合成。
+        "skill_temp": temp_skill_score(t),
+        "skill_precip": precip_skill_score(p),
+        "skill_score": composite_skill_score(temp_skill_score(t),
+                                             precip_skill_score(p)),
     }
     row.update(extra)
     # 展示层一次映射：原始分 → 0~100 的"拉开"刻度。必须在 extra 合并之后做，
@@ -3909,8 +4177,12 @@ def _block_scoring_fingerprint(eval_cfg: dict, models: list[str],
         "temp_accuracy_limits", "rain_threshold_mm", "rain_daily_threshold_mm",
         "rain_hourly_threshold_mm", "hourly_lead_days", "daily_max_offset_days",
         "daily_min_hours", "daily_source_fallback", "min_sample",
-        "score_slopes", "score_index_gain", "score_index_center",
-        "score_composite_gain", "precip_min_surviving_weight", "graded_backend",
+        # 注意：**不要**把 score_index_gain / score_index_center /
+        # score_composite_gain 放进指纹。它们只作用于展示层，不改变格子的
+        # 原始指标（temp_score/precip_score/所有诊断列），放进来会让每次
+        # 调展示刻度就把 17 个历史块全部重算（实测 +40 s）。同理，
+        # bootstrap_runs / sensitivity_runs / 渲染参数也不属于格子口径。
+        "score_slopes", "precip_min_surviving_weight", "graded_backend",
         "require_complete_snapshots", "require_frozen_samples",
         "board_block_days", "board_block_min_days",
         "board_block_min_rain_events", "board_block_min_rain_days",
@@ -4845,11 +5117,14 @@ def _resolution_boards_blocks(
             S, W, np.asarray(d["adj"]["row_keep"], dtype=bool),
             np.asarray(d["adj"]["col_keep"], dtype=bool),
             _board_block_cols(name, K, H, D),
-            runs=max(100, int(bootstrap_runs)), seed=BOOTSTRAP_SEED, ridge=ridge)
+            runs=max(100, int(bootstrap_runs)), seed=BOOTSTRAP_SEED, ridge=ridge,
+            # 与点估计共用同一张格子掩膜：CI 的中心必须落在榜面那个估计量上
+            cell_valid=np.asarray(d["adj"]["cell_valid"], dtype=bool))
         eligible = [bool(gate_info[name][m]["qualified"]) for m in models]
         got = _stats._summarize_bootstrap(
             runs_scores, models, eligible, top_model=point_champs[name],
-            m_eff=m_eff)
+            m_eff=m_eff,
+            point_scores=np.asarray(d["adj"]["scores"], dtype=float))
         holm_family[name] = got.get("__family__")
         boot_out[name] = got
 
@@ -4863,6 +5138,8 @@ def _resolution_boards_blocks(
             r["sig_vs_top"] = b.get("sig_vs_top") if rankable else None
             r["sig_vs_top_raw"] = b.get("sig_vs_top_raw") if rankable else None
             r["p_vs_top"] = b.get("p_vs_top") if rankable else None
+            r["bootstrap_center_delta"] = (b.get("bootstrap_center_delta")
+                                           if rankable else None)
 
     # ---- 披露：跨轨分歧 + 每榜的难度/收缩/敏感性 ----
     windows: dict[str, dict] = {}
@@ -5165,8 +5442,13 @@ def _build_board_rows(models, name, design, *, by_model,
     mat = spec["mat"]
     row_keep, col_keep = adj["row_keep"], adj["col_keep"]
     W_cell = design["W_cell"]
-    scores = np.asarray(adj["scores"], dtype=float)
     cell_valid = np.asarray(adj["cell_valid"], dtype=bool)
+    # 注意：本函数的 score 行值取 aligned["composite"]（两维对齐分的均值），
+    # 不再取 adj["scores"]。后者的设计矩阵里 composite 与两维缺项位置不同，
+    # 单独拟合一列会让"综合 = 两维平均"在页面上永远对不上（实测最大 11.2 分）。
+    # adj["scores"] 仍用于 CI/冠军等**综合分本身**的统计推断——它在行级与
+    # aligned["composite"] 的差别只来自缺项格与 EB 列组合，二者在合格行上
+    # 应当一致；由 test_board_composite_equals_dim_mean 锁定。
     neff_t_map, neff_r_map = neff_pair
 
     # 榜面显示列与综合分走**同一张设计**（同一批格子、同一组权重、同一收缩）：
@@ -5181,15 +5463,72 @@ def _build_board_rows(models, name, design, *, by_model,
     # 开销重复 19 次（三张榜 ≈ 6 s）。two_way_fit 本来就支持 (r, m, b) 批量，
     # 把指标堆成 r 维一次拟合：每行的迭代只读自己的切片，结果与逐列调用逐位
     # 相同，只是 NumPy 调用次数从 19×N 降到 N。
+    # 派生列与综合分必须来自**同一个估计量**。旧实现把 composite 作为一列单独
+    # 做 difficulty_adjusted + EB，而 temp_score/precip_score 又各自拟合一列；
+    # batch 拟合中每列有自己的 mu/α/β（两维缺项的位置不同、权重不同），于是
+    # `composite` 并不等于 `(temp_score+precip_score)/2`。实测小时榜平均差
+    # −5.9 分、最大 11.2 分，读者按三列复算永远对不上。
+    #
+    # 修法：**综合分不再单独拟合一列**，而是由两维对齐分按定义合成。这样
+    # `score=(temp+precip)/2` 是构造出来的恒等式，不依赖各列拟合是否恰好同尺；
+    # 两维仍各自过同一张设计/同一组权重/同一套 EB，缺项规则也只在一处生效。
+    # 单项指标列（acc2/rmse/...）保留独立对齐——它们是诊断列，不参与综合分合成。
+    _ALIGNED_KEYS = ("temp_score", "precip_score",
+                     "acc2", "rmse", "acc1", "mae", "mbe", "r", "slope",
+                     "mbe_bdisp", "ts", "ets", "accr", "pod", "far", "bias",
+                     "amt_mae", "amt_bias", "grade_ets")
     stack = np.stack([mat[k] for k in _ALIGNED_KEYS])
-    aligned_mat = _stats.difficulty_adjusted(
-        stack, row_keep, col_keep,
+    aligned_parts = _stats._fit_parts(
+        stack, row_keep, col_keep, 300, 1e-8,
         weights=(W_cell[None, ...] if W_cell is not None else None),
-        # ridge 与本榜的实际设计一致（第四轮 P2-11）：派生列若用无收缩拟合
-        # 而综合分用收缩拟合，同一行的两列数字就来自两个不同的估计量
         ridge=float(design["gate_params"]["ridge"]),
         valid=cell_valid[None, ...])
-    aligned = {k: aligned_mat[i] for i, k in enumerate(_ALIGNED_KEYS)}
+    if aligned_parts is None:
+        aligned_mat = np.full((len(_ALIGNED_KEYS) + 1, len(models)), np.nan)
+    else:
+        a_mu, alpha_raw, beta_raw, _v = aligned_parts
+        V = np.asarray(cell_valid, dtype=bool)
+        Wres = W_cell if W_cell is not None else np.where(V, 1.0, 0.0)
+        block_ids = np.asarray(design["block_ids"])
+        n_blocks = int(block_ids.max()) + 1
+        # 两维分共享**同一个** EB 收缩系数 B：以温度列的块残差估计 B，再用于
+        # 降水列。若两列各估各的 B，"综合 = 两维平均"在收缩后又会破。
+        beta0 = np.where(np.isfinite(beta_raw[0]), beta_raw[0], 0.0)
+        resid0 = np.where(V, stack[0] - alpha_raw[0][:, None]
+                          - beta0[None, :], 0.0)
+        rb0, wb0 = _stats.block_residuals(resid0, Wres, block_ids, n_blocks)
+        present0 = np.isfinite(rb0) & (wb0 > 0)
+        _a0, info0 = _stats.eb_shrink(alpha_raw[0], rb0, wb0, present0)
+        B_shared = np.asarray(info0["shrink"], dtype=float).reshape(-1)
+        alpha_shrunk = np.array(alpha_raw, dtype=float, copy=True)
+        for ri in range(len(_ALIGNED_KEYS)):
+            beta_i = np.where(np.isfinite(beta_raw[ri]), beta_raw[ri], 0.0)
+            resid = np.where(V, stack[ri] - alpha_raw[ri][:, None]
+                             - beta_i[None, :], 0.0)
+            rb, wb = _stats.block_residuals(resid, Wres, block_ids, n_blocks)
+            present = np.isfinite(rb) & (wb > 0)
+            a_shr, _info = _stats.eb_shrink(
+                alpha_raw[ri], rb, wb, present, shrink_override=B_shared)
+            alpha_shrunk[ri] = a_shr
+        aligned_mat = np.where(
+            row_keep[None, :],
+            np.asarray(a_mu, dtype=float)[:, None] + alpha_shrunk, np.nan)
+        aligned = {k: aligned_mat[i] for i, k in enumerate(_ALIGNED_KEYS)}
+        temp_score_aligned = aligned["temp_score"]
+        precip_score_aligned = aligned["precip_score"]
+        # 综合分 = 两维对齐分的均值；任一维缺即缺（与 _composite_score 同纪律）。
+        with np.errstate(invalid="ignore"):
+            composite_aligned = np.where(
+                np.isfinite(temp_score_aligned) & np.isfinite(precip_score_aligned),
+                (temp_score_aligned + precip_score_aligned) / 2.0, np.nan)
+        aligned["composite"] = composite_aligned
+        aligned_mat = np.vstack([composite_aligned[None, :], aligned_mat])
+    if aligned_parts is None:
+        aligned = {k: aligned_mat[i + 1] for i, k in enumerate(_ALIGNED_KEYS)}
+        aligned["composite"] = aligned_mat[0]
+
+
+
     rows: list[dict] = []
     for i, m in enumerate(models):
         # 行级派生量的跨榜共享（性能轮）：下面这批计数、验证日集合与按维覆盖时效
@@ -5220,7 +5559,7 @@ def _build_board_rows(models, name, design, *, by_model,
         h_temp, h_rain, d_temp, d_rain = (f["h_temp"], f["h_rain"],
                                           f["d_temp"], f["d_rain"])
         neff, neff_rain = neff_t_map.get(m), neff_r_map.get(m)
-        score_raw = _fin(scores[i], 2)
+        score_raw = _fin(aligned["composite"][i], 2)
         t_score = _fin(aligned["temp_score"][i], 2)
         p_score = _fin(aligned["precip_score"][i], 2)
         ev = (rain_evidence or {}).get(m) or {}
@@ -5504,3 +5843,18 @@ def _score_trend(models, track_sources, hourly_lead_days,
                 _mean2(ts_h, ps_h), _mean2(ts_d, ps_d), daily_track_weight))
     trend["all"] = block
     return trend
+
+
+def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
+                 period_label: str, is_monthly: bool = False) -> dict:
+    """构建报告：评分参数装载与全部重算在**同一把锁**内完成。
+
+    实现体是 `_build_report_unlocked`（原函数逐行不变）；这层包装只负责把
+    "装载 config 的 λ / gain / 门槛 + 用它们算完整份报告"变成临界区。没有它，
+    同进程并发构建（服务化、并行测试、边渲染边重算）会交错修改模块级评分参数，
+    产出无法从任何一份 meta 复算的混合口径报告。
+    """
+    with _SCORE_PARAMS_LOCK:
+        return _build_report_unlocked(
+            station_ids, models, eval_cfg, start_dt, end_dt,
+            period_label, is_monthly=is_monthly)

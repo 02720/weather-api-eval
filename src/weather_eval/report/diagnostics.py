@@ -918,6 +918,108 @@ def score_slope_influence(report: dict) -> dict[str, Any]:
                     "方差贡献；后者见 composite_share（两维之间）"}
 
 
+def exact_variance_contribution(report: dict) -> dict[str, Any]:
+    """逐项对**维度分方差**的精确贡献（含指标间协方差）。
+
+    为什么必须单独做：`score_slope_influence` 的 effective_share 是
+    `w_i·sd_i / Σ_j w_j·sd_j`，它是"局部敏感度份额"——在指标互相独立时才有
+    方差含义。而真实子分高度相关（桶内 ρ 常达 0.8~0.98），交叉项会显著改变
+    实际贡献；2026-10 实测名义权重与方差份额的偏离最高 1.68 倍（日轨
+    grade_ets）与 0.24 倍（日轨 POD）。把 `effective_share` 当方差份额读，
+    等于假装相关不存在。
+
+    精确分解（对固定权重 w、维度和 S=Σ w_i x_i）：
+        Var(S) = Σ_i w_i·Cov(x_i, S)
+    因为 Cov(Σ w_j x_j, S)=Var(S)。因此每项的贡献 `w_i·Cov(x_i,S)` 之和
+    恰等于 Var(S)，协方差不需要单列"交互项"——它已经按项分配完毕。份额可为
+    负（某指标在大权重指标上起对冲作用），负份额是真实信息，不截断。
+    """
+    from ..evaluate import TEMP_SCORE_PARTS, PRECIP_SCORE_PARTS
+
+    def _collect(track: str, dim: str, parts: tuple, cells: dict) -> dict:
+        """返回 {(bucket, model): {key: subscore}}，只保留所有键齐备的格子。"""
+        keys = [k for k, *_ in parts]
+        rows: dict[tuple[str, str], dict[str, float]] = {}
+        for m, per in (cells or {}).items():
+            for b, met in (per or {}).items():
+                met = met or {}
+                vals: dict[str, float] = {}
+                if track == "daily" and dim == "temp":
+                    halves = [met.get("max") or {}, met.get("min") or {}]
+                    if not all(all(isinstance(h.get(k), (int, float))
+                                   and np.isfinite(h.get(k)) for k in keys)
+                               for h in halves):
+                        continue
+                    for k, _w, _l, _mp, fn in parts:
+                        vals[k] = float(np.mean([
+                            np.clip(float(fn(h[k])), 0.0, 100.0) for h in halves]))
+                else:
+                    if not all(isinstance(met.get(k), (int, float))
+                               and np.isfinite(met.get(k)) for k in keys):
+                        continue
+                    for k, _w, _l, _mp, fn in parts:
+                        vals[k] = float(np.clip(float(fn(met[k])), 0.0, 100.0))
+                rows[(str(b), m)] = vals
+        return rows
+
+    out: dict[str, Any] = {"available": True, "tracks": {}}
+    for track, dims in (("hourly", {"temp": report.get("temp_hourly") or {},
+                                    "precip": report.get("precip_hourly_score")
+                                    or report.get("precip_hourly") or {}}),
+                        ("daily", {"temp": report.get("temp_daily") or {},
+                                   "precip": report.get("precip_score_daily")
+                                   or report.get("precip_daily") or {}})):
+        for dim, parts in (("temp", TEMP_SCORE_PARTS),
+                           ("precip", PRECIP_SCORE_PARTS)):
+            rows = _collect(track, dim, parts, dims[dim])
+            if len(rows) < 8:
+                continue
+            # 桶内中心化：先去掉"这一档整体难/易"，再算跨源方差；否则桶间难度
+            # 差异会被当成指标间共同信号，虚高协方差（与 composite_share 同口径）。
+            by_bucket: dict[str, list[dict[str, float]]] = defaultdict(list)
+            for (b, _m), vals in rows.items():
+                by_bucket[b].append(vals)
+            centered: list[list[float]] = []
+            keys = [k for k, *_ in parts]
+            for bucket in by_bucket.values():
+                if len(bucket) < 3:
+                    continue
+                arr = np.asarray([[r[k] for k in keys] for r in bucket], dtype=float)
+                centered.extend((arr - arr.mean(axis=0)).tolist())
+            if len(centered) < 8:
+                continue
+            X = np.asarray(centered, dtype=float)
+            w = np.asarray([wt for _k, wt, *_ in parts], dtype=float)
+            S = X @ w
+            var_s = float(S.var())
+            if var_s <= 0:
+                continue
+            contrib = np.asarray([w[i] * float(np.cov(X[:, i], S, ddof=0)[0, 1])
+                                  for i in range(len(w))])
+            shares = contrib / var_s
+            out["tracks"].setdefault(track, {})[dim] = {
+                "cells": len(X),
+                "dim_score_var": round(var_s, 4),
+                "sum_share": round(float(shares.sum()), 6),
+                "items": [{
+                    "key": k,
+                    "nominal_weight": round(float(w[i]), 4),
+                    "variance_share": round(float(shares[i]), 4),
+                    "ratio_to_nominal": (round(float(shares[i] / w[i]), 3)
+                                         if w[i] else None),
+                    "sd": round(float(X[:, i].std(ddof=1)), 3),
+                    "corr_with_dim": round(float(np.corrcoef(X[:, i], S)[0, 1]), 3),
+                } for i, k in enumerate(keys)],
+            }
+    if not out["tracks"]:
+        return {"available": False, "reason": "没有足够的逐桶子分格子"}
+    out["note"] = ("variance_share = w_i·Cov(x_i, 维度分) / Var(维度分)，"
+                   "各项之和严格等于 1（含协方差，允许负份额）。它回答"
+                   "“这一项真正决定了多少跨源差异”，不同于局部敏感度份额；"
+                   "名义权重是价值判断，方差份额是当期数据的实现。")
+    return out
+
+
 def composite_dimension_share(report: dict) -> dict[str, Any]:
     """综合分"温度各半"的**实际兑现度**：方差里温度与降水各占多少（审查 P1-3）。
 
@@ -1126,4 +1228,5 @@ def compute_all(report: dict, data_root: Path, months: list[str] | None = None,
     out["corridor"] = corridor_sensitivity(report)
     out["slope_influence"] = score_slope_influence(report)
     out["composite_share"] = composite_dimension_share(report)
+    out["exact_variance_contribution"] = exact_variance_contribution(report)
     return out

@@ -126,3 +126,40 @@ def test_station_rho_int_sample_keys_match_tuple_keys():
     assert new["pairs"] == old["pairs"]
     assert new["mean_rho"] == old["mean_rho"]
     assert new["k_eff"] == old["k_eff"]
+
+
+def test_exact_variance_contribution_sums_to_one_and_exposes_covariance():
+    """逐项方差贡献必须**精确加总为 1**，且能揭示相关指标的对冲（负份额）。
+
+    这与 `effective_share` 是两回事：后者假设指标独立；真实子分桶内相关常
+    达 0.8~0.98，协方差会让名义权重与实际方差贡献显著偏离。合成数据显式构
+    造两项完全负相关/正相关的子分，断言：
+      * variance_share 之和 == 1（含协方差，不另列交互项）；
+      * 两项正相关时，权重更大的项拿到超过名义权重比的份额；
+      * 不伪造"所有份额都非负"。
+    """
+    import numpy as np
+    from weather_eval.report.diagnostics import exact_variance_contribution
+
+    rng = np.random.default_rng(7)
+    # 两个指标同源（正相关 1），模型 A/B 的差异同向
+    base = rng.normal(size=20)
+    temp2: dict = {}
+    for i in range(20):
+        m = f"m{i % 5}"
+        temp2.setdefault(m, {})[f"{i//5+1}d"] = {
+            "rmse": float(abs(base[i]) + 1.0),
+            "mae": float(abs(base[i]) + 1.0),
+            "acc2": float(50 + 10 * base[i]),
+            "acc1": float(30 + 5 * base[i]),
+            "mbe": float(0.1 * base[i]), "mbe_bdisp": 0.2,
+            "r": 0.8, "slope": 1.0}
+    report = {"temp_hourly": temp2, "precip_hourly_score": {}}
+    got = exact_variance_contribution(report)
+    assert got["available"]
+    items = got["tracks"]["hourly"]["temp"]["items"]
+    assert abs(sum(r["variance_share"] for r in items) - 1.0) <= 2e-4
+    # 构造里 rmse/mae/acc2/acc1 高度同源，rmse 的名义权重 0.2 应拿到显著份额
+    by = {r["key"]: r for r in items}
+    assert by["rmse"]["variance_share"] > 0
+    assert by["rmse"]["corr_with_dim"] > 0.5

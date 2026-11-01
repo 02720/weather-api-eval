@@ -353,3 +353,41 @@ def test_reports_footprint_ignores_hidden_dirs(tmp_path):
     (hidden / "big.html").write_text("y" * 5000, encoding="utf-8")
     fp = storage.reports_footprint(tmp_path)
     assert fp["total_bytes"] == 100
+
+
+def test_build_and_render_share_score_param_lock():
+    """评分参数是模块级全局，并发"装载+构建/渲染"必须被同一把锁串行化。
+
+    没有锁时，线程 A 装载 λ=10、线程 B 装载 λ=5，A 再算分就会用 B 的尺；
+    报告照样生成，meta 里却写着 A 的 λ——一份无法复算的混合口径报告。
+    这里只验证锁对象同一、可重入，且 `build_report` 的包装确实在锁内：
+    把锁换成记录型 RLock，断言进入/退出次数成对。
+    """
+    from weather_eval import evaluate as ev
+
+    assert ev.score_params_lock() is ev.score_params_lock()
+    entered = []
+
+    class _Recorder:
+        def __enter__(self):
+            entered.append("enter")
+            return self
+        def __exit__(self, *exc):
+            entered.append("exit")
+            return False
+
+    original = ev._SCORE_PARAMS_LOCK
+    ev._SCORE_PARAMS_LOCK = _Recorder()
+    try:
+        # 空模型+空站点也要真正进入包装（内部会正常返回空报告）
+        from datetime import datetime
+        ev.build_report([], [], {"temp_accuracy_limits": [1, 2],
+                                 "rain_threshold_mm": 0.1,
+                                 "hourly_lead_days": 1,
+                                 "daily_max_offset_days": 1,
+                                 "min_sample": 1},
+                        datetime(2026, 1, 1), datetime(2026, 1, 1),
+                        "lock-test")
+    finally:
+        ev._SCORE_PARAMS_LOCK = original
+    assert entered == ["enter", "exit"]

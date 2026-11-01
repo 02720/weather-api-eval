@@ -70,10 +70,24 @@ def pearson_r(a: np.ndarray, b: np.ndarray) -> float | None:
         a, b = a[m], b[m]
         if a.size < 2:
             return None
-    if a.var() <= 0 or b.var() <= 0:
+    # 数值安全版的手写中心化点积：与 np.corrcoef 的数学定义完全一致，但省掉
+    # corrcoef → cov → average 的三层 Python/np 调度。本函数在 n_eff 热路径上
+    # 被调用 7 万次以上（实测累计 16 s），是报告构建的最大单项。等价性：
+    #   ρ = Σ(a−ā)(b−b̄) / √(Σ(a−ā)²·Σ(b−b̄)²)
+    # 用 float64 累加；零方差返回 None（与旧的 a.var()<=0 判定同义）。
+    am = a.mean()
+    bm = b.mean()
+    ac = a - am
+    bc = b - bm
+    aa = float(np.dot(ac, ac))
+    bb = float(np.dot(bc, bc))
+    if aa <= 0.0 or bb <= 0.0:
         return None
-    r = float(np.corrcoef(a, b)[0, 1])
-    return r if np.isfinite(r) else None
+    r = float(np.dot(ac, bc) / np.sqrt(aa * bb))
+    # 浮点舍入可能给出 1+1e-16；clamp 到 [-1,1] 只修边界，不改变内部值。
+    if not np.isfinite(r):
+        return None
+    return max(-1.0, min(1.0, r))
 
 
 def effective_n(err: np.ndarray) -> int:
@@ -91,7 +105,10 @@ def effective_n(err: np.ndarray) -> int:
     性原理；噪声下限在 n→∞ 时收敛到 0，全额校正照常生效。
     """
     e = np.asarray(err, dtype=float)
-    e = e[np.isfinite(e)]
+    # 快路径：绝大多数误差序列来自已清洗的配对表，全部有限。旧实现无条件
+    # 分配 bool 掩膜 + 拷贝，在 4 万次 n_eff 调用中是纯固定开销。
+    if not np.isfinite(e).all():
+        e = e[np.isfinite(e)]
     n = int(e.size)
     if n <= 2:
         return n
@@ -131,27 +148,58 @@ def cross_station_rho(series_by_station: dict[str, list[float]],
     if len(ids) < 2:
         return None
     if times_by_station is not None:
-        maps: list[dict[str, float]] = []
-        for sid in ids:
-            vals = series_by_station[sid]
-            times = times_by_station.get(sid)
-            if times is None or len(times) != len(vals):
-                return None
-            maps.append(dict(zip(times, vals)))
-        rs: list[float] = []
-        ns: list[int] = []
-        for i in range(len(maps)):
-            for j in range(i + 1, len(maps)):
-                common = maps[i].keys() & maps[j].keys()
-                if len(common) < min_overlap:
-                    continue
-                keys = sorted(common)
-                a = np.array([maps[i][k] for k in keys], dtype=float)
-                b = np.array([maps[j][k] for k in keys], dtype=float)
-                r = pearson_r(a, b)
-                if r is not None:
-                    rs.append(r)
-                    ns.append(len(common))
+        # 两条路径必须给出逐位相同的 ρ̄ 与 n_eff：
+        #   * 短序列走 dict（numpy 字符串数组的固定开销更大）；
+        #   * 长序列且时间键严格升序唯一时走数组交集（assume_unique=True，
+        #     免排序；`intersect1d` 返回下标顺序 == sorted(common) 顺序）。
+        # 任一时间键不满足严格升序唯一，就整体回退 dict 路径——绝不用未经
+        # 验证的排序假设换速度。阈值 256 来自微基准拐点。
+        total_len = sum(len(v) for v in series_by_station.values())
+        arrs: list[tuple[np.ndarray, np.ndarray]] = []
+        use_arrays = total_len >= 4 * 256
+        if use_arrays:
+            for sid in ids:
+                vals = series_by_station[sid]
+                times = times_by_station.get(sid)
+                if times is None or len(times) != len(vals):
+                    return None
+                ta = np.asarray(times)
+                if ta.size > 1 and not bool(np.all(ta[1:] > ta[:-1])):
+                    use_arrays = False
+                    break
+                arrs.append((ta, np.asarray(vals, dtype=float)))
+        if use_arrays:
+            rs: list[float] = []
+            ns: list[int] = []
+            for i in range(len(arrs)):
+                for j in range(i + 1, len(arrs)):
+                    ti, vi = arrs[i]
+                    tj, vj = arrs[j]
+                    common, ia, ib = np.intersect1d(
+                        ti, tj, assume_unique=True, return_indices=True)
+                    if common.size < min_overlap:
+                        continue
+                    r = pearson_r(vi[ia], vj[ib])
+                    if r is not None:
+                        rs.append(r)
+                        ns.append(int(common.size))
+        else:
+            maps = [dict(zip(times_by_station[sid], series_by_station[sid]))
+                    for sid in ids]
+            rs = []
+            ns = []
+            for i in range(len(maps)):
+                for j in range(i + 1, len(maps)):
+                    common = maps[i].keys() & maps[j].keys()
+                    if len(common) < min_overlap:
+                        continue
+                    keys = sorted(common)
+                    a = np.array([maps[i][k] for k in keys], dtype=float)
+                    b = np.array([maps[j][k] for k in keys], dtype=float)
+                    r = pearson_r(a, b)
+                    if r is not None:
+                        rs.append(r)
+                        ns.append(len(common))
     else:
         # 按位置对齐、截断到最短序列
         cut = min(len(series_by_station[sid]) for sid in ids)
@@ -1655,7 +1703,8 @@ def two_way_adjust(S2: np.ndarray,
 
 # ------------------------------------------------ 分块模型的经验贝叶斯收缩
 def eb_shrink(alpha: np.ndarray, resid_block: np.ndarray, block_weight: np.ndarray,
-              present: np.ndarray) -> tuple[np.ndarray, dict]:
+              present: np.ndarray,
+              shrink_override: np.ndarray | None = None) -> tuple[np.ndarray, dict]:
     """把行效应 α 按**有效块数**向面板均值收缩（经验贝叶斯，2026-10-31）。
 
     第一性原理：一个只覆盖 1 个 7 天块的源，它的 α 是**一次天气抽签**的产物；
@@ -1676,6 +1725,11 @@ def eb_shrink(alpha: np.ndarray, resid_block: np.ndarray, block_weight: np.ndarr
       resid_block  (..., M, K)  每个（源, 块）的加权平均残差；无格子的块为 NaN
       block_weight (..., M, K)  该块残差的权重（格子权重之和）
       present      (..., M, K)  该块是否有可评格子
+      shrink_override  (..., M)  显式指定收缩系数（None = 用本列块残差估计）。
+        综合分与它的两个成分必须共享同一个 B：若三列各估各的 B，线性关系
+        `综合 = (温度 + 降水)/2` 在收缩后就不再成立，页面上的三列来自三个
+        估计量（2026-10-31 复核实测小时榜最大差 11.2 分）。派生列调用时传入
+        综合分估计出的 B，即"同一把收缩尺"。
     返回 (alpha_shrunk, info)；info 里 sigma2/tau2/n_blocks/shrink 供披露与
     bootstrap 复用。**点估计与每次重采样用同一个函数**，区间中心不会漂。
     """
@@ -1724,6 +1778,17 @@ def eb_shrink(alpha: np.ndarray, resid_block: np.ndarray, block_weight: np.ndarr
     # 退化保护：τ²=0（源间没有可分辨差异）→ 全部收缩到面板均值；
     # σ²=0（块间完全一致）→ 不收缩。两者都是极限情形，不能除零。
     B = np.where(np.isfinite(B), B, 0.0)
+    if shrink_override is not None:
+        # 共享收缩系数：显式给定时用调用方的 B（通常是综合分那一列），
+        # 但缺格子的行仍不收缩（B=0），避免把无证据的源拉进榜。
+        Bo = np.asarray(shrink_override, dtype=float)
+        # 允许 (M,) 的逐源 B 广播到 (R, M)：点估计路径 R=1，alpha 是 (M,)，
+        # 而内部 B 是 (R, M)。共享系数回答的是"每个源收缩多少"，与 R 无关。
+        if Bo.ndim == 1 and B.ndim == 2 and Bo.size == B.shape[1]:
+            Bo = np.broadcast_to(Bo, B.shape)
+        if Bo.shape != B.shape:
+            raise ValueError(f"shrink_override 形状 {Bo.shape} 与 {B.shape} 不匹配")
+        B = np.where((n_block > 0) & np.isfinite(Bo), Bo, 0.0)
     A1 = np.where(np.isfinite(A), A, mu_a[:, None])
     alpha_shrunk = mu_a[:, None] + B * (A1 - mu_a[:, None])
     back = (lambda v: v.reshape(lead)) if lead else (lambda v: v.reshape(()))
@@ -1765,7 +1830,8 @@ def block_bootstrap_scores(S: np.ndarray, W: np.ndarray,
                            block_cols: list[np.ndarray], *,
                            runs: int = 500, seed: int = 20260906,
                            ridge: float = 0.0, max_iter: int = 50,
-                           tol: float = 1e-4, chunk: int = 100) -> np.ndarray:
+                           tol: float = 1e-4, chunk: int = 100,
+                           cell_valid: np.ndarray | None = None) -> np.ndarray:
     """按 **7 天块**重采样 + 重拟合 + 经验贝叶斯收缩，返回 (runs, M) 行分。
 
     为什么不是按天重采样（旧 `day_block_bootstrap`）：分块模型的行效应由
@@ -1789,6 +1855,15 @@ def block_bootstrap_scores(S: np.ndarray, W: np.ndarray,
     if any(len(c) != L for c in block_cols):
         raise ValueError("每个分块的列数必须相同（列布局按块等长构造）")
     V0 = np.isfinite(S) & row_keep[:, None] & col_keep[None, :]
+    if cell_valid is not None:
+        # **点估计的同一张格子掩膜**：薄格门槛、证据门、长尾列剔除都在点估计
+        # 的设计阶段完成；bootstrap 若重新只用 isfinite(S) 判定，就会把点估计
+        # 已剔除的格子带回每一次重采样，CI 中心系统性偏离榜面分。这里以调用方
+        # 的 cell_valid 为准（与 difficulty_adjusted(valid=...) 同一纪律）。
+        cv = np.asarray(cell_valid, dtype=bool)
+        if cv.shape != S.shape:
+            raise ValueError("cell_valid 必须与 S 同形状")
+        V0 = V0 & cv
     W0 = np.where(V0, W, 0.0)
     col_of_block = np.repeat(np.arange(K), L)
     bc = np.stack([np.asarray(c, dtype=int) for c in block_cols])
@@ -1802,19 +1877,20 @@ def block_bootstrap_scores(S: np.ndarray, W: np.ndarray,
         S_b = np.take(S, idx, axis=1).transpose(1, 0, 2)
         W_b = np.take(W0, idx, axis=1).transpose(1, 0, 2)
         V_b = np.take(V0, idx, axis=1).transpose(1, 0, 2)
-        alpha, beta = two_way_fit(S_b, V_b, weights=W_b, ridge=ridge,
-                                  max_iter=max_iter, tol=tol)
-        present_col = V_b.any(axis=1)             # (r, C)
-        ncol = present_col.sum(axis=1)
-        shift = np.where(ncol > 0, (beta * present_col).sum(axis=1)
-                         / np.maximum(ncol, 1), 0.0)
-        alpha = alpha + shift[:, None]
-        beta = beta - shift[:, None]
-        resid = np.where(V_b, S_b - alpha[:, :, None] - beta[:, None, :], 0.0)
-        wsum = W_b.sum(axis=(1, 2))
-        mu = np.where(wsum > 0, (W_b * resid).sum(axis=(1, 2))
-                      / np.where(wsum > 0, wsum, 1.0), np.nan)
+        # 与点估计共用 `_fit_parts`：它负责列效应归一化（让保留列平均难度=0）
+        # 与 μ 的定义（残差加权均值）。旧实现手工重写了一遍这两步，却没做
+        # `_fit_parts` 的 beta 归一化 → bootstrap 的 μ 与点估计不同，CI 中心
+        # 系统性偏离榜面分（实测残差中位 2.4 分）。同一函数、同一公式才叫
+        # "bootstrap 回答同一个估计量"。
+        fit = _fit_parts(S_b, row_keep, col_keep, max_iter, tol,
+                         weights=W_b, ridge=ridge, valid=V_b)
+        if fit is None:
+            out[lo:hi] = np.nan
+            continue
+        mu, alpha, beta, Vfit = fit
         # 块级残差（重采样布局：每个采样位置由 L 列组成，块内先平均）
+        resid = np.where(Vfit, S_b - alpha[:, :, None]
+                         - np.where(np.isfinite(beta), beta, 0.0)[:, None, :], 0.0)
         resid_pos, w_pos = block_residuals(resid, W_b, col_of_block, K)
         present_pos = np.isfinite(resid_pos)
         # 同一个原始块可能被抽中多次：按原始块去重后再进 σ²/ n_block 估计，
@@ -2157,7 +2233,9 @@ def holm_bonferroni(pvals: list[float], alpha: float = 0.10,
 def _summarize_bootstrap(macro: np.ndarray, models: list[str],
                          eligible: list[bool], alpha: float = 0.10,
                          top_model: str | None = None,
-                         m_eff: float | None = None) -> dict[str, dict[str, Any]]:
+                         m_eff: float | None = None,
+                         point_scores: np.ndarray | None = None,
+                         ) -> dict[str, dict[str, Any]]:
     """(runs, m) 的 macro 分 → 每模型的 CI90 / 冠军频率 / 与冠军的显著性。
 
     sig_vs_top 走 **max-T 单步（族内极值）**校正，见 `_max_t_pvalues`。与第一名
@@ -2187,10 +2265,24 @@ def _summarize_bootstrap(macro: np.ndarray, models: list[str],
         finite = scores[np.isfinite(scores)]
         ci = None
         if finite.size >= max(5, macro.shape[0] // 10):
+            # 百分位区间：报告的是"若重抽天气块，这个估计量会落在哪个范围"。
+            # 非线性估计量（EB 收缩的 B 依赖每次重采样的块结构）的 bootstrap
+            # 分布均值可系统偏离点估计；这属于**估计量抽样分布**的真实性质，
+            # 不能用 basic bootstrap 强行把中心拉回点估计（实测那样会把区间
+            # 中心偏移放大到 6 分，等于用错误的对偶区间掩盖偏差）。
+            # 报告同时给出 `bootstrap_center_delta`（分布均值−点估计），让读者
+            # 看见偏差，而不是把它藏进区间。
             lo, hi = np.percentile(finite, [5, 95])
             ci = [round(float(lo), 2), round(float(hi), 2)]
+        center_delta = None
+        if point_scores is not None and np.isfinite(point_scores[mi]) and finite.size:
+            center_delta = round(float(np.mean(finite) - point_scores[mi]), 3)
         out[m] = {"ci90": ci, "champion_pct": 0.0, "sig_vs_top": None,
-                  "sig_vs_top_raw": None, "p_vs_top": None}
+                  "sig_vs_top_raw": None, "p_vs_top": None,
+                  # bootstrap 分布中心与榜面点估计的差（原始分）：非线性 EB
+                  # 收缩的抽样分布可系统偏移。CI 不强行拉回中心，而是把这个
+                  # 偏差显式披露。
+                  "bootstrap_center_delta": center_delta}
         if not eligible[mi] or ci is None:
             continue
         fallback_candidates.append((float(np.nanmean(scores)), mi))
@@ -2204,12 +2296,18 @@ def _summarize_bootstrap(macro: np.ndarray, models: list[str],
     # 冠军频率（逐 run 的 nan-aware 最大；某 run 全模型无分时该 run 不计冠军）。
     # 只有入围者可成为冠军（未入围者不应凭高温度分在频率表上占位）
     elig_arr = np.array(eligible, dtype=bool)
-    macro_elig = np.where(elig_arr[None, :], macro, np.nan)
+    macro_elig = np.where(elig_arr[None, :], macro, np.nan) if macro.size else macro
     finite = np.isfinite(macro_elig)
     # 与权重敏感性同样的平局处理：先取整到 1e-6 分再比大小，避免浮点噪声
-    # （1e-14 级）决定"谁在这一轮是冠军"
-    best = np.where(finite, np.round(macro_elig, 6), -np.inf).argmax(axis=1)
-    best = np.where(finite.any(axis=1), best, -1)
+    # （1e-14 级）决定"谁在这一轮是冠军"。
+    # 空模型集合（配置为空/全被门槛剔除）没有 argmax 定义：返回空摘要，
+    # 而不是让报告构建在收尾阶段崩掉。
+    if not macro_elig.size or macro_elig.shape[1] == 0:
+        best = np.full(macro_elig.shape[0] if macro_elig.ndim else 0, -1,
+                       dtype=int)
+    else:
+        best = np.where(finite, np.round(macro_elig, 6), -np.inf).argmax(axis=1)
+        best = np.where(finite.any(axis=1), best, -1)
     counted = int((best >= 0).sum())
     for mi, m in enumerate(models):
         pct = round(100.0 * float((best == mi).sum()) / counted, 1) if counted else 0.0
@@ -2482,16 +2580,19 @@ def weight_champion_distribution(
     with np.errstate(invalid="ignore", divide="ignore"):
         t_score = num_t / np.where(den_t > 0, den_t, np.nan)
         p_score = num_p / np.where(den_p > 0, den_p, np.nan)
-    # 宏观权重下的缺项加权平均：nums/总权重，而不是 nanmean（后者恒为 50:50）
+    # 宏观权重下的综合分：**必须两维齐备**（v_t & v_p），与正式榜
+    # `_composite_score`/`_mean2` 的"缺一即缺"同一条纪律。旧实现用的是
+    # "按存活权重重归一"（tot_w），于是缺降水维的源会拿纯温度分参与冠军竞争
+    # ——那正是 MSN 教训的复现，而且发生在"不确定性披露"这个最该可信的口径里。
+    # 这里固定 50:50 的缺项规则：任一维缺 → 该桶综合分 NaN；扰动只改权重，
+    # 不改"什么是可评的综合分"。
     v_t = np.isfinite(t_score)
     v_p = np.isfinite(p_score)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        with np.errstate(invalid="ignore", divide="ignore"):
-            tot_w = w_macro * v_t + (1.0 - w_macro) * v_p
-            num = w_macro * np.where(v_t, t_score, 0.0) \
-                + (1.0 - w_macro) * np.where(v_p, p_score, 0.0)
-            bucket = np.where(tot_w > 0, num / np.where(tot_w > 0, tot_w, 1.0), np.nan)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        bucket = np.where(v_t & v_p,
+                          w_macro * np.where(v_t, t_score, 0.0)
+                          + (1.0 - w_macro) * np.where(v_p, p_score, 0.0),
+                          np.nan)
     if adj_row is None or adj_col is None:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
@@ -2508,6 +2609,8 @@ def weight_champion_distribution(
     # 决定——冠军频率会被凭空摊薄（实测平局用例出现 84/16 而不是 100/0）。
     # 1e-6 分远小于任何真实差异，取整只吃掉浮点噪声。
     finite = np.isfinite(macro)
+    if not macro.size or macro.shape[1] == 0:
+        return []
     best = np.where(finite, np.round(macro, 6), -np.inf).argmax(axis=1)
     best = np.where(finite.any(axis=1), best, -1)
     counts = np.bincount(best[best >= 0], minlength=n_m)
@@ -2549,11 +2652,12 @@ def macro_champion_at_alpha(temp_sub: np.ndarray, precip_sub: np.ndarray,
         t_score = num_t / np.where(den_t > 0, den_t, np.nan)
         p_score = num_p / np.where(den_p > 0, den_p, np.nan)
     vt, vp = np.isfinite(t_score), np.isfinite(p_score)
-    tot = alpha * vt + (1.0 - alpha) * vp
     with np.errstate(invalid="ignore", divide="ignore"):
-        num = alpha * np.where(vt, t_score, 0.0) \
-            + (1.0 - alpha) * np.where(vp, p_score, 0.0)
-        bucket = np.where(tot > 0, num / np.where(tot > 0, tot, 1.0), np.nan)
+        # 缺一即缺：与正式综合分同纪律，缺项重归一不得进入宏观端点冠军。
+        bucket = np.where(vt & vp,
+                          alpha * np.where(vt, t_score, 0.0)
+                          + (1.0 - alpha) * np.where(vp, p_score, 0.0),
+                          np.nan)
     if adj_row is None or adj_col is None:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)

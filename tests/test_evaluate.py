@@ -223,21 +223,26 @@ def test_score_parts_contract():
     # 脚本 scripts/audit_metric_redundancy.py。
     scored = {k for k, *_ in (*TEMP_SCORE_PARTS, *PRECIP_SCORE_PARTS)}
     assert not {"chi2", "rss", "ts", "acc", "miss", "farate", "bias"} & scored
-    # 同族平等契约：rmse/mae 与 r/slope 各半（这是分析选择，不是"更重要"）
+    # 同族主/复核契约（2026-11 权重再复核）：同族高度相关的第二成员降为
+    # 复核项，主指标承担该族大部分权重。旧"各半"把同一份证据计两遍，
+    # 实测 mae↔rmse 0.76/0.79、acc1↔acc2 0.92、r↔slope 0.59/0.72。
     w_t = {k: w for k, w, *_ in TEMP_SCORE_PARTS}
-    assert w_t["rmse"] == w_t["mae"] and w_t["r"] == w_t["slope"]
-    # 雨量精度族与雨强分辨力的比例契约（2026-10-31）：25% / 20%
+    assert w_t["rmse"] > w_t["mae"] and w_t["acc2"] > w_t["acc1"]
+    assert w_t["r"] > w_t["slope"]
+    assert abs(w_t["rmse"] - 0.35) < 1e-9 and abs(w_t["mae"] - 0.10) < 1e-9
+    # 雨量精度族与雨强分辨力的比例契约（2026-11）：25% / 15%
     w_p = {k: w for k, w, *_ in PRECIP_SCORE_PARTS}
     assert abs(w_p["amt_mae"] - 0.25) < 1e-9
-    assert abs(w_p["grade_ets"] - 0.20) < 1e-9
+    assert abs(w_p["grade_ets"] - 0.15) < 1e-9
     # 去冗余契约：amt_bias / bias 永不回到评分表
     assert "amt_bias" not in w_p and "bias" not in w_p
     # P0-3 契约：acc 不入分（气候基率主导）；ETS 是降水维最大单项；
-    # POD 与 FAR 等权（不预设超报/欠报方向偏好）
+    # POD 与 FAR 仍等权（不预设超报/欠报方向偏好），但只作方向复核的小份额。
     keys = [k for k, *_ in PRECIP_SCORE_PARTS]
     assert "acc" not in keys
     assert max(w_p, key=w_p.get) == "ets"
     assert w_p["far"] == w_p["pod"]
+    assert w_p["ets"] > 5 * w_p["pod"]
 
 
 def test_score_slopes_frozen_and_log_symmetric():
@@ -1892,7 +1897,7 @@ def test_snapshot_quality_and_model_status_disclosed(tmp_path, monkeypatch):
     monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
     start = datetime(2026, 8, 1, 0, 0)
     obs = [{"time": iso(start + timedelta(hours=h)), "temp": 20.0,
-            "rain": 0.0} for h in range(72)]
+            "rain": 0.0} for h in range(96)]
     storage.save_obs("s1", obs)
     # full：3 个起报轮次，序列长度一致；trunc：第 3 份只有 12 小时
     for k in range(3):
@@ -2166,3 +2171,101 @@ def test_timeseries_uses_only_forecasts_issued_before_valid_time():
     # 01:00 / 02:00：晚发布的快照起报时刻 >= 有效时刻，不得覆盖（取早报的 11/12）；
     # 03:00：02:00 的起报早于有效时刻，按"后发布覆盖"取 93。
     assert temps == [11.0, 12.0, 93.0]
+
+
+
+def test_board_composite_is_dimension_mean_by_construction(tmp_path, monkeypatch):
+    """总榜每行必须满足 `score = (temp_score + precip_score) / 2`。
+
+    这是页面三列的**可复算契约**：旧实现把 composite 与 temp/precip 当三列各自
+    做双向拟合 + 经验贝叶斯收缩，每列有自己的 μ/α/β，于是三列不是同一个估计量。
+    实测小时榜平均差 −5.9 分、最大 11.2 分——读者按"温度/降水各半"永远算不出
+    综合分。修法是综合分由两维对齐分按定义合成（不是再拟合一列）；本测试在
+    原始分上验证恒等式成立（展示层在 0 处截断后不可反演，故必须用原始分）。
+    """
+    from weather_eval import evaluate as ev
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    start = datetime(2026, 8, 1, 0, 0)
+    end = datetime(2026, 8, 30, 23, 0)
+    obs = [{"time": iso(start + timedelta(hours=h)), "temp": 20.0 + (h % 5),
+            "rain": 1.0 if h % 12 == 0 else 0.0} for h in range(30 * 24)]
+    storage.save_obs("s1", obs)
+    for sid in ("a", "b", "c"):
+        for day in range(0, 10):
+            issue = start + timedelta(days=day)
+            times = [iso(issue + timedelta(hours=hh)) for hh in range(24 * 8)]
+            bias = {"a": 0.2, "b": 1.0, "c": 2.0}[sid]
+            storage.save_forecast_snapshot("s1", sid, {
+                "issue_iso": iso(issue), "station_id": "s1", "source": "test",
+                "models": [sid], "hourly_time": times,
+                "data": {sid: {
+                    "temperature_2m": [20.0 + (hh % 5) + bias for hh in range(24 * 8)],
+                    "precipitation": [1.0 if hh % 12 == 0 else 0.0 for hh in range(24 * 8)],
+                }}})
+    cfg = {"temp_accuracy_limits": [1, 2], "rain_threshold_mm": 0.1,
+           "hourly_lead_days": 8, "daily_max_offset_days": 8, "min_sample": 3,
+           "bootstrap_runs": 20, "sensitivity_runs": 20,
+           "board_min_qualified_days": 1, "board_block_min_days": 1,
+           "board_block_min_rain_events": 1, "board_block_min_rain_days": 1,
+           "board_block_min_cells": 1, "min_cell_neff": 0,
+           "board_min_col_frac": 0.0}
+    ev.apply_score_index_gain(1.0, 50.0)
+    ev.apply_composite_gain(1.0, 50.0)
+    try:
+        data = ev.build_report(["s1"], ["a", "b", "c"], cfg, start, end, "2026-08")
+    finally:
+        ev.apply_score_index_gain(None, 50.0)
+        ev.apply_composite_gain(None, 50.0)
+    checked = 0
+    for board in ("hourly", "daily", "all"):
+        for row in data["leaderboards"][board]:
+            if row.get("score") is None:
+                continue
+            checked += 1
+            # 展示层在 [0,100] 截断；只在三元组都未被截断时比较原始恒等式
+            vals = (row["score"], row["temp_score"], row["precip_score"])
+            if any(v <= 0.0 or v >= 100.0 for v in vals):
+                continue
+            assert abs(row["score"] - (row["temp_score"] + row["precip_score"]) / 2) <= 0.011, (
+                board, row["model"], row["score"], row["temp_score"], row["precip_score"])
+    assert checked > 0, "夹具没有产出任何可复算的行"
+
+
+def test_daily_fallback_respects_freeze_window(tmp_path, monkeypatch):
+    """日产品补位不得绕过"封存时点"门槛。
+
+    快照在 T 日之后抓取、但 daily 块回填了 T 日之前（或当天已开始）的日预报时，
+    这些"日预报"是事后才取回的，可能含实况。逐小时路径早已按 fetched_at 排除；
+    日产品补位此前漏掉同一门槛，两条轨道因此不是同一批样本。
+    """
+    monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
+    # 抓取时刻固定为 08-23 06:00；08-22 的日产品是"抓取前已开始"的，必须排除
+    monkeypatch.setenv("WEATHER_EVAL_FETCHED_AT", "2026-08-23T06:00:00")
+    start = datetime(2026, 8, 21, 0, 0)
+    obs = [{"time": iso(start + timedelta(hours=h)), "temp": 20.0,
+            "rain": 0.0} for h in range(96)]
+    storage.save_obs("s1", obs)
+    snap = {
+        "issue_iso": iso(start), "station_id": "s1", "source": "test",
+        "models": ["m"], "hourly_time": [],
+        "data": {"m": {"temperature_2m": [], "precipitation": []}},
+        "daily_time": ["2026-08-21", "2026-08-22", "2026-08-23", "2026-08-24"],
+        "daily": {"m": {"temp_max": [25.0] * 4, "temp_min": [15.0] * 4,
+                        "precipitation": [0.0] * 4}},
+    }
+    storage.save_forecast_snapshot("s1", "m", snap)
+    from weather_eval.evaluate import collect, clear_preload_cache
+    clear_preload_cache()
+    _hourly, daily = collect(["s1"], ["m"], start,
+                             start + timedelta(hours=95), 16, 16, 20)
+    by_day = {r["valid_day"]: r for r in daily}
+    # 08-21/08-22 的日产品在抓取前已开始 → 不得提供预报值；08-23 00:00 也早于
+    # 06:00 → 同样不可用；只有 08-24（抓取之后才开始）允许作为日产品。
+    # 记录本身可以存在（观测侧仍有数据），但预报侧必须为空。
+    for day in ("2026-08-21", "2026-08-22", "2026-08-23"):
+        r = by_day.get(day)
+        assert r is None or (r["temp_max_fcst"] is None
+                             and r["temp_min_fcst"] is None
+                             and r["rain_fcst"] is None), day
+    assert by_day["2026-08-24"]["temp_max_fcst"] == 25.0
+    assert by_day["2026-08-24"]["temp_src"] == "daily"

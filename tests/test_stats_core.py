@@ -432,3 +432,68 @@ def test_composite_worst_case_regression_without_second_layer():
                 == np.array([0.0, 50.0, 100.0])).all()
     finally:
         stats.apply_composite_gain(old_gain, old_center)
+
+
+def test_weight_sensitivity_does_not_reweight_single_dimension():
+    """权重敏感性/宏观端点也必须"缺一即缺"，不得用单维分重归一。
+
+    正式综合分是 `(温度+降水)/2` 且任一维缺则无结论；旧敏感性实现用
+    `num/(w_t·v_t+w_p·v_p)` 重归一，缺降水维的源会拿纯温度分参与扰动后的
+    冠军竞争——这正是"半个证据当整个用"（MSN 教训）在披露层的复现。
+    """
+    temp_parts, precip_parts = _toy_parts()
+    # 模型 A：温度满分、降水缺；模型 B：温度 40、降水 40
+    temp_sub = np.array([[[100.0]], [[40.0]]])
+    prec_sub = np.array([[[np.nan]], [[40.0]]])
+    # 固定 50:50：A 必须无分，B 无争议夺冠
+    fixed = stats.weight_champion_distribution(
+        temp_sub, prec_sub, temp_parts, precip_parts, runs=50,
+        macro_weight_range=(0.5, 0.5))
+    assert [(d["index"], d["pct"]) for d in fixed] == [(1, 100.0)]
+    # 任意宏观权重扰动下，A 都不该靠"只剩温度"夺冠
+    varying = stats.weight_champion_distribution(
+        temp_sub, prec_sub, temp_parts, precip_parts, runs=300,
+        macro_weight_range=(0.05, 0.95))
+    assert [(d["index"], d["pct"]) for d in varying] == [(1, 100.0)]
+    # 宏观端点冠军同样不得让 A 出现
+    got = stats.macro_champion_at_alpha(
+        temp_sub, prec_sub, temp_parts, precip_parts, 0.95)
+    assert got is not None and got["index"] == 1
+
+
+def test_n_eff_array_path_matches_dict_path_for_long_series():
+    """长序列的数组交集快路径必须与 dict 路径给出**整数完全相同**的 n_eff。
+
+    快慢不能改变答案：时间键严格升序唯一时 `assume_unique=True` 的
+    `intersect1d` 顺序 == `sorted(common)`；不满足时实现必须回退 dict 路径。
+    这里同时覆盖"乱序时间键"——它必须走回退，而不是静默算出一个不同结果。
+    """
+    rng = np.random.default_rng(20261101)
+    n = 700
+    times = [f"2026-01-{d:02d}T{h:02d}" for d in range(1, 31) for h in range(24)][:n]
+    assert len(times) == n
+    series = {f"s{i}": rng.normal(size=n).tolist() for i in range(4)}
+    tm = {f"s{i}": times for i in range(4)}
+    fast = stats.n_eff_from_station_series(series, tm)
+
+    # 独立复算 dict 路径（与实现里的慢路径同式）
+    import numpy as _np
+    maps = [dict(zip(tm[sid], series[sid])) for sid in series]
+    rs, ns = [], []
+    for i in range(len(maps)):
+        for j in range(i + 1, len(maps)):
+            common = maps[i].keys() & maps[j].keys()
+            keys = sorted(common)
+            a = _np.array([maps[i][k] for k in keys])
+            b = _np.array([maps[j][k] for k in keys])
+            r = stats.pearson_r(a, b)
+            if r is not None:
+                rs.append(r)
+                ns.append(len(common))
+    rho = stats.fisher_z_combine(rs, ns)
+    total = sum(stats.effective_n(_np.asarray(v)) for v in series.values())
+    expected = max(1, int(round(total / (1.0 + 3 * min(rho, stats.RHO_CLAMP)))))
+    assert fast == expected
+    # 乱序时间键：必须回退且仍给同一结果
+    shuffled = {sid: list(reversed(v)) for sid, v in series.items()}
+    assert stats.n_eff_from_station_series(shuffled, tm) == fast

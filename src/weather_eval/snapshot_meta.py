@@ -215,6 +215,29 @@ def _legacy_canonical_bytes(snapshot: dict) -> bytes:
                       separators=(",", ":")).encode("utf-8")
 
 
+# 单份快照哈希的进程内缓存（按对象身份，强引用防 id 复用）。
+# 关键纪律：只在**同一次报告构建**内复用；`integrity_summary` 的输入是
+# `_preload` 返回的同一批 dict，期间内容不变。缓存保存对象引用，因此 id 不会
+# 在缓存存活期间被回收复用。`clear_hash_cache()` 供测试与长进程显式清理。
+_HASH_CACHE: dict[int, tuple[dict, str, bool]] = {}
+
+
+def clear_hash_cache() -> None:
+    _HASH_CACHE.clear()
+
+
+def _snapshot_integrity_cached(snapshot: dict) -> tuple[str, bool]:
+    key = id(snapshot)
+    hit = _HASH_CACHE.get(key)
+    if hit is not None and hit[0] is snapshot:
+        return hit[1], hit[2]
+    real, ok = check_snapshot_integrity(snapshot)
+    if len(_HASH_CACHE) >= 200_000:
+        _HASH_CACHE.clear()
+    _HASH_CACHE[key] = (snapshot, real, ok)
+    return real, ok
+
+
 def check_snapshot_integrity(snapshot: dict) -> tuple[str, bool]:
     """重算快照内容哈希，并与快照内嵌的 ``payload_sha256`` 比对。
 
@@ -262,7 +285,7 @@ def integrity_summary(snapshots: list[dict]) -> dict:
     n_legacy = 0
     mismatches: list[dict] = []
     for s in snapshots:
-        real, ok = check_snapshot_integrity(s)
+        real, ok = _snapshot_integrity_cached(s)
         if not ok and isinstance(s.get("payload_sha256"), str) and s["payload_sha256"]:
             # 旧口径（排除封存时刻）盖章的存量快照：迁移期内如实计数披露，
             # 新封存的快照不会再产生这一类

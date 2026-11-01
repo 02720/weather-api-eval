@@ -109,7 +109,8 @@ def test_two_kinds_of_missing_are_distinguished():
     # 缺 ets（0.30 权重，最大单权重）→ 存活 0.70 ≥ 0.5，照旧归一
     p = {k: v for k, v in FULL.items() if k != "ets"}
     assert precip_score(p) is not None
-    # [ets, far] 在位（0.425 < 0.5）→ 判缺测：半截证据不能当整个用
+    # [ets, far] 在位（0.55 > 0.5）但**只有晴雨一族** → 判缺测：
+    # 半截证据不能当整个用（比"存活权重"更本质的是"几个独立证据族"）
     assert precip_score({"ets": 0.2, "far": 30.0}) is None
     # 干桶误报形态：实况全域无降水（h=mi=0）→ amt/pod 缺，只剩 ets+far
     # （0.425）→ 判缺测，而不是重归一出一个"0 分惩罚"
@@ -164,7 +165,7 @@ def test_point_and_bootstrap_paths_agree_on_the_gate():
     pt = precip_score(FULL)
     assert pt is not None
     assert abs(raw - pt) <= 5e-3
-    # ② 半证据二件套：两路**同时**判缺测
+    # ② 半证据二件套：两路**同时**判缺测（只有雨量一族）
     arr2 = {k: np.array(v) for k, v in AMT_ONLY.items()}
     assert np.isnan(st._score_from_parts(arr2, PRECIP_SCORE_PARTS,
                                          min_weight_frac=0.5)).all()
@@ -176,8 +177,10 @@ def test_point_and_bootstrap_paths_agree_on_the_gate():
     for frac in (0.85, 0.95):
         _set_gate(frac)
         assert precip_score(FULL) is not None, frac
-        p90 = {k: v for k, v in FULL.items() if k != "grade_ets"}   # 存活 0.80
-        assert (precip_score(p90) is None) == (frac > 0.80), frac
+        p90 = {k: v for k, v in FULL.items() if k != "grade_ets"}
+        # 新口径：缺 grade_ets 仍有两族（晴雨 + 雨量），是**结构性缺失**而非
+        # 证据不足；权重门槛不得把它误杀。纯半证据（AMT_ONLY）已在上一步锁定。
+        assert precip_score(p90) is not None, frac
         # 聚合路径缺省（不显式传门槛）跟同一全局走：amt-only 聚合格判缺测
         out = st._rain_scores_from_aggregate(_synthetic_aggregate(True),
                                              PRECIP_SCORE_PARTS, min_sample=5)
