@@ -1,0 +1,13 @@
+{
+  "2026-11-01T00:00": {
+    "time": "2026-11-01T00:00",
+    "source": "wd",
+    "temp": 24.1,
+    "pressure": 1011.8,
+    "humidity": 92.0,
+    "rain": 0.0,
+    "wind_speed": 0.8,
+    "wind_dir": 234.0,
+    "visibility": null
+  }
+}
