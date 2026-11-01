@@ -44,6 +44,7 @@ from ..evaluate import (_DAILY_TEMP_VIEW_KEYS, PRECIP_SCORE_PARTS,
                         PRECIP_SKILL_PARTS, TEMP_SCORE_PARTS, TEMP_SKILL_PARTS,
                         apply_composite_gain, apply_score_index_gain,
                         apply_score_skill_k, apply_score_scheme,
+                        apply_score_amt_floors, apply_score_penalty_lambdas,
                         apply_score_slopes, daily_temp_score,
                         display_dim_score, score_map_text, score_params_lock)
 from ..timeutil import now_beijing
@@ -236,9 +237,9 @@ def _verify_daily_temp_halves(lb: dict, lbtemp: dict,
     * 分半字段整体缺席（旧结论摘要数据重渲染）时无事可对，跳过不误伤；
       一旦有任何分半值，对不上就是发布坏了，就地炸。
     """
-    if scheme == "skill-v3":
-        # skill-v3 的日温度分依赖每半的 ref/r_anom；lbtemp 只发布 8 个原始指标，
-        # 无法从发布字段逐位复算。v3 的“子分→维度”一致性由 evaluate 的
+    if scheme in ("skill-v3", "skill-v4"):
+        # skill-v3/v4 的日温度分依赖每半的 ref/r_anom；lbtemp 只发布 8 个原始指标，
+        # 无法从发布字段逐位复算。技能分的“子分→维度”一致性由 evaluate 的
         # 性质测试锁定；这里只保留 slope-v2 的发布契约检查。
         return
     for day, hal_rows in (lbtemp or {}).items():
@@ -281,8 +282,16 @@ def _slim_report(report_data: dict) -> dict:
     # 默认值而触发 P2 复算不变量报错（发布分 74.2 vs 复算 63.1）。
     scheme = str(meta.get("score_scheme") or "slope-v2")
     apply_score_scheme(scheme)
-    if scheme == "skill-v3":
+    if scheme in ("skill-v3", "skill-v4"):
         apply_score_skill_k(meta.get("score_skill_k"))
+        if scheme == "skill-v4":
+            _floors = meta.get("score_amt_floors") or {}
+            apply_score_amt_floors(_floors.get("hourly_mm"),
+                                  _floors.get("daily_mm"))
+            _pen = meta.get("score_skill_penalties") or {}
+            apply_score_penalty_lambdas(
+                (_pen.get("temp") or {}).get("lambda"),
+                (_pen.get("precip") or {}).get("lambda"))
     else:
         apply_score_slopes(meta.get("score_slopes"))
         apply_score_index_gain(meta.get("score_index_gain"),
@@ -836,8 +845,9 @@ def render_report_html(report_data: dict, title: str | None = None,
 
     _scheme = str((report_data.get("meta") or {}).get("score_scheme")
                   or "slope-v2")
-    _temp_parts = TEMP_SKILL_PARTS if _scheme == "skill-v3" else TEMP_SCORE_PARTS
-    _precip_parts = (PRECIP_SKILL_PARTS if _scheme == "skill-v3"
+    _skill_scheme = _scheme in ("skill-v3", "skill-v4")
+    _temp_parts = TEMP_SKILL_PARTS if _skill_scheme else TEMP_SCORE_PARTS
+    _precip_parts = (PRECIP_SKILL_PARTS if _skill_scheme
                      else PRECIP_SCORE_PARTS)
     return tpl.render(
         report=report_data,

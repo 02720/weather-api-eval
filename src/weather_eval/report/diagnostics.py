@@ -808,7 +808,14 @@ def score_slope_influence(report: dict) -> dict[str, Any]:
     残差的绝对水位已由 macro_weight_range 敏感性与 composite_dimension_share
     （温度:降水的宏观话语权）覆盖披露。
     """
-    from ..evaluate import TEMP_SCORE_PARTS, PRECIP_SCORE_PARTS, score_map_text
+    from ..evaluate import (TEMP_SCORE_PARTS, PRECIP_SCORE_PARTS, score_map_text,
+                            SCORE_SCHEME, SKILL_SCHEMES)
+    if SCORE_SCHEME in SKILL_SCHEMES:
+        # λ 斜率标定只属于 slope-v2；skill-v3/v4 没有 λ，实际话语权改由
+        # exact_variance_contribution 逐项发布（同一把 s 尺）。
+        return {"available": False,
+                "reason": "skill-v3/v4 不使用 score_slopes λ；见 exact_variance_contribution",
+                "scheme": SCORE_SCHEME}
 
     def _side_swing(parts: tuple, view: dict) -> dict[str, float]:
         """一侧（{model: {bucket: 平铺指标 dict}}）逐项的桶内中心化 sd（键 → swing）。
@@ -934,10 +941,18 @@ def exact_variance_contribution(report: dict) -> dict[str, Any]:
     恰等于 Var(S)，协方差不需要单列"交互项"——它已经按项分配完毕。份额可为
     负（某指标在大权重指标上起对冲作用），负份额是真实信息，不截断。
     """
-    from ..evaluate import TEMP_SCORE_PARTS, PRECIP_SCORE_PARTS
+    from ..evaluate import (TEMP_SCORE_PARTS, PRECIP_SCORE_PARTS,
+                            TEMP_SKILL_PARTS, PRECIP_SKILL_PARTS,
+                            SCORE_SCHEME, SKILL_SCHEMES, _skill_value)
+
+    skill = SCORE_SCHEME in SKILL_SCHEMES
 
     def _collect(track: str, dim: str, parts: tuple, cells: dict) -> dict:
-        """返回 {(bucket, model): {key: subscore}}，只保留所有键齐备的格子。"""
+        """返回 {(bucket, model): {key: subscore}}，只保留所有键齐备的格子。
+
+        skill-v3/v4：subscore 是技能变量 s（不是 0~100 子分）；方差份额不受
+        仿射映射影响，但“份额=名义”的审计必须在同一把 s 尺上做。
+        """
         keys = [k for k, *_ in parts]
         rows: dict[tuple[str, str], dict[str, float]] = {}
         for m, per in (cells or {}).items():
@@ -950,16 +965,33 @@ def exact_variance_contribution(report: dict) -> dict[str, Any]:
                                    and np.isfinite(h.get(k)) for k in keys)
                                for h in halves):
                         continue
-                    for k, _w, _l, _mp, fn in parts:
-                        vals[k] = float(np.mean([
-                            np.clip(float(fn(h[k])), 0.0, 100.0) for h in halves]))
+                    if skill:
+                        for k in keys:
+                            sv = [_skill_value(k, h) for h in halves]
+                            if any(s is None for s in sv):
+                                vals = {}
+                                break
+                            vals[k] = float(np.mean(sv))
+                    else:
+                        for k, _w, _l, _mp, fn in parts:
+                            vals[k] = float(np.mean([
+                                np.clip(float(fn(h[k])), 0.0, 100.0) for h in halves]))
                 else:
                     if not all(isinstance(met.get(k), (int, float))
                                and np.isfinite(met.get(k)) for k in keys):
                         continue
-                    for k, _w, _l, _mp, fn in parts:
-                        vals[k] = float(np.clip(float(fn(met[k])), 0.0, 100.0))
-                rows[(str(b), m)] = vals
+                    if skill:
+                        for k in keys:
+                            s = _skill_value(k, met)
+                            if s is None:
+                                vals = {}
+                                break
+                            vals[k] = float(s)
+                    else:
+                        for k, _w, _l, _mp, fn in parts:
+                            vals[k] = float(np.clip(float(fn(met[k])), 0.0, 100.0))
+                if vals:
+                    rows[(str(b), m)] = vals
         return rows
 
     out: dict[str, Any] = {"available": True, "tracks": {}}
@@ -969,8 +1001,9 @@ def exact_variance_contribution(report: dict) -> dict[str, Any]:
                         ("daily", {"temp": report.get("temp_daily") or {},
                                    "precip": report.get("precip_score_daily")
                                    or report.get("precip_daily") or {}})):
-        for dim, parts in (("temp", TEMP_SCORE_PARTS),
-                           ("precip", PRECIP_SCORE_PARTS)):
+        _t_parts = TEMP_SKILL_PARTS if skill else TEMP_SCORE_PARTS
+        _p_parts = PRECIP_SKILL_PARTS if skill else PRECIP_SCORE_PARTS
+        for dim, parts in (("temp", _t_parts), ("precip", _p_parts)):
             rows = _collect(track, dim, parts, dims[dim])
             if len(rows) < 8:
                 continue
@@ -999,6 +1032,7 @@ def exact_variance_contribution(report: dict) -> dict[str, Any]:
             shares = contrib / var_s
             out["tracks"].setdefault(track, {})[dim] = {
                 "cells": len(X),
+                "scale": "skill_s" if skill else "subscore_0_100",
                 "dim_score_var": round(var_s, 4),
                 "sum_share": round(float(shares.sum()), 6),
                 "items": [{

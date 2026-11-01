@@ -575,6 +575,51 @@ _RAIN_STATS = ("h", "fa", "mi", "c", "so", "sf", "sae",
                "gh1", "gfa1", "gmi1", "gh2", "gfa2", "gmi2")
 
 
+def grade_bounds_all(kind: str) -> tuple[tuple[float, float], ...]:
+    """全部雨强档位的 (min, max) 区间（有序多阈值技能用，不改变 grade_ets 的 2 档）。"""
+    kind = kind.lower()
+    table = ACC_PRECIP_LEVELS if kind == "24h" else PRECIP_LEVELS
+    n = 6 if kind == "24h" else 5
+    out = []
+    for i in range(1, n + 1):
+        iv = table[kind][i]
+        out.append((float(iv["min"]), float(iv["max"])))
+    return tuple(out)
+
+
+def ordinal_precip_skill(o: np.ndarray, f: np.ndarray, kind: str,
+                         min_sample: int) -> float | None:
+    """有序多阈值降水技能：0=同边际随机，1=完美，负=比随机差。
+
+    把“不下雨 + 各雨强档”排成有序列联表，用 |i−j| 作距离权重：
+        s = 1 − Σ w_ij n_ij / Σ w_ij n_i. n_.j / N
+    它一次用满 5/6 个档位，测的是“雨强分布整体偏了几档”，而不是只看某一个
+    二值阈值。与 ETS 同源但多出阈值维度；den=0（整格没有可评降水）→ None。
+    """
+    ro = np.round(np.asarray(o, dtype=float), 1)
+    rf = np.round(np.asarray(f, dtype=float), 1)
+    keep = ~(ro != ro) & ~(rf != rf)
+    ro, rf = ro[keep], rf[keep]
+    n = int(ro.size)
+    if n == 0 or n < min_sample:
+        return None
+    bounds = grade_bounds_all(kind)
+    k = len(bounds) + 1                  # 0 = 低于最低档（不下雨/小雨以下）
+    # 档位区间在 cyeva 里是连续的（小时非累积、日累积都单调），用最低阈值
+    # 的 searchsorted 一次性映射到 0..k-1，避免逐档 Python 循环 + np.add.at。
+    lows = np.asarray([b[0] for b in bounds], dtype=float)
+    io = np.searchsorted(lows, ro, side="right")
+    iff = np.searchsorted(lows, rf, side="right")
+    tab = np.bincount(io * k + iff, minlength=k * k).reshape(k, k)
+    rows, cols = tab.sum(axis=1), tab.sum(axis=0)
+    dist = np.abs(np.arange(k)[:, None] - np.arange(k)[None, :])
+    num = float((dist * tab).sum())
+    den = float((dist * np.outer(rows, cols) / n).sum())
+    if not np.isfinite(den) or den <= 0:
+        return None
+    return float(max(-1.0, min(1.0, 1.0 - num / den)))
+
+
 def grade_bounds(kind: str) -> tuple[tuple[float, float], ...]:
     """评分轨入分的两个雨强档位的 (min, max) 区间，阈值**只此一处**且取自 cyeva。
 

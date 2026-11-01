@@ -17,7 +17,15 @@ DEFAULT_EVAL = {
                                        # slope-v2，供旧夹具/归档月报与直接调用回放。
     "score_ref_window_days": 15,      # skill-v3 气候参照：只用目标日之前 W 天观测
     "score_ref_min_days": 5,          # 参照最少历史天数；不足 → 参照不可用，不出分
-    "score_skill_k": 1.535,           # skill-v3 下半段指数压缩参数（50→0 的衰减）
+    "score_skill_k": 1.535,           # skill 下半段指数压缩参数（50→0 的衰减）
+    # ---- skill-v4（2026-11）----
+    # 雨量技能分母下限：MAE_ref 很小时不再让 log 比值爆炸；公式同时保留
+    # “零雨参照=0”的锚点（见 evaluate.precip_amount_metrics）。
+    "score_amt_floor_hourly_mm": 0.05,   # 小时轨 κ：1mm/h 评分阈的 5%
+    "score_amt_floor_daily_mm": 0.5,     # 日轨 κ：0.5mm/day（起点值，待影子标定）
+    # 校准扣分项的下行预算：q∈[0,1]，最多扣 λ×50 分；不占正向权重。
+    "score_penalty_lambda_temp": 0.15,   # 温度 MBE/slope 扣分，最多 7.5 分
+    "score_penalty_lambda_precip": 0.10, # 降水 BIAS 扣分，最多 5 分
     "temp_accuracy_limits": [1, 2],   # ±1°C、±2°C 准确率
     "rain_threshold_mm": 0.1,          # 有无降水阈值（国内业务：≥0.1mm 记为有降水）
     "rain_daily_threshold_mm": 1.0,    # 降水分（日榜·降水维）阈值：24h 累计 ≥1mm 记"有效降水日"

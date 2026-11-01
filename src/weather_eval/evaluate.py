@@ -1246,22 +1246,34 @@ def precip_binary_metrics(obs_vals, fcst_vals, threshold, min_sample,
 
 def _precip_score_cell(obs_vals, fcst_vals, threshold, min_sample,
                        n_eff: int | None = None,
-                       gbounds: tuple[tuple[float, float], ...] = ()) -> dict:
+                       gbounds: tuple[tuple[float, float], ...] = (),
+                       amt_floor: float | None = None,
+                       grade_kind: str | None = None) -> dict:
     """评分轨道一个 (模型, 天桶) 格子的全部入分指标 = 晴雨二分类 + 雨量精度
-    + 雨强分辨力。
+    + 雨强分辨力 + 有序多阈值技巧。
 
     三者必须走**同一份样本**（同一 NaN 掩膜、同一个 n_eff 门槛）；分三次算只是
     因为口径不同（阈值二值化 vs 连续量求和 vs 雨强分档），不是三批数据。
+    `amt_floor`：skill-v4 的雨量技能分母下限 κ；None = 旧 log 口径（回放）。
+    `grade_kind`：`1h`/`24h`；给了才计算用满 5/6 档的 `ord_skill`。
     """
     out = precip_binary_metrics(obs_vals, fcst_vals, threshold, min_sample,
                                 n_eff=n_eff, gbounds=gbounds)
     out.update(precip_amount_metrics(obs_vals, fcst_vals, min_sample,
-                                     n_eff=n_eff))
+                                     n_eff=n_eff, amt_floor=amt_floor))
+    if grade_kind is not None:
+        if n_eff is not None and n_eff < min_sample:
+            out["ord_skill"] = None
+        else:
+            v = _stats.ordinal_precip_skill(obs_vals, fcst_vals, grade_kind,
+                                            min_sample)
+            out["ord_skill"] = _r(v) if v is not None else None
     return out
 
 
 def precip_amount_metrics(obs_vals, fcst_vals, min_sample,
-                          n_eff: int | None = None) -> dict:
+                          n_eff: int | None = None,
+                          amt_floor: float | None = None) -> dict:
     """评分轨道专用的**雨量精度**指标（2026-10 新增；与二分类**同一份样本**）。
 
     为什么要有这一维：晴雨二分类只回答"下没下"，累计雨量到底报得准不准是完全
@@ -1315,9 +1327,18 @@ def precip_amount_metrics(obs_vals, fcst_vals, min_sample,
     out["amt_mae"] = _r(float(np.abs(f - o).sum()) / so)
     out["amt_bias"] = _r(float(f.sum()) / so)
     # skill-v3：对数雨量技能。MAE=参照 → 0；完美 → 1；更差 → 负但被压缩。
+    # skill-v4（amt_floor 非 None）：**对数差 + 分母下限**。分子也做差，
+    # 因此“永远报零雨”参照恒为 0；干格（MAE_ref<κ）的完美上限 <1，但没有
+    # “任何小误差都 −1”的断崖。
     if mae_ref > 0:
-        out["amt_skill"] = round(
-            1.0 - math.log1p(mae) / math.log1p(mae_ref), 4)
+        if amt_floor is None:
+            out["amt_skill"] = round(
+                1.0 - math.log1p(mae) / math.log1p(mae_ref), 4)
+        else:
+            den = math.log1p(max(mae_ref, float(amt_floor)))
+            if den > 0:
+                s = (math.log1p(mae_ref) - math.log1p(mae)) / den
+                out["amt_skill"] = round(max(-1.0, min(1.0, s)), 4)
     return out
 
 
@@ -1722,11 +1743,13 @@ TEMP_SKILL_PARTS = (
      "预报异常与观测异常的相关：0=无技巧，1=完美", None),
 )
 PRECIP_SKILL_PARTS = (
-    ("ets", 0.60, "晴雨 ETS 技能",
+    ("ets", 0.50, "晴雨 ETS 技能",
      "ETS：0=无技巧，1=完美", None),
     ("amt_skill", 0.25, "对数雨量技能",
-     "1 − ln(1+MAE)/ln(1+参照MAE)；参照=永远报零雨", None),
-    ("grade_ets", 0.15, "雨强分辨力技能",
+     "相对“永远报零雨”参照的对数误差差；0=参照，1=完美", None),
+    ("ord_skill", 0.15, "有序雨强技能",
+     "5/6 档有序列联表的距离加权技巧：0=同边际随机，1=完美", None),
+    ("grade_ets", 0.10, "雨强分辨力技能",
      "中雨/大雨档 ETS：0=无技巧，1=完美", None),
 )
 TEMP_SKILL_ATTRIBUTES = ("mbe", "mbe_bdisp", "slope", "r")
@@ -1735,32 +1758,64 @@ PRECIP_SKILL_ATTRIBUTES = ("pod", "far", "bias", "amt_bias", "amt_mae")
 SCORE_SCHEME = "slope-v2"
 SCORE_SKILL_K = 1.535
 SCORE_SKILL_CENTER = 50.0
+SKILL_SCHEMES = ("skill-v3", "skill-v4")
+
+# skill-v4：雨量技能分母下限（mm；按轨分别配置）与校准扣分项的下行预算。
+SCORE_AMT_FLOOR_HOURLY = 0.05
+SCORE_AMT_FLOOR_DAILY = 0.5
+SCORE_PENALTY_LAMBDA_TEMP = 0.15
+SCORE_PENALTY_LAMBDA_PRECIP = 0.10
 
 
 def apply_score_scheme(scheme: str | None) -> None:
-    """装载评分方案：`slope-v2`（归档旧报）或 `skill-v3`（新报）。"""
+    """装载评分方案：`slope-v2`（归档旧报）、`skill-v3`（旧技能分）或 `skill-v4`。"""
     global SCORE_SCHEME
     s = str(scheme or "slope-v2").strip().lower()
-    if s not in ("slope-v2", "skill-v3"):
+    if s not in ("slope-v2", "skill-v3", "skill-v4"):
         raise ValueError(f"未知 score_scheme: {scheme!r}")
     SCORE_SCHEME = s
 
 
 def apply_score_skill_k(k: float | None = None) -> None:
-    """装载 skill-v3 下半段压缩参数（config eval.score_skill_k）。"""
+    """装载 skill 下半段展示压缩参数（config eval.score_skill_k）。"""
     global SCORE_SKILL_K
     SCORE_SKILL_K = 1.535 if k is None else max(0.0, float(k))
 
 
+def apply_score_amt_floors(hourly_mm: float | None = None,
+                           daily_mm: float | None = None) -> None:
+    """装载 skill-v4 雨量技能分母下限 κ（config eval.score_amt_floor_*）。"""
+    global SCORE_AMT_FLOOR_HOURLY, SCORE_AMT_FLOOR_DAILY
+    if hourly_mm is not None:
+        SCORE_AMT_FLOOR_HOURLY = max(0.0, float(hourly_mm))
+    if daily_mm is not None:
+        SCORE_AMT_FLOOR_DAILY = max(0.0, float(daily_mm))
+
+
+def apply_score_penalty_lambdas(temp: float | None = None,
+                                precip: float | None = None) -> None:
+    """装载 skill-v4 校准扣分项的下行预算 λ（0~1；不占正向权重）。"""
+    global SCORE_PENALTY_LAMBDA_TEMP, SCORE_PENALTY_LAMBDA_PRECIP
+    if temp is not None:
+        SCORE_PENALTY_LAMBDA_TEMP = max(0.0, min(1.0, float(temp)))
+    if precip is not None:
+        SCORE_PENALTY_LAMBDA_PRECIP = max(0.0, min(1.0, float(precip)))
+
+
 def _skill_value(key: str, metrics: dict) -> float | None:
-    """指标字典 + 参照 → 技能变量 s；缺项/参照不可用 → None。"""
+    """指标字典 + 参照 → 技能变量 s；缺项/参照不可用 → None。
+
+    **skill-v4 起所有技能变量在评分层有界 [−1,1]**：rmse/mae/amt_skill 此前的
+    下侧无界，单个灾难格可以支配最小二乘与 bootstrap；有界化不是展示层裁剪，
+    而是评分口径本身。其余分支本来就有界，保留同一道 clip。
+    """
     ref = metrics.get("ref") or {}
     if key in ("rmse", "mae"):
         m = metrics.get(key)
         r = ref.get(f"{key}_ref")
         if m is None or r is None or r <= 0:
             return None
-        return float(1.0 - float(m) / float(r))
+        return max(-1.0, min(1.0, float(1.0 - float(m) / float(r))))
     if key in ("acc1", "acc2"):
         a = metrics.get(key)
         ar = ref.get(f"{key}_ref")
@@ -1778,22 +1833,26 @@ def _skill_value(key: str, metrics: dict) -> float | None:
         if v is None:
             v = ref.get("r_anom")
         return None if v is None else max(-1.0, min(1.0, float(v)))
-    if key in ("ets", "grade_ets"):
+    if key in ("ets", "grade_ets", "ord_skill"):
         v = metrics.get(key)
         return None if v is None else max(-1.0, min(1.0, float(v)))
     if key == "amt_skill":
         v = metrics.get("amt_skill")
-        return None if v is None else float(v)
+        return None if v is None else max(-1.0, min(1.0, float(v)))
     return None
 
 
-def _weighted_skill(parts, metrics: dict, require_key: str | None = None) -> float | None:
-    """技能变量加权平均 → 原始线性技能指数 `50 + 50·s`（可为负，不裁剪）。
+def _skill_mean(parts, metrics: dict, require_key: str | None = None,
+                require_any: tuple[str, ...] | None = None) -> float | None:
+    """技能变量加权平均（缺项按剩余权重归一）→ s；缺锚点/无证据 → None。
 
-    `require_key`：降水维必须 ETS 存活；ETS 缺失（无雨事件）时整维缺测，
-    不允许“只剩 amount”凑一个降水分。
+    `require_key`：降水维必须 ETS 存活；`require_any`：温度维至少一个误差/
+    命中项存活（只 r_anom 存活不能撑起整维，与降水 ETS 锚点同纪律）。
     """
-    if require_key is not None and metrics.get(require_key) is None:
+    if require_key is not None and _skill_value(require_key, metrics) is None:
+        return None
+    if require_any and not any(_skill_value(k, metrics) is not None
+                               for k in require_any):
         return None
     num = den = 0.0
     for key, w, *_rest in parts:
@@ -1802,9 +1861,74 @@ def _weighted_skill(parts, metrics: dict, require_key: str | None = None) -> flo
             continue
         num += w * s
         den += w
-    if not den:
+    return float(num / den) if den else None
+
+
+def _weighted_skill(parts, metrics: dict, require_key: str | None = None) -> float | None:
+    """技能变量加权平均 → 原始线性技能指数 `50 + 50·s`（可为负，不裁剪）。
+
+    skill-v3 兼容路径；skill-v4 的锚点门与扣分项在 `temp_score`/`precip_score`
+    里显式组合，避免把“有界化”和“扣分预算”混进同一个旧函数。
+    """
+    s = _skill_mean(parts, metrics, require_key=require_key)
+    return None if s is None else float(50.0 + 50.0 * s)
+
+
+def _clip01(v: float) -> float:
+    return max(0.0, min(1.0, float(v)))
+
+
+def _q_mbe(t: dict) -> float | None:
+    """MBE 扣分：只罚“比气候参照更偏”的系统偏差；参照处恒为 0。"""
+    ref = t.get("ref") or {}
+    mbe = t.get("mbe")
+    mbe_ref = ref.get("mbe_ref")
+    rmse_ref = ref.get("rmse_ref")
+    if mbe is None or mbe_ref is None or rmse_ref is None:
         return None
-    return float(50.0 + 50.0 * (num / den))
+    return _clip01((abs(float(mbe)) - abs(float(mbe_ref)))
+                   / max(float(rmse_ref), 0.1))
+
+
+def _q_slope(t: dict) -> float | None:
+    """幅度扣分：只罚“比参照幅度更失准”；斜率 ≤0 记最差。"""
+    ref = t.get("ref") or {}
+    slope = t.get("slope")
+    if slope is None:
+        return None
+    slope = float(slope)
+    if slope <= 0:
+        return 1.0
+    slope_ref = ref.get("slope_ref")
+    if slope_ref is None:
+        return None
+    slope_ref = float(slope_ref)
+    if slope_ref <= 0:
+        return _clip01(abs(math.log2(slope)) / 3.0)
+    return _clip01(max(0.0, abs(math.log2(slope))
+                       - abs(math.log2(slope_ref))) / 3.0)
+
+
+def _q_fbias(p: dict) -> float | None:
+    """降水频率校准扣分：BIAS=1 → 0；2 倍 → 1/3；8 倍或 0 → 1。"""
+    v = p.get("bias")
+    if v is None:
+        return None
+    v = float(v)
+    if v <= 0:
+        return 1.0
+    return _clip01(abs(math.log2(v)) / 3.0)
+
+
+def _weighted_penalty(items) -> float:
+    """扣分项按可用性加权；全部缺失 → 0（不凭空制造惩罚）。"""
+    num = den = 0.0
+    for q, w in items:
+        if q is None:
+            continue
+        num += float(w) * float(q)
+        den += float(w)
+    return float(num / den) if den else 0.0
 
 
 def skill_display(x):
@@ -1883,11 +2007,11 @@ def display_dim_score(raw: float | None) -> float | None:
     """原始维度分 → 展示分值（**只用于展示**，不参与名次/显著性/CI 计算）。
 
     slope-v2：gain 由 config `eval.score_index_gain` 标定（P99.5 → 软上限 98）。
-    skill-v3：上半段原样、下半段指数压缩；50=气候平均，100=完美。
+    skill-v3/v4：上半段原样、下半段指数压缩；50=无技巧，100=完美。
     """
     if raw is None:
         return None
-    if SCORE_SCHEME == "skill-v3":
+    if SCORE_SCHEME in SKILL_SCHEMES:
         return round(float(skill_display(raw)), 2)
     return round(float(_stats.index_gain(raw)), 2)
 
@@ -1896,11 +2020,11 @@ def display_composite_score(raw: float | None) -> float | None:
     """原始综合分 → 展示分值（**只用于展示**）；排名与 CI 走未缩放原始分。
 
     slope-v2：`score_composite_gain` 总展示增益（P99.5 → 98）。
-    skill-v3：同 `skill_display`，50=两维平均无技巧。
+    skill-v3/v4：同 `skill_display`，50=两维平均无技巧。
     """
     if raw is None:
         return None
-    if SCORE_SCHEME == "skill-v3":
+    if SCORE_SCHEME in SKILL_SCHEMES:
         return round(float(skill_display(raw)), 2)
     return round(float(_stats.composite_gain(raw)), 2)
 
@@ -1909,7 +2033,7 @@ def display_ci(ci: list[float] | tuple[float, ...] | None) -> list[float] | None
     """bootstrap 的原始 CI 端点 → 展示刻度（与 display_composite_score 同一映射）。"""
     if not ci:
         return None
-    if SCORE_SCHEME == "skill-v3":
+    if SCORE_SCHEME in SKILL_SCHEMES:
         return [None if v is None else round(float(skill_display(v)), 2)
                 for v in ci]
     return [None if v is None else round(float(_stats.composite_gain(v)), 2)
@@ -1944,9 +2068,18 @@ def temp_score(t: dict) -> float | None:
 
     slope-v2：4 族 8 项按 `TEMP_SCORE_PARTS` 加权，缺项按剩余权重归一。
     skill-v3：5 项技能变量先在 s 上加权，返回 `50+50s`（可为负，不裁剪）。
+    skill-v4：5 项正向技能 + 温度锚点门（至少一个误差/命中项存活），再扣
+    MBE/slope 校准项（最多 λ_temp×50 分）；正向 s 已有界 [−1,1]。
     """
     if SCORE_SCHEME == "skill-v3":
         return _weighted_skill(TEMP_SKILL_PARTS, t)
+    if SCORE_SCHEME == "skill-v4":
+        s = _skill_mean(TEMP_SKILL_PARTS, t,
+                        require_any=("rmse", "mae", "acc1", "acc2"))
+        if s is None:
+            return None
+        q = _weighted_penalty(((_q_mbe(t), 0.60), (_q_slope(t), 0.40)))
+        return float(50.0 + 50.0 * (s - SCORE_PENALTY_LAMBDA_TEMP * q))
     return _weighted_score(TEMP_SCORE_PARTS, t)
 
 
@@ -2073,6 +2206,15 @@ def precip_score(p: dict) -> float | None:
         # ETS 是降水维的锚点：缺失（无雨事件）→ 整维 None，绝不允许
         # “只剩 amount/grade”凑一个降水分。
         return _weighted_skill(PRECIP_SKILL_PARTS, p, require_key="ets")
+    if SCORE_SCHEME == "skill-v4":
+        # ETS 仍是锚点；频率校准 BIAS 只做扣分项（最多 λ_precip×50 分），
+        # 不与 ETS 重复计权。
+        s = _skill_mean(PRECIP_SKILL_PARTS, p, require_key="ets")
+        if s is None:
+            return None
+        q = _q_fbias(p)
+        return float(50.0 + 50.0 * (
+            s - SCORE_PENALTY_LAMBDA_PRECIP * (0.0 if q is None else q)))
     gate = _stats.PRECIP_MIN_WEIGHT_FRAC
     if gate and gate > 0:
         # 独立证据族门槛（2026-11）：只看权重总和会把"ets+far 缺 pod"这种
@@ -2496,20 +2638,46 @@ def _build_reference_index(station_ids, obs_maps, window_days=15,
                            min_days=min_days)
 
 
-def _ref_stats(obs, ref, persist, limits, min_sample: int) -> dict:
-    """观测 vs 参照/持续性的误差统计；不足样本 → available=False（不出分）。"""
+def _ref_stats(obs, ref, persist, limits, min_sample: int,
+               mask: np.ndarray | None = None) -> dict:
+    """观测 vs 参照/持续性的误差统计；不足样本 → available=False（不出分）。
+
+    `mask`：只保留“模型预报有效”的行，保证 **分子（模型误差）与分母（参照误差）
+    是同一批样本**。旧实现用全部观测算参照、只用预报有效行算模型误差，部分覆盖
+    的源会拿两批样本比 skill。
+    """
     o = np.asarray(obs, dtype=float)
     r = np.asarray(ref, dtype=float)
     p = np.asarray(persist, dtype=float)
     valid = np.isfinite(o) & np.isfinite(r)
+    pv = np.isfinite(o) & np.isfinite(p)
+    if mask is not None:
+        m = np.asarray(mask, dtype=bool)
+        if m.shape != o.shape:
+            raise ValueError(f"mask 形状 {m.shape} 与观测 {o.shape} 不一致")
+        valid &= m
+        pv &= m
     n = int(valid.sum())
     out = {"available": False, "ref_type": None, "n": n, "rmse_ref": None,
            "mae_ref": None, "acc1_ref": None, "acc2_ref": None,
-           "persist_n": 0, "persist_rmse": None, "persist_mae": None,
+           "mbe_ref": None, "slope_ref": None,
+           "persist_n": int(pv.sum()), "persist_rmse": None, "persist_mae": None,
            "persist_acc1": None, "persist_acc2": None}
-    pv = np.isfinite(o) & np.isfinite(p)
+
+    def _bias_slope(x_ref: np.ndarray, x_obs: np.ndarray) -> tuple[float, float | None]:
+        e = x_obs - x_ref
+        mbe = float(np.mean(e))
+        slope = None
+        if x_ref.size >= 2:
+            var = float(np.var(x_ref))
+            if var > 0 and np.isfinite(var):
+                cov = float(np.mean((x_ref - x_ref.mean()) * (x_obs - x_obs.mean())))
+                if np.isfinite(cov):
+                    slope = cov / var
+        return mbe, (float(slope) if slope is not None and np.isfinite(slope)
+                     else None)
+
     pn = int(pv.sum())
-    out["persist_n"] = pn
     if pn >= min_sample:
         pe = o[pv] - p[pv]
         out["persist_rmse"] = float(np.sqrt(np.mean(pe * pe)))
@@ -2522,6 +2690,7 @@ def _ref_stats(obs, ref, persist, limits, min_sample: int) -> dict:
         out["mae_ref"] = float(np.mean(np.abs(e)))
         for lim in limits:
             out[f"acc{lim}_ref"] = float(100.0 * np.mean(np.abs(e) <= lim))
+        out["mbe_ref"], out["slope_ref"] = _bias_slope(r[valid], o[valid])
         out["available"] = True
         out["ref_type"] = "climatology"
         return out
@@ -2532,20 +2701,25 @@ def _ref_stats(obs, ref, persist, limits, min_sample: int) -> dict:
         out["mae_ref"] = out["persist_mae"]
         for lim in limits:
             out[f"acc{lim}_ref"] = out[f"persist_acc{lim}"]
+        out["mbe_ref"], out["slope_ref"] = _bias_slope(p[pv], o[pv])
         out["available"] = True
         out["ref_type"] = "persistence"
     return out
 
 
 def _anomaly_corr(recs: list[dict], ref_vals, ka: str, kb: str,
-                  min_group_n: int = GROUP_MIN_N) -> float | None:
+                  min_group_n: int = GROUP_MIN_N,
+                  mask: np.ndarray | None = None) -> float | None:
     """预报异常与观测异常的站内相关，Fisher-z 合并。
 
     异常 = 原始值 − 同一时刻的过去-only 气候参照。原始 r 混入季节均值与站点
     气候差异，中长期会虚高；异常相关才是"起伏同步不同步"。
+    `mask`：只保留模型预报有效的行，与 `_ref_stats` 同一批样本。
     """
     by: dict[str, list[tuple[float, float, float]]] = defaultdict(list)
-    for r, rv in zip(recs, ref_vals):
+    for i, (r, rv) in enumerate(zip(recs, ref_vals)):
+        if mask is not None and not bool(mask[i]):
+            continue
         if rv is None or not np.isfinite(rv):
             continue
         o, f = r.get(ka), r.get(kb)
@@ -2597,10 +2771,18 @@ def _temp_reference_stats(recs: list[dict], ref_index: _ReferenceIndex,
         obs_key = "temp_max_obs" if half == "max" else "temp_min_obs"
         fcst_key = "temp_max_fcst" if half == "max" else "temp_min_fcst"
     obs = np.asarray([r.get(obs_key) for r in recs], dtype=float)
-    stats = _ref_stats(obs, ref_vals, persist_vals, limits, min_sample)
+    # skill-v4（P1）：参照与模型误差必须同批样本。旧实现用全部观测算
+    # rmse_ref/mae_ref/acc_ref，模型误差却只在 fcst 有值的行上算；部分覆盖的
+    # 源于是拿“易样本误差”对“全样本参照”。这里用预报有效掩膜锁死同一批行。
+    fcst_mask = np.asarray([
+        isinstance(r.get(fcst_key), (int, float)) and np.isfinite(r.get(fcst_key))
+        for r in recs], dtype=bool)
+    stats = _ref_stats(obs, ref_vals, persist_vals, limits, min_sample,
+                       mask=fcst_mask)
     stats["r_anom"] = _anomaly_corr(
         recs, ref_vals, obs_key, fcst_key,
-        min_group_n=5 if kind == "daily" else GROUP_MIN_N)
+        min_group_n=5 if kind == "daily" else GROUP_MIN_N,
+        mask=fcst_mask)
     return stats
 
 
@@ -2731,6 +2913,16 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
     apply_score_scheme(score_scheme_cfg)
     apply_score_skill_k(eval_cfg.get(
         "score_skill_k", DEFAULT_EVAL.get("score_skill_k", 1.535)))
+    apply_score_amt_floors(
+        eval_cfg.get("score_amt_floor_hourly_mm",
+                     DEFAULT_EVAL.get("score_amt_floor_hourly_mm")),
+        eval_cfg.get("score_amt_floor_daily_mm",
+                     DEFAULT_EVAL.get("score_amt_floor_daily_mm")))
+    apply_score_penalty_lambdas(
+        eval_cfg.get("score_penalty_lambda_temp",
+                     DEFAULT_EVAL.get("score_penalty_lambda_temp")),
+        eval_cfg.get("score_penalty_lambda_precip",
+                     DEFAULT_EVAL.get("score_penalty_lambda_precip")))
     require_complete = bool(eval_cfg.get("require_complete_snapshots", True))
     # 封存时点门槛（审查 P1-4）：默认开——"预报必须在实况之前封存"不该只是口号。
     # 关掉它可退回旧口径做对照，两份报告的差就是这一个开关的代价。
@@ -2895,7 +3087,8 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
             ne_r = (_n_eff_rain_columnar(pt, icell, thr_hourly) if icell is not None
                     else _n_eff_rain(recs, thr_hourly, "valid_iso", "lead"))
             precip_hourly_score[m][f"{b}d"] = _precip_score_cell(
-                ro, rf, thr_hourly, min_sample, ne_r, gb_hourly)
+                ro, rf, thr_hourly, min_sample, ne_r, gb_hourly,
+                amt_floor=SCORE_AMT_FLOOR_HOURLY, grade_kind="1h")
 
     # ---- 降水的评分轨道：按天累计（24h）+ rain_daily_threshold_mm 阈值 ----
     # 每模型每日偏移一份二分类指标（P0-3），入分的同时披露 acc 供明细。
@@ -2916,7 +3109,8 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
                     if dcell is not None
                     else _n_eff_rain(recs, thr_daily, "valid_day", "offset"))
             precip_score_daily[m][f"{off}d"] = _precip_score_cell(
-                ro, rf, thr_daily, min_sample, ne_r, gb_daily)
+                ro, rf, thr_daily, min_sample, ne_r, gb_daily,
+                amt_floor=SCORE_AMT_FLOOR_DAILY, grade_kind="24h")
 
     # ---- 逐小时逐时效曲线（1..72h）温度 RMSE / ±2°C 准确率（轻量路径）----
     temp_lead_curve: dict[str, dict] = {m: {} for m in models}
@@ -3173,9 +3367,12 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
         adj_ridge=ridge, macro_weight_range=macro_w)
     logger.info("权重敏感性（分块面板）用时 %.1fs",
                 _time.perf_counter() - _t_ws)
+    _ws_parts = ((TEMP_SKILL_PARTS, PRECIP_SKILL_PARTS)
+                 if SCORE_SCHEME in SKILL_SCHEMES
+                 else (TEMP_SCORE_PARTS, PRECIP_SCORE_PARTS))
     weight_sensitivity = {
         "runs": sensitivity_runs,
-        "n_parts": len(TEMP_SCORE_PARTS) + len(PRECIP_SCORE_PARTS),
+        "n_parts": len(_ws_parts[0]) + len(_ws_parts[1]),
         "macro_weight_range": [float(macro_w[0]), float(macro_w[1])],
         "champions": ws_champions,
         # 宏观权重端点冠军（P0-2 前置披露）：温度占 α_lo / α_hi 时谁第一
@@ -3230,6 +3427,27 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
                          for k, w, lb, *_ in TEMP_SKILL_PARTS],
                 "precip": [{"key": k, "weight": w, "label": lb}
                            for k, w, lb, *_ in PRECIP_SKILL_PARTS],
+            },
+            # skill-v4：校准扣分项不是正向权重，只占“下行预算”；这里把定义、
+            # λ 与最大扣分发布出来，读者才能复算“为什么这家比 50 低”。
+            "score_skill_penalties": {
+                "temp": {"mbe_share": 0.60, "slope_share": 0.40,
+                         "lambda": float(SCORE_PENALTY_LAMBDA_TEMP),
+                         "max_points": round(50.0 * SCORE_PENALTY_LAMBDA_TEMP, 2)},
+                "precip": {"bias_share": 1.0,
+                           "lambda": float(SCORE_PENALTY_LAMBDA_PRECIP),
+                           "max_points": round(50.0 * SCORE_PENALTY_LAMBDA_PRECIP, 2)},
+            },
+            "score_amt_floors": {
+                "hourly_mm": float(SCORE_AMT_FLOOR_HOURLY),
+                "daily_mm": float(SCORE_AMT_FLOOR_DAILY),
+            },
+            # 锚点语义：50 不是“及格线”，也不是单一物理量；按维度分别写清。
+            "score_skill_anchors": {
+                "temp": "50=与 15 天气候参照打平；100=正向技能完美且校准不差于参照",
+                "precip": ("50=ETS 0（同边际随机）且 BIAS=1；"
+                           "永远报零雨因 BIAS=0 会低于 50"),
+                "composite": "50=两维各半的组合零点，不对应单一预报",
             },
             "score_skill_attributes": {
                 "temp": list(TEMP_SKILL_ATTRIBUTES),
@@ -3721,30 +3939,45 @@ def _weight_sensitivity_champions_panel(
     旧实现只重排全窗口的 32 列；分块榜的列是 (块×天桶)，敏感性必须回答
     "分块榜那个名次对权重有多敏感"，否则答的是另一个估计量。
     """
-    t_sub = np.concatenate([
-        _panel_track_tensor(models, panel, blocks, "hourly", TEMP_SCORE_PARTS, H),
-        _panel_track_tensor(models, panel, blocks, "daily", TEMP_SCORE_PARTS, D)],
-        axis=1)
-    p_sub = np.concatenate([
-        _panel_track_tensor(models, panel, blocks, "hourly", PRECIP_SCORE_PARTS, H),
-        _panel_track_tensor(models, panel, blocks, "daily", PRECIP_SCORE_PARTS, D)],
-        axis=1)
+    if SCORE_SCHEME in SKILL_SCHEMES:
+        t_parts, p_parts = TEMP_SKILL_PARTS, PRECIP_SKILL_PARTS
+        t_sub = np.concatenate([
+            _panel_track_tensor_skill(models, panel, blocks, "hourly", t_parts, H),
+            _panel_track_tensor_skill(models, panel, blocks, "daily", t_parts, D)],
+            axis=1)
+        p_sub = np.concatenate([
+            _panel_track_tensor_skill(models, panel, blocks, "hourly", p_parts, H),
+            _panel_track_tensor_skill(models, panel, blocks, "daily", p_parts, D)],
+            axis=1)
+    else:
+        t_parts, p_parts = TEMP_SCORE_PARTS, PRECIP_SCORE_PARTS
+        t_sub = np.concatenate([
+            _panel_track_tensor(models, panel, blocks, "hourly", t_parts, H),
+            _panel_track_tensor(models, panel, blocks, "daily", t_parts, D)],
+            axis=1)
+        p_sub = np.concatenate([
+            _panel_track_tensor(models, panel, blocks, "hourly", p_parts, H),
+            _panel_track_tensor(models, panel, blocks, "daily", p_parts, D)],
+            axis=1)
     for i, m in enumerate(models):
         if m not in qualified:
             t_sub[i, :, :] = np.nan
             p_sub[i, :, :] = np.nan
     dist = weight_champion_distribution(
-        t_sub, p_sub, TEMP_SCORE_PARTS, PRECIP_SCORE_PARTS, runs=runs,
+        t_sub, p_sub, t_parts, p_parts, runs=runs,
         adj_row=adj_row, adj_col=adj_col, adj_w=adj_w, adj_ridge=adj_ridge,
         macro_weight_range=tuple(macro_weight_range))
     macro_endpoints = []
     for alpha in (float(macro_weight_range[0]), float(macro_weight_range[1])):
         got = _stats.macro_champion_at_alpha(
-            t_sub, p_sub, TEMP_SCORE_PARTS, PRECIP_SCORE_PARTS, alpha,
+            t_sub, p_sub, t_parts, p_parts, alpha,
             adj_row=adj_row, adj_col=adj_col, adj_w=adj_w, adj_ridge=adj_ridge)
         if got is not None:
+            score = got["score"]
+            if SCORE_SCHEME in SKILL_SCHEMES:
+                score = float(50.0 + 50.0 * score)
             macro_endpoints.append({"alpha": alpha, "model": models[got["index"]],
-                                    "score": got["score"]})
+                                    "score": score})
     return ([{"model": models[d["index"]], "pct": d["pct"]} for d in dist],
             macro_endpoints)
 
@@ -4372,13 +4605,14 @@ def _segment_board(S: np.ndarray, W: np.ndarray | None, cols: list[int],
 # 新源 7 天后拿到的就是正式分数、正式名次和正式 CI；证据量少带来的不确定性由
 # 经验贝叶斯收缩（stats.eb_shrink）与更宽的 bootstrap 区间如实披露。
 # ============================================================================
-_BLOCK_SCHEMA = 2
+_BLOCK_SCHEMA = 4   # skill-v4：ref + 雨量公式 + ord_skill（有序多阈值）
 
 # 分块缓存里只存入分/展示真正用到的字段（温度 8 项 + 样本量，降水 8 项 + 样本量）。
 _BLOCK_TEMP_KEYS = ("n", "n_eff", "rmse", "mae", "mbe", "acc1", "acc2", "r",
                     "slope", "mbe_bdisp", "r_anom")
 _BLOCK_PRECIP_KEYS = ("n", "n_eff", "acc", "pod", "far", "ts", "ets", "bias",
-                      "amt_mae", "amt_bias", "grade_ets", "amt_skill")
+                      "amt_mae", "amt_bias", "grade_ets", "amt_skill",
+                      "ord_skill")
 
 
 def _seven_day_blocks(start_dt, end_dt, block_days: int = 7) -> list[dict]:
@@ -4429,13 +4663,16 @@ def _block_source_digest() -> str | None:
 
     funcs = (
         temp_metrics, precip_binary_metrics, precip_amount_metrics,
-        _precip_score_cell, _weighted_score,
+        _precip_score_cell, _weighted_score, _skill_mean, _weighted_skill,
+        _q_mbe, _q_slope, _q_fbias, _weighted_penalty,
+        _ref_stats, _temp_reference_stats, _anomaly_corr,
         temp_score, daily_temp_score, precip_score, _composite_score,
         _track_mean, _clamp100, _station_groups, _farrays, _pool,
         _n_eff_temp_min_lead, _n_eff_rain, _n_eff_daily_temp,
         _n_eff_temp, _stats.n_eff_from_station_series,
         _stats.binary_counts, _stats.binary_metrics_from_counts,
         _stats.grade_bounds, _stats.grade_ets_point, _stats.grade_counts,
+        _stats.grade_bounds_all, _stats.ordinal_precip_skill,
         _graded.precip_graded_metrics,
     )
     h = hashlib.sha256()
@@ -4446,7 +4683,8 @@ def _block_source_digest() -> str | None:
     except (OSError, TypeError):
         return None
     for const in (TEMP_SCORE_FAMILIES, _TEMP_FAMILY_MEMBER_SHARES,
-                  PRECIP_SCORE_FAMILIES, _PRECIP_FAMILY_MEMBER_SHARES):
+                  PRECIP_SCORE_FAMILIES, _PRECIP_FAMILY_MEMBER_SHARES,
+                  TEMP_SKILL_PARTS, PRECIP_SKILL_PARTS, SKILL_SCHEMES):
         h.update(repr(const).encode("utf-8"))
         h.update(b"\0")
     return h.hexdigest()[:16]
@@ -4483,6 +4721,8 @@ def _block_scoring_fingerprint(eval_cfg: dict, models: list[str],
         # bootstrap_runs / sensitivity_runs / 渲染参数也不属于格子口径。
         "score_scheme", "score_ref_window_days", "score_ref_min_days",
         "score_skill_k", "score_slopes", "precip_min_surviving_weight",
+        "score_amt_floor_hourly_mm", "score_amt_floor_daily_mm",
+        "score_penalty_lambda_temp", "score_penalty_lambda_precip",
         "graded_backend", "require_complete_snapshots", "require_frozen_samples",
         "board_block_days", "board_block_min_days",
         "board_block_min_rain_events", "board_block_min_rain_days",
@@ -4728,7 +4968,9 @@ def _block_panel(models, blocks, hourly, daily, *, obs_maps, station_ids,
         slots_t.append((cell, "t"))
         refs_t.append(_temp_reference_stats(recs, ref_index, "hourly", None,
                                             limits, min_sample))
-        cell["p"] = _precip_score_cell(ro, rf, thr_hourly, min_sample, ne_r, gb_hourly)
+        cell["p"] = _precip_score_cell(ro, rf, thr_hourly, min_sample, ne_r,
+                                       gb_hourly, amt_floor=SCORE_AMT_FLOOR_HOURLY,
+                                       grade_kind="1h")
         computed[k]["hourly"].setdefault(m, {})[str(b)] = cell
     for (k, m, off), recs in dagroups.items():
         cell = {}
@@ -4744,7 +4986,9 @@ def _block_panel(models, blocks, hourly, daily, *, obs_maps, station_ids,
             refs_t.append(_temp_reference_stats(recs, ref_index, "daily", half,
                                                 limits, min_sample))
         ro, rf = _pool(recs, ("rain_obs", "rain_fcst"))
-        cell["p"] = _precip_score_cell(ro, rf, thr_daily, min_sample, ne_r, gb_daily)
+        cell["p"] = _precip_score_cell(ro, rf, thr_daily, min_sample, ne_r,
+                                       gb_daily, amt_floor=SCORE_AMT_FLOOR_DAILY,
+                                       grade_kind="24h")
         computed[k]["daily"].setdefault(m, {})[str(off)] = cell
 
     for (target, key), res, ref in zip(
@@ -5139,6 +5383,43 @@ def _board_block_ids(name: str, K: int, H: int, D: int) -> np.ndarray:
     if name == "daily":
         return np.repeat(np.arange(K), D)
     return np.concatenate([np.repeat(np.arange(K), H), np.repeat(np.arange(K), D)])
+
+
+def _panel_track_tensor_skill(models, panel, blocks, track, parts, days):
+    """skill-v3/v4 的权重敏感性张量：列 = 技能变量 s（不是 slope-v2 子分）。
+
+    与 `_panel_track_tensor` 同一列布局；日温度仍按 max/min 两半各自求 s 再平均，
+    与 `daily_temp_score` 同源。扣分项不在这里扰动（它们是固定预算），
+    敏感性只回答“正向权重扰动时冠军换不换”。
+    """
+    K = len(blocks)
+    T = np.full((len(models), K * days, len(parts)), np.nan)
+    is_temp = parts is TEMP_SKILL_PARTS
+    for ki, b in enumerate(blocks):
+        cells = (panel["cells"].get(b["key"]) or {}).get(track) or {}
+        for mi, m in enumerate(models):
+            by_b = cells.get(m) or {}
+            for d in range(1, days + 1):
+                cell = by_b.get(str(d))
+                if not cell:
+                    continue
+                if is_temp and track == "daily":
+                    halves = cell.get("t") or {}
+                    for pi, (key, *_r) in enumerate(parts):
+                        vs = []
+                        for half in ("max", "min"):
+                            s = _skill_value(key, halves.get(half) or {})
+                            if s is not None:
+                                vs.append(s)
+                        if vs:
+                            T[mi, ki * days + d - 1, pi] = sum(vs) / len(vs)
+                else:
+                    md = (cell.get("t") if is_temp else cell.get("p")) or {}
+                    for pi, (key, *_r) in enumerate(parts):
+                        s = _skill_value(key, md)
+                        if s is not None:
+                            T[mi, ki * days + d - 1, pi] = s
+    return T
 
 
 def _panel_track_tensor(models, panel, blocks, track, parts, days):

@@ -6,6 +6,7 @@ import math
 import numpy as np
 
 from weather_eval import evaluate as ev
+from weather_eval import stats as st
 
 
 def setup_function():
@@ -99,3 +100,95 @@ def test_display_mapping_is_monotone_and_never_fake_zero():
     assert 0.0 <= shown[0] < 1.0
     assert shown[-1] == 100.0
     assert all(shown[i] > 0 for i in range(1, len(raw)))
+
+
+# ------------------------------------------------------------------
+# skill-v4：有界化 + 锚点安全的雨量公式 + 校准扣分项
+# ------------------------------------------------------------------
+
+def _v4_temp(**kw):
+    base = {
+        "rmse": 2.0, "mae": 1.5, "acc1": 40.0, "acc2": 70.0, "r_anom": 0.0,
+        "mbe": 0.3, "slope": 0.8,
+        "ref": {"available": True, "rmse_ref": 2.0, "mae_ref": 1.5,
+                "acc1_ref": 40.0, "acc2_ref": 70.0,
+                "mbe_ref": 0.3, "slope_ref": 0.8},
+    }
+    base.update(kw)
+    return base
+
+
+def test_v4_temp_anchors_and_penalty_cap():
+    ev.apply_score_scheme("skill-v4")
+    assert ev.temp_score(_v4_temp()) == 50.0
+    perfect = _v4_temp(rmse=0.0, mae=0.0, acc1=100.0, acc2=100.0,
+                       r_anom=1.0, mbe=0.0, slope=1.0)
+    assert ev.temp_score(perfect) == 100.0
+    bad = _v4_temp(rmse=6.0, mae=4.0, acc1=0.0, acc2=0.0, r_anom=-1.0,
+                   mbe=3.0, slope=0.1)
+    raw = ev.temp_score(bad)
+    assert raw is not None
+    # 正向技能全 −1 + 扣分项全 1：raw = 50 + 50·(−1 − 0.15) = −7.5
+    assert raw >= -7.5 - 1e-9
+
+
+def test_v4_precip_zero_rain_is_below_50_but_random_is_50():
+    ev.apply_score_scheme("skill-v4")
+    assert ev.precip_score({"ets": 0.0, "amt_skill": 0.0,
+                            "grade_ets": 0.0, "bias": 1.0}) == 50.0
+    assert ev.precip_score({"ets": 0.0, "amt_skill": 0.0,
+                            "grade_ets": 0.0, "bias": 0.0}) == 45.0
+    assert ev.precip_score({"ets": 1.0, "amt_skill": 1.0,
+                            "grade_ets": 1.0, "bias": 1.0}) == 100.0
+
+
+def test_v4_amt_skill_anchor_and_dry_gradient():
+    # 干格：完美上限 <1，但小绝对误差不再一刀切 −1
+    obs = np.array([0.001] * 100)
+    fc_perfect = obs.copy()
+    fc_tiny = np.array([0.01] * 100)
+    fc_huge = np.array([1.0] * 100)
+    p = ev.precip_amount_metrics(obs, fc_perfect, 5, amt_floor=0.05)["amt_skill"]
+    tiny = ev.precip_amount_metrics(obs, fc_tiny, 5, amt_floor=0.05)["amt_skill"]
+    huge = ev.precip_amount_metrics(obs, fc_huge, 5, amt_floor=0.05)["amt_skill"]
+    ref = ev.precip_amount_metrics(obs, np.zeros_like(obs), 5,
+                                   amt_floor=0.05)["amt_skill"]
+    assert 0.0 < p < 1.0          # 干格没有足够可改进空间
+    assert -1.0 < tiny < 0.0      # 小绝对误差不是最大惩罚
+    assert huge == -1.0           # 大误差封底
+    assert ref == 0.0             # “永远报零雨”仍是 0 锚点
+
+
+def test_v4_rmse_mae_skill_is_bounded():
+    s = ev._skill_value("rmse", {"rmse": 100.0, "ref": {"rmse_ref": 0.1}})
+    assert s == -1.0
+    s = ev._skill_value("amt_skill", {"amt_skill": -999.0})
+    assert s == -1.0
+
+
+def test_v4_temp_single_axis_is_missing():
+    ev.apply_score_scheme("skill-v4")
+    only_r = {"r_anom": 0.5, "ref": {"r_anom": 0.0}}
+    assert ev.temp_score(only_r) is None
+
+
+def test_ref_stats_mask_and_components():
+    obs = np.array([1.0, 2.0, 3.0])
+    ref = np.array([1.0, 2.0, 3.0])
+    persist = np.array([1.0, 2.0, 3.0])
+    rs = ev._ref_stats(obs, ref, persist, [1, 2], min_sample=1,
+                       mask=np.array([True, True, False]))
+    assert rs["n"] == 2
+    assert rs["rmse_ref"] == 0.0
+    assert rs["mbe_ref"] == 0.0
+    assert rs["slope_ref"] == 1.0
+
+
+def test_ordinal_skill_uses_all_thresholds_and_has_anchor():
+    obs = np.array([0, 0, 1, 2, 5, 10, 25, 50.0])
+    assert st.ordinal_precip_skill(obs, obs.copy(), "24h", 5) == 1.0
+    shifted = np.array([0, 0, 0, 1, 2, 5, 10, 25.0])
+    s = st.ordinal_precip_skill(obs, shifted, "24h", 5)
+    assert s is not None and 0.0 < s < 1.0
+    # 整格没有可评降水 → 无定义，不是 0 分
+    assert st.ordinal_precip_skill(np.zeros(10), np.zeros(10), "1h", 5) is None
