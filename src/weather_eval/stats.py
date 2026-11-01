@@ -52,6 +52,29 @@ MIN_BUCKETS_PER_MODEL = 2
 
 
 # ------------------------------------------------------------------ 有效样本量
+def _pearson_r_finite(a: np.ndarray, b: np.ndarray) -> float | None:
+    """``pearson_r`` 的"输入已全有限"主体（供 pairwise_corr_matrix 列级快路径）。
+
+    与 pearson_r 对同一对**已过滤**数组的输出逐位相同：同样的中心化点积、同样
+    的退化判定与 clamp。唯一差异是免去每对重算 isfinite 掩膜——调用方必须
+    保证两侧数组全部有限（掩膜在列级算一次，而不是每对两遍）。
+    """
+    if a.size != b.size or a.size < 2:
+        return None
+    am = a.mean()
+    bm = b.mean()
+    ac = a - am
+    bc = b - bm
+    aa = float(np.dot(ac, ac))
+    bb = float(np.dot(bc, bc))
+    if aa <= 0.0 or bb <= 0.0:
+        return None
+    r = float(np.dot(ac, bc) / np.sqrt(aa * bb))
+    if not np.isfinite(r):
+        return None
+    return max(-1.0, min(1.0, r))
+
+
 def pearson_r(a: np.ndarray, b: np.ndarray) -> float | None:
     """皮尔逊相关系数（数值安全版）。
 
@@ -75,19 +98,7 @@ def pearson_r(a: np.ndarray, b: np.ndarray) -> float | None:
     # 被调用 7 万次以上（实测累计 16 s），是报告构建的最大单项。等价性：
     #   ρ = Σ(a−ā)(b−b̄) / √(Σ(a−ā)²·Σ(b−b̄)²)
     # 用 float64 累加；零方差返回 None（与旧的 a.var()<=0 判定同义）。
-    am = a.mean()
-    bm = b.mean()
-    ac = a - am
-    bc = b - bm
-    aa = float(np.dot(ac, ac))
-    bb = float(np.dot(bc, bc))
-    if aa <= 0.0 or bb <= 0.0:
-        return None
-    r = float(np.dot(ac, bc) / np.sqrt(aa * bb))
-    # 浮点舍入可能给出 1+1e-16；clamp 到 [-1,1] 只修边界，不改变内部值。
-    if not np.isfinite(r):
-        return None
-    return max(-1.0, min(1.0, r))
+    return _pearson_r_finite(a, b)
 
 
 def effective_n(err: np.ndarray) -> int:
@@ -2801,18 +2812,38 @@ def pairwise_corr_matrix(series: dict[str, dict[Any, float]],
                                  count=len(ks)),
                      np.fromiter((d[k] for k in ks), dtype=float, count=len(ks))))
 
+    # 列级共享（2026-11 性能轮）：finite 掩膜每列算一次（此前每一对都在
+    # pearson_r 里把两侧 isfinite 重算一遍）；双列均全有限时走 `_pearson_r_finite`
+    # （与 pearson_r 对已过滤数组的主体逐位同款）。键集相同（同一全局轴上的
+    # 同一段，主流情形）时跳过 intersect1d/searchsorted——此时 gather 出的
+    # (a, b) 就是全列本身，与逐对路径逐位相同，r 必然逐位相同。
+    col_finite = [bool(np.isfinite(v).all()) for _k, v in cols]
+
     for i in range(n):
+        ki, vi = cols[i]
+        fi = col_finite[i]
         for j in range(i + 1, n):
-            ki, vi = cols[i]
             kj, vj = cols[j]
-            # 两侧下标均已按全局序升序 → assume_unique 且免排序
-            common = np.intersect1d(ki, kj, assume_unique=True)
+            if ki.size == kj.size and bool(np.array_equal(ki, kj)):
+                # 同一段全局轴：全列即公共键（顺序 = 全局序，与旧路径 gather
+                # 结果逐位相同）
+                common = ki
+                a = vi
+                b = vj
+            else:
+                # 两侧下标均已按全局序升序 → assume_unique 且免排序
+                common = np.intersect1d(ki, kj, assume_unique=True)
+                if common.size < min_overlap:
+                    continue
+                a = vi[np.searchsorted(ki, common)]
+                b = vj[np.searchsorted(kj, common)]
             if common.size < min_overlap:
                 continue
             max_common = max(max_common, int(common.size))
-            a = vi[np.searchsorted(ki, common)]
-            b = vj[np.searchsorted(kj, common)]
-            r = pearson_r(a, b)
+            if fi and col_finite[j]:
+                r = _pearson_r_finite(a, b)
+            else:
+                r = pearson_r(a, b)
             matrix[i][j] = r
             matrix[j][i] = r
     return names, matrix, max_common

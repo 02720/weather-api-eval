@@ -19,9 +19,31 @@
 """
 from __future__ import annotations
 
+from operator import itemgetter
+
 import numpy as np
 
 from .timeutil import minute_index
+
+# 单趟列提取的块大小：zip(*) 转置按块进行，瞬态行元组内存 ≈ 块大小 × 行元组
+# 开销（131,072 × ~130 B ≈ 17 MB），不推高峰值 RSS。
+_CHUNK = 1 << 17
+
+
+def _columns(records: list[dict], keys: tuple[str, ...]) -> list[list]:
+    """把 dict 记录列表按列拆开：每条记录一次 ``itemgetter``（C 层）取出全部键，
+    按块 ``zip(*)`` 转置成列。与"每列一趟列表推导"取出**同一批键的同一批值**
+    （同一批 dict、同一批下标），列内容逐位相同，只是把 14 趟 Python 循环
+    压成 1 趟。"""
+    get_row = itemgetter(*keys)
+    cols: list[list] = [[] for _ in keys]
+    for off in range(0, len(records), _CHUNK):
+        rows = list(map(get_row, records[off:off + _CHUNK]))
+        if not rows:
+            continue
+        for col, vals in zip(cols, zip(*rows)):
+            col.extend(vals)
+    return cols
 
 
 def _names_in_code_order(code: dict[str, int]) -> list[str]:
@@ -78,34 +100,37 @@ class PairTable:
     def _build_hourly(self, hourly, day_code):
         sc = self.station_code_h
         mc = self.model_code
-        # 列式化用列表推导逐列生成，再由 numpy 一次性转数组：逐元素 `arr[i] =`
-        # 的 14×N 次 Python 下标写入是构建期最大的纯解释器开销（实测 5.7 s）。
-        # 列表推导仍是 O(N) Python 级，但每个元素只做一次 dict 取值，随后交给
-        # C 层转换——列之间的 dtype 校验由 numpy 完成，不会引入第二套语义。
-        self.h_model = np.array([mc.get(r["model"], -1) for r in hourly], dtype=np.int32)
-        self.h_bucket = np.array([r["bucket"] for r in hourly], dtype=np.int16)
-        self.h_station = np.array([sc[r["station"]] for r in hourly], dtype=np.int16)
-        self.h_day = np.array([day_code.get(r["valid_iso"][:10], -1)
-                               for r in hourly], dtype=np.int32)
-        self.h_lead = np.array([r["lead"] for r in hourly], dtype=np.int32)
+        # 列式化（2026-11 性能轮）：此前 14 列各跑一趟列表推导（每趟 = Python
+        # 循环 + 一次 dict 取值），改走 `_columns` 的单趟 itemgetter 提取，再在
+        # 提取结果上做各列自己的轻量变换（模型/日编码、分钟序号、None→NaN）。
+        # 取出的值与逐列推导逐位相同，dtype 校验仍由 numpy 完成，语义不变。
+        c_model, c_bucket, c_station, c_lead, c_vis, c_to, c_tf, c_ro, c_rf = \
+            _columns(hourly, ("model", "bucket", "station", "lead", "valid_iso",
+                              "temp_obs", "temp_fcst", "rain_obs", "rain_fcst"))
+        self.h_model = np.array([mc.get(x, -1) for x in c_model], dtype=np.int32)
+        self.h_bucket = np.array(c_bucket, dtype=np.int16)
+        self.h_station = np.array([sc[x] for x in c_station], dtype=np.int16)
+        self.h_day = np.array([day_code.get(x[:10], -1) for x in c_vis],
+                              dtype=np.int32)
+        self.h_lead = np.array(c_lead, dtype=np.int32)
         # 时间键：分钟序号（int32）代替定长 U19 字符串列。旧列 2.75M × 76 B
         # ≈ 209 MB，而所有消费者只需要"同一时刻相等 + 按时间排序"这两个性质；
         # 定长 ISO 的字典序与分钟序完全一致（timeutil.minute_index 的等价性已
         # 单独论证），故整数键逐位等价。时间轴若非定长 ISO（minute_index 返回
         # None），整列退回字符串——绝不用一个猜测的整数键替代真实时刻。
-        minutes = [minute_index(r["valid_iso"]) for r in hourly]
+        minutes = [minute_index(x) for x in c_vis]
         if None in minutes:
-            self.h_time = np.array([r["valid_iso"] for r in hourly], dtype="U19")
+            self.h_time = np.array(c_vis, dtype="U19")
         else:
             self.h_time = np.array(minutes, dtype=np.int32)
-        self.h_temp_o = np.array([np.nan if r["temp_obs"] is None else r["temp_obs"]
-                                  for r in hourly], dtype=np.float64)
-        self.h_temp_f = np.array([np.nan if r["temp_fcst"] is None else r["temp_fcst"]
-                                  for r in hourly], dtype=np.float64)
-        self.h_rain_o = np.array([np.nan if r["rain_obs"] is None else r["rain_obs"]
-                                  for r in hourly], dtype=np.float64)
-        self.h_rain_f = np.array([np.nan if r["rain_fcst"] is None else r["rain_fcst"]
-                                  for r in hourly], dtype=np.float64)
+        self.h_temp_o = np.array([np.nan if x is None else x for x in c_to],
+                                 dtype=np.float64)
+        self.h_temp_f = np.array([np.nan if x is None else x for x in c_tf],
+                                 dtype=np.float64)
+        self.h_rain_o = np.array([np.nan if x is None else x for x in c_ro],
+                                 dtype=np.float64)
+        self.h_rain_f = np.array([np.nan if x is None else x for x in c_rf],
+                                 dtype=np.float64)
         # 入样判定**向量化**且不依赖 NaN 语义：两侧都必须是**有限**值。
         # 未写过的格子是 NaN，写了 NaN/inf 的也算缺测——于是 NaN 在这里只有一个
         # 含义（"没有值"），永远不会被下游当成 0.0 参与比较（I4）。
@@ -151,27 +176,31 @@ class PairTable:
     def _build_daily(self, daily, day_code):
         sc = self.station_code_d
         mc = self.model_code
-        # 与逐小时同款：列式列表推导 + 一次转换。日轨的时间键直接用天编码
-        # （`days` 由 eval_days 按字符串升序给出，编码升序 == 自然日升序），
+        # 与逐小时同款：`_columns` 单趟提取 + 各列轻量变换。日轨的时间键直接用
+        # 天编码（`days` 由 eval_days 按字符串升序给出，编码升序 == 自然日升序），
         # 旧的 U10 字符串列因此完全不需要存在。
-        self.d_model = np.array([mc.get(r["model"], -1) for r in daily], dtype=np.int32)
-        self.d_offset = np.array([r["offset"] for r in daily], dtype=np.int16)
-        self.d_station = np.array([sc[r["station"]] for r in daily], dtype=np.int16)
-        self.d_day = np.array([day_code.get(r["valid_day"], -1)
-                               for r in daily], dtype=np.int32)
+        c_model, c_offset, c_station, c_vday, c_maxo, c_maxf, c_mino, c_minf, \
+            c_ro, c_rf = _columns(
+                daily, ("model", "offset", "station", "valid_day",
+                        "temp_max_obs", "temp_max_fcst", "temp_min_obs",
+                        "temp_min_fcst", "rain_obs", "rain_fcst"))
+        self.d_model = np.array([mc.get(x, -1) for x in c_model], dtype=np.int32)
+        self.d_offset = np.array(c_offset, dtype=np.int16)
+        self.d_station = np.array([sc[x] for x in c_station], dtype=np.int16)
+        self.d_day = np.array([day_code.get(x, -1) for x in c_vday], dtype=np.int32)
         self.d_time = self.d_day
-        self.d_max_o = np.array([np.nan if r["temp_max_obs"] is None else r["temp_max_obs"]
-                                 for r in daily], dtype=np.float64)
-        self.d_max_f = np.array([np.nan if r["temp_max_fcst"] is None else r["temp_max_fcst"]
-                                 for r in daily], dtype=np.float64)
-        self.d_min_o = np.array([np.nan if r["temp_min_obs"] is None else r["temp_min_obs"]
-                                 for r in daily], dtype=np.float64)
-        self.d_min_f = np.array([np.nan if r["temp_min_fcst"] is None else r["temp_min_fcst"]
-                                 for r in daily], dtype=np.float64)
-        self.d_rain_o = np.array([np.nan if r["rain_obs"] is None else r["rain_obs"]
-                                  for r in daily], dtype=np.float64)
-        self.d_rain_f = np.array([np.nan if r["rain_fcst"] is None else r["rain_fcst"]
-                                  for r in daily], dtype=np.float64)
+        self.d_max_o = np.array([np.nan if x is None else x for x in c_maxo],
+                                dtype=np.float64)
+        self.d_max_f = np.array([np.nan if x is None else x for x in c_maxf],
+                                dtype=np.float64)
+        self.d_min_o = np.array([np.nan if x is None else x for x in c_mino],
+                                dtype=np.float64)
+        self.d_min_f = np.array([np.nan if x is None else x for x in c_minf],
+                                dtype=np.float64)
+        self.d_rain_o = np.array([np.nan if x is None else x for x in c_ro],
+                                 dtype=np.float64)
+        self.d_rain_f = np.array([np.nan if x is None else x for x in c_rf],
+                                 dtype=np.float64)
         # 日温度维的两个量**各自**记录是否成对：旧实现是"两个量里至少一个成对
         # 就取这一条，值取成对的那些量的平均"。混合成一个 bool 会把"只有最高成对"
         # 的样本丢掉，n_eff 立刻对不上。

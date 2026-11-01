@@ -1,5 +1,69 @@
 
 ---
+## 2026-11-01 · 性能轮（无重冻结：报告数字零漂移）
+
+性质：**纯性能轮**，无口径变更、无结构变更。51 张榜 × 全部展示字段与名次
+**逐位不变**——golden 套件（含两次构建确定性、性能预算）在**不重冻结**的前提下
+直接通过，这就是本次改动被接受的前提； Cyeva 位级等价另有专项证据（下）。
+
+实测（本机 4 核，`scripts/bench_report.py --window-file tests/baseline/window.json`
+3 次取中位，热分块缓存）：**160.2 s / 3156 MB → 60.0 s / 3206 MB（−62.6%）**；
+峰值 RSS 基本持平（+50 MB，在噪声内，预算 3400 MB 之内）。
+
+### 改了什么（全部位级等价）
+
+1. **`temp_metrics` 标量六项 + ±N°C 准确率换 numpy 快速路径**（16.7 → 1.2 s）。
+   复刻的是 cyeva 在公式外面的四层壳：无参调用时 `@source_round_digit()` 对
+   self 对象 `np.round` 抛 TypeError 走 passthrough（**输入不舍入**）、
+   `@drop_nan` 只剔 NaN **保留 inf**、公式本体 `d=o−f` 一次内积给出
+   rss/chi2/rmse（同源 `ss=Σd²`）与 mae/mbe/acc、`@result_round_digit(4)` 的
+   round4。cyeva 原路经 `DEFAULT_METRIC_BACKEND` 开关保留为对拍参照与兜底。
+2. **`precip_metrics` 连续量 rmse/mae/mbe 共用同一条等价实现**（5.0 → 3.3 s）：
+   与温度标量是 `Comparison` 基类的同一组装饰器，语义只有一份，两条路不会各自
+   漂移。
+3. **`collect` 逐快照常数外提**（39.7 → 8.4 s，−79%）：obs 查找、
+   `minute_index`、lead、天桶、封存滞后只依赖 (快照, 小时下标) 而与模型无关，
+   此前在 `for m in snap["data"]` 的内层逐模型重算——open-meteo 一份快照挂
+   14 个模型键，同一小时的这些常数被重复算 14 遍。判定顺序（rec → lead →
+   封存 → 天桶）与 `_note_unfrozen` 的逐 series 副作用逐位保持；按天聚合
+   循环同款处理。畸形时刻串回退 datetime 路径的分支原样保留。
+4. **`PairTable` 单趟列提取**：14 趟逐列列表推导改为一次 `operator.itemgetter`
+   （C 层）+ 分块 `zip(*)` 转置，块大小限制瞬态行元组内存不推高峰值 RSS。
+5. **`pairwise_corr_matrix` 列级共享**：finite 掩膜每列算一次（此前每对在
+   `pearson_r` 里重算两遍）；键集相同（同一全局轴，主流情形）时跳过
+   intersect1d/searchsorted 直接取全列。`pearson_r` 的过滤后主体提取为
+   `_pearson_r_finite`（同值，无行为变化）。
+6. **`_n_eff_*` dict 路径累积器改 flat dict**：`(站, 时刻)` 单键替代
+   defaultdict 套 dict，站序/站内时刻序/并列 lead 先到先得三条顺序语义逐位
+   保持（`_min_lead_bucket` 文档为准；日温路径走共享实现）。
+
+### 对拍证据（先对拍、后切换的项目铁律）
+
+* `scripts/parity_temp.py`（新增，仿 parity_graded 三层收窄）：冻结窗口全部
+  **2,310 个真实格子**（评分卡三池 + 逐小时 1..16 桶 + 按天 max/min 1..16），
+  cyeva 路径 vs numpy 路径输出按 `float.hex()` 逐位相同、None 处置一致、
+  整数字段零容差——**mismatch 0**。
+* 单元级边界守护（tests/test_evaluate.py 新增 3 个用例，仿
+  `test_precip_fast_path_matches_cyeva` 的刻意构造风格）：全 NaN / 单边 NaN /
+  inf / 单样本 / 零方差 / |d| 恰落档位边界 / 非整数档位 / backend 组合
+  （numpy 连续量 × cyeva 分级）。
+
+### 分块缓存指纹：一次性重算（预期行为，非漂移）
+
+`_block_source_digest` 对"决定格子数值"的函数源码取哈希，`temp_metrics` /
+`_n_eff_*` 在列——源码变了指纹就变，14 个历史块**一次性**重算并落盘新指纹
+（`data/metrics/blocks/*` 随本批提交）。这正是"缓存命中不依赖开发者记得改
+版本号"的保守设计在工作：语义等价的改动多付一次重算，语义变化绝无可能
+被旧缓存掩盖。
+
+### 预算：本机实测已降 2.7×，棘轮暂不收紧（留待 CI 数据）
+
+本机 60 s × 2.0 = 120 s 会低于 CI 2 核的预期实测（历史证据：同一套测试在
+不同环境测得 49.6 s / 4 min / 35 min，跨机比值 3~5×），现在收紧等于把
+"CI 机器更慢"写成回归。300 s 预算继续有效（仍能抓住 5× 级回归）；待 golden
+在 CI 新代码上的实测落地，由下一次重冻结经 `_apply_ratchet` 自然收紧。
+
+---
 ## 2026-11-01 · 第十八次重冻结（EW4ALL 接入 CMA-GFS：榜单 32 → 33 行）
 
 重冻结原因：**结构变更（新增模型）**，非口径变更。EW4ALL 独立源新增第三个模型

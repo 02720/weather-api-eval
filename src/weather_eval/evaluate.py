@@ -609,68 +609,124 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                 n_hi = upper_split(times, end_dt)
                 # 封存判定的基准时刻：一次定界 + 一次解析，绝不进内层循环
                 frozen_lo, fetched_dt = unfrozen_split(times, snap.get("fetched_at_bj"))
-                for m in snap["data"]:
-                    # 记录归属按沿袭表映射到接替 id：物理数据键不改（payload_sha256
-                    # 锚定封存那一刻的字典），但系列身份以接替 id 计——旧 id 目录
-                    # 归并进来的存档计入接替系列的样本（见 storage.FORECAST_MODEL_LINEAGE）
-                    series = canonical_model(m)
-                    arr_t = snap["data"][m]["temperature_2m"]
-                    arr_p = snap["data"][m]["precipitation"]
-                    lt = len(arr_t)
-                    lp = len(arr_p)
+                if issue_im is not None:
+                    # ---- 逐小时常数表（2026-11 性能轮）：每快照一次，全部模型键复用 ----
+                    # obs 查找 / minute_index / lead / 天桶 / 封存滞后只依赖
+                    # (快照, 小时下标)，与模型无关；此前它们在 `for m in snap["data"]`
+                    # 的内层逐模型重算——open-meteo 一份快照挂 14 个模型键，同一
+                    # 小时的这些常数被重复算 14 遍。表项 (i, tstr, rec, lead,
+                    # days_off, unfrozen_lag) 按**原判定顺序**预求值：rec → lead
+                    # → 封存 → 天桶；unfrozen_lag 非 None 表示该小时未封存，
+                    # `_note_unfrozen` 的逐 series 副作用仍在模型循环里发生
+                    # （预计算阶段没有 series，绝不能在那里吞掉任何计数）。
+                    hourly_pre: list[tuple] = []
+                    pre_append = hourly_pre.append
                     for i in range(n_lo, n_hi):
                         tstr = times[i]
                         rec = obs_get(tstr)
                         if rec is None:
                             continue
-                        im = minute_index(tstr) if issue_im is not None else None
+                        im = minute_index(tstr)
                         if im is not None:
                             lead = (im - issue_im) // 60
-                        else:
-                            lead = int((parse_iso(tstr) - issue).total_seconds() // 3600)
-                        if lead <= 0 or lead > max_lead:
-                            continue
-                        # ---- 封存时点门槛（审查 P1-4）----
-                        # 有效时刻已经过去之后才抓回来的"预报值"不进任何榜：它可能
-                        # 是修订值甚至实况值。无 fetched_at 的历史存档无从判定，
-                        # 按已封存处理（新契约是纯增量，绝不凭空抹掉历史样本）。
-                        if fetched_dt is not None and i < frozen_lo:
-                            _note_unfrozen(stats, series,
-                                           (fetched_dt - parse_iso(tstr)).total_seconds() / 3600.0,
-                                           frozen_excluded=require_frozen)
-                            if require_frozen:
+                            if lead <= 0 or lead > max_lead:
                                 continue
-                        # ---- 天桶按**日历时窗**对齐（对抗式审查 P0-3）----
-                        # 旧口径用 (lead−1)//24+1 分桶：这是"起报后的第几个滚动 24h"，
-                        # 与降水侧（有效日 − 起报日）不是同一个时间窗。后果是同一个
-                        # "提前 1 天"里，Open-Meteo 的温度分 96% 来自**起报当天**、
-                        # 风清的 72.5% 来自起报次日，而降水分对所有源都严格是"起报
-                        # 次日全天"——两维日历构成不同却平均成同一个数字。
-                        # 现在温度也用"有效时刻所属自然日 − 起报自然日"：天桶 N 对
-                        # 温度与降水都指"起报日之后第 N 个自然日"，两维真正同窗。
-                        #
-                        # bucket=0（起报当日）是一条**哨兵**：它不进任何天桶榜
-                        # （build_day_stat_tables 与各天桶循环都只取 1..N），但记录
-                        # 仍然保留，供"固定时效窗"诊断口径（scorecard 的 24h/72h 池、
-                        # 逐时效曲线）使用——那是另一套合法且已披露的口径，不该被
-                        # 天桶对齐连带删掉，否则等于用一次口径修正把诊断视图掏空。
-                        if im is not None:
+                            # ---- 封存时点门槛（审查 P1-4）----
+                            # 有效时刻已经过去之后才抓回来的"预报值"不进任何榜：它可能
+                            # 是修订值甚至实况值。无 fetched_at 的历史存档无从判定，
+                            # 按已封存处理（新契约是纯增量，绝不凭空抹掉历史样本）。
+                            if fetched_dt is not None and i < frozen_lo:
+                                lag = (fetched_dt - parse_iso(tstr)).total_seconds() / 3600.0
+                            else:
+                                lag = None
+                            # ---- 天桶按**日历时窗**对齐（对抗式审查 P0-3）----
+                            # 旧口径用 (lead−1)//24+1 分桶：这是"起报后的第几个滚动 24h"，
+                            # 与降水侧（有效日 − 起报日）不是同一个时间窗。现在温度也用
+                            # "有效时刻所属自然日 − 起报自然日"：天桶 N 对温度与降水都指
+                            # "起报日之后第 N 个自然日"，两维真正同窗。
+                            #
+                            # bucket=0（起报当日）是一条**哨兵**：它不进任何天桶榜，
+                            # 但记录仍然保留，供"固定时效窗"诊断口径（scorecard 的
+                            # 24h/72h 池、逐时效曲线）使用。
                             days_off = im // 1440 - issue_day_im
                         else:
+                            # 该小时时刻串非分钟分辨率 → 本小时回退 datetime 路径
+                            #（与原内层逐点路径同款；畸形串绝不当成 0 处理）
+                            lead = int((parse_iso(tstr) - issue).total_seconds() // 3600)
+                            if lead <= 0 or lead > max_lead:
+                                continue
+                            if fetched_dt is not None and i < frozen_lo:
+                                lag = (fetched_dt - parse_iso(tstr)).total_seconds() / 3600.0
+                            else:
+                                lag = None
                             days_off = _days_between(issue_day_s, tstr[:10])
-                        if days_off < 0 or days_off > hourly_lead_days:
-                            continue
-                        # 数组越界按缺测处理（与按天聚合同防护）：畸形存档降级为
-                        # 该点缺测，不拖垮整份报告
-                        append_hr({
-                            "station": sid, "model": series, "valid_iso": tstr,
-                            "issue_iso": issue_iso_s,
-                            "lead": lead, "bucket": days_off,
-                            "temp_obs": rec.get("temp"),
-                            "temp_fcst": (arr_t[i] if i < lt else None),
-                            "rain_obs": rec.get("rain"),
-                            "rain_fcst": (arr_p[i] if i < lp else None),
-                        })
+                        pre_append((i, tstr, rec, lead, days_off, lag))
+                    for m in snap["data"]:
+                        # 记录归属按沿袭表映射到接替 id：物理数据键不改（payload_sha256
+                        # 锚定封存那一刻的字典），但系列身份以接替 id 计——旧 id 目录
+                        # 归并进来的存档计入接替系列的样本（见 storage.FORECAST_MODEL_LINEAGE）
+                        series = canonical_model(m)
+                        entry = snap["data"][m]
+                        arr_t = entry["temperature_2m"]
+                        arr_p = entry["precipitation"]
+                        lt = len(arr_t)
+                        lp = len(arr_p)
+                        for i, tstr, rec, lead, days_off, lag in hourly_pre:
+                            if lag is not None:
+                                _note_unfrozen(stats, series, lag,
+                                               frozen_excluded=require_frozen)
+                                if require_frozen:
+                                    continue
+                            if days_off < 0 or days_off > hourly_lead_days:
+                                continue
+                            # 数组越界按缺测处理（与按天聚合同防护）：畸形存档降级为
+                            # 该点缺测，不拖垮整份报告
+                            append_hr({
+                                "station": sid, "model": series, "valid_iso": tstr,
+                                "issue_iso": issue_iso_s,
+                                "lead": lead, "bucket": days_off,
+                                "temp_obs": rec.get("temp"),
+                                "temp_fcst": (arr_t[i] if i < lt else None),
+                                "rain_obs": rec.get("rain"),
+                                "rain_fcst": (arr_p[i] if i < lp else None),
+                            })
+                else:
+                    # 起报串不是分钟分辨率 → 本快照整体回退 datetime 路径
+                    # （口径不变，只是不再走整数快路径；实测时间轴全部 16 字符，
+                    # 此分支按留存防护处理）
+                    for m in snap["data"]:
+                        series = canonical_model(m)
+                        entry = snap["data"][m]
+                        arr_t = entry["temperature_2m"]
+                        arr_p = entry["precipitation"]
+                        lt = len(arr_t)
+                        lp = len(arr_p)
+                        for i in range(n_lo, n_hi):
+                            tstr = times[i]
+                            rec = obs_get(tstr)
+                            if rec is None:
+                                continue
+                            lead = int((parse_iso(tstr) - issue).total_seconds() // 3600)
+                            if lead <= 0 or lead > max_lead:
+                                continue
+                            if fetched_dt is not None and i < frozen_lo:
+                                _note_unfrozen(stats, series,
+                                               (fetched_dt - parse_iso(tstr)).total_seconds() / 3600.0,
+                                               frozen_excluded=require_frozen)
+                                if require_frozen:
+                                    continue
+                            days_off = _days_between(issue_day_s, tstr[:10])
+                            if days_off < 0 or days_off > hourly_lead_days:
+                                continue
+                            append_hr({
+                                "station": sid, "model": series, "valid_iso": tstr,
+                                "issue_iso": issue_iso_s,
+                                "lead": lead, "bucket": days_off,
+                                "temp_obs": rec.get("temp"),
+                                "temp_fcst": (arr_t[i] if i < lt else None),
+                                "rain_obs": rec.get("rain"),
+                                "rain_fcst": (arr_p[i] if i < lp else None),
+                            })
 
     # 按天聚合
     daily_records: list[dict] = []
@@ -714,6 +770,19 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                 d_lo = lower_split(times, start_dt)
                 d_hi = upper_split(times, end_dt)
                 d_frozen_lo, fetched_dt = unfrozen_split(times, snap.get("fetched_at_bj"))
+                # 逐小时常数表（2026-11 性能轮）：day 切片 / 封存标记 / 观测值只依赖
+                # (快照, 小时下标)，与模型无关，每快照求值一次供全部模型键复用
+                #（表项 (day, unfrozen, ot, op, i)；一条小时都不许丢——预报-only
+                # 小时也要更新 fd 桶，空日桶是覆盖披露的一部分）。
+                daily_pre: list[tuple] = []
+                for i in range(d_lo, d_hi):
+                    tstr = times[i]
+                    rec_o = obs_get(tstr)
+                    daily_pre.append((tstr[:10],
+                                      fetched_dt is not None and i < d_frozen_lo,
+                                      rec_o.get("temp") if rec_o else None,
+                                      rec_o.get("rain") if rec_o else None,
+                                      i))
                 for m in snap["data"]:
                     series = canonical_model(m)
                     arr_t = snap["data"][m]["temperature_2m"]
@@ -740,10 +809,7 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                     d_cur: dict | None = None
                     df_cur: dict | None = None
                     c_cur: dict | None = None
-                    for i in range(d_lo, d_hi):
-                        tstr = times[i]
-                        day = tstr[:10]
-                        unfrozen = fetched_dt is not None and i < d_frozen_lo
+                    for day, unfrozen, ot, op, i in daily_pre:
                         allowed = not (unfrozen and require_frozen)
                         if day != cur_day:
                             cur_day = day
@@ -764,9 +830,6 @@ def collect(station_ids: list[str], models: list[str], start_dt, end_dt,
                             stats["n_daily_unfrozen_hours"] = stats.get("n_daily_unfrozen_hours", 0) + 1
                         d = d_cur
                         df = df_cur
-                        rec_o = obs_get(tstr)
-                        ot = rec_o.get("temp") if rec_o else None
-                        op = rec_o.get("rain") if rec_o else None
                         # 只取一次值、只做一次越界判定：旧写法 `has_t` 与聚合体
                         # 各取一次 arr_t[i]，并把 8 次内置 max/min 调用留在这条
                         # 270 万次 × 每模型的内层循环里。直接比较与 max/min 在
@@ -973,9 +1036,74 @@ def daily_source_mix_summary(mix: dict) -> dict:
 
 
 # ----------------------------------------------------------------- 指标计算
+# 温度标量六项与降水连续三项的计算后端。numpy = 快速路径（与 cyeva 逐位同值，
+# 由 scripts/parity_temp.py 与 tests/test_evaluate.py 的对拍用例锁定）；
+# cyeva = 权威原路（保留为对拍参照与兜底）。
+DEFAULT_METRIC_BACKEND = "numpy"
+
+
+def _cyv_round4(v: float) -> float:
+    """cyeva ``result_round_digit(4)`` 的位级等价：结果先 ``round(v, 4)``。
+
+    装饰器里的 ``if result:`` 分支无需复刻——``round(0.0, 4) == 0.0``（等价），
+    ``round(nan, 4)`` 仍是 nan、``round(inf, 4)`` 仍是 inf（nan/inf 均为 truthy，
+    同样被 round）。终端的 ``_r``（round3、nan/inf → None）由调用方施加，
+    与 cyeva 路径完全一致。
+    """
+    return round(v, 4)
+
+
+def _temp_core_cyeva_equiv(obs_vals, fcst_vals, limits):
+    """温度标量六项 + ±N°C 准确率的 numpy 实现，与 cyeva 调用**逐位同值**。
+
+    对齐的不是数学公式，而是 cyeva 包在公式外面的四层壳（对照
+    cyeva/core/base.py 的装饰器栈与 cyeva/core/statistic.py 的实现）：
+
+      * 无参调用（``tc.calc_rmse()``）时 ``@source_round_digit()`` 对 self 对象
+        ``np.round`` 抛 TypeError 走 passthrough——**输入不做任何舍入**；
+      * ``@drop_nan``：掩膜 = ``x != x`` 语义——**只剔 NaN、保留 inf**（改用
+        isfinite 会在含 inf 的样本上落到不同的样本集合）；
+      * 公式本体：rmse/chi2/rss 同源——``d = o−f``、``ss = Σd²``，
+        rss = round4(ss)、chi2 = round4(ss/n)、rmse = round4(√(ss/n))；
+        mbe = round4(Σ(f−o)/n)（注意减法方向与 cyeva 一致）、
+        mae = round4(Σ|d|/n)、acc_lim = round4(count(|d|≤lim)/n×100)；
+        ``d**2`` 与 ``d*d`` 逐位相同（numpy 对整数 2 次幂走同一乘法）；
+      * ``@result_round_digit(4)``：见 `_cyv_round4`。
+
+    返回 (rmse, mae, mbe, rss, chi2, {lim: acc})，均为"round4 后、_r 前"的值；
+    样本剔空（全 NaN）时 cyeva 走 ZeroDivisionError → NaN → _r → None，
+    这里直接返回 None。
+    """
+    o = np.asarray(obs_vals, dtype=float)
+    f = np.asarray(fcst_vals, dtype=float)
+    if o.size != f.size:
+        # 与 cyeva @assert_length 同语义：长度不等是调用方契约错误，绝不静默
+        raise ValueError(
+            f"observation/forecast length mismatch: {o.size} vs {f.size}")
+    m = ~(np.isnan(o) | np.isnan(f))
+    om = o[m]
+    fm = f[m]
+    nv = int(om.size)
+    if nv == 0:
+        return None, None, None, None, None, {lim: None for lim in limits}
+    d = om - fm
+    d2 = d * d
+    ss = float(np.sum(d2))
+    rss = _cyv_round4(ss)
+    chi2 = _cyv_round4(ss / nv)
+    rmse = _cyv_round4(math.sqrt(ss / nv))
+    mae = _cyv_round4(float(np.sum(np.abs(d))) / nv)
+    mbe = _cyv_round4(float(np.sum(fm - om)) / nv)
+    ad = np.abs(d)
+    accs = {lim: _cyv_round4(int((ad <= lim).sum()) / nv * 100.0)
+            for lim in limits}
+    return rmse, mae, mbe, rss, chi2, accs
+
+
 def temp_metrics(obs_vals, fcst_vals, limits, min_sample, *,
                  n_eff: int | None = None,
-                 groups: list | None = None) -> dict:
+                 groups: list | None = None,
+                 backend: str | None = None) -> dict:
     """温度全套指标（cyeva TemperatureComparison 全量）。
 
     n_eff：有效样本量（考虑误差自相关，见 stats.effective_n）。n 或 n_eff 低于
@@ -986,6 +1114,10 @@ def temp_metrics(obs_vals, fcst_vals, limits, min_sample, *,
     斜率按样本量加权合并——跨站池化的 r 混入"复现站间气候差异"这一容易得多的
     任务，不是对"站内起伏同步程度"的度量。池化口径保留在 r_pooled/slope_pooled
     并列披露。单组/缺省时直接对池化样本计算（r_pooled 即 r）。
+
+    backend：标量六项与 ±N°C 准确率走哪条实现（默认 numpy 快速路径，见
+    `DEFAULT_METRIC_BACKEND`）。两条路径逐位同值，由 scripts/parity_temp.py
+    在冻结窗口全部真实格子上按 float.hex() 对拍锁定；切换它不改变任何对外数字。
     """
     obs = np.asarray(obs_vals, dtype=float)
     fcst = np.asarray(fcst_vals, dtype=float)
@@ -997,14 +1129,21 @@ def temp_metrics(obs_vals, fcst_vals, limits, min_sample, *,
            **{f"acc{lim}": None for lim in limits}}
     if n < min_sample or n == 0 or (n_eff is not None and n_eff < min_sample):
         return out
-    tc = TemperatureComparison(obs, fcst, unit="degC")
-    out["rmse"] = _r(tc.calc_rmse())
-    out["mae"] = _r(tc.calc_mae())
-    out["mbe"] = _r(tc.calc_mbe())
-    out["rss"] = _r(tc.calc_rss())
-    out["chi2"] = _r(tc.calc_chi_square())
+    if str(backend or DEFAULT_METRIC_BACKEND).lower() != "cyeva":
+        rmse, mae, mbe, rss, chi2, accs = _temp_core_cyeva_equiv(obs, fcst, limits)
+    else:
+        tc = TemperatureComparison(obs, fcst, unit="degC")
+        rmse, mae, mbe, rss, chi2 = (tc.calc_rmse(), tc.calc_mae(),
+                                     tc.calc_mbe(), tc.calc_rss(),
+                                     tc.calc_chi_square())
+        accs = {lim: tc.calc_diff_accuracy_ratio(limit=lim) for lim in limits}
+    out["rmse"] = _r(rmse)
+    out["mae"] = _r(mae)
+    out["mbe"] = _r(mbe)
+    out["rss"] = _r(rss)
+    out["chi2"] = _r(chi2)
     for lim in limits:
-        out[f"acc{lim}"] = _r(tc.calc_diff_accuracy_ratio(limit=lim))
+        out[f"acc{lim}"] = _r(accs[lim])
     # r/slope：numpy 充分统计量公式（与 scipy.linregress 同定义，cyeva 亦委托之，
     # 一致性由测试锁定）。池化与站内合并两条口径都算，缺项回退池化。
     r_pooled, slope_pooled = r_slope_numpy(fcst, obs)   # x=预报, y=观测（cyeva 口径）
@@ -1129,7 +1268,8 @@ def _cyv_div(num: float, den: float, pct: bool = False) -> float:
 def precip_metrics(obs_vals, fcst_vals, threshold, min_sample,
                    kind: str | None = None, graded_levs: tuple = (),
                    n_eff: int | None = None,
-                   graded_backend: str | None = None) -> dict:
+                   graded_backend: str | None = None,
+                   backend: str | None = None) -> dict:
     """降水全套指标：晴雨二分类 8 项 + 连续量 3 项（+ 可选分级每级 7 项）。
 
     kind/graded_levs：传 "1h"+("1".."5") 算逐小时雨强区间分级，
@@ -1138,6 +1278,10 @@ def precip_metrics(obs_vals, fcst_vals, threshold, min_sample,
     graded_backend：分级指标走哪条实现（默认 numpy 快速路径，见
     `weather_eval.graded` 的模块 docstring）。两条路径的输出由对拍脚本逐格锁死，
     切换它**不改变任何对外数字**。
+
+    backend：连续量 rmse/mae/mbe 走哪条实现（默认 numpy 快速路径，见
+    `DEFAULT_METRIC_BACKEND`；晴雨二分类与分级不受它控制——它们各有自己
+    的后端开关与对拍锁定）。
     """
     obs = np.asarray(obs_vals, dtype=float)
     fcst = np.asarray(fcst_vals, dtype=float)
@@ -1159,8 +1303,9 @@ def precip_metrics(obs_vals, fcst_vals, threshold, min_sample,
     # 口径由 `_threshold_counts` / `_cyv_div` 逐条锁死（round2 二值化、NaN
     # 掩膜、除零→NaN、结果先 round4 再 round3），同值性由
     # `test_precip_fast_path_matches_cyeva` 逐格对拍锁定。
-    # 连续量 3 项（rmse/mae/mbe）留 cyeva 类路径：它们走 pint 单位换算，换成
-    # 手写会引入第二套口径，而收益极小（不经过 Counter，不是热点）。
+    # 连续量 3 项（rmse/mae/mbe）走 `_temp_core_cyeva_equiv` 的 numpy 等价
+    # 实现（与温度标量同一套 cyeva 壳，逐位同值；cyeva 原路经 backend 开关
+    # 保留为对拍参照）。
     hits, misses, false_alarms, correct_rejects = _threshold_counts(
         obs, fcst, threshold)
     total = hits + misses + false_alarms + correct_rejects
@@ -1181,10 +1326,18 @@ def precip_metrics(obs_vals, fcst_vals, threshold, min_sample,
     fb = fcst[m] >= threshold
     out["ets"] = _r(_stat_ets(ob, fb))
     out["farate"] = _r(_stat_farate(ob, fb))
-    pc = PrecipitationComparison(obs, fcst, unit="mm")
-    out["rmse"] = _r(pc.calc_rmse())
-    out["mae"] = _r(pc.calc_mae())
-    out["mbe"] = _r(pc.calc_mbe())
+    # 连续量 3 项与温度标量同一套 cyeva 壳（Comparison 基类的同一组装饰器：
+    # 无参调用输入不舍入、drop_nan 只剔 NaN、round4），故共用同一条 numpy
+    # 等价实现——语义只有一份，两条路不会各自漂移。cyeva 原路保留为对拍参照。
+    pc: PrecipitationComparison | None = None
+    if str(backend or DEFAULT_METRIC_BACKEND).lower() != "cyeva":
+        rmse, mae, mbe, _rss, _chi2, _accs = _temp_core_cyeva_equiv(obs, fcst, ())
+    else:
+        pc = PrecipitationComparison(obs, fcst, unit="mm")
+        rmse, mae, mbe = pc.calc_rmse(), pc.calc_mae(), pc.calc_mbe()
+    out["rmse"] = _r(rmse)
+    out["mae"] = _r(mae)
+    out["mbe"] = _r(mbe)
     if graded_levs and kind:
         if str(graded_backend or DEFAULT_GRADED_BACKEND).lower() != "cyeva":
             # 分级指标占全部 cyeva 调用的 70%（实测 26.65s / 38.06s）。它的数学
@@ -1194,6 +1347,10 @@ def precip_metrics(obs_vals, fcst_vals, threshold, min_sample,
             return out
         for lev in graded_levs:
             try:
+                # backend=numpy 但 graded_backend=cyeva 的组合：连续量没构造过
+                # pc，这里就地补造（同一对象，两条口径互不依赖）
+                if pc is None:
+                    pc = PrecipitationComparison(obs, fcst, unit="mm")
                 out["graded"][lev] = {
                     "acc": _r(pc.calc_accuracy_ratio(kind=kind, lev=lev)),
                     "pod": _r(pc.calc_hit_ratio(kind=kind, lev=lev)),
@@ -2278,20 +2435,36 @@ def _n_eff_temp(recs: list[dict]) -> int | None:
     同时把各站的**时刻键**一并传入：`n_eff_from_station_series` 要靠公共时刻
     估计跨站相关 ρ̄，再按 1+(k−1)ρ̄ 折算。只做时间维自相关校正（旧口径）会把
     4 个由同一批天气系统驱动的站当成 4 份独立信息，n_eff 高估约 1.7 倍（P0-4）。
+    （累积逻辑内联自 `_min_lead_bucket`，顺序语义逐位一致；热路径免两次闭包
+    调用。）
     """
-    by: dict[str, dict[str, tuple[int, float]]] = defaultdict(dict)
+    by: dict[tuple[str, str], tuple[int, float]] = {}
     for r in recs:
-        o, f = r["temp_obs"], r["temp_fcst"]
-        if o is None or f is None:
+        o = r["temp_obs"]
+        if o is None:
             continue
-        cur = by[r["station"]].get(r["valid_iso"])
-        if cur is None or r["lead"] < cur[0]:
-            by[r["station"]][r["valid_iso"]] = (r["lead"], f - o)
+        f = r["temp_fcst"]
+        if f is None:
+            continue
+        key = (r["station"], r["valid_iso"])
+        ld = r["lead"]
+        cur = by.get(key)
+        if cur is None or ld < cur[0]:
+            by[key] = (ld, f - o)
     if not by:
         return None
-    series = {sid: [err for _vt, (_lead, err) in sorted(d.items())]
-              for sid, d in by.items()}
-    times = {sid: [vt for vt, _x in sorted(d.items())] for sid, d in by.items()}
+    per: dict[str, dict[str, tuple[int, float]]] = {}
+    for (st, t), v in by.items():
+        d = per.get(st)
+        if d is None:
+            d = per[st] = {}
+        d[t] = v
+    series: dict[str, list] = {}
+    times: dict[str, list] = {}
+    for sid, d in per.items():
+        items = sorted(d.items())
+        times[sid] = [t for t, _x in items]
+        series[sid] = [err for _t, (_lead, err) in items]
     return _stats.n_eff_from_station_series(series, times)
 
 
@@ -2387,26 +2560,83 @@ def _rain_evidence_note(name: str, ev: dict, min_events: int, min_days: int,
     return False, "样本积累中"
 
 
+def _min_lead_bucket(recs: list[dict], okf, errf, time_key: str,
+                     lead_key: str) -> tuple[dict[str, list], dict[str, list]] | None:
+    """dict 路径 n_eff 共用的"min-lead 去重 → 按站有序序列"累积器。
+
+    与旧 `defaultdict(dict)` 实现的**顺序语义逐位一致**（差一条 n_eff 就会漂）：
+      * 站序 = 首次出现顺序（defaultdict 的插入顺序）；
+      * 站内时刻按升序（旧代码 `sorted(d.items())`；时刻键在站内唯一，无并列）；
+      * 同一 (站, 时刻) 并列 lead 时取**最先出现**的那条（旧代码严格小于才替换，
+        由"先到先得 + 仅严格更小才覆盖"复现）；
+      * 时刻键插入顺序 = 首次出现顺序（flat dict 的键序），随后 sorted 排序——
+        两种顺序下 sorted 结果相同（键唯一无并列）。
+
+    okf/errf：每条记录的 (是否入样, 误差值)；errf 只对入样记录调用一次。
+    返回 (series, times)；无任何入样记录时返回 None（旧代码 `if not by`）。
+    """
+    by: dict[tuple[str, str], tuple[int, float]] = {}
+    for r in recs:
+        if not okf(r):
+            continue
+        key = (r["station"], r[time_key])
+        ld = r[lead_key]
+        cur = by.get(key)
+        if cur is None or ld < cur[0]:
+            by[key] = (ld, errf(r))
+    if not by:
+        return None
+    per: dict[str, dict[str, tuple[int, float]]] = {}
+    for (st, t), v in by.items():
+        d = per.get(st)
+        if d is None:
+            d = per[st] = {}
+        d[t] = v
+    series: dict[str, list] = {}
+    times: dict[str, list] = {}
+    for sid, d in per.items():
+        items = sorted(d.items())
+        times[sid] = [t for t, _x in items]
+        series[sid] = [err for _t, (_lead, err) in items]
+    return series, times
+
+
 def _n_eff_temp_min_lead(recs: list[dict]) -> int | None:
     """分块格子的逐小时温度 n_eff：同一（站, 时刻）取**最小 lead** 那一版。
 
     与全窗口列式路径的 `min_lead_select` 同一语义（同一时刻被多轮起报覆盖时，
     只留最新一版）。`_n_eff_temp` 的 dict 路径保留"遍历到的第一条"，而分块格子
     的记录顺序取决于快照抓取顺序——不显式取 min lead 会让 n_eff 随抓取时序漂移。
+    （累积逻辑内联自 `_min_lead_bucket`，顺序语义逐位一致；热路径免两次闭包
+    调用。）
     """
-    by: dict[str, dict[str, tuple[int, float]]] = defaultdict(dict)
+    by: dict[tuple[str, str], tuple[int, float]] = {}
     for r in recs:
-        o, f = r["temp_obs"], r["temp_fcst"]
-        if o is None or f is None:
+        o = r["temp_obs"]
+        if o is None:
             continue
-        cur = by[r["station"]].get(r["valid_iso"])
-        if cur is None or r["lead"] < cur[0]:
-            by[r["station"]][r["valid_iso"]] = (r["lead"], f - o)
+        f = r["temp_fcst"]
+        if f is None:
+            continue
+        key = (r["station"], r["valid_iso"])
+        ld = r["lead"]
+        cur = by.get(key)
+        if cur is None or ld < cur[0]:
+            by[key] = (ld, f - o)
     if not by:
         return None
-    series = {sid: [err for _t, (_lead, err) in sorted(d.items())]
-              for sid, d in by.items()}
-    times = {sid: [t for t, _x in sorted(d.items())] for sid, d in by.items()}
+    per: dict[str, dict[str, tuple[int, float]]] = {}
+    for (st, t), v in by.items():
+        d = per.get(st)
+        if d is None:
+            d = per[st] = {}
+        d[t] = v
+    series: dict[str, list] = {}
+    times: dict[str, list] = {}
+    for sid, d in per.items():
+        items = sorted(d.items())
+        times[sid] = [t for t, _x in items]
+        series[sid] = [err for _t, (_lead, err) in items]
     return _stats.n_eff_from_station_series(series, times)
 
 
@@ -2416,21 +2646,36 @@ def _n_eff_rain(recs: list[dict], thr: float, time_key: str,
 
     与温度侧同样做跨站相关校正（P0-4）——相邻站"今天下没下雨"的判定高度同步，
     各站 n_eff 直接相加同样会高估。
+    （累积逻辑内联自 `_min_lead_bucket`，顺序语义逐位一致；热路径免两次闭包
+    调用。）
     """
-    by: dict[str, dict[str, tuple[int, float]]] = defaultdict(dict)
+    by: dict[tuple[str, str], tuple[int, float]] = {}
     for r in recs:
-        o, f = r["rain_obs"], r["rain_fcst"]
-        if o is None or f is None:
+        o = r["rain_obs"]
+        if o is None:
             continue
-        cur = by[r["station"]].get(r[time_key])
-        if cur is None or r[lead_key] < cur[0]:
-            by[r["station"]][r[time_key]] = (
-                r[lead_key], 1.0 if ((o >= thr) != (f >= thr)) else 0.0)
+        f = r["rain_fcst"]
+        if f is None:
+            continue
+        key = (r["station"], r[time_key])
+        ld = r[lead_key]
+        cur = by.get(key)
+        if cur is None or ld < cur[0]:
+            by[key] = (ld, 1.0 if ((o >= thr) != (f >= thr)) else 0.0)
     if not by:
         return None
-    series = {sid: [err for _t, (_lead, err) in sorted(d.items())]
-              for sid, d in by.items()}
-    times = {sid: [t for t, _x in sorted(d.items())] for sid, d in by.items()}
+    per: dict[str, dict[str, tuple[int, float]]] = {}
+    for (st, t), v in by.items():
+        d = per.get(st)
+        if d is None:
+            d = per[st] = {}
+        d[t] = v
+    series: dict[str, list] = {}
+    times: dict[str, list] = {}
+    for sid, d in per.items():
+        items = sorted(d.items())
+        times[sid] = [t for t, _x in items]
+        series[sid] = [err for _t, (_lead, err) in items]
     return _stats.n_eff_from_station_series(series, times)
 
 
@@ -5151,22 +5396,32 @@ def _n_eff_daily_temp(recs: list[dict]) -> int | None:
     保留了"这一天的温度偏差有多大"的含义，又不把一个自然日当成两天的信息——
     否则同一天的两个极值误差会被当成两次独立观测，n_eff 凭空翻倍。
     同一天被多个起报覆盖时取最小日偏移（最新一版起报），与逐小时侧同款去重。
+
+    误差值的浮点序与旧实现逐位一致：`sum([a]) / 1 == a`（IEEE 除以 1.0 精确），
+    `sum([a, b]) / 2 == (a + b) / 2`（0 + a 精确等于 a），且 max 在前、min 在后。
     """
-    by: dict[str, dict[str, tuple[int, float]]] = defaultdict(dict)
-    pairs = (("temp_max_obs", "temp_max_fcst"), ("temp_min_obs", "temp_min_fcst"))
-    for r in recs:
-        vals = [r[fb] - r[ob] for ob, fb in pairs
-                if r.get(ob) is not None and r.get(fb) is not None]
-        if not vals:
-            continue
-        cur = by[r["station"]].get(r["valid_day"])
-        if cur is None or r["offset"] < cur[0]:
-            by[r["station"]][r["valid_day"]] = (r["offset"], sum(vals) / len(vals))
-    if not by:
+    def _daily_err(r: dict) -> float:
+        emo = r["temp_max_obs"]
+        emf = r["temp_max_fcst"]
+        if emo is not None and emf is not None:
+            nmi = r["temp_min_obs"]
+            nmf = r["temp_min_fcst"]
+            if nmi is not None and nmf is not None:
+                return ((emf - emo) + (nmf - nmi)) / 2.0
+            return emf - emo
+        return r["temp_min_fcst"] - r["temp_min_obs"]
+
+    got = _min_lead_bucket(
+        recs,
+        lambda r: ((r.get("temp_max_obs") is not None
+                    and r.get("temp_max_fcst") is not None)
+                   or (r.get("temp_min_obs") is not None
+                       and r.get("temp_min_fcst") is not None)),
+        _daily_err,
+        "valid_day", "offset")
+    if got is None:
         return None
-    series = {sid: [err for _t, (_o, err) in sorted(d.items())] for sid, d in by.items()}
-    times = {sid: [t for t, _x in sorted(d.items())] for sid, d in by.items()}
-    return _stats.n_eff_from_station_series(series, times)
+    return _stats.n_eff_from_station_series(got[0], got[1])
 
 
 _PANEL_METRIC_KEYS = (

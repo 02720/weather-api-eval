@@ -1529,6 +1529,113 @@ def test_precip_fast_path_matches_cyeva():
         assert got["farate"] == _r(_stat_farate(o[m] >= thr, f[m] >= thr)), \
             f"case {i} farate"
 
+
+def test_temp_fast_path_matches_cyeva():
+    """温度标量六项 + ±N°C 准确率的 numpy 快速路径与 cyeva **逐位同值**。
+
+    这是把 `temp_metrics` 里的 `TemperatureComparison` 换成 numpy 的唯一单元级
+    凭据（全量真实格子对拍在 scripts/parity_temp.py）。覆盖的边界刻意构造：
+      * 全 NaN / 单边 NaN / inf——cyeva 的 drop_nan 只剔 NaN，inf 参与运算后
+        由 `_r` 归 None；两条路径必须给出**同一个** None/数值；
+      * 单样本、零方差、|d| 恰落在 ±N°C 边界；
+      * 非整数档位（0.5）与多档位 limits；降水连续量共用同一条等价实现，
+        由 precip 侧的 backend 对拍一并覆盖（test_precip_continuous_fast_path）。
+    """
+    import numpy as np
+    from weather_eval.evaluate import temp_metrics
+
+    rng = np.random.default_rng(20261101)
+    cases = []
+    for _ in range(120):
+        n = int(rng.integers(2, 200))
+        o = np.round(rng.normal(18.0, 6.0, n), 1)
+        f = np.round(o + rng.normal(0, 2.0, n), 1)
+        o[rng.random(n) < 0.08] = np.nan
+        f[rng.random(n) < 0.08] = np.nan
+        cases.append((o, f, [1, 2], 2))
+    cases += [
+        # inf：drop_nan 保留 inf，d=inf → ss=inf → rss/chi2/rmse 经 _r 归 None
+        (np.array([1.0, np.inf, 3.0, 4.0]), np.array([1.5, 2.0, np.inf, 4.0]),
+         [1, 2], 2),
+        # 单样本（n=1 ≥ min_sample=1）：r/slope 退化路径
+        (np.array([20.0]), np.array([21.0]), [1, 2], 1),
+        # 零方差：r_slope_numpy 返回 None，标量六项照常
+        (np.full(8, 20.0), np.full(8, 20.0), [1, 2], 2),
+        # |d| 恰等于档位：acc 边界（<= lim 判"准确"）
+        (np.array([20.0, 20.0, 20.0, 20.0]), np.array([21.0, 19.0, 22.0, 20.0]),
+         [1, 2], 2),
+        # 非整数档位
+        (np.array([10.0, 11.0, 12.0, 13.0]), np.array([10.4, 11.6, 12.5, 13.0]),
+         [0.5, 1.5], 2),
+        # 大样本含 ±inf 与 NaN 混合
+        (np.concatenate([rng.normal(15, 5, 300), [np.inf, np.nan]]),
+         np.concatenate([rng.normal(15, 5, 300), [3.0, np.nan]]), [2], 5),
+    ]
+
+    for i, (o, f, limits, ms) in enumerate(cases):
+        kw_common = dict(n_eff=None)
+        a = temp_metrics(o, f, limits, ms, backend="cyeva", **kw_common)
+        b = temp_metrics(o, f, limits, ms, backend="numpy", **kw_common)
+        assert set(a) == set(b), f"case {i}: 字段集不一致"
+        for k in a:
+            va, vb = a[k], b[k]
+            if va is None or vb is None:
+                assert va is None and vb is None, \
+                    f"case {i} {k}: None 处置不一致 cyeva={va!r} numpy={vb!r}"
+            elif isinstance(va, float) and isinstance(vb, float):
+                if np.isnan(va):
+                    assert np.isnan(vb), f"case {i} {k}: {va!r} vs {vb!r}"
+                else:
+                    assert va.hex() == vb.hex(), \
+                        f"case {i} {k}: {va!r} ({va.hex()}) != {vb!r} ({vb.hex()})"
+            else:
+                assert va == vb, f"case {i} {k}: {va!r} != {vb!r}"
+
+
+def test_precip_continuous_fast_path_matches_cyeva():
+    """降水连续量（rmse/mae/mbe）的 numpy 快速路径与 cyeva **逐位同值**。
+
+    晴雨二分类与分级各有自己的后端开关与对拍（上面与 parity_graded），这里只
+    锁连续量后端切换：同一批 case 上 `backend="cyeva"` 与 `backend="numpy"`
+    的输出必须逐字段相同（分级字段两边同走 numpy 分级路径，恰好充当恒等哨兵）。
+    """
+    import numpy as np
+    from weather_eval.evaluate import precip_metrics
+
+    rng = np.random.default_rng(20261102)
+    cases = []
+    for _ in range(80):
+        n = int(rng.integers(5, 200))
+        o = np.round(rng.exponential(0.8, n) * rng.random(n), 3)
+        f = np.round(rng.exponential(0.8, n) * rng.random(n), 3)
+        o[rng.random(n) < 0.1] = np.nan
+        f[rng.random(n) < 0.1] = np.nan
+        cases.append((o, f))
+    cases += [
+        (np.array([0.0, 0.0, 0.0]), np.array([0.0, 0.0, 0.0])),   # 全零：rmse=0
+        (np.array([1.0, np.inf]), np.array([np.inf, 2.0])),       # inf−inf → None
+        (np.array([5.0]), np.array([7.0])),                       # 单样本
+    ]
+    for i, (o, f) in enumerate(cases):
+        if not (~np.isnan(o) & ~np.isnan(f)).any():
+            continue
+        a = precip_metrics(o, f, 0.1, 2, kind="1h", graded_levs=("1", "2"),
+                           backend="cyeva")
+        b = precip_metrics(o, f, 0.1, 2, kind="1h", graded_levs=("1", "2"),
+                           backend="numpy")
+        for k in ("rmse", "mae", "mbe"):
+            va, vb = a[k], b[k]
+            if va is None or vb is None:
+                assert va is None and vb is None, \
+                    f"case {i} {k}: None 处置不一致 cyeva={va!r} numpy={vb!r}"
+            else:
+                assert va.hex() == vb.hex(), \
+                    f"case {i} {k}: {va!r} ({va.hex()}) != {vb!r} ({vb.hex()})"
+        # 分级与二分类字段与后端开关无关（同一实现），顺带断言不受污染
+        assert a["graded"] == b["graded"], f"case {i}: 分级字段被 backend 污染"
+        assert a["ts"] == b["ts"] and a["ets"] == b["ets"], f"case {i}: 二分类被污染"
+
+
 def test_bootstrap_ci_deterministic_and_honest(tmp_path, monkeypatch):
     """P0-2：bootstrap 置信区间。
 
