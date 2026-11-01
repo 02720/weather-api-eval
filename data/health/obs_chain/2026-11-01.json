@@ -320,5 +320,170 @@
         ]
       }
     }
+  },
+  {
+    "at": "2026-11-01T22:23:23",
+    "stations": {
+      "wuzhou": {
+        "degraded": true,
+        "n_records": 24,
+        "n_filled": 7,
+        "n_elem_filled": 6,
+        "served_by": [
+          "eia_data",
+          "cma_data"
+        ],
+        "attempts": [
+          {
+            "name": "eia_data",
+            "attempted": true,
+            "ok": false,
+            "n_records": 17,
+            "n_hours": 17,
+            "n_used": 17,
+            "n_conflict": 0,
+            "n_elem_filled": 0,
+            "latest": "2026-11-01T14:00",
+            "age_hours": 8.387205623888889,
+            "degraded_reason": "最新观测滞后 8.4h（阈值 3h）",
+            "error": null
+          },
+          {
+            "name": "cma_data",
+            "attempted": true,
+            "ok": true,
+            "n_records": 13,
+            "n_hours": 13,
+            "n_used": 7,
+            "n_conflict": 15,
+            "n_elem_filled": 6,
+            "latest": "2026-11-01T21:00",
+            "age_hours": 1.3894203461111112,
+            "degraded_reason": null,
+            "error": null
+          }
+        ]
+      },
+      "bobai": {
+        "degraded": true,
+        "n_records": 24,
+        "n_filled": 7,
+        "n_elem_filled": 6,
+        "served_by": [
+          "eia_data",
+          "cma_data"
+        ],
+        "attempts": [
+          {
+            "name": "eia_data",
+            "attempted": true,
+            "ok": false,
+            "n_records": 17,
+            "n_hours": 17,
+            "n_used": 17,
+            "n_conflict": 0,
+            "n_elem_filled": 0,
+            "latest": "2026-11-01T14:00",
+            "age_hours": 8.387185324444445,
+            "degraded_reason": "最新观测滞后 8.4h（阈值 3h）",
+            "error": null
+          },
+          {
+            "name": "cma_data",
+            "attempted": true,
+            "ok": true,
+            "n_records": 13,
+            "n_hours": 13,
+            "n_used": 7,
+            "n_conflict": 15,
+            "n_elem_filled": 6,
+            "latest": "2026-11-01T21:00",
+            "age_hours": 1.3895920216666668,
+            "degraded_reason": null,
+            "error": null
+          }
+        ]
+      },
+      "pingnan": {
+        "degraded": true,
+        "n_records": 24,
+        "n_filled": 7,
+        "n_elem_filled": 6,
+        "served_by": [
+          "eia_data",
+          "cma_data"
+        ],
+        "attempts": [
+          {
+            "name": "eia_data",
+            "attempted": true,
+            "ok": false,
+            "n_records": 17,
+            "n_hours": 17,
+            "n_used": 17,
+            "n_conflict": 0,
+            "n_elem_filled": 0,
+            "latest": "2026-11-01T14:00",
+            "age_hours": 8.3872064125,
+            "degraded_reason": "最新观测滞后 8.4h（阈值 3h）",
+            "error": null
+          },
+          {
+            "name": "cma_data",
+            "attempted": true,
+            "ok": true,
+            "n_records": 13,
+            "n_hours": 13,
+            "n_used": 7,
+            "n_conflict": 15,
+            "n_elem_filled": 6,
+            "latest": "2026-11-01T21:00",
+            "age_hours": 1.3891966102777777,
+            "degraded_reason": null,
+            "error": null
+          }
+        ]
+      },
+      "wanning": {
+        "degraded": true,
+        "n_records": 24,
+        "n_filled": 7,
+        "n_elem_filled": 6,
+        "served_by": [
+          "eia_data",
+          "cma_data"
+        ],
+        "attempts": [
+          {
+            "name": "eia_data",
+            "attempted": true,
+            "ok": false,
+            "n_records": 17,
+            "n_hours": 17,
+            "n_used": 17,
+            "n_conflict": 0,
+            "n_elem_filled": 0,
+            "latest": "2026-11-01T14:00",
+            "age_hours": 8.38720989361111,
+            "degraded_reason": "最新观测滞后 8.4h（阈值 3h）",
+            "error": null
+          },
+          {
+            "name": "cma_data",
+            "attempted": true,
+            "ok": true,
+            "n_records": 13,
+            "n_hours": 13,
+            "n_used": 7,
+            "n_conflict": 14,
+            "n_elem_filled": 6,
+            "latest": "2026-11-01T21:00",
+            "age_hours": 1.3897591769444444,
+            "degraded_reason": null,
+            "error": null
+          }
+        ]
+      }
+    }
   }
 ]
