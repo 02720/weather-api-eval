@@ -292,26 +292,37 @@ jobs:
         run: python -m weather_eval health --stale-hours 30
 
       - name: 变基远端最新提交（避免 push 被拒）
-        # 旧实现的 `|| true` 让 rebase 失败（冲突、autostash 弹出失败）静默通过，
-        # 随后 git-auto-commit-action 照常提交——可能把当轮数据提交到一棵**陈旧的、
-        # 与远端分叉的**树上，下一次运行再重复同样的失败，而日志里只留一行被忽略的
-        # stderr（对抗式审查 P1-7）。现在：先 abort 掉半途的变基（把工作区恢复到
-        # 变基前，当轮产物一个不丢），再以非零退出让作业如实变红。
+        # 为什么不用 `--autostash`（2026-11 修复）：autostash 弹回时若与远端新增内容
+        # 冲突，索引会卡在 "needs merge"，而下面的提交步骤是 if: always()，照样运行
+        # git-auto-commit，撞上未解决索引直接报 "you need to resolve your current
+        # index first"（实况日志）。本仓库 runner 上没有本地提交、工作区改动全部是
+        # 可再生的当轮产物，所以走更稳的路：先把 data/reports 备份到临时目录 →
+        # 变基（失败则硬重置到远端，工作区其余改动可丢弃）→ 把当轮产物铺回最新
+        # 远端之上。任何路径下索引都不可能带冲突，数据也绝不落在陈旧分叉树上。
         id: rebase
-        # 不设 continue-on-error（第四轮 P2-2）：旧值让步骤结论变 success、
-        # 作业不变红——"以非零退出让作业如实变红"的注释落了空。开 Issue 的
-        # 下游步骤用的是 steps.rebase.outcome（不受本值影响）。
+        # 不设 continue-on-error（第四轮 P2-2）：失败必须让作业变红，下游开 Issue
+        # 步骤用的是 steps.rebase.outcome（不受本值影响）。
         if: always() && steps.install.outcome == 'success'
         run: |
-          set +e
-          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
-          rc=$?
-          if [ $rc -ne 0 ]; then
-            echo "::error::git pull --rebase 失败（rc=$rc）：本地与远端已分叉，本轮数据可能未能入库"
+          set -e
+          BACKUP="$RUNNER_TEMP/eval-round-outputs"
+          mkdir -p "$BACKUP"
+          cp -a data reports "$BACKUP"/ 2>/dev/null || true
+
+          git fetch origin "${GITHUB_REF_NAME}"
+          if ! git rebase "origin/${GITHUB_REF_NAME}"; then
+            echo "::warning::rebase 失败，硬重置到远端后铺回当轮产物"
             git rebase --abort >/dev/null 2>&1 || true
-            git stash list | head -5
-            exit $rc
+            git reset --hard "origin/${GITHUB_REF_NAME}"
           fi
+          # 铺回当轮产物（无备份时跳过，例如 install 前就失败的极端路径）
+          if [ -d "$BACKUP/data" ]; then
+            rm -rf data && cp -a "$BACKUP/data" data
+          fi
+          if [ -d "$BACKUP/reports" ]; then
+            rm -rf reports && cp -a "$BACKUP/reports" reports
+          fi
+          git status --short | head -20
 
       - name: 校验当轮快照的哈希链（可审计性）
         # §7.1：把"预报在实况之前封存且事后未被修改"从自我声明变成可机器核验的
