@@ -303,134 +303,386 @@
   },
   "2026-11-02T09:00": {
     "time": "2026-11-02T09:00",
-    "source": "cma_data",
+    "source": "wd",
     "temp": 23.0,
-    "humidity": 83.0,
     "pressure": 1009.6,
-    "wind_speed": 5.1,
+    "humidity": 83.0,
     "rain": 0.0,
-    "visibility": 16000.0,
-    "wind_dir": null
+    "wind_speed": 4.9,
+    "wind_dir": 27.0,
+    "visibility": null,
+    "revisions": [
+      {
+        "at": "2026-11-02T21:21:51",
+        "prev": {
+          "temp": 23.0,
+          "rain": 0.0,
+          "time": "2026-11-02T09:00"
+        }
+      }
+    ]
   },
   "2026-11-02T08:00": {
     "time": "2026-11-02T08:00",
-    "source": "cma_data",
+    "source": "wd",
     "temp": 24.4,
-    "humidity": 84.0,
     "pressure": 1008.8,
-    "wind_speed": 4.3,
+    "humidity": 84.0,
     "rain": 0.0,
-    "visibility": 15600.0,
-    "wind_dir": null
+    "wind_speed": 4.0,
+    "wind_dir": 9.0,
+    "visibility": null,
+    "revisions": [
+      {
+        "at": "2026-11-02T21:21:51",
+        "prev": {
+          "temp": 24.4,
+          "rain": 0.0,
+          "time": "2026-11-02T08:00"
+        }
+      }
+    ]
   },
   "2026-11-02T07:00": {
     "time": "2026-11-02T07:00",
-    "source": "cma_data",
+    "source": "wd",
     "temp": 24.8,
-    "humidity": 84.0,
     "pressure": 1007.8,
-    "wind_speed": 2.1,
+    "humidity": 84.0,
     "rain": 0.0,
-    "visibility": 10200.0,
-    "wind_dir": null
+    "wind_speed": 2.2,
+    "wind_dir": 1.0,
+    "visibility": null,
+    "revisions": [
+      {
+        "at": "2026-11-02T21:21:51",
+        "prev": {
+          "temp": 24.8,
+          "rain": 0.0,
+          "time": "2026-11-02T07:00"
+        }
+      }
+    ]
   },
   "2026-11-02T06:00": {
     "time": "2026-11-02T06:00",
-    "source": "cma_data",
+    "source": "wd",
     "temp": 25.0,
-    "humidity": 81.0,
     "pressure": 1006.7,
-    "wind_speed": 0.5,
+    "humidity": 81.0,
     "rain": 0.0,
-    "visibility": 12500.0,
-    "wind_dir": null
+    "wind_speed": 0.8,
+    "wind_dir": 178.0,
+    "visibility": null,
+    "revisions": [
+      {
+        "at": "2026-11-02T21:21:51",
+        "prev": {
+          "temp": 25.0,
+          "rain": 0.0,
+          "time": "2026-11-02T06:00"
+        }
+      }
+    ]
   },
   "2026-11-02T05:00": {
     "time": "2026-11-02T05:00",
-    "source": "cma_data",
+    "source": "wd",
     "temp": 24.8,
-    "humidity": 87.0,
     "pressure": 1006.3,
-    "wind_speed": 1.6,
+    "humidity": 87.0,
     "rain": 0.0,
-    "visibility": 9000.0,
-    "wind_dir": null
+    "wind_speed": 1.5,
+    "wind_dir": 24.0,
+    "visibility": null,
+    "revisions": [
+      {
+        "at": "2026-11-02T21:21:51",
+        "prev": {
+          "temp": 24.8,
+          "rain": 0.0,
+          "time": "2026-11-02T05:00"
+        }
+      }
+    ]
   },
   "2026-11-02T04:00": {
     "time": "2026-11-02T04:00",
-    "source": "cma_data",
+    "source": "wd",
     "temp": 25.1,
-    "humidity": 84.0,
     "pressure": 1006.3,
-    "wind_speed": 1.1,
+    "humidity": 84.0,
     "rain": 0.0,
-    "visibility": 13800.0,
-    "wind_dir": null
+    "wind_speed": 0.8,
+    "wind_dir": 10.0,
+    "visibility": null,
+    "revisions": [
+      {
+        "at": "2026-11-02T21:21:51",
+        "prev": {
+          "temp": 25.1,
+          "rain": 0.0,
+          "time": "2026-11-02T04:00"
+        }
+      }
+    ]
   },
   "2026-11-02T03:00": {
     "time": "2026-11-02T03:00",
-    "source": "cma_data",
+    "source": "wd",
     "temp": 25.1,
-    "humidity": 85.0,
     "pressure": 1006.6,
-    "wind_speed": 1.6,
+    "humidity": 85.0,
     "rain": 0.0,
-    "visibility": 13300.0,
-    "wind_dir": null
+    "wind_speed": 1.6,
+    "wind_dir": 12.0,
+    "visibility": null,
+    "revisions": [
+      {
+        "at": "2026-11-02T21:21:51",
+        "prev": {
+          "temp": 25.1,
+          "rain": 0.0,
+          "time": "2026-11-02T03:00"
+        }
+      }
+    ]
   },
   "2026-11-02T02:00": {
     "time": "2026-11-02T02:00",
-    "source": "cma_data",
+    "source": "wd",
     "temp": 25.8,
-    "humidity": 81.0,
     "pressure": 1006.8,
-    "wind_speed": 1.8,
+    "humidity": 81.0,
     "rain": 0.0,
-    "visibility": 12700.0,
-    "wind_dir": null
+    "wind_speed": 1.6,
+    "wind_dir": 124.0,
+    "visibility": null,
+    "revisions": [
+      {
+        "at": "2026-11-02T21:21:51",
+        "prev": {
+          "temp": 25.8,
+          "rain": 0.0,
+          "time": "2026-11-02T02:00"
+        }
+      }
+    ]
   },
   "2026-11-02T01:00": {
     "time": "2026-11-02T01:00",
-    "source": "cma_data",
+    "source": "wd",
     "temp": 26.3,
-    "humidity": 78.0,
     "pressure": 1007.1,
-    "wind_speed": 1.5,
+    "humidity": 78.0,
     "rain": 0.0,
-    "visibility": 11400.0,
-    "wind_dir": null
+    "wind_speed": 1.5,
+    "wind_dir": 124.0,
+    "visibility": null,
+    "revisions": [
+      {
+        "at": "2026-11-02T21:21:51",
+        "prev": {
+          "temp": 26.3,
+          "rain": 0.0,
+          "time": "2026-11-02T01:00"
+        }
+      }
+    ]
   },
   "2026-11-02T00:00": {
     "time": "2026-11-02T00:00",
-    "source": "cma_data",
+    "source": "wd",
     "temp": 26.5,
-    "humidity": 74.0,
     "pressure": 1007.1,
-    "wind_speed": 0.9,
+    "humidity": 74.0,
     "rain": 0.0,
-    "visibility": 17100.0,
-    "wind_dir": null
+    "wind_speed": 1.0,
+    "wind_dir": 264.0,
+    "visibility": null,
+    "revisions": [
+      {
+        "at": "2026-11-02T21:21:51",
+        "prev": {
+          "temp": 26.5,
+          "rain": 0.0,
+          "time": "2026-11-02T00:00"
+        }
+      }
+    ]
   },
   "2026-11-01T23:00": {
     "time": "2026-11-01T23:00",
-    "source": "cma_data",
+    "source": "wd",
     "temp": 26.0,
-    "humidity": 77.0,
     "pressure": 1007.1,
-    "wind_speed": 1.8,
+    "humidity": 77.0,
     "rain": 0.0,
-    "visibility": 13800.0,
-    "wind_dir": null
+    "wind_speed": 1.7,
+    "wind_dir": 317.0,
+    "visibility": null,
+    "revisions": [
+      {
+        "at": "2026-11-02T21:21:51",
+        "prev": {
+          "temp": 26.0,
+          "rain": 0.0,
+          "time": "2026-11-01T23:00"
+        }
+      }
+    ]
   },
   "2026-11-01T22:00": {
     "time": "2026-11-01T22:00",
-    "source": "cma_data",
+    "source": "wd",
     "temp": 26.4,
-    "humidity": 75.0,
     "pressure": 1006.9,
-    "wind_speed": 0.9,
+    "humidity": 75.0,
     "rain": 0.0,
-    "visibility": 15100.0,
-    "wind_dir": null
+    "wind_speed": 0.8,
+    "wind_dir": 117.0,
+    "visibility": null,
+    "revisions": [
+      {
+        "at": "2026-11-02T21:21:51",
+        "prev": {
+          "temp": 26.4,
+          "rain": 0.0,
+          "time": "2026-11-01T22:00"
+        }
+      }
+    ]
+  },
+  "2026-11-02T21:00": {
+    "time": "2026-11-02T21:00",
+    "source": "wd",
+    "temp": 21.1,
+    "pressure": 1008.9,
+    "humidity": 80.0,
+    "rain": 0.0,
+    "wind_speed": 4.5,
+    "wind_dir": 16.0,
+    "visibility": null
+  },
+  "2026-11-02T20:00": {
+    "time": "2026-11-02T20:00",
+    "source": "wd",
+    "temp": 21.1,
+    "pressure": 1008.8,
+    "humidity": 77.0,
+    "rain": 0.0,
+    "wind_speed": 5.1,
+    "wind_dir": 15.0,
+    "visibility": null
+  },
+  "2026-11-02T19:00": {
+    "time": "2026-11-02T19:00",
+    "source": "wd",
+    "temp": 21.1,
+    "pressure": 1008.0,
+    "humidity": 79.0,
+    "rain": 0.0,
+    "wind_speed": 3.9,
+    "wind_dir": 7.0,
+    "visibility": null
+  },
+  "2026-11-02T18:00": {
+    "time": "2026-11-02T18:00",
+    "source": "wd",
+    "temp": 21.6,
+    "pressure": 1007.7,
+    "humidity": 79.0,
+    "rain": 0.0,
+    "wind_speed": 2.7,
+    "wind_dir": 11.0,
+    "visibility": null
+  },
+  "2026-11-02T17:00": {
+    "time": "2026-11-02T17:00",
+    "source": "wd",
+    "temp": 22.6,
+    "pressure": 1007.6,
+    "humidity": 75.0,
+    "rain": 0.0,
+    "wind_speed": 4.5,
+    "wind_dir": 10.0,
+    "visibility": null
+  },
+  "2026-11-02T16:00": {
+    "time": "2026-11-02T16:00",
+    "source": "wd",
+    "temp": 23.0,
+    "pressure": 1007.4,
+    "humidity": 75.0,
+    "rain": 0.0,
+    "wind_speed": 4.6,
+    "wind_dir": 11.0,
+    "visibility": null
+  },
+  "2026-11-02T15:00": {
+    "time": "2026-11-02T15:00",
+    "source": "wd",
+    "temp": 23.2,
+    "pressure": 1007.6,
+    "humidity": 72.0,
+    "rain": 0.0,
+    "wind_speed": 4.9,
+    "wind_dir": 6.0,
+    "visibility": null
+  },
+  "2026-11-02T14:00": {
+    "time": "2026-11-02T14:00",
+    "source": "wd",
+    "temp": 23.1,
+    "pressure": 1008.0,
+    "humidity": 75.0,
+    "rain": 0.0,
+    "wind_speed": 3.9,
+    "wind_dir": 18.0,
+    "visibility": null
+  },
+  "2026-11-02T13:00": {
+    "time": "2026-11-02T13:00",
+    "source": "wd",
+    "temp": 23.0,
+    "pressure": 1008.7,
+    "humidity": 76.0,
+    "rain": 0.0,
+    "wind_speed": 4.4,
+    "wind_dir": 17.0,
+    "visibility": null
+  },
+  "2026-11-02T12:00": {
+    "time": "2026-11-02T12:00",
+    "source": "wd",
+    "temp": 22.4,
+    "pressure": 1009.7,
+    "humidity": 79.0,
+    "rain": 0.0,
+    "wind_speed": 4.9,
+    "wind_dir": 7.0,
+    "visibility": null
+  },
+  "2026-11-02T11:00": {
+    "time": "2026-11-02T11:00",
+    "source": "wd",
+    "temp": 22.8,
+    "pressure": 1010.2,
+    "humidity": 78.0,
+    "rain": 0.0,
+    "wind_speed": 2.7,
+    "wind_dir": 14.0,
+    "visibility": null
+  },
+  "2026-11-02T10:00": {
+    "time": "2026-11-02T10:00",
+    "source": "wd",
+    "temp": 23.0,
+    "pressure": 1010.3,
+    "humidity": 81.0,
+    "rain": 0.0,
+    "wind_speed": 3.9,
+    "wind_dir": 20.0,
+    "visibility": null
   }
 }
