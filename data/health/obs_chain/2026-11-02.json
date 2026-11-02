@@ -1,0 +1,167 @@
+[
+  {
+    "at": "2026-11-02T09:27:37",
+    "stations": {
+      "wuzhou": {
+        "degraded": true,
+        "n_records": 18,
+        "n_filled": 12,
+        "n_elem_filled": 0,
+        "served_by": [
+          "eia_data",
+          "cma_data"
+        ],
+        "attempts": [
+          {
+            "name": "eia_data",
+            "attempted": true,
+            "ok": false,
+            "n_records": 6,
+            "n_hours": 6,
+            "n_used": 6,
+            "n_conflict": 0,
+            "n_elem_filled": 0,
+            "latest": "2026-11-01T14:00",
+            "age_hours": 19.458481469444447,
+            "degraded_reason": "最新观测滞后 19.5h（阈值 3h）",
+            "error": null
+          },
+          {
+            "name": "cma_data",
+            "attempted": true,
+            "ok": true,
+            "n_records": 12,
+            "n_hours": 12,
+            "n_used": 12,
+            "n_conflict": 0,
+            "n_elem_filled": 0,
+            "latest": "2026-11-02T09:00",
+            "age_hours": 0.46034998388888887,
+            "degraded_reason": null,
+            "error": null
+          }
+        ]
+      },
+      "bobai": {
+        "degraded": true,
+        "n_records": 18,
+        "n_filled": 12,
+        "n_elem_filled": 0,
+        "served_by": [
+          "eia_data",
+          "cma_data"
+        ],
+        "attempts": [
+          {
+            "name": "eia_data",
+            "attempted": true,
+            "ok": false,
+            "n_records": 6,
+            "n_hours": 6,
+            "n_used": 6,
+            "n_conflict": 0,
+            "n_elem_filled": 0,
+            "latest": "2026-11-01T14:00",
+            "age_hours": 19.458484122777776,
+            "degraded_reason": "最新观测滞后 19.5h（阈值 3h）",
+            "error": null
+          },
+          {
+            "name": "cma_data",
+            "attempted": true,
+            "ok": true,
+            "n_records": 12,
+            "n_hours": 12,
+            "n_used": 12,
+            "n_conflict": 0,
+            "n_elem_filled": 0,
+            "latest": "2026-11-02T09:00",
+            "age_hours": 0.4602466838888889,
+            "degraded_reason": null,
+            "error": null
+          }
+        ]
+      },
+      "pingnan": {
+        "degraded": true,
+        "n_records": 18,
+        "n_filled": 12,
+        "n_elem_filled": 0,
+        "served_by": [
+          "eia_data",
+          "cma_data"
+        ],
+        "attempts": [
+          {
+            "name": "eia_data",
+            "attempted": true,
+            "ok": false,
+            "n_records": 6,
+            "n_hours": 6,
+            "n_used": 6,
+            "n_conflict": 0,
+            "n_elem_filled": 0,
+            "latest": "2026-11-01T14:00",
+            "age_hours": 19.458470899166667,
+            "degraded_reason": "最新观测滞后 19.5h（阈值 3h）",
+            "error": null
+          },
+          {
+            "name": "cma_data",
+            "attempted": true,
+            "ok": true,
+            "n_records": 12,
+            "n_hours": 12,
+            "n_used": 12,
+            "n_conflict": 0,
+            "n_elem_filled": 0,
+            "latest": "2026-11-02T09:00",
+            "age_hours": 0.4601930211111111,
+            "degraded_reason": null,
+            "error": null
+          }
+        ]
+      },
+      "wanning": {
+        "degraded": true,
+        "n_records": 18,
+        "n_filled": 12,
+        "n_elem_filled": 0,
+        "served_by": [
+          "eia_data",
+          "cma_data"
+        ],
+        "attempts": [
+          {
+            "name": "eia_data",
+            "attempted": true,
+            "ok": false,
+            "n_records": 6,
+            "n_hours": 6,
+            "n_used": 6,
+            "n_conflict": 0,
+            "n_elem_filled": 0,
+            "latest": "2026-11-01T14:00",
+            "age_hours": 19.45846829027778,
+            "degraded_reason": "最新观测滞后 19.5h（阈值 3h）",
+            "error": null
+          },
+          {
+            "name": "cma_data",
+            "attempted": true,
+            "ok": true,
+            "n_records": 12,
+            "n_hours": 12,
+            "n_used": 12,
+            "n_conflict": 0,
+            "n_elem_filled": 0,
+            "latest": "2026-11-02T09:00",
+            "age_hours": 0.4603325180555556,
+            "degraded_reason": null,
+            "error": null
+          }
+        ]
+      }
+    }
+  }
+]
