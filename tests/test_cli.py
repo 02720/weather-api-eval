@@ -1,8 +1,11 @@
 """CLI 杂项回归：monthly --month 参数校验与归档冻结保护、快照拆分的模型分账。"""
+from datetime import timedelta
+
 import pytest
 
 from weather_eval import storage
 from weather_eval.__main__ import main
+from weather_eval.timeutil import iso, now_beijing
 
 
 def test_monthly_rejects_invalid_month():
@@ -62,22 +65,30 @@ def test_fetch_forecast_splits_daily_block_per_model(tmp_path, monkeypatch):
 
 
 def test_archive_dry_run_and_apply(tmp_path, monkeypatch, caplog):
-    """P3-5：archive 命令 dry-run 列候选、--apply 压缩删源文件。"""
+    """P3-5：archive 命令 dry-run 列候选、--apply 压缩删源文件。
+
+    同 test_storage 的同名用例：样本日期从当前时钟推导，不写死日历日。
+    "窗口内/窗口外"是相对 now 的口径，写死日期会让用例随真实时间流逝必然变红。
+    """
     import logging
     monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
-    for issue in ("2026-07-01T08:00", "2026-09-06T08:00"):
+    now = now_beijing()
+    outside = iso(now - timedelta(days=90))       # 确定早于 60 天窗口
+    inside = iso(now - timedelta(days=5))         # 确定在窗口内
+    for issue in (outside, inside):
         snap = {"issue_iso": issue, "models": ["ecmwf_ifs"],
                 "hourly_time": [issue], "data": {"ecmwf_ifs": {}}}
         storage.save_forecast_snapshot("s1", "ecmwf_ifs", snap)
 
-    from weather_eval.__main__ import main
+    d = tmp_path / "forecasts" / "s1" / "ecmwf_ifs"
+    outside_name = outside.replace(":", "") + ".json"
+    inside_name = inside.replace(":", "") + ".json"
     main(["archive", "--days", "60"])                      # dry-run
-    assert (tmp_path / "forecasts" / "s1" / "ecmwf_ifs" / "2026-07-01T0800.json").exists()
+    assert (d / outside_name).exists()
 
     with caplog.at_level(logging.INFO):
         main(["archive", "--days", "60", "--apply"])
-    d = tmp_path / "forecasts" / "s1" / "ecmwf_ifs"
-    assert (d / "2026-07-01T0800.json.gz").exists()
-    assert not (d / "2026-07-01T0800.json").exists()
-    assert (d / "2026-09-06T0800.json").exists()           # 窗口内的不动
+    assert (d / (outside_name + ".gz")).exists()
+    assert not (d / outside_name).exists()
+    assert (d / inside_name).exists()                      # 窗口内的不动
     assert len(storage.list_forecast_snapshots("s1", "ecmwf_ifs")) == 2

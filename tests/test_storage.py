@@ -1,4 +1,7 @@
+from datetime import timedelta
+
 from weather_eval import storage
+from weather_eval.timeutil import iso, now_beijing
 
 
 def test_obs_dedup_and_merge(tmp_path, monkeypatch):
@@ -83,17 +86,28 @@ def test_snapshots_readable_from_gzip(tmp_path, monkeypatch):
 
 
 def test_archive_old_snapshots_dry_run_and_apply(tmp_path, monkeypatch):
-    """archive_old_snapshots：dry-run 只列候选；apply 压缩并删源文件；幂等。"""
+    """archive_old_snapshots：dry-run 只列候选；apply 压缩并删源文件；幂等。
+
+    样本日期按**当前时钟**推导，不写死日历日。保留窗口是"早于 now−60 天"的
+    相对口径，而写死日期的用例必然随真实时间流逝变红——2026-11-07 实况：
+    旧版本把 2026-09-06 当作"60 天窗口内"，那时它已是 62 天前，本用例与
+    test_cli 的同名用例同时失败（当时 ruff 先红、快层被跳过，故障被掩盖）。
+    用例要钉的是"窗口外的归档、窗口内的不动"这条口径，与跑测试的日期无关。
+    """
     monkeypatch.setenv("WEATHER_EVAL_DATA_ROOT", str(tmp_path))
-    old = {"issue_iso": "2026-07-01T08:00", "models": ["ecmwf_ifs"],
-           "hourly_time": ["2026-07-01T08:00"], "data": {"ecmwf_ifs": {}}}
-    new = {"issue_iso": "2026-09-06T08:00", "models": ["ecmwf_ifs"],
-           "hourly_time": ["2026-09-06T08:00"], "data": {"ecmwf_ifs": {}}}
+    now = now_beijing()
+    outside = iso(now - timedelta(days=90))       # 确定早于 60 天窗口
+    inside = iso(now - timedelta(days=5))         # 确定在窗口内
+    old = {"issue_iso": outside, "models": ["ecmwf_ifs"],
+           "hourly_time": [outside], "data": {"ecmwf_ifs": {}}}
+    new = {"issue_iso": inside, "models": ["ecmwf_ifs"],
+           "hourly_time": [inside], "data": {"ecmwf_ifs": {}}}
     storage.save_forecast_snapshot("s1", "ecmwf_ifs", old)
     storage.save_forecast_snapshot("s1", "ecmwf_ifs", new)
 
+    outside_name = outside.replace(":", "") + ".json"
     candidates = storage.archive_old_snapshots(60, apply=False)
-    assert len(candidates) == 1 and candidates[0].name == "2026-07-01T0800.json"
+    assert len(candidates) == 1 and candidates[0].name == outside_name
     assert candidates[0].exists()                       # dry-run 不动文件
 
     changed = storage.archive_old_snapshots(60, apply=True)
@@ -102,7 +116,7 @@ def test_archive_old_snapshots_dry_run_and_apply(tmp_path, monkeypatch):
     assert candidates[0].with_name(candidates[0].name + ".gz").exists()
     # 归档后两个快照都能读到（.json.gz 与 .json 混存）
     snaps = storage.list_forecast_snapshots("s1", "ecmwf_ifs")
-    assert [s["issue_iso"] for s in snaps] == ["2026-07-01T08:00", "2026-09-06T08:00"]
+    assert [s["issue_iso"] for s in snaps] == [outside, inside]
     # 幂等：再跑一次无候选
     assert storage.archive_old_snapshots(60, apply=True) == []
 

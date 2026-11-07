@@ -3119,8 +3119,10 @@ class _ReferenceIndex:
         xs = [date.fromisoformat(d).toordinal() - issue_ord for d, _v in vals]
         ys = [v for _d, v in vals]
         n = len(vals)
-        sx = sum(xs); sy = sum(ys)
-        sxx = sum(x * x for x in xs); sxy = sum(x * y for x, y in zip(xs, ys))
+        sx = sum(xs)
+        sy = sum(ys)
+        sxx = sum(x * x for x in xs)
+        sxy = sum(x * y for x, y in zip(xs, ys))
         den = n * sxx - sx * sx
         if den > 0:
             slope = (n * sxy - sx * sy) / den
