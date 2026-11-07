@@ -2586,6 +2586,31 @@ def macro_scores_from_weights(
                                ridge=adj_ridge)
 
 
+def _rank_bucket_normalize(t_score: np.ndarray, p_score: np.ndarray,
+                          alpha) -> np.ndarray:
+    """跨模型桶内标准化后的名次分：α·z(T)+(1−α)·z(P)。
+
+    t_score/p_score 形状 (..., m, b)；沿**模型轴**（倒数第二维）做桶内标准化。
+    α 可以是标量，也可以是 (runs,1,1) 的逐 run 权重。两维缺一即缺；某列只有
+    1 家或 sd=0 时 z=0（该桶不提供相对信息，而不是伪造 ±∞）。
+    这是 skill-v5 的 R；非 skill-v5 路径不调用，保持旧线性 α 合成。
+    """
+    t = np.asarray(t_score, dtype=float)
+    p = np.asarray(p_score, dtype=float)
+    valid = np.isfinite(t) & np.isfinite(p)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        mu_t = np.nanmean(np.where(valid, t, np.nan), axis=-2, keepdims=True)
+        mu_p = np.nanmean(np.where(valid, p, np.nan), axis=-2, keepdims=True)
+        sd_t = np.nanstd(np.where(valid, t, np.nan), axis=-2, keepdims=True)
+        sd_p = np.nanstd(np.where(valid, p, np.nan), axis=-2, keepdims=True)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        zt = np.where(sd_t > 1e-12, (t - mu_t) / sd_t, 0.0)
+        zp = np.where(sd_p > 1e-12, (p - mu_p) / sd_p, 0.0)
+        r = alpha * zt + (1.0 - alpha) * zp
+    return np.where(valid, r, np.nan)
+
+
 def weight_champion_distribution(
     temp_sub: np.ndarray, precip_sub: np.ndarray, temp_parts, precip_parts,
     runs: int = 500, seed: int = 20260907,
@@ -2594,6 +2619,7 @@ def weight_champion_distribution(
     macro_weight_range: tuple[float, float] = (0.30, 0.70),
     adj_w: np.ndarray | None = None,
     adj_ridge: float = 0.0,
+    rank_normalize: bool = False,
 ) -> list[dict]:
     """权重敏感性（P0-2.2）：把各项权重各扰动 ±40%，统计冠军分布。
 
@@ -2645,10 +2671,13 @@ def weight_champion_distribution(
     v_t = np.isfinite(t_score)
     v_p = np.isfinite(p_score)
     with np.errstate(invalid="ignore", divide="ignore"):
-        bucket = np.where(v_t & v_p,
-                          w_macro * np.where(v_t, t_score, 0.0)
-                          + (1.0 - w_macro) * np.where(v_p, p_score, 0.0),
-                          np.nan)
+        if rank_normalize:
+            bucket = _rank_bucket_normalize(t_score, p_score, w_macro)
+        else:
+            bucket = np.where(v_t & v_p,
+                              w_macro * np.where(v_t, t_score, 0.0)
+                              + (1.0 - w_macro) * np.where(v_p, p_score, 0.0),
+                              np.nan)
     if adj_row is None or adj_col is None:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
@@ -2682,7 +2711,8 @@ def macro_champion_at_alpha(temp_sub: np.ndarray, precip_sub: np.ndarray,
                             adj_row: np.ndarray | None = None,
                             adj_col: np.ndarray | None = None,
                             adj_w: np.ndarray | None = None,
-                            adj_ridge: float = 0.0) -> dict | None:
+                            adj_ridge: float = 0.0,
+                            rank_normalize: bool = False) -> dict | None:
     """固定"温度占综合分比例 α"下的冠军（P0-2 的前置披露，2026-10-25）。
 
     随机权重敏感性回答"权重一起扰动时冠军换不换"；读者真正要问的却是
@@ -2710,10 +2740,13 @@ def macro_champion_at_alpha(temp_sub: np.ndarray, precip_sub: np.ndarray,
     vt, vp = np.isfinite(t_score), np.isfinite(p_score)
     with np.errstate(invalid="ignore", divide="ignore"):
         # 缺一即缺：与正式综合分同纪律，缺项重归一不得进入宏观端点冠军。
-        bucket = np.where(vt & vp,
-                          alpha * np.where(vt, t_score, 0.0)
-                          + (1.0 - alpha) * np.where(vp, p_score, 0.0),
-                          np.nan)
+        if rank_normalize:
+            bucket = _rank_bucket_normalize(t_score, p_score, float(alpha))
+        else:
+            bucket = np.where(vt & vp,
+                              alpha * np.where(vt, t_score, 0.0)
+                              + (1.0 - alpha) * np.where(vp, p_score, 0.0),
+                              np.nan)
     if adj_row is None or adj_col is None:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)

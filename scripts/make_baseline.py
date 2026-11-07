@@ -64,7 +64,9 @@ SETTLE_HOURS = 48
 # 对外展示字段：这些值出现在 report.html 的表格/卡片上，逐位冻结。
 # 不含内部中间量（它们有 1e-9 容差，且不在页面上）。
 BOARD_FIELDS = (
-    "model", "score", "temp_score", "precip_score", "ci90", "champion_pct",
+    "model", "score", "temp_score", "precip_score",
+    # skill-v5：名次分（score）与绝对技能分分列冻结，防止一号两义
+    "temp_skill", "precip_skill", "ci90", "champion_pct",
     "sig_vs_top", "qualified", "comparable", "n", "n_precip", "n_eff",
     "n_eff_rain", "acc2", "rmse", "ts", "ets", "lead_days", "n_days",
     "track_gap", "hourly_score", "daily_score",

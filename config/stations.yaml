@@ -108,10 +108,23 @@ eval:
   # —— skill-v3（2026-11）技能分口径 ——
   # 50 = 与过去-only 气候参照一样（无技巧）；100 = 完美；下半段指数压缩，
   # 不硬触底。旧月报按 meta.score_scheme=slope-v2 回放，不受影响。
-  score_scheme: skill-v4
-  score_ref_window_days: 15             # 只用目标日之前 15 天观测做气候参照
+  # skill-v5（2026-11）：综合分拆成两套语义，禁止一个数兼任两义
+  #   · 名次分 R：桶内标准化（μ/σ 扣掉该档难度与两维离散度差），喂给总榜/分时效榜
+  #   · 技能分 S：α·T+(1−α)·P 的绝对尺度，喂给 §02 走势图，不做桶内标准化
+  # 50/100 在 S 上仍是"打平同类朴素参照 / 完美"；R 的 50 是"本档同台平均"。
+  score_scheme: skill-v5
+  score_ref_window_days: 15             # 只取起报前 15 天观测做气候参照（严格 past-only）
   score_ref_min_days: 5                 # 不足 5 天 → 参照不可用，不出分
-  score_skill_k: 2.303                  # 展示层下半段压缩（ln10，纯展示、不参与名次）
+  score_skill_k: 2.303                  # 仅 skill-v3/v4 回放使用；skill-v5 用冻结仿射
+  # —— skill-v5 综合分参数（显式声明、冻结进配置）——
+  score_composite_alpha: 0.5            # 温度:降水 = 1:1（显式业务价值，非隐含缺省）
+  score_composite_sd_temp: 8.77         # R 的退化兜底温度尺度（优先用桶内样本 sd）
+  score_composite_sd_precip: 3.73       # R 的退化兜底降水尺度（优先用桶内样本 sd）
+  score_rank_scale: 10.0                # R_show = 50 + 10·R（R 为 α 加权 z 分）
+  # 显式 lead 权重：1–3d 全权重、4–7d 0.7、8–14d 0.4、15–16d 0.2
+  score_lead_weights: {"1-3": 1.0, "4-7": 0.7, "8-14": 0.4, "15-16": 0.2}
+  score_skill_tau: 0.9                  # 下半段 s=−(1−exp(s_raw/0.9))：保 s(0)=0/s(1)=1，尾部渐近 −1
+  score_v5_display_gain: 1.0            # 冻结仿射 g(x)=clip(50+γ(x−50),0,100)
   # —— skill-v4 雨量分母下限（锚点安全：零雨参照仍为 0）——
   score_amt_floor_hourly_mm: 0.05       # 小时轨 κ（1mm/h 评分阈的 5%，起点值）
   score_amt_floor_daily_mm: 0.5         # 日轨 κ（0.5mm/day，起点值）

@@ -13,11 +13,33 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "stations
 # 评估默认参数（可被 stations.yaml 的 eval 段覆盖）
 DEFAULT_EVAL = {
     "score_scheme": "slope-v2",       # 评分口径：stations.yaml 的生产配置显式设为
-                                       # skill-v3（2026-11，技能分）；代码内缺省保留
-                                       # slope-v2，供旧夹具/归档月报与直接调用回放。
-    "score_ref_window_days": 15,      # skill-v3 气候参照：只用目标日之前 W 天观测
+                                       # skill-v5（2026-11，名次分/技能分双口径）；
+                                       # 代码内缺省保留 slope-v2，供旧夹具/归档月报
+                                       # 与直接调用回放。
+    "score_ref_window_days": 15,      # skill-v5 气候参照：只用**起报日之前** W 天观测
+                                       # （v3/v4 回放仍为目标日之前 W 天）
     "score_ref_min_days": 5,          # 参照最少历史天数；不足 → 参照不可用，不出分
     "score_skill_k": 1.535,           # skill 下半段指数压缩参数（50→0 的衰减）
+    # ---- skill-v5（2026-11）综合分口径 ----
+    # 温度:降水的**声明业务价值** α；综合分与敏感性分析都以它为唯一宏观权重。
+    # 0.5 是显式起点，不再是“没有配置于是各半”的隐含值。
+    "score_composite_alpha": 0.5,
+    # 桶内名次分 R 的**退化兜底**尺度：σ/τ 优先取该桶同台家数的样本 sd
+    #（名次分是相对构念，用当批离散度归一才能让两维方差份额精确 = α）；
+    # 家数<2 或 sd=0 时才回落到这两个冻结常量（起点来自 2026-08~11 复算）。
+    "score_composite_sd_temp": 8.77,
+    "score_composite_sd_precip": 3.73,
+    # R 的展示倍率：R_show = 50 + scale·R（R 为 α 加权 z 分）。
+    "score_rank_scale": 10.0,
+    # 显式 lead 权重（取代 n_eff 的隐式决定）：按提前天数分段递减。
+    # 总榜与走势图都按同一组 w_b 聚合；页面 meta 披露各段实际占比。
+    "score_lead_weights": {"1-3": 1.0, "4-7": 0.7, "8-14": 0.4, "15-16": 0.2},
+    # 子项软压缩 τ：上半段线性，下半段 s=−(1−exp(s_raw/τ))，保留 50/100 锚点
+    # 并把"差 1.2 倍"与"差 10 倍"留在同一单调轴上（不再硬触底 −1）。
+    "score_skill_tau": 0.9,
+    # skill-v5 的展示层增益 γ：g(x)=clip(50+γ(x−50),0,100)。γ=1 即冻结仿射，
+    # 只保留 0/100 截断；综合分与两维分解严格满足 g(C)=α·g(T)+(1−α)·g(P)。
+    "score_v5_display_gain": 1.0,
     # ---- skill-v4（2026-11）----
     # 雨量技能分母下限：MAE_ref 很小时不再让 log 比值爆炸；公式同时保留
     # “零雨参照=0”的锚点（见 evaluate.precip_amount_metrics）。
