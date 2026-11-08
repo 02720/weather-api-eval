@@ -107,6 +107,8 @@ def test_fixed_climatology_is_lead_independent_and_leave_one_day_out():
             obs2[key] = {"temp": -100.0, "rain": 0.0}
     idx2 = ev._build_reference_index(["s1"], {"s1": obs2}, mode="fixed",
                                      window_days=15, min_days=3)
+    # 目标日被污染成 −100 后参照仍不变：先验是**本站全窗口气候中位数**，
+    # 不再含同日跨站异常场，也不再向气候均值收缩邻日样本（2026-11 复核 P0-4）。
     assert idx2.hourly_ref("s1", target, "2026-09-10T06:00") == a
     # 同一有效时刻的参照只由邻日观测决定：09-16 的参照 = 09-09~09-23
     # 同一小时（剔除 09-16）的均值 = 20 + 0.6 + 16 = 36.6

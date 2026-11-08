@@ -38,8 +38,39 @@ RHO_CLAMP = 0.95
 # 站内 r/slope 参与合并的最小站内样本量（与点估计路径一致）
 GROUP_MIN_N = 30
 # 跨站相关 ρ̄ 的最小公共时刻数：少于此值时两两相关的估计噪声大于信号，
-# 退回"各站独立"的旧口径（不校正，宁可保守也不过校正）
+# 退回"各站独立"的旧口径（不校正，宁可保守也不过校正）。
+#
+# **2026-11 复核 P1-1 修正**：这两个门槛（含 GROUP_MIN_N）是在"全窗口 30~60 天"
+# 时代定的。2026-10-31 切到 7 天日历块之后，**单块内日轨每站最多 7 个样本**
+# （4 站合计 ≤28），于是 `common.size < 30` 与 `n_station < 30` 在**所有** 7 天
+# 块的日轨上恒成立，跨站折减 ÷(1+(k−1)ρ̄) 与站内 Fisher-z 合并被静默跳过，
+# 日轨 n_eff 系统性高估 1.7~2.2 倍，且与小时轨口径分裂。
+#
+# 门槛必须按**分辨率**自适应：小时轨一天 24 个样本，30 个公共时刻只要 2 天；
+# 日轨一个 7 天块最多 7 个，门槛只能是 5（低于 5 个点，相关系数本身不可信，
+# 此时退回"各站独立"是诚实的选择，而不是把 7 个点硬撑成 30 个）。
 CROSS_STATION_MIN_OVERLAP = 30
+CROSS_STATION_MIN_OVERLAP_DAILY = 5
+# 站内合并的最小样本量同理按分辨率自适应（日轨 7 天块最多 7 个）。
+GROUP_MIN_N_DAILY = 5
+
+
+def cross_station_min_overlap(kind: str | None = None) -> int:
+    """按轨道分辨率取跨站相关的最小公共时刻数（`daily` → 5，其余 → 30）。"""
+    k = str(kind or "").strip().lower()
+    if k == "daily" or k.startswith("24h") or k in ("d", "day"):
+        return int(CROSS_STATION_MIN_OVERLAP_DAILY)
+    return int(CROSS_STATION_MIN_OVERLAP)
+
+
+def group_min_n(kind: str | None = None) -> int:
+    """按轨道分辨率取站内 r/slope 合并的最小样本量（`daily` → 5，其余 → 30）。"""
+    k = str(kind or "").strip().lower()
+    if k == "daily" or k.startswith("24h") or k in ("d", "day"):
+        return int(GROUP_MIN_N_DAILY)
+    return int(GROUP_MIN_N)
+
+
 # 站间一致性（between_station_mbe_sd）要求的最少达标站数。两站的离散度只是两点
 # 距离、受单站噪声支配，撑不起"跨站一致性"这个命题；本项目 4 站，取 3 意味着
 # "至少覆盖多数站点才算数"，不足则整维缺项（按剩余权重归一）。
@@ -135,8 +166,12 @@ def effective_n(err: np.ndarray) -> int:
 
 def cross_station_rho(series_by_station: dict[str, list[float]],
                       times_by_station: dict[str, list[str]] | None = None,
-                      min_overlap: int = CROSS_STATION_MIN_OVERLAP) -> float | None:
+                      min_overlap: int | None = None,
+                      kind: str | None = None) -> float | None:
     """站间误差序列的平均两两相关 ρ̄（跨站冗余度）。
+
+    `min_overlap`：最小公共时刻数；缺省按 `kind` 自适应（日轨 5、其余 30）。
+    7 天块内日轨每站最多 7 个样本，固定 30 会让跨站校正在日轨上恒不触发。
 
     为什么需要它（第一性原理）：`effective_n` 只校正了**时间**维度的自相关，它把
     "各站相互独立"当成了默认事实。但相距几十到几百公里的站点，误差由同一批天气
@@ -150,6 +185,8 @@ def cross_station_rho(series_by_station: dict[str, list[float]],
 
     返回 None 表示样本不足以估计（< 2 站、公共长度 < min_overlap）。
     """
+    mo = int(cross_station_min_overlap(kind) if min_overlap is None
+             else min_overlap)
     ids = list(series_by_station)
     if len(ids) < 2:
         return None
@@ -188,7 +225,7 @@ def cross_station_rho(series_by_station: dict[str, list[float]],
                     tj, vj = arrs[j]
                     common, ia, ib = np.intersect1d(
                         ti, tj, assume_unique=True, return_indices=True)
-                    if common.size < min_overlap:
+                    if common.size < mo:
                         continue
                     r = pearson_r(vi[ia], vj[ib])
                     if r is not None:
@@ -202,7 +239,7 @@ def cross_station_rho(series_by_station: dict[str, list[float]],
             for i in range(len(maps)):
                 for j in range(i + 1, len(maps)):
                     common = maps[i].keys() & maps[j].keys()
-                    if len(common) < min_overlap:
+                    if len(common) < mo:
                         continue
                     keys = sorted(common)
                     a = np.array([maps[i][k] for k in keys], dtype=float)
@@ -214,7 +251,7 @@ def cross_station_rho(series_by_station: dict[str, list[float]],
     else:
         # 按位置对齐、截断到最短序列
         cut = min(len(series_by_station[sid]) for sid in ids)
-        if cut < min_overlap:
+        if cut < mo:
             return None
         rs = []
         ns = []
@@ -580,8 +617,16 @@ _TEMP_STATS = ("n", "se2", "ae", "se", "h1", "h2", "sx", "sy", "sxy", "sxx", "sy
 # 逐位口径（含 source_round_digit(1) 的舍入时点）见 _rain_stat_row。
 _GRADE_NLEV = 2
 # 评分轨入分的雨强档位编号：hourly 走 1h 口径的中雨/大雨，daily 走 24h 累计的
-# 中雨/大雨（业务语义对齐：都是"中雨档 + 大雨档"）。
-_GRADE_LEVS = {"1h": ("2", "3"), "24h": ("+2", "+3")}
+# 评分轨入分的雨强档位编号：hourly 与 daily 都走**累积超越阈值**（"+2"/"+3"），
+# 即 1h 的 ≥2 mm/h 与 ≥5 mm/h、24h 的 ≥10 mm 与 ≥25 mm。业务语义对齐为
+# "中雨档 + 大雨档"，且两者现在同构。
+#
+# 为什么小时轨必须从闭区间 "2"/"3"（[2.0,4.9] 与 [5.0,9.9] mm/h）改成
+# 超越阈值（2026-11 复核 P1-3）：闭区间下，实况 5.0 mm/h 而模型报 4.9 mm/h
+# （差 0.1 mm/h）会同时在 2 档算空报、在 3 档算漏报——比报 0 mm/h（只算 3 档
+# 漏报）罚得还重，直接违反误差单调性。实测后果是小时轨 grade_ets 的跨源 sd
+# 只剩 0.023（日轨 0.066），方差贡献跌到名义的 0.36 倍。
+_GRADE_LEVS = {"1h": ("+2", "+3"), "24h": ("+2", "+3")}
 _RAIN_STATS = ("h", "fa", "mi", "c", "so", "sf", "sae",
                "gh1", "gfa1", "gmi1", "gh2", "gfa2", "gmi2")
 

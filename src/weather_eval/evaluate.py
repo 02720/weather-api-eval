@@ -1112,10 +1112,11 @@ def temp_metrics(obs_vals, fcst_vals, limits, min_sample, *,
     min_sample 视为样本不足——名义 n 达标但 n_eff 不达标同样不出结论（P1-2）。
 
     groups：按站分组的 [(obs, fcst), ...]（P1-3）。相关系数 r 与回归斜率在
-    各站内部计算（站内样本 ≥ GROUP_MIN_N 才参与），r 按 Fisher-z 加权合并、
-    斜率按样本量加权合并——跨站池化的 r 混入"复现站间气候差异"这一容易得多的
-    任务，不是对"站内起伏同步程度"的度量。池化口径保留在 r_pooled/slope_pooled
-    并列披露。单组/缺省时直接对池化样本计算（r_pooled 即 r）。
+    各站内部计算（站内样本 ≥ `min_group_n` 才参与；缺省 30，**日轨须传 5**——
+    7 天块内每站最多 7 个日样本，沿用 30 会让站内合并恒不触发），r 按 Fisher-z
+    加权合并、斜率按样本量加权合并——跨站池化的 r 混入"复现站间气候差异"这一
+    容易得多的任务，不是对"站内起伏同步程度"的度量。池化口径保留在
+    r_pooled/slope_pooled 并列披露。单组/缺省时直接对池化样本计算（r_pooled 即 r）。
 
     backend：标量六项与 ±N°C 准确率走哪条实现（默认 numpy 快速路径，见
     `DEFAULT_METRIC_BACKEND`）。两条路径逐位同值，由 scripts/parity_temp.py
@@ -1443,6 +1444,12 @@ def precip_amount_metrics(obs_vals, fcst_vals, min_sample,
     **唯一一块真正的新信息**；而 acc/ts/漏报率/空报频率与它们同源同一张 2×2
     列联表，反而是零新信息（见 PRECIP_SCORE_PARTS 的拒收注释）。
 
+    口径（skill-v5，2026-11 第一性原理复核 P0-1）：`amt_skill` 在**事件并集**
+    `U = {O ≥ τ} ∪ {F ≥ τ}` 上求值，而不是在观测有雨子集上求值。旧口径让干样本
+    上的任意量级空报免费（实测 BIAS=2.22、FAR=67% 的源拿下降水第一），是与
+    「恰当评分规则」直接冲突的漏洞；并集口径同时保住 `s=0`（参照恒零雨）、
+    `s=1`（完美预报）两条锚点，且仍只依赖可加充分统计量。
+
     为什么必须是**相对口径**而不是 mm：雨量误差的量纲随桶与轨剧烈变化（实测
     桶内跨源 sd：逐小时 0.07mm、按天 1.35mm，相差约 20 倍）。一个全局换算斜率
     λ 无法同时标定两轨——裸 mm 入分等于让"按天桶"独占该维度的话语权（λ 反解后
@@ -1477,7 +1484,8 @@ def precip_amount_metrics(obs_vals, fcst_vals, min_sample,
     n = int(m.sum())
     out = {"n": n, "n_eff": n_eff, "amt_mae": None, "amt_bias": None,
            "amt_skill": None, "amt_mae_wet": None, "amt_mean_wet": None,
-           "amt_n_wet": 0}
+           "amt_n_wet": 0, "amt_n_event": 0, "amt_mae_event": None,
+           "amt_mean_event": None}
     if n < min_sample or n == 0 or (n_eff is not None and n_eff < min_sample):
         return out
     o, f = obs[m], fcst[m]
@@ -1498,18 +1506,30 @@ def precip_amount_metrics(obs_vals, fcst_vals, min_sample,
             l_model = float(np.abs(fw - ow).mean())
             out["amt_mean_wet"] = round(l_ref, 4)
             out["amt_mae_wet"] = round(l_model, 4)
-    # skill-v5：**观测有雨子样本上的相对技能**，与天气干湿无关。
-    #   s = (L_ref_wet − L_model_wet) / max(L_ref_wet, κ)
-    # 旧 skill-v4 公式把 κ 放进分母定义（log1p(max(mae_ref,κ))），同一相对误差
-    # 在干/湿桶得分差 2.8 倍；且小时轨 1d 就有 91% 为负，形成与时效几乎无关的
-    # −5~−7 分常数。新式只在"有雨时下了多少"上比较，判别（ETS）与量级分离；
-    # κ 只作除零/极小值保护，不改变"相对表现同一分"的尺度不变性。
+        # 事件并集 U = {O ≥ τ} ∪ {F ≥ τ}：干样本上的空报量必须进入雨量误差。
+        ev = wet | (f >= float(wet_threshold))
+        out["amt_n_event"] = int(ev.sum())
+        if out["amt_n_event"]:
+            oe, fe = o[ev], f[ev]
+            out["amt_mean_event"] = round(float(oe.mean()), 4)
+            out["amt_mae_event"] = round(float(np.abs(fe - oe).mean()), 4)
+    # skill-v5：**事件并集上的相对技能**（2026-11 第一性原理复核 P0-1）。
+    #   U = {O_t ≥ τ ∨ F_t ≥ τ}；s = (L_ref − L_model) / max(L_ref, κ)
+    #   L_model = mean_{U}|F−O|，L_ref = mean_{U}O（"永远报零雨"参照）
+    # 为什么必须改成并集：旧口径只在 {O ≥ τ} 上求值，模型在干样本上**任意量级
+    # 的空报完全不进 amt_skill**（实测 NCEP AIGFS 以 BIAS=2.22、FAR=67% 拿下
+    # 降水贡献第一）。并集把它们收回来，且三条锚点严格不变：
+    #   * 参照恒报 0 → L_model = L_ref = mean_U O ⟹ s = 0（50 分锚点）；
+    #   * 完美预报 F≡O → L_model = 0 ⟹ s = 1（100 分锚点）；
+    #   * 干样本上 F ≥ τ 必进 U，分子 |F−O| 增大 → s 下降（空报不再免责）。
+    # 仍只用可加充分统计量（Σo / Σf / Σ|f−o| / 计数），按天分块 bootstrap 可逐位
+    # 重算同一把尺子。
     if SCORE_SCHEME == "skill-v5" and wet_threshold is not None \
             and amt_floor is not None:
-        n_wet = int(out["amt_n_wet"] or 0)
-        if n_wet >= min_sample:
-            l_ref = float(out["amt_mean_wet"])
-            l_model = float(out["amt_mae_wet"])
+        n_ev = int(out.get("amt_n_event") or 0)
+        if n_ev >= min_sample:
+            l_ref = float(out["amt_mean_event"])
+            l_model = float(out["amt_mae_event"])
             den = max(l_ref, float(amt_floor))
             if den > 0:
                 s = (l_ref - l_model) / den
@@ -1919,21 +1939,36 @@ PRECIP_SCORE_PARTS = _build_score_parts(
 #   * MBE / slope / bias / POD / FAR 等属性量退出主综合分，单列披露。
 # 旧 slope-v2 的表与函数原样保留，供归档月报回放（meta.score_scheme 分流）。
 # ============================================================================
+# 温度维：**按误差自由度分族**，不是按"哪个指标看起来兑现得多"分配权重
+#（2026-11 复核 P1-3）。旧表的 rmse+mae+acc2+acc1 = 93% 全部测量同一个尺度
+# 参数 σ（与维度分的相关 0.91~0.98）：RMSE 是随 |μ| 平移的 L₂、MAE 是同一
+# 分布的 L₁、acc_c 是同一分布的 Φ 变换。把 93% 权重堆在一个自由度的四种函数
+# 范数上，再用"实测方差贡献低"为由把唯一正交的 r_anom 从 0.20 砍到 0.07，
+# 是自我强化的死循环（共线簇的方差贡献 ∝ (Σw)²，正交项 ∝ w²，所以正交项
+# 的兑现份额**必然**远低于名义权重）。
+#
+# 现在的三族（族内已按尺度归一，族间权重即真实话语权）：
+#   · 幅度族 0.55（RMSE 0.40 + MAE 0.15）—— L₂ 主导、L₁ 稳健复核；
+#   · 阈值族 0.25（acc2 0.25）—— 业务意义上的"报准 2°C 内"；
+#     acc1 已移除：与 acc2 相关 0.903，且整数化温度源在 ±1°C 处产生
+#     阶跃跳变偏置，信息增量接近 0；
+#   · 形态族 0.20（r_anom 0.20）—— 唯一与幅度族正交的自由度（相位/异常形态）。
 TEMP_SKILL_PARTS = (
-    # 2026-11 第一性原理复核：r_anom 的实测方差兑现只有名义权重的 ~0.35 倍，
-    # 且旧参照下不随 lead 衰减。权重 0.20 → 0.07（=其精确方差兑现水平），
-    # 释放的 0.13 给误差项（RMSE +0.10、MAE +0.03）；参照改造完成后重验。
-    ("rmse", 0.55, "RMSE 技能分",
+    ("rmse", 0.40, "RMSE 技能分",
      "1 − RMSE/气候参照RMSE（0=与气候平均一样，1=完美）", None),
-    ("mae", 0.13, "MAE 技能分",
+    ("mae", 0.15, "MAE 技能分",
      "1 − MAE/气候参照MAE（稳健复核）", None),
-    ("acc2", 0.20, "±2°C 命中技能",
+    ("acc2", 0.25, "±2°C 命中技能",
      "命中率相对气候参照：参照→0，全对→1，全错→−1", None),
-    ("acc1", 0.05, "±1°C 命中技能",
-     "±1°C 命中率相对气候参照", None),
-    ("r_anom", 0.07, "异常相关",
+    ("r_anom", 0.20, "异常相关",
      "预报异常与观测异常的相关：0=无技巧，1=完美", None),
 )
+# 温度维的证据族：幅度族与形态族必须都有证据，避免"只有幅度"或"只有相位"
+# 冒充整维（与降水维的证据族门同纪律）。acc2 属幅度族的阈值表达，随幅度族。
+TEMP_SKILL_FAMILIES: dict[str, tuple[str, ...]] = {
+    "误差幅度/命中": ("rmse", "mae", "acc2"),
+    "形态与相位": ("r_anom",),
+}
 PRECIP_SKILL_PARTS = (
     ("ets", 0.50, "晴雨 ETS 技能",
      "ETS：0=无技巧，1=完美", None),
@@ -1971,7 +2006,12 @@ SCORE_COMPOSITE_ALPHA = 0.5
 SCORE_COMPOSITE_SD_TEMP = 8.77
 SCORE_COMPOSITE_SD_PRECIP = 3.73
 SCORE_RANK_SCALE = 10.0
-SCORE_SKILL_TAU = 0.9
+SCORE_SKILL_TAU = 1.0
+# 降水频率校准阻尼（2026-11 复核 P0-1）：ETS 在低基率下天然偏好过度报雨
+# （B* ∈ [1.5, 2.5]）。d(B) = exp(−γ·max(0, |ln B| − ln B_tol)²) 只压不抬，
+# B ∈ [1/B_tol, B_tol] 时不惩罚（不改变正常校准源的分数）。
+SCORE_FREQ_DAMP_GAMMA = 0.8
+SCORE_FREQ_DAMP_TOL = 1.25
 SCORE_V5_DISPLAY_GAIN = 1.0
 SCORE_LEAD_WEIGHTS: tuple[tuple[int, int, float], ...] = (
     (1, 3, 1.0), (4, 7, 0.7), (8, 14, 0.4), (15, 16, 0.2))
@@ -1990,9 +2030,14 @@ SCORE_REF_SHRINK_N = 3.0        # 跨站收缩的先验样本量 n0
 SCORE_BUCKET_MIN_MODELS = 3
 SCORE_BUCKET_SD_PRIOR_N = 5.0
 SCORE_BUCKET_SD_FLOOR_FRAC = 0.25
-# 可靠性加权（发现 4/21）：z* = z/√ρ，ρ 是该（维, 桶）的跨期信度。
-# ρ 由 7 天块的重复测量估计（模型均值的组内噪声 ÷ 组间方差）；
-# ρ 低于下限的维在该桶退出 R（证据不足，而不是把噪声放大后参与排名）。
+# 桶内尺度的稳健化（2026-11 复核 P0-2）：先按 中位数 ± k·1.4826·MAD 双侧
+# Winsorize 再算 sd，防止单家故障源把整列尺度撑大、压缩其余家数的相对分差。
+# k=3.5 ≈ 正态下 ±3.5σ（超出即视为离群）；k<=0 关闭（旧口径逐位回放）。
+SCORE_WINSOR_K = 3.5
+# 可靠性加权（2026-11 复核 P0-2 修正）：z̃ = √ρ·(X−μ)/σ。
+# ρ 是该（维, 桶）的跨期信度，由 7 天块的重复测量估计（组内噪声 ÷ 组间方差）。
+# **乘以 √ρ 是收缩、不是放大**：ρ=1 时与裸 z 相同；ρ↓ ⟹ 该维对 R 的影响力单调
+# 衰减（旧口径除以 √ρ 把纯噪声方差放大到 (1−ρ)/ρ，ρ=0.2 时 ×4，方向相反）。
 SCORE_RELIABILITY_WEIGHTING = True
 SCORE_RELIABILITY_MIN = 0.20
 # skill-v5 的降水判别项"可达上界"：同类朴素参照的最佳 ETS（当前实测为 0，
@@ -2027,14 +2072,19 @@ def apply_score_ref_params(mode: str | None = None,
 
 
 def apply_score_reliability(enabled: bool | None = None,
-                            min_rho: float | None = None) -> None:
-    """装载可靠性加权开关与信度下限（config eval.score_reliability_weighting）。"""
-    global SCORE_RELIABILITY_WEIGHTING, SCORE_RELIABILITY_MIN
+                            min_rho: float | None = None,
+                            winsor_k: float | None = None) -> None:
+    """装载可靠性加权开关、信度下限与稳健尺度截断（config eval.score_*）。
+
+    `winsor_k`：桶内 μ/σ 的中位数±k·1.4826·MAD 双侧截断倍数；0 = 关闭。
+    """
+    global SCORE_RELIABILITY_WEIGHTING, SCORE_RELIABILITY_MIN, SCORE_WINSOR_K
     if enabled is not None:
         SCORE_RELIABILITY_WEIGHTING = bool(enabled)
     if min_rho is not None:
         SCORE_RELIABILITY_MIN = max(0.0, min(1.0, float(min_rho)))
-
+    if winsor_k is not None:
+        SCORE_WINSOR_K = max(0.0, float(winsor_k))
 
 def apply_score_composite_params(alpha: float | None = None,
                                  sd_temp: float | None = None,
@@ -2101,6 +2151,51 @@ def apply_score_penalty_lambdas(temp: float | None = None,
         SCORE_PENALTY_LAMBDA_PRECIP = max(0.0, min(1.0, float(precip)))
 
 
+def apply_score_freq_damping(gamma: float | None = None,
+                             tol: float | None = None) -> None:
+    """装载降水频率校准阻尼参数（config eval.score_freq_damp_*）。"""
+    global SCORE_FREQ_DAMP_GAMMA, SCORE_FREQ_DAMP_TOL
+    if gamma is not None:
+        SCORE_FREQ_DAMP_GAMMA = max(0.0, float(gamma))
+    if tol is not None:
+        SCORE_FREQ_DAMP_TOL = max(1.0, float(tol))
+
+
+def _frequency_damping(bias) -> float:
+    """降水频率偏差的**软校准阻尼** d(B) ∈ (0, 1]（2026-11 复核 P0-1）。
+
+        d(B) = exp(−γ · max(0, |ln B| − ln B_tol)²)
+    为什么需要它：2×2 列联表去掉样本量 n 与气候基率 p_o 后有两个自由度，
+    而标量 ETS 只有一个。低基率（本项目小时雨 p_o ≈ 4.6%）下，对固定判别力
+    d′ 令 ∂ETS/∂B = 0 解出的最优频率偏差 B* 严格大于 1（通常 1.5~2.5），
+    即 **ETS 天然奖励过度报雨**。skill-v5 删除了 BIAS 扣分之后，这条通道
+    完全没有约束（实测 BIAS=2.22 / FAR=67% 的源拿下降水第一）。
+
+    设计约束（为什么不是恢复 BIAS 扣分）：
+      * **只压不抬**：d ≤ 1 且 B ∈ [1/B_tol, B_tol] 时 d ≡ 1。故意漏报
+        （B < 1）同样受阻尼，不存在"报得越少越好"的反向投机；
+      * **不引入新锚点**：d(1) = 1，ETS=0 时 s 仍为 0，完美格仍为 1；
+      * **标量化**：d 只是该（模型, 格）的乘性标量，ETS 的列联表可加性不变。
+
+    BIAS 缺失（无法校准）时返回 1.0——不拿"未知"当惩罚，与"缺测不折算 0"
+    同一条纪律。γ 为 0 时完全关闭（归档回放用）。
+    """
+    gamma = float(SCORE_FREQ_DAMP_GAMMA)
+    if gamma <= 0:
+        return 1.0
+    try:
+        b = float(bias)
+    except (TypeError, ValueError):
+        return 1.0
+    if not math.isfinite(b) or b <= 0:
+        return 1.0
+    tol = max(1.0, float(SCORE_FREQ_DAMP_TOL))
+    excess = max(0.0, abs(math.log(b)) - math.log(tol))
+    if excess <= 0:
+        return 1.0
+    return float(math.exp(-gamma * excess * excess))
+
+
 def _soft_skill(x: float) -> float:
     """skill-v5 子项软压缩：上半段线性、下半段指数趋近 −1。
 
@@ -2109,9 +2204,14 @@ def _soft_skill(x: float) -> float:
     `s(0)=0`（50=无技巧）两个锚点，下半段只能做成**渐近**：
         s(x) = x                       (0 ≤ x ≤ 1；>1 记 1)
         s(x) = −(1 − exp(x/τ))         (x < 0)
-    于是 s(−1) = −0.67（τ=0.9）而不是直接 −1，"差 1.2 倍"与"差 10 倍"仍在
+    于是 s(−1) = −0.63（τ=1）而不是直接 −1，"差 1.2 倍"与"差 10 倍"仍在
     同一单调轴上可分；只有误差趋于无穷才逼近 −1。触底率因此从 27%~40%
     降到 <15%，且不伪造满分。τ=0 时退回硬 clip（旧口径回放/对照）。
+
+    **τ 的取值是数学约束，不是口味**（2026-11 复核 P1-3）：x=0 处左右导数
+    分别为 1 与 1/τ，只有在 **τ=1** 时 s₊′(0)=s₋′(0)=1，函数才 C¹ 光滑；
+    旧值 τ=0.9 在锚点处有一个 1.111 倍的斜率跳变（每个子项都在 s_raw=0 附近
+    产生一个未声明的 kink）。故默认 τ=1.0。
     """
     x = float(x)
     tau = float(SCORE_SKILL_TAU)
@@ -2131,10 +2231,9 @@ def _skill_value(key: str, metrics: dict) -> float | None:
     而是评分口径本身。
 
     **skill-v5**（2026-11）三处修正：
-      · 命中项改为**对称分母** `max(a_ref, 1−a_ref)`——旧口径在 a_ref≈0.83 时
-        正负两侧分母差 4.9 倍，是一个未声明、未标定的隐含价值判断；
-      · 判别项按**可达上界**归一（`ETS_best=0` 时数值不变，但上界显式化）；
-      · 末端硬 clip 换成归一化 tanh 软压缩（见 `_soft_skill`）。
+      · 命中项用对称分段线性分母（上侧 1−a_ref、下侧 a_ref）；
+      · 判别项按**可达上界**归一（`ETS_best` 显式化）并乘频率校准阻尼；
+      · 末端硬 clip 换成软压缩（见 `_soft_skill`，τ=1 保证 C¹ 光滑）。
     """
     ref = metrics.get("ref") or {}
     if key in ("rmse", "mae"):
@@ -2183,6 +2282,17 @@ def _skill_value(key: str, metrics: dict) -> float | None:
             # "上界=1"的旧读法里像 5% 的技巧，在这里显式声明它不是满分制 5%。
             den = max(1.0 - float(SCORE_REACH_PRECIP_BEST),
                       float(SCORE_REACH_FLOOR))
+            # 频率校准阻尼（2026-11 复核 P0-1）：低基率下 ETS 对固定判别力
+            # 的**过度报雨**（B ≈ 1.5~2.5）给出更高期望值（Mason 1989；
+            # Hogan et al. 2010）——这正是 skill-v5 删除 BIAS 扣分后实测
+            # "BIAS=2.22、FAR=67% 的源拿下降水第一"的机制。BIAS 仍是列联表
+            # 的函数，但它在这里的作用是**软校准阻尼**（不是正向权重）：
+            #   d(B) = exp(−γ·max(0, |ln B| − ln B_tol)²)
+            # B ∈ [1/B_tol, B_tol] 时 d ≡ 1（不惩罚正常校准）；偏离越多压制
+            # 越强。只压不抬，因此不会让"故意漏报"变成投机路径，也不改动
+            # ETS 本身的可加性（阻尼是列级标量，bootstrap 按块重算同一把尺）。
+            if key == "ets":
+                v = float(v) * _frequency_damping(metrics.get("bias"))
             return _soft_skill(float(v) / den)
         return max(-1.0, min(1.0, float(v)))
     if key == "amt_skill":
@@ -2196,19 +2306,45 @@ def _skill_value(key: str, metrics: dict) -> float | None:
 
 def _skill_mean(parts, metrics: dict, require_key: str | None = None,
                 require_any: tuple[str, ...] | None = None,
-                min_weight_frac: float | None = None) -> float | None:
+                min_weight_frac: float | None = None,
+                families: dict[str, tuple[str, ...]] | None = None) -> float | None:
     """技能变量加权平均（缺项按剩余权重归一）→ s；缺锚点/无证据 → None。
 
     `require_key`：降水维必须 ETS 存活；`require_any`：温度维至少一个误差/
     命中项存活（只 r_anom 存活不能撑起整维，与降水 ETS 锚点同纪律）。
     `min_weight_frac`：存活权重低于名义总权重的该比例 → 整维缺测（不重归一）。
     与 `_weighted_score` 的 P8 门同一条纪律，但作用在技能变量权重表上。
+
+    `families`（2026-11 复核 P1-3）：证据族字典。与 `precip_score` 同一纪律——
+    **每个族都必须有存活证据**；只有一族存活时，该族必须全员存活（结构性
+    缺席），否则整维缺测。缺省 None = 不做族门（skill-v3/v4 回放不变）。
     """
     if require_key is not None and _skill_value(require_key, metrics) is None:
         return None
     if require_any and not any(_skill_value(k, metrics) is not None
                                for k in require_any):
         return None
+    if families:
+        key_set = {k for k, *_ in parts}
+        alive_fams = {}
+        for fam, keys in families.items():
+            keys = [k for k in keys if k in key_set]
+            if not keys:
+                continue
+            live = [k for k in keys if _skill_value(k, metrics) is not None]
+            if live:
+                alive_fams[fam] = (live, keys)
+        if len(alive_fams) >= 2:
+            pass
+        elif len(alive_fams) == 1:
+            # 只有一族存活：该族必须**全员存活**（=该源结构性缺席另一类产品），
+            # 否则是半截证据，判缺测（绝不把部分证据当整个维度）。
+            live_one, keys_one = next(iter(alive_fams.values()))
+            if len(live_one) < len(keys_one):
+                return None
+        else:
+            return None
+
     num = den = 0.0
     for key, w, *_rest in parts:
         s = _skill_value(key, metrics)
@@ -2599,8 +2735,11 @@ def temp_score(t: dict) -> float | None:
         # （BIAS 只披露）对称。q 实测几乎不起作用（移除后名次 ρ=1.0000、
         # 中位位移 0.04 分），保留只会制造"温度有暗扣、降水没有"的假不对称。
         # MBE/slope 仍作为属性列随行披露。
+        # 证据族门（2026-11 复核 P1-3）：幅度族与形态族都必须有存活证据，
+        # 否则整维缺测——防止"只报得平"或"只抓住相位"的单族分冒充整维。
         s = _skill_mean(TEMP_SKILL_PARTS, t,
-                        require_any=("rmse", "mae", "acc1", "acc2"))
+                        require_any=("rmse", "mae", "acc1", "acc2"),
+                        families=TEMP_SKILL_FAMILIES)
         return None if s is None else float(50.0 + 50.0 * s)
     return _weighted_score(TEMP_SCORE_PARTS, t)
 
@@ -3310,22 +3449,34 @@ class _ReferenceIndex:
         自身误差，读者能看见"这把尺有多准"，而不是假设它完美。
         """
         smooth = max(1, int(SCORE_REF_SMOOTH_DAYS))
-        n0 = max(0.0, float(SCORE_REF_SHRINK_N))
         all_days = sorted({d for sid in self._station_ids
                            for d in (self._day_keys.get(sid) or ())})
         if not all_days:
             return
+        # 跨站收缩的**信息集纪律**（2026-11 复核 P0-4）：
+        # 旧实现把"先验"设成 `station_mean + pooled_anom`，而 pooled_anom 是
+        # **同一天**各站异常的平均——那正是目标日天气系统本身的实况。把它喂进
+        # 参照，等于让 50 分基准提前看到答案。这里改成两层**因果**先验：
+        #   1) 邻近日（目标日前后各 smooth 天，剔除目标日）的站内均值 mean_s：
+        #      安全，因为它是与目标日无关的同期天气样本；
+        #   2) 站点的**全窗口气候平均** station_mean：安全，它与目标日无关。
+        # 明确**不再**使用 pooled_anom（同日跨站异常场）。代价：样本薄站点的
+        # 参照更粗糙（rmse_ref 上升），这是"只准用当期不偷看的信息"的必然代价，
+        # 也正是 SCORING.md §4 所说"禁止偷看当期天气过程"的落地。
         station_mean_h: dict[str, float | None] = {}
         station_mean_d: dict[str, dict[str, float | None]] = {
             "max": {}, "min": {}}
         for sid in self._station_ids:
             vals = [v for day in (self._day_map.get(sid) or {}).values()
                     for v in day.values()]
-            station_mean_h[sid] = (sum(vals) / len(vals)) if vals else None
+            # 用**中位数**而不是均值：全窗均值的崩溃点为 0，目标日被污染
+            # （例如一条 −100 的脏值）就会把整个站的气候基线拖走，间接改变
+            # 该日参照。中位数对单点污染不敏感。
+            station_mean_h[sid] = float(np.median(vals)) if vals else None
             ex = self._extremes.get(sid) or {}
             for half, idx in (("max", 0), ("min", 1)):
                 ev = [x[idx] for x in ex.values()]
-                station_mean_d[half][sid] = (sum(ev) / len(ev)) if ev else None
+                station_mean_d[half][sid] = float(np.median(ev)) if ev else None
 
         def _window(sid: str, day: str) -> list[str]:
             keys = self._day_keys.get(sid) or []
@@ -3339,16 +3490,17 @@ class _ReferenceIndex:
 
         def _estimate(n_s: float, mean_s: float | None,
                       station_mean: float | None,
-                      pooled_anom: float | None) -> float | None:
-            """站内平滑值与跨站异常场的收缩估计（n0 先验）。"""
-            if mean_s is not None and station_mean is not None:
-                prior = station_mean + (pooled_anom or 0.0)
-                if n_s <= 0:
-                    return prior
-                return (n_s * mean_s + n0 * prior) / (n_s + n0)
-            if station_mean is not None and pooled_anom is not None:
-                return station_mean + pooled_anom
-            return None
+                      pooled_anom: float | None = None) -> float | None:
+            """邻近日站内均值；仅在**没有邻日样本**时回落到本站气候中位数。
+
+            绝不把邻日样本向气候均值收缩：收缩会引入"全窗口平均"这一与目标日
+            无关的量，一旦窗口内任何一天被污染，目标日参照就跟着动，破坏
+            leave-one-day-out 因果性。宁可用纯邻日均值（噪声大但因果干净）。
+            `n0`/`pooled_anom` 仅为兼容旧签名，不参与计算。
+            """
+            if mean_s is not None:
+                return mean_s
+            return station_mean
 
         # ---- 逐小时 ----
         by_day_hour: dict[tuple[str, str], dict[str, tuple[int, float]]] = {}
@@ -3365,16 +3517,9 @@ class _ReferenceIndex:
                         by_day_hour.setdefault((day, hour), {})[sid] = (
                             len(vals), sum(vals) / len(vals))
         for (day, hour), per in by_day_hour.items():
-            pool_num = pool_den = 0.0
-            for sid, (n_s, mean_s) in per.items():
-                sm = station_mean_h.get(sid)
-                if sm is not None:
-                    pool_num += n_s * (mean_s - sm)
-                    pool_den += n_s
-            pooled_anom = (pool_num / pool_den) if pool_den > 0 else None
             for sid in self._station_ids:
                 n_s, mean_s = per.get(sid, (0, None))
-                est = _estimate(n_s, mean_s, station_mean_h.get(sid), pooled_anom)
+                est = _estimate(n_s, mean_s, station_mean_h.get(sid))
                 if est is not None:
                     self._fixed_hourly[(sid, f"{day}T{hour}")] = float(est)
 
@@ -3392,17 +3537,9 @@ class _ReferenceIndex:
                         by_day_half.setdefault((day, half), {})[sid] = (
                             len(vals), sum(vals) / len(vals))
         for (day, half), per in by_day_half.items():
-            pool_num = pool_den = 0.0
-            for sid, (n_s, mean_s) in per.items():
-                sm = station_mean_d[half].get(sid)
-                if sm is not None:
-                    pool_num += n_s * (mean_s - sm)
-                    pool_den += n_s
-            pooled_anom = (pool_num / pool_den) if pool_den > 0 else None
             for sid in self._station_ids:
                 n_s, mean_s = per.get(sid, (0, None))
-                est = _estimate(n_s, mean_s, station_mean_d[half].get(sid),
-                                pooled_anom)
+                est = _estimate(n_s, mean_s, station_mean_d[half].get(sid))
                 if est is not None:
                     self._fixed_daily[(sid, day, half)] = float(est)
 
@@ -3681,7 +3818,7 @@ def _temp_reference_stats(recs: list[dict], ref_index: _ReferenceIndex,
                        mask=fcst_mask, ref_type=ref_index.ref_type)
     stats["r_anom"] = _anomaly_corr(
         recs, ref_vals, obs_key, fcst_key,
-        min_group_n=5 if kind == "daily" else GROUP_MIN_N,
+        min_group_n=_stats.group_min_n(kind),
         mask=fcst_mask)
     return stats
 
@@ -3831,13 +3968,19 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
         eval_cfg.get("score_skill_tau"),
         eval_cfg.get("score_v5_display_gain"),
         eval_cfg.get("score_lead_weights"))
+    apply_score_freq_damping(
+        eval_cfg.get("score_freq_damp_gamma",
+                     DEFAULT_EVAL.get("score_freq_damp_gamma")),
+        eval_cfg.get("score_freq_damp_tol",
+                     DEFAULT_EVAL.get("score_freq_damp_tol")))
     apply_score_ref_params(
         eval_cfg.get("score_ref_mode"),
         eval_cfg.get("score_ref_smooth_days"),
         eval_cfg.get("score_ref_shrink_n"))
     apply_score_reliability(
         eval_cfg.get("score_reliability_weighting"),
-        eval_cfg.get("score_reliability_min"))
+        eval_cfg.get("score_reliability_min"),
+        eval_cfg.get("score_winsor_k", DEFAULT_EVAL.get("score_winsor_k")))
     require_complete = bool(eval_cfg.get("require_complete_snapshots", True))
     # 封存时点门槛（审查 P1-4）：默认开——"预报必须在实况之前封存"不该只是口号。
     # 关掉它可退回旧口径做对照，两份报告的差就是这一个开关的代价。
@@ -6366,13 +6509,51 @@ def _bucket_reliability(X: np.ndarray, n_blocks: int, days: int) -> np.ndarray:
     return out
 
 
+def _winsorize_column(X: np.ndarray, valid: np.ndarray,
+                      k: float | None = None) -> np.ndarray:
+    """按列做 中位数 ± k·1.4826·MAD 的双侧 Winsorize（NaN 原样保留）。
+
+    为什么不用裸 `np.nanstd`：样本 sd 的崩溃点为 0——单家故障源（实测某源
+    BIAS=26.9）就能把某一列的尺度撑大 1.5~2 倍，其余正常源的相对分差被压缩
+    30%~50%。中位数与 MAD 的崩溃点均为 50%，且 1.4826·MAD 在正态下就是 σ 的
+    一致估计，因此截断后仍是对"正常家数离散度"的估计。
+
+    `k=None` 时读 `SCORE_WINSOR_K`；`k<=0` 关闭截断（与旧口径逐位相同）。
+    """
+    X = np.asarray(X, dtype=float)
+    V = np.asarray(valid, dtype=bool)
+    kk = float(SCORE_WINSOR_K if k is None else k)
+    if kk <= 0 or X.size == 0:
+        return X
+    out = np.array(X, dtype=float, copy=True)
+    with np.errstate(invalid="ignore"):
+        med = np.full(X.shape[1], np.nan)
+        mad = np.full(X.shape[1], np.nan)
+        for j in range(X.shape[1]):
+            col = X[V[:, j], j]
+            if col.size == 0:
+                continue
+            m = float(np.median(col))
+            med[j] = m
+            mad[j] = float(np.median(np.abs(col - m)))
+    ok = np.isfinite(med) & np.isfinite(mad)
+    if not ok.any():
+        return out
+    half = kk * 1.4826 * mad
+    lo = np.where(ok, med - half, -np.inf)[None, :]
+    hi = np.where(ok, med + half, np.inf)[None, :]
+    with np.errstate(invalid="ignore"):
+        out = np.where(V, np.clip(out, lo, hi), out)
+    return out
+
+
 def _attach_rank_matrices(mats: dict[str, np.ndarray],
                           n_blocks: int | None = None,
                           days: int | None = None) -> dict[str, np.ndarray]:
     """在已算好的 T/P 矩阵上派生**桶内名次分 R** 与两维分解。
 
     每个面板列 = 一个（7 天块 × 天桶）的同一批天气。μ/ν 与 σ/τ 都取该列内
-    两维齐备的同台家数（σ/τ 为样本 sd，退化时回落到冻结常量）。R 因此回答
+    两维齐备的同台家数（σ/τ 为稳健样本 sd，退化时回落到冻结常量）。R 因此回答
     "在本档同台对手里谁更好"，与温度的天然离散度、降水的天然窄幅无关——
     `corr(名次分, 温度分)` 不再被温度单维支配。R 与贡献列在同一批格子上可加：
     R_show = t_contrib+p_contrib−50。
@@ -6382,13 +6563,21 @@ def _attach_rank_matrices(mats: dict[str, np.ndarray],
     valid = np.isfinite(T) & np.isfinite(P)
     cnt = valid.sum(axis=0)
     with np.errstate(invalid="ignore", divide="ignore"):
-        mu_t = np.where(cnt > 0, np.nansum(np.where(valid, T, np.nan), axis=0)
+        # ---- 稳健中心与尺度（2026-11 复核 P0-2）----
+        # 先按 中位数 ± winsor_k·1.4826·MAD 双侧 Winsorize，再算 μ（截断均值）
+        # 与样本 σ。理由：一个崩溃源（实测某源 BIAS=26.9）用裸 sd / 裸均值会把
+        # 当列尺度与中心一起拖走，其余 30 家正常源的相对分差被无端压缩
+        # 30%~50%，名次取决于"有没有一家坏掉"。中位数与 MAD 的崩溃点 50%，
+        # 是这里唯一正确的中心-尺度估计量族；正态下 1.4826·MAD ≡ σ。
+        wt_t = _winsorize_column(T, valid)
+        wt_p = _winsorize_column(P, valid)
+        mu_t = np.where(cnt > 0, np.nansum(np.where(valid, wt_t, 0.0), axis=0)
                         / np.where(cnt > 0, cnt, 1), np.nan)
-        mu_p = np.where(cnt > 0, np.nansum(np.where(valid, P, np.nan), axis=0)
+        mu_p = np.where(cnt > 0, np.nansum(np.where(valid, wt_p, 0.0), axis=0)
                         / np.where(cnt > 0, cnt, 1), np.nan)
-        sdt = np.sqrt(np.nansum(np.where(valid, (T - mu_t[None, :]) ** 2, np.nan),
+        sdt = np.sqrt(np.nansum(np.where(valid, (wt_t - mu_t[None, :]) ** 2, 0.0),
                                 axis=0) / np.where(cnt > 0, cnt, 1))
-        sdp = np.sqrt(np.nansum(np.where(valid, (P - mu_p[None, :]) ** 2, np.nan),
+        sdp = np.sqrt(np.nansum(np.where(valid, (wt_p - mu_p[None, :]) ** 2, 0.0),
                                 axis=0) / np.where(cnt > 0, cnt, 1))
         prior_t = float(SCORE_COMPOSITE_SD_TEMP)
         prior_p = float(SCORE_COMPOSITE_SD_PRECIP)
@@ -6401,10 +6590,19 @@ def _attach_rank_matrices(mats: dict[str, np.ndarray],
         sdp = np.sqrt((cnt * sdp ** 2 + n0 * prior_p ** 2) / (cnt + n0))
         sdt = np.maximum(sdt, prior_t * floor)
         sdp = np.maximum(sdp, prior_p * floor)
-        # 可靠性加权（发现 4/21）：ρ 由 K 个 7 天块的重复测量估计；
-        # z* = (X−μ)/σ_signal，σ_signal = σ_total·√ρ（等价 z/√ρ）。
-        # 这把两维都归一化到**信号方差**上，名义 α 才能在榜面兑现；
-        # ρ 不可估（块太少）时按 1 处理，绝不在证据不足时放大噪声。
+        # ---- 信度加权方向（2026-11 复核 P0-2 修正）----
+        # ρ 由 K 个 7 天块的重复测量估计。设 X = S_true + ε，
+        # Var(S_true) = ρσ²，Var(ε) = (1−ρ)σ²。旧实现把 z 除以 √ρ（等价于
+        # σ_signal = σ·√ρ），本意是"让信号方差为 1"，代价是**把纯噪声方差
+        # 放大到 (1−ρ)/ρ**——ρ=0.2 时噪声方差 ×4（标准差 ×2.24）。这违反
+        # 信噪单调性：越吵的维度在名次分里话语权越大，与下游 eb_shrink（乘
+        # ρ̂）互相打架。
+        #
+        # 正确做法（Wiener / 经典真分数理论的最优线性合成）：z 用**总方差**
+        # 标准化（量纲对齐），信度只以**收缩**的方式进入——低信度的证据向
+        # 中性 0 靠拢，而不是被放大：
+        #     z̃_{m,d} = √ρ_d · (X_{m,d} − μ_d) / σ_d ,  Var(噪声) = ρ_d(1−ρ_d)
+        # ρ=1 时与裸 z 逐位相同；ρ<1 时该维对 R 的影响力单调衰减。
         rel_t = _bucket_reliability(T, int(n_blocks or 0), int(days or 0))
         rel_p = _bucket_reliability(P, int(n_blocks or 0), int(days or 0))
         rho_t = np.where(np.isfinite(rel_t), rel_t, 1.0)
@@ -6412,13 +6610,13 @@ def _attach_rank_matrices(mats: dict[str, np.ndarray],
         if not SCORE_RELIABILITY_WEIGHTING:
             rho_t = np.ones_like(rho_t)
             rho_p = np.ones_like(rho_p)
-        # ρ 下限：ρ 越低，1/√ρ 的放大越极端（ρ=0 时发散）。下限同时是
-        # "该维还有多少可靠信号"的保守声明——不把 ρ=0 读成"无限噪声"。
         rho_floor = float(SCORE_RELIABILITY_MIN)
         rho_t = np.clip(rho_t, rho_floor, 1.0)
         rho_p = np.clip(rho_p, rho_floor, 1.0)
-        # 降水"触底率"：长时效大量格贴 0 分时，该维没有可分辨信号，
-        # 退出 R（只发布 S），不拿噪声决定名次。
+        # 降水"触底率"：长时效大量格贴 0 分时，**降水维**没有可分辨信号，
+        # 退出 R（只发布 S）。注意：退出不等于把整格作废——温度维的证据
+        # 必须保留（2026-11 复核 P1-2：旧口径下"两维缺一即缺"把 9~15d 的
+        # 整格清空，8~16d 在总榜的实际权重只剩 12.7%）。
         with np.errstate(invalid="ignore"):
             bottom_p = np.where(cnt > 0,
                                 np.nansum(np.where(valid & (P <= 0.5), 1.0, 0.0),
@@ -6427,12 +6625,11 @@ def _attach_rank_matrices(mats: dict[str, np.ndarray],
         active_t = valid & (cnt >= SCORE_BUCKET_MIN_MODELS)[None, :]
         active_p = valid & (cnt >= SCORE_BUCKET_MIN_MODELS)[None, :] \
             & (bottom_p <= 0.5)[None, :]
-        sd_eff_t = np.maximum(sdt * np.sqrt(rho_t),
-                              prior_t * floor)
-        sd_eff_p = np.maximum(sdp * np.sqrt(rho_p),
-                              prior_p * floor)
-        zt = np.where(active_t, (T - mu_t[None, :]) / sd_eff_t[None, :], 0.0)
-        zp = np.where(active_p, (P - mu_p[None, :]) / sd_eff_p[None, :], 0.0)
+        # 已退出 R 的**格**（`valid` 之外）不参与，但仍可能因单维存活而给分。
+        zt = np.where(active_t, np.sqrt(rho_t)[None, :]
+                      * (T - mu_t[None, :]) / sdt[None, :], 0.0)
+        zp = np.where(active_p, np.sqrt(rho_p)[None, :]
+                      * (P - mu_p[None, :]) / sdp[None, :], 0.0)
         a = float(SCORE_COMPOSITE_ALPHA)
         wt = a * active_t.astype(float)
         wp = (1.0 - a) * active_p.astype(float)
@@ -6449,6 +6646,9 @@ def _attach_rank_matrices(mats: dict[str, np.ndarray],
                       np.where(any_active, 50.0, np.nan))
         pc = np.where(active_p, 50.0 + scale * wp * zp / safe,
                       np.where(any_active, 50.0, np.nan))
+        # 是否只有单维存活（披露用：这些格不进"两维齐备"的综合名次，只发
+        # 布该维的名次分，防止读成"缺一即缺"被静默违反）。
+        mats["_single_dim"] = (wsum > 0) & ~(active_t & active_p)
         mats["_rel_temp"] = rho_t
         mats["_rel_precip"] = rho_p
         mats["_precip_bottom"] = bottom_p

@@ -132,10 +132,14 @@ eval:
     - score_penalty_lambda_temp
     - score_penalty_lambda_precip
     - score_slopes
-  # 可靠性加权（发现 4/21）：桶内 z 除以 √ρ，让 α 在真实信号方差上兑现。
-  # ρ 由 7 天块的重复测量估计；ρ < min 的维在该桶退出 R（只发布 S）。
+  # 信度加权（2026-11 复核 P0-2 修正）：z̃ = √ρ·(X−μ)/σ。
+  # **乘以 √ρ 是收缩**（ρ=1 时与裸 z 相同，ρ↓ 则影响力单调衰减）；旧口径
+  # 除以 √ρ 会把纯噪声方差放大到 (1−ρ)/ρ（ρ=0.2 时 ×4），方向相反。
   score_reliability_weighting: true
   score_reliability_min: 0.20
+  # 桶内尺度的稳健化（P0-2）：中位数 ± k·1.4826·MAD 双侧 Winsorize 后再算
+  # μ/σ，防止单家故障源绑架整列尺度；k<=0 关闭（旧口径逐位回放）。
+  score_winsor_k: 3.5
   score_skill_k: 2.303                  # 仅 skill-v3/v4 回放使用；skill-v5 用冻结仿射
   # —— skill-v5 综合分参数（显式声明、冻结进配置）——
   score_composite_alpha: 0.5            # 温度:降水 = 1:1（显式业务价值，非隐含缺省）
@@ -144,7 +148,15 @@ eval:
   score_rank_scale: 10.0                # R_show = 50 + 10·R（R 为 α 加权 z 分）
   # 显式 lead 权重：1–3d 全权重、4–7d 0.7、8–14d 0.4、15–16d 0.2
   score_lead_weights: {"1-3": 1.0, "4-7": 0.7, "8-14": 0.4, "15-16": 0.2}
-  score_skill_tau: 0.9                  # 下半段 s=−(1−exp(s_raw/0.9))：保 s(0)=0/s(1)=1，尾部渐近 −1
+  # 下半段 s=−(1−exp(s_raw/τ))：保 s(0)=0/s(1)=1、尾部渐近 −1。
+  # **τ=1.0 是 C¹ 光滑约束的解**（x=0 处左右导数须相等）；旧值 0.9 在锚点
+  # 留了 1.111 倍的斜率跳变（2026-11 复核 P1-3）。
+  score_skill_tau: 1.0
+  # 降水频率校准阻尼（P0-1）：d(B)=exp(−γ·max(0,|lnB|−lnB_tol)²)，只压不抬。
+  # ETS 在低基率下对固定判别力的最优频率偏差 B*∈[1.5,2.5]，故 B>1.25 起
+  # 平滑压制过度报雨；γ=0 等价关闭（归档回放/对照）。
+  score_freq_damp_gamma: 0.8
+  score_freq_damp_tol: 1.25
   score_v5_display_gain: 1.0            # 冻结仿射 g(x)=clip(50+γ(x−50),0,100)
   # —— skill-v4 雨量分母下限（锚点安全：零雨参照仍为 0）——
   score_amt_floor_hourly_mm: 0.05       # 小时轨 κ（1mm/h 评分阈的 5%，起点值）
