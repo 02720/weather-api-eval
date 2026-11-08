@@ -37,7 +37,7 @@ def test_grade_counts_match_cyeva():
                     9.9, 9.95, 10.0, 24.9, 25.0, 60.0])
     fcst = np.array([2.0, 0.14, 0.04, 5.0, 2.0, 4.9, 1.9, 4.95, 2.1, 9.9,
                      5.0, 10.0, 9.9, 25.0, 24.95, 0.0])
-    for kind, levs in (("1h", ("2", "3")), ("24h", ("+2", "+3"))):
+    for kind, levs in (("1h", ("+2", "+3")), ("24h", ("+2", "+3"))):
         want = graded_counts(obs, fcst, kind, levs)
         bounds = stats.grade_bounds(kind)
         got = stats.grade_counts(obs, fcst, bounds)
@@ -57,8 +57,8 @@ def test_grade_counts_ignore_nan_pairs():
     (h1, fa1, mi1), (h2, fa2, mi2) = stats.grade_counts(
         obs, fcst, stats.grade_bounds("1h"))
     # 缺测对不产生任何计数：有效对只剩 (3,3) 与 (0,6)（(6,nan) 整对剔除）。
-    # 2 档 = [2.0,4.9]：仅 (3,3) 命中；3 档 = [5.0,9.9]：仅 (0,6) 空报。
-    assert (h1, fa1, mi1) == (1, 0, 0)
+    # +2 档 = ≥2 mm/h：(3,3) 命中，(0,6) 空报；+3 档 = ≥5 mm/h：(0,6) 空报。
+    assert (h1, fa1, mi1) == (1, 1, 0)
     assert (h2, fa2, mi2) == (0, 1, 0)
 
 

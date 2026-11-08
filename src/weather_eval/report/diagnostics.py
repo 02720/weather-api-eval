@@ -641,10 +641,35 @@ def bridge_and_jackknife(report: dict, board_key: str = "all",
         rho = st._spearman(base_scores[common], alt_scores[common])
         if rho is None:
             continue
+        shift = alt_scores[common] - base_scores[common]
         jack.append({"model": m, "spearman": round(float(rho), 4),
+                     # C4：留一源时幸存者的分数位移（正=剔除后整体上移）
+                     "shift_median": round(float(np.median(shift)), 3),
+                     "shift_max_abs": round(float(np.max(np.abs(shift))), 3),
                      "top10_changed": _top_moved(order_base,
                                                  _rank_order(alt_scores, models))})
     jack.sort(key=lambda x: x["spearman"])
+
+    # C4：剔除 5 家最差源后的整体分数位移（参赛集合敏感性）
+    drop5 = None
+    finite_rows = [i for i in range(len(models)) if np.isfinite(base_scores[i])]
+    if len(finite_rows) > 5:
+        worst = sorted(finite_rows, key=lambda i: base_scores[i])[:5]
+        keep = np.ones(len(models), dtype=bool)
+        keep[worst] = False
+        alt = _adjust(S[keep], report, buckets)
+        alt_scores = np.full(len(models), np.nan)
+        alt_scores[keep] = alt
+        common = np.isfinite(base_scores) & np.isfinite(alt_scores)
+        if int(common.sum()) >= 3:
+            shift = alt_scores[common] - base_scores[common]
+            drop5 = {
+                "dropped": [models[i] for i in worst],
+                "shift_median": round(float(np.median(shift)), 3),
+                "shift_max_abs": round(float(np.max(np.abs(shift))), 3),
+                "note": ("R 是相对本档同台的构念；剔除最差 5 家会让幸存者"
+                         "整体上移。跨期/跨集合比较应改用 S。"),
+            }
 
     # ---- ridge 并列名次（P1-2：把"已论证过的风险"从默认值里拿出来，变成可核对的数字）
     ridge_runs = []
@@ -674,6 +699,12 @@ def bridge_and_jackknife(report: dict, board_key: str = "all",
             "mean": round(float(np.mean([j["spearman"] for j in jack])), 4) if jack else None,
             "n": len(jack),
             "all": jack,
+        },
+        "participant_sensitivity": {
+            "leave_one_out": jack,
+            "drop_5_worst": drop5,
+            "note": ("R 的零点随参赛集合移动；留一源/剔五源揭示"
+                     "分数位移的量级，不改变 μ_b 的构造。"),
         },
         "ridge_runs": ridge_runs,
         "default_ridge": float(meta.get("board_ridge") or 0.0),
@@ -1274,6 +1305,9 @@ def composite_dimension_share(report: dict) -> dict[str, Any]:
                     if float(ps) <= 0.5:
                         bottom += 1
         alpha = float(SCORE_COMPOSITE_ALPHA)
+        t_share = var_t / var_r
+        p_share = var_p / var_r
+        cov_share = 2.0 * cov / var_r
         return {
             "available": True,
             "scheme": SCORE_SCHEME,
@@ -1281,9 +1315,15 @@ def composite_dimension_share(report: dict) -> dict[str, Any]:
             "effective_variance_share": round(alpha ** 2 /
                                               (alpha ** 2 + (1 - alpha) ** 2), 3),
             "tracks": {"all": {
-                "temp_share": round(var_t / var_r, 3),
-                "precip_share": round(var_p / var_r, 3),
-                "cov_share": round(2.0 * cov / var_r, 3),
+                "temp_share": round(t_share, 3),
+                "precip_share": round(p_share, 3),
+                "cov_share": round(cov_share, 3),
+                # A3：三个数逐项披露 + 协方差按 Shapley（均分）折算
+                "temp_own": round(t_share, 3),
+                "precip_own": round(p_share, 3),
+                "covariance": round(cov_share, 3),
+                "shapley_temp": round(t_share + cov_share / 2.0, 3),
+                "shapley_precip": round(p_share + cov_share / 2.0, 3),
                 "temp_sd": round(float(t.std(ddof=1)), 2),
                 "precip_sd": round(float(p.std(ddof=1)), 2),
                 "cells": len(rows),
@@ -1300,9 +1340,9 @@ def composite_dimension_share(report: dict) -> dict[str, Any]:
             }},
             "note": ("skill-v5：份额 = 两维贡献的方差 ÷ 名次分方差（含协方差），"
                      "直接对榜面 score/temp_score/precip_score 复算；"
-                     "名义 α 的**理想**方差份额是 α²/(α²+(1−α)²)，"
-                     "只有 α=0.5 时恰好等于 α。raw_info_ratio = 原始 T/P 桶内 sd 比，"
-                     "precip_bottom_rate = 降水原始分触底（≤0.5）的格子占比。"),
+                     "temp_own/precip_own/covariance 是原始三个数；"
+                     "shapley_* 把协方差均分后的话语权（A3 披露口径）。"
+                     "名义 α 的**理想**方差份额是 α²/(α²+(1−α)²)。"),
         }
     cell_sources = {
         "hourly": (report.get("temp_hourly") or {},

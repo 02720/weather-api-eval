@@ -76,8 +76,8 @@ def test_frequency_damping_only_presses_never_lifts():
     """d(B) ≤ 1；B 在容差带内为 1；过度报雨被单调压制。"""
     d = ev._frequency_damping
     assert d(1.0) == 1.0
-    assert d(1.2) == 1.0                 # 容差 B_tol=1.25 内不惩罚
-    assert d(0.85) == pytest.approx(1.0, abs=1e-12)   # 欠报同带内也不惩罚
+    assert d(1.05) == 1.0                # 容差 B_tol=1.10 内不惩罚
+    assert d(0.95) == pytest.approx(1.0, abs=1e-12)   # 欠报同带内也不惩罚
     vals = [d(1.3), d(1.7), d(2.22), d(3.0)]
     assert all(v <= 1.0 for v in vals)
     assert vals == sorted(vals, reverse=True)         # 偏离越远压得越狠
@@ -128,8 +128,10 @@ def test_rank_matrices_shrink_low_reliability_dimension():
     out = ev._attach_rank_matrices(mats, n_blocks=1, days=1)
     r = out["rank_score"][:, 0]
     assert np.all(np.isfinite(r))
-    assert out["_rel_temp"][0] == pytest.approx(1.0)
-    # 单块无法估 ρ，两维都按 1 处理 → 名次分对称、50 为中心
+    # 单块无法估 ρ → 回填 ρ_exit（不再按 1.0 的"最不保守"选择）
+    assert out["_rel_temp"][0] == pytest.approx(ev.SCORE_RELIABILITY_EXIT)
+    assert out["_rel_temp_imputed"][0]
+    # 名次分仍以 50 为中心、上下对称（√ρ 只改幅度）
     assert r.mean() == pytest.approx(50.0, abs=1e-9)
     assert (r[0] - 50.0) == pytest.approx(-(r[3] - 50.0), abs=1e-9)
 
@@ -243,11 +245,13 @@ def test_temperature_requires_both_amplitude_and_shape_evidence():
     """
     amp = {"rmse": 1.5, "mae": 1.0, "acc2": 70.0,
            "ref": {"rmse_ref": 2.0, "mae_ref": 1.5, "acc2_ref": 70.0}}
-    # 幅度族齐备 + 形态族完全缺席（该源不提供 r_anom）→ 可评
-    assert ev.temp_score(amp) is not None
+    # 幅度族齐备 + 形态族在**源级结构性缺席**（该源从不提供 r_anom）→ 可评
+    assert ev.temp_score(amp, absent_families={"形态与相位"}) is not None
+    # 源在别处提供 r_anom、本格全缺 → 半截证据 → 缺测
+    assert ev.temp_score(amp) is None
     # 幅度族**部分**缺失（只剩 rmse）+ 形态族缺席 → 半截证据 → 缺测
     partial = {"rmse": 1.5, "ref": {"rmse_ref": 2.0}}
-    assert ev.temp_score(partial) is None
+    assert ev.temp_score(partial, absent_families={"形态与相位"}) is None
     # 两族齐备 → 可评
     assert ev.temp_score(dict(amp, r_anom=0.5)) is not None
 

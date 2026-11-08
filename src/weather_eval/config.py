@@ -20,23 +20,23 @@ DEFAULT_EVAL = {
                                        # 基础厚度；run_anchored 回放仍为起报前 W 天
     "score_ref_min_days": 5,          # 参照最少历史天数；不足 → 参照不可用，不出分
     # skill-v5 参照模式（2026-11 第一性原理复核）：
-    #   fixed       固定日历气候态：同一（站, 有效时刻）对所有起报日/所有源
-    #               共用一个 M_ref，参照难度与 lead 无关（生产口径）
-    #   run_anchored 起报日之前 15 天线性外推（2026-11 旧 v5，保留对照/回放）
-    #   target      目标日之前 15 天（v3/v4 归档回放）
-    "score_ref_mode": "fixed",
+    #   fixed         固定日历气候态（对称窗 ±smooth 天，用于归档月报）
+    #   fixed_trailing 固定日历气候态（目标日之前 2×smooth 天，生产实时榜）
+    #   run_anchored  起报日之前 15 天线性外推（2026-11 旧 v5，保留对照/回放）
+    #   target        目标日之前 15 天（v3/v4 归档回放）
+    "score_ref_mode": "fixed_trailing",
     "score_ref_smooth_days": 7,       # 固定气候态的日历平滑半窗（±7 天，剔除目标日）
-    "score_ref_shrink_n": 3.0,        # 跨站异常场收缩的先验样本量 n0
     # skill-v5 下已退役、只留给归档回放的参数清单（单一事实源披露）。
     "deprecated_in_skill_v5": [
         "score_skill_k", "score_index_gain", "score_composite_gain",
         "score_penalty_lambda_temp", "score_penalty_lambda_precip",
         "score_slopes",
     ],
-    # 可靠性加权（发现 4/21）：桶内 z 除以 √ρ（ρ = 该维跨期信度），
-    # 让 α 在**真实信号方差**上兑现；ρ 低于下限的维在该桶退出 R。
+    # 可靠性加权（2026-11 复核 P0-2）：z̃ = √ρ·z（ρ=该维跨期信度）。
+    # ρ 低于 exit 的维在该天桶退出 R（只发布 S）；门按（轨道 × 天桶）判定。
     "score_reliability_weighting": True,
     "score_reliability_min": 0.20,
+    "score_reliability_exit": 0.20,
     "score_skill_k": 1.535,           # skill 下半段指数压缩参数（50→0 的衰减）
     # ---- skill-v5（2026-11）综合分口径 ----
     # 温度:降水的**声明业务价值** α；综合分与敏感性分析都以它为唯一宏观权重。
@@ -57,11 +57,12 @@ DEFAULT_EVAL = {
     # **τ=1.0 是 C¹ 光滑约束的解**：x=0 处左右导数 1 与 1/τ 只有 τ=1 时相等，
     # 旧值 0.9 在锚点留了一个 1.111 倍的斜率跳变（2026-11 复核 P1-3）。
     "score_skill_tau": 1.0,
-    # 降水频率校准阻尼（2026-11 复核 P0-1）：ETS 在低基率下天然奖励过度报雨
-    #（B*∈[1.5,2.5]），d(B)=exp(−γ·max(0,|lnB|−lnB_tol)²) 只压不抬。
-    # γ=0 等价于关闭（归档回放/对照）。
-    "score_freq_damp_gamma": 0.8,
-    "score_freq_damp_tol": 1.25,
+    # 降水频率校准阻尼（2026-11 复核 P0-1 / 优化 B2）：ETS 在低基率下天然奖励
+    # 过度报雨（B*∈[1.5,2.5]），d(B)=exp(−γ·max(0,|lnB|−lnB_tol)²) 只压不抬。
+    # 阻尼乘到整个判别/分档族；B_tol 收紧到 1.10，γ 按 "argmax_B ETS·d(B)
+    # ∈ [0.95,1.10]" 重标定。γ=0 等价于关闭（归档回放/对照）。
+    "score_freq_damp_gamma": 1.2,
+    "score_freq_damp_tol": 1.10,
     "score_v5_display_gain": 1.0,
     # ---- skill-v4（2026-11）----
     # 雨量技能分母下限：MAE_ref 很小时不再让 log 比值爆炸；公式同时保留

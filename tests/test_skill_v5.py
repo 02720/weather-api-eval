@@ -197,13 +197,18 @@ def test_v5_precip_evidence_gate_is_back_in_force():
     assert ev.precip_score({"ets": 0.10}) is None
     # 判别族只活 2/3（半族）→ 证据不足
     assert ev.precip_score({"ets": 0.10, "ord_skill": 0.20}) is None
-    # 判别族完整存活（雨量族结构性缺席）→ 可评
+    # 判别族完整存活（雨量族在**源级结构性缺席**）→ 可评
     assert ev.precip_score({"ets": 0.10, "ord_skill": 0.20,
-                            "grade_ets": 0.10}) is not None
+                            "grade_ets": 0.10},
+                           absent_families={"雨量精度"}) is not None
+    # 源在别处提供 amt_skill、本格全缺 → 半截证据 → 缺测
+    assert ev.precip_score({"ets": 0.10, "ord_skill": 0.20,
+                            "grade_ets": 0.10}) is None
     # 两族都有一项存活 → 可评
     assert ev.precip_score({"ets": 0.10, "amt_skill": 0.50}) is not None
-    # 只有雨量 → 单族单成员 → 证据不足
-    assert ev.precip_score({"amt_skill": 0.50}) is None
+    # 只有雨量（判别族在源级结构性缺席）→ 单族成员可评
+    assert ev.precip_score({"amt_skill": 0.50},
+                           absent_families={"晴雨判别/雨强分档"}) is not None
 
 
 def test_soft_skill_keeps_anchors_and_softens_floor():
@@ -262,12 +267,17 @@ def test_rank_composite_realizes_alpha_in_variance_share_and_is_additive():
 
 
 def test_rank_and_skill_are_two_different_objects():
-    """同一对 T/P：S 是绝对技能，R 是桶内名次；缺一维时两者都判缺。"""
+    """同一对 T/P：S 是绝对技能，R 是桶内名次；单维存活格按单维分支给分。"""
     a = ev._rank_contributions(80.0, 40.0, 70.0, 45.0)
     b = ev._rank_contributions(80.0, 40.0, 70.0, 45.0)
     assert a == b
     assert a[0] is not None
-    assert ev._rank_contributions(None, 40.0, 70.0, 45.0) == (None, None, None)
+    # 只有降水维：R = p_c，温度贡献固定 50（不再把整格作废）
+    only_p = ev._rank_contributions(None, 40.0, 70.0, 45.0)
+    assert only_p[0] is not None and only_p[1] == 50.0
+    assert only_p[2] == only_p[0]
+    # 两维都无证据 → 三项全 None
+    assert ev._rank_contributions(None, None, 70.0, 45.0) == (None, None, None)
     assert ev._composite_score(80.0, 40.0) == 60.0
     # R 以本档均值为 50：把两维都抬到均值之上，R 必须高于 50
     above = ev._rank_contributions(75.0, 48.0, 70.0, 45.0)[0]

@@ -679,13 +679,16 @@ def ordinal_precip_skill(o: np.ndarray, f: np.ndarray, kind: str,
 def grade_bounds(kind: str) -> tuple[tuple[float, float], ...]:
     """评分轨入分的两个雨强档位的 (min, max) 区间，阈值**只此一处**且取自 cyeva。
 
-    与 `weather_eval.graded._level_config` 同源（都读 cyeva 的配置模块），上游改
-    阈值这里自动跟随——不存在第二份需要人工同步的阈值表。区间判定与舍入口径
-    见 graded 模块 docstring 的第 1、3 条（复刻 cyeva 的 `level_binarize`）。
+    与 `weather_eval.graded._level_config` 同源：**按前缀选表**，`+n` 是累积
+    超越阈值（`(threshold_n, inf)`），裸 `n` 才是闭区间；不再按 `kind` 选表
+    （旧实现把 `+` 剥掉又按 kind 取 PRECIP_LEVELS，把 1h 的 "+2/+3" 静默变成
+    闭区间 [2,4.9]/[5,9.9]，造成"实况 5.0、预报 4.9"同时空报+漏报的双罚）。
+    1h 阈值 2/5 mm/h、24h 阈值 10/25 mm，与 cyeva 配置逐位一致。
     """
-    table = ACC_PRECIP_LEVELS if kind == "24h" else PRECIP_LEVELS
+    kind = kind.lower()
     out = []
     for lev in _GRADE_LEVS[kind]:
+        table = ACC_PRECIP_LEVELS if lev.startswith("+") else PRECIP_LEVELS
         iv = table[kind][int(lev.replace("+", ""))]
         out.append((float(iv["min"]), float(iv["max"])))
     return tuple(out)
@@ -1926,6 +1929,145 @@ def block_residuals(resid: np.ndarray, weights: np.ndarray,
     return out_r, out_w
 
 
+def icc1_reliability(X: np.ndarray, *, min_blocks: int = 3,
+                     min_models: int = 5, min_per_model: int = 2,
+                     iters: int = 10) -> float:
+    """单格信度 ICC(1)：X = μ + a_m + β_k + e 的组间/总方差比。
+
+    X 形状 (M, K)（模型 × 重复时段）。**组间与组内使用同一个模型集**
+    （n_i ≥ min_per_model），用交替最小二乘剥掉块效应 β_k，再按
+    `σ²_a = max(0, Var(a_m) − σ²_e·mean(1/n_m))`、
+    `ρ = σ²_a/(σ²_a+σ²_e)` 估计**单个格子**的信度（不是 K 块均值的 ICC(K)）。
+    不可估（块<3、模型<5、自由度≤0）→ NaN。
+    """
+    X = np.asarray(X, dtype=float)
+    if X.ndim != 2:
+        raise ValueError("icc1_reliability 需要 (模型, 时段) 二维数组")
+    M, K = X.shape
+    if K < int(min_blocks) or M < int(min_models):
+        return float("nan")
+    finite = np.isfinite(X)
+    n_i = finite.sum(axis=1)
+    keep = n_i >= int(min_per_model)
+    if int(keep.sum()) < int(min_models):
+        return float("nan")
+    X = X[keep]
+    n_i = n_i[keep]
+    M = X.shape[0]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        mu = float(np.nanmean(X))
+        a = np.zeros(M, dtype=float)
+        b = np.zeros(K, dtype=float)
+        for _ in range(max(2, int(iters))):
+            b = np.nanmean(X - mu - a[:, None], axis=0)
+            b = np.where(np.isfinite(b), b, 0.0)
+            b -= float(np.mean(b))
+            a = np.nanmean(X - mu - b[None, :], axis=1)
+            a = np.where(np.isfinite(a), a, 0.0)
+            a -= float(np.mean(a))
+            mu = float(np.nanmean(X - a[:, None] - b[None, :]))
+        resid = np.where(finite[keep], X - mu - a[:, None] - b[None, :], 0.0)
+    N = int(finite[keep].sum())
+    df = N - M - K + 1
+    if df <= 0:
+        return float("nan")
+    s2e = float((resid ** 2).sum() / df)
+    if s2e <= 0:
+        return 1.0 if float(np.var(a, ddof=1)) > 0 else float("nan")
+    var_a = float(np.var(a, ddof=1))
+    s2a = max(0.0, var_a - s2e * float(np.mean(1.0 / n_i)))
+    rho = s2a / (s2a + s2e) if (s2a + s2e) > 0 else float("nan")
+    return float(max(0.0, min(1.0, rho))) if np.isfinite(rho) else float("nan")
+
+
+def block_bootstrap_parts(S3: np.ndarray, W: np.ndarray,
+                          row_keep: np.ndarray, col_keep: np.ndarray,
+                          block_cols: list[np.ndarray], *,
+                          runs: int = 500, seed: int = 20260906,
+                          ridge: float = 0.0, max_iter: int = 50,
+                          tol: float = 1e-4, chunk: int = 100,
+                          cell_valid: np.ndarray | None = None,
+                          min_valid_cells: int = 0) -> np.ndarray:
+    """按 7 天块重采样 + 重拟合 + 逐分量 EB 收缩，返回 (runs, R, M)。
+
+    与点估计逐位同源：同一次重采样、同一 `_fit_parts`、同一套逐分量
+    `eb_shrink`。`S3` 是 (R, M, C) 的待劈分张量（总榜 CI 用
+    [temp_contrib, precip_contrib]，综合分由两分量相加构造）。
+    """
+    S3 = np.asarray(S3, dtype=float)
+    if S3.ndim != 3:
+        raise ValueError("block_bootstrap_parts 需要 (R, M, C) 三维数组")
+    R, M, C = S3.shape
+    W = np.asarray(W, dtype=float)
+    row_keep = np.asarray(row_keep, dtype=bool)
+    col_keep = np.asarray(col_keep, dtype=bool)
+    K = len(block_cols)
+    if K == 0:
+        return np.full((runs, R, M), np.nan)
+    L = len(block_cols[0])
+    if any(len(c) != L for c in block_cols):
+        raise ValueError("每个分块的列数必须相同（列布局按块等长构造）")
+    V0 = np.isfinite(S3[0]) & row_keep[:, None] & col_keep[None, :]
+    if cell_valid is not None:
+        cv = np.asarray(cell_valid, dtype=bool)
+        if cv.shape != V0.shape:
+            raise ValueError("cell_valid 必须与 S3 的 (M, C) 同形状")
+        V0 = V0 & cv
+    W0 = np.where(V0, W, 0.0)
+    col_of_block = np.repeat(np.arange(K), L)
+    bc = np.stack([np.asarray(c, dtype=int) for c in block_cols])
+    rng = np.random.default_rng(seed)
+    out = np.full((runs, R, M), np.nan)
+    for lo in range(0, runs, chunk):
+        hi = min(runs, lo + chunk)
+        r = hi - lo
+        picks = rng.integers(0, K, size=(r, K))
+        idx = bc[picks].reshape(r, K * L)          # (r, C)
+        S_b = np.take(S3, idx, axis=2).transpose(2, 0, 1, 3)   # (r, R, M, C)
+        W_b = np.take(W0, idx, axis=1).transpose(1, 0, 2)      # (r, M, C)
+        V_b = np.take(V0, idx, axis=1).transpose(1, 0, 2)
+        valid_cells = V_b.sum(axis=-1)            # (r, M)
+        onehot = np.zeros((r, K, K), dtype=bool)
+        rr = np.arange(r)[:, None]
+        jj = np.arange(K)[None, :]
+        onehot[rr, jj, picks] = True
+        chunk_out = np.full((r, R, M), np.nan)
+        for ri in range(R):
+            fit = _fit_parts(S_b[:, ri], row_keep, col_keep, max_iter, tol,
+                             weights=W_b, ridge=ridge, valid=V_b)
+            if fit is None:
+                continue
+            mu, alpha, beta, Vfit = fit          # alpha (r, M)
+            resid = np.where(Vfit, S_b[:, ri] - alpha[:, :, None]
+                             - np.where(np.isfinite(beta), beta, 0.0)[:, None, :],
+                             0.0)
+            resid_pos, w_pos = block_residuals(resid, W_b, col_of_block, K)
+            present_pos = np.isfinite(resid_pos)
+            present_orig = np.einsum(
+                "rmj,rjp->rmp", present_pos.astype(float), onehot.astype(float)) > 0.5
+            num_orig = np.einsum("rmj,rmj,rjp->rmp",
+                                 np.where(present_pos, resid_pos, 0.0),
+                                 np.where(present_pos, w_pos, 0.0),
+                                 onehot.astype(float))
+            den_orig = np.einsum("rmj,rjp->rmp",
+                                 np.where(present_pos, w_pos, 0.0),
+                                 onehot.astype(float))
+            with np.errstate(invalid="ignore", divide="ignore"):
+                resid_orig = np.where(
+                    den_orig > 0,
+                    num_orig / np.where(den_orig > 0, den_orig, 1.0), 0.0)
+            a_shrunk, info = eb_shrink(alpha, resid_orig, den_orig, present_orig)
+            scores = mu[:, None] + a_shrunk
+            scores = np.where(info["n_blocks"] > 0, scores, np.nan)
+            scores[:, ~row_keep] = np.nan
+            if min_valid_cells and min_valid_cells > 0:
+                scores = np.where(valid_cells >= int(min_valid_cells), scores, np.nan)
+            chunk_out[:, ri, :] = scores
+        out[lo:hi] = chunk_out
+    return out
+
+
 def block_bootstrap_scores(S: np.ndarray, W: np.ndarray,
                            row_keep: np.ndarray, col_keep: np.ndarray,
                            block_cols: list[np.ndarray], *,
@@ -1934,98 +2076,16 @@ def block_bootstrap_scores(S: np.ndarray, W: np.ndarray,
                            tol: float = 1e-4, chunk: int = 100,
                            cell_valid: np.ndarray | None = None,
                            min_valid_cells: int = 0) -> np.ndarray:
-    """按 **7 天块**重采样 + 重拟合 + 经验贝叶斯收缩，返回 (runs, M) 行分。
+    """按 7 天块重采样 + 重拟合 + EB 收缩，返回 (runs, M) 行分。
 
-    为什么不是按天重采样（旧 `day_block_bootstrap`）：分块模型的行效应由
-    "跨了多少个块"决定精度，按天重采样会把同一块的多个时效当成独立信息，
-    区间偏窄。这里整块重采样（块内所有时效/两条轨道一起进），每次重新拟合
-    行/列效应并重新收缩——与点估计同一个估计量。
-
-    S/W 是 (M, C) 的点估计面板（已按点估计设计掩膜/薄格门槛处理），
-    block_cols 是每个块的列下标列表（各块列数必须相同；块内列顺序保持），
-    runs 次重采样在内部按 chunk 分批，峰值内存与总列数无关。
+    单分量的薄包装：与 `block_bootstrap_parts` 逐位相同（后者的 R=1 特例）。
     """
-    S = np.asarray(S, dtype=float)
-    W = np.asarray(W, dtype=float)
-    row_keep = np.asarray(row_keep, dtype=bool)
-    col_keep = np.asarray(col_keep, dtype=bool)
-    M, C = S.shape
-    K = len(block_cols)
-    if K == 0:
-        return np.full((runs, M), np.nan)
-    L = len(block_cols[0])
-    if any(len(c) != L for c in block_cols):
-        raise ValueError("每个分块的列数必须相同（列布局按块等长构造）")
-    V0 = np.isfinite(S) & row_keep[:, None] & col_keep[None, :]
-    if cell_valid is not None:
-        # **点估计的同一张格子掩膜**：薄格门槛、证据门、长尾列剔除都在点估计
-        # 的设计阶段完成；bootstrap 若重新只用 isfinite(S) 判定，就会把点估计
-        # 已剔除的格子带回每一次重采样，CI 中心系统性偏离榜面分。这里以调用方
-        # 的 cell_valid 为准（与 difficulty_adjusted(valid=...) 同一纪律）。
-        cv = np.asarray(cell_valid, dtype=bool)
-        if cv.shape != S.shape:
-            raise ValueError("cell_valid 必须与 S 同形状")
-        V0 = V0 & cv
-    W0 = np.where(V0, W, 0.0)
-    col_of_block = np.repeat(np.arange(K), L)
-    bc = np.stack([np.asarray(c, dtype=int) for c in block_cols])
-    rng = np.random.default_rng(seed)
-    out = np.full((runs, M), np.nan)
-    for lo in range(0, runs, chunk):
-        hi = min(runs, lo + chunk)
-        r = hi - lo
-        picks = rng.integers(0, K, size=(r, K))
-        idx = bc[picks].reshape(r, K * L)          # (r, C)
-        S_b = np.take(S, idx, axis=1).transpose(1, 0, 2)
-        W_b = np.take(W0, idx, axis=1).transpose(1, 0, 2)
-        V_b = np.take(V0, idx, axis=1).transpose(1, 0, 2)
-        valid_cells = V_b.sum(axis=-1)            # (r, M) 本次重采样的有效格数
-        # 与点估计共用 `_fit_parts`：它负责列效应归一化（让保留列平均难度=0）
-        # 与 μ 的定义（残差加权均值）。旧实现手工重写了一遍这两步，却没做
-        # `_fit_parts` 的 beta 归一化 → bootstrap 的 μ 与点估计不同，CI 中心
-        # 系统性偏离榜面分（实测残差中位 2.4 分）。同一函数、同一公式才叫
-        # "bootstrap 回答同一个估计量"。
-        fit = _fit_parts(S_b, row_keep, col_keep, max_iter, tol,
-                         weights=W_b, ridge=ridge, valid=V_b)
-        if fit is None:
-            out[lo:hi] = np.nan
-            continue
-        mu, alpha, beta, Vfit = fit
-        # 块级残差（重采样布局：每个采样位置由 L 列组成，块内先平均）
-        resid = np.where(Vfit, S_b - alpha[:, :, None]
-                         - np.where(np.isfinite(beta), beta, 0.0)[:, None, :], 0.0)
-        resid_pos, w_pos = block_residuals(resid, W_b, col_of_block, K)
-        present_pos = np.isfinite(resid_pos)
-        # 同一个原始块可能被抽中多次：按原始块去重后再进 σ²/ n_block 估计，
-        # 重复抽样是 bootstrap 的机制，不是额外证据。
-        onehot = np.zeros((r, K, K), dtype=bool)
-        rr = np.arange(r)[:, None]
-        jj = np.arange(K)[None, :]
-        onehot[rr, jj, picks] = True
-        present_orig = np.einsum("rmj,rjp->rmp",
-                                 present_pos.astype(float), onehot.astype(float)) > 0.5
-        num_orig = np.einsum("rmj,rmj,rjp->rmp",
-                             np.where(present_pos, resid_pos, 0.0),
-                             np.where(present_pos, w_pos, 0.0),
-                             onehot.astype(float))
-        den_orig = np.einsum("rmj,rjp->rmp",
-                             np.where(present_pos, w_pos, 0.0),
-                             onehot.astype(float))
-        with np.errstate(invalid="ignore", divide="ignore"):
-            resid_orig = np.where(den_orig > 0, num_orig / np.where(den_orig > 0, den_orig, 1.0),
-                                  0.0)
-        a_shrunk, info = eb_shrink(alpha, resid_orig, den_orig, present_orig)
-        scores = mu[:, None] + a_shrunk
-        scores = np.where(info["n_blocks"] > 0, scores, np.nan)
-        scores[:, ~row_keep] = np.nan
-        if min_valid_cells and min_valid_cells > 0:
-            # 稀疏源的病态 CI（发现 7）：某次重采样里这家只剩 1 个有效格时，
-            # EB 收缩把它拉向面板均值，分位数下界会出现多家完全相同的哨兵值
-            # （实测 3 家下界都是 4.58）。有效格不足的重采样不计入该源的
-            # 抽样分布——"证据不足"必须是可披露的状态，而不是一个假区间。
-            scores = np.where(valid_cells >= int(min_valid_cells), scores, np.nan)
-        out[lo:hi] = scores
-    return out
+    got = block_bootstrap_parts(
+        np.asarray(S, dtype=float)[None, ...], W, row_keep, col_keep,
+        block_cols, runs=runs, seed=seed, ridge=ridge, max_iter=max_iter,
+        tol=tol, chunk=chunk, cell_valid=cell_valid,
+        min_valid_cells=min_valid_cells)
+    return got[:, 0, :]
 
 
 # ------------------------------------------------ 加法假设的量化与名次稳定性
@@ -2639,43 +2699,226 @@ def macro_scores_from_weights(
                                ridge=adj_ridge)
 
 
+def winsorize_column(X: np.ndarray, valid: np.ndarray,
+                     k: float = 3.5) -> np.ndarray:
+    """按列做 中位数 ± k·1.4826·MAD 的双侧 Winsorize（NaN 原样保留）。
+
+    截断值只进入 μ/σ 的估计，**不改变被评分的值**：标准化仍用原始 X。
+    中位数与 MAD 的崩溃点均为 50%，单家故障源不会把整列尺度撑大。
+    `k<=0` 关闭截断（与旧口径逐位相同）。
+    """
+    X = np.asarray(X, dtype=float)
+    V = np.asarray(valid, dtype=bool)
+    kk = float(k)
+    if kk <= 0 or X.size == 0:
+        return X
+    out = np.array(X, dtype=float, copy=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        masked = np.where(V, out, np.nan)
+        med = np.nanmedian(masked, axis=-2, keepdims=True)
+        mad = np.nanmedian(np.abs(masked - med), axis=-2, keepdims=True)
+    ok = np.isfinite(med) & np.isfinite(mad)
+    half = kk * 1.4826 * mad
+    lo = np.where(ok, med - half, -np.inf)
+    hi = np.where(ok, med + half, np.inf)
+    return np.where(V, np.clip(out, lo, hi), out)
+
+
+def composite_from_z(z_t: np.ndarray, z_p: np.ndarray, *,
+                     alpha, rho_t, rho_p, phi=0.0, scale: float = 10.0,
+                     active_t=None, active_p=None) -> dict[str, np.ndarray]:
+    """唯一的名次分合成式：α 管方向、ρ 管置信、门管退出（2026-11 口径）。
+
+    ```
+    σ_d = sqrt(α² + (1−α)² + 2α(1−α)·φ)
+    ρ_c = clip((α²ρ_T + (1−α)²ρ_P + 2α(1−α)√(ρ_Tρ_P)·φ) / σ_d², 0, 1)
+    R   = 50 + scale·√ρ_c·(α·z_T + (1−α)·z_P) / σ_d
+    t_c = 50 + scale·√ρ_c·α·z_T / σ_d
+    p_c = 50 + scale·√ρ_c·(1−α)·z_P / σ_d
+    ```
+    单维存活时不再除以存活权重和（旧实现的 1/α 放大已删除）：
+    `R = 50 + scale·√ρ_T·z_T`，另一维贡献固定 50（中性）。
+    `active_t/active_p` 为 None 时按输入有限性判定两维齐备。
+    """
+    z_t = np.asarray(z_t, dtype=float)
+    z_p = np.asarray(z_p, dtype=float)
+    a = np.asarray(alpha, dtype=float)
+    if active_t is None:
+        active_t = np.isfinite(z_t)
+    if active_p is None:
+        active_p = np.isfinite(z_p)
+    active_t = np.asarray(active_t, dtype=bool) & np.isfinite(z_t)
+    active_p = np.asarray(active_p, dtype=bool) & np.isfinite(z_p)
+    rt = np.asarray(rho_t, dtype=float)
+    rp = np.asarray(rho_p, dtype=float)
+    ph = np.asarray(phi, dtype=float)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        sd = np.sqrt(a * a + (1.0 - a) ** 2
+                     + 2.0 * a * (1.0 - a) * ph)
+        rho_c = (a * a * rt + (1.0 - a) ** 2 * rp
+                 + 2.0 * a * (1.0 - a) * np.sqrt(rt * rp) * ph)
+        rho_c = np.clip(np.where((sd > 1e-12) & np.isfinite(rho_c),
+                                 rho_c / np.where(sd > 1e-12, sd ** 2, 1.0),
+                                 1.0), 0.0, 1.0)
+        common = float(scale) * np.sqrt(rho_c) / np.where(sd > 1e-12, sd, 1.0)
+        both = active_t & active_p
+        r_two = 50.0 + common * (a * z_t + (1.0 - a) * z_p)
+        t_two = 50.0 + common * a * z_t
+        p_two = 50.0 + common * (1.0 - a) * z_p
+        only_t = active_t & ~active_p
+        only_p = active_p & ~active_t
+        r_t = 50.0 + float(scale) * np.sqrt(rt) * z_t
+        r_p = 50.0 + float(scale) * np.sqrt(rp) * z_p
+        rank = np.where(both, r_two, np.where(only_t, r_t,
+                                             np.where(only_p, r_p, np.nan)))
+        tc = np.where(both, t_two, np.where(only_t, r_t,
+                                           np.where(only_p, 50.0, np.nan)))
+        pc = np.where(both, p_two, np.where(only_t, 50.0,
+                                           np.where(only_p, r_p, np.nan)))
+    single = (only_t | only_p) & np.isfinite(rank)
+    return {"rank_score": rank, "temp_contrib": tc, "precip_contrib": pc,
+            "single_dim": single, "rho_composite": rho_c,
+            "temp_share": np.where(both, a, np.nan),
+            "active_t": active_t, "active_p": active_p}
+
+
+def rank_from_scores(t_score: np.ndarray, p_score: np.ndarray, *,
+                     alpha, rho_t=None, rho_p=None,
+                     gate_t=None, gate_p=None,
+                     min_models: int = 3,
+                     prior_sd: tuple[float, float] = (8.77, 3.73),
+                     prior_n: float = 5.0, floor_frac: float = 0.25,
+                     winsor_k: float = 3.5, scale: float = 10.0,
+                     reliability: bool = True) -> dict[str, np.ndarray]:
+    """桶内名次分 R 的**唯一实现**（总榜 / 分时效榜 / 敏感性三条链共用）。
+
+    t_score/p_score 形状 (..., m, c)，沿模型轴（倒数第二维）做逐列标准化。
+    - μ/σ 取**两维齐备**行的稳健均值与 Winsorized sd，并向长期尺度收缩/设下限；
+    - 标准化用**原始 X**（截断值只进 μ/σ）；
+    - φ = 该列两维齐备行上的 corr(z_T, z_P)，n<5 时取 0；
+    - ρ 只出现在公共因子 √ρ_c 上（整体收缩），不重新分配两维份额；
+    - 单维存活格按 `composite_from_z` 的同一合成式给分。
+    返回除 rank/贡献列外，还带诊断量：`mu_t/sd_t/mu_p/sd_p/phi/
+    rel_t/rel_p/reliability_imputed`（后者的 imputed 标记由调用方按桶级填充）。
+    """
+    t = np.asarray(t_score, dtype=float)
+    p = np.asarray(p_score, dtype=float)
+    if t.shape != p.shape:
+        raise ValueError("t_score / p_score 形状必须一致")
+    valid = np.isfinite(t) & np.isfinite(p)
+    n_both = valid.sum(axis=-2, keepdims=True)
+    has_t = np.isfinite(t)
+    has_p = np.isfinite(p)
+    n_t = has_t.sum(axis=-2, keepdims=True)
+    n_p = has_p.sum(axis=-2, keepdims=True)
+    # 中心/尺度的样本：优先两维齐备行；该列两维齐备不足 min_models 时回落到
+    # 该维自身有效行（单维存活格的 μ/σ 仍有定义）。
+    mask_t = np.where(n_both >= int(min_models), valid, has_t)
+    mask_p = np.where(n_both >= int(min_models), valid, has_p)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        wt = winsorize_column(t, mask_t, winsor_k)
+        wp = winsorize_column(p, mask_p, winsor_k)
+        mu_t = np.nanmean(np.where(mask_t, wt, np.nan), axis=-2, keepdims=True)
+        mu_p = np.nanmean(np.where(mask_p, wp, np.nan), axis=-2, keepdims=True)
+        sd_t_raw = np.nanstd(np.where(mask_t, wt, np.nan), axis=-2, keepdims=True)
+        sd_p_raw = np.nanstd(np.where(mask_p, wp, np.nan), axis=-2, keepdims=True)
+        cnt_t = mask_t.sum(axis=-2, keepdims=True).astype(float)
+        cnt_p = mask_p.sum(axis=-2, keepdims=True).astype(float)
+    pt, pp = float(prior_sd[0]), float(prior_sd[1])
+    n0 = float(max(prior_n, 0.0))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        sd_t = np.where(np.isfinite(sd_t_raw) & (sd_t_raw > 1e-9),
+                        sd_t_raw, pt)
+        sd_p = np.where(np.isfinite(sd_p_raw) & (sd_p_raw > 1e-9),
+                        sd_p_raw, pp)
+        sd_t = np.sqrt((cnt_t * sd_t ** 2 + n0 * pt ** 2) / (cnt_t + n0))
+        sd_p = np.sqrt((cnt_p * sd_p ** 2 + n0 * pp ** 2) / (cnt_p + n0))
+        sd_t = np.maximum(sd_t, pt * float(floor_frac))
+        sd_p = np.maximum(sd_p, pp * float(floor_frac))
+        # 标准化用原始 X，不用截断值
+        zt = np.where(has_t, (t - mu_t) / np.where(sd_t > 1e-12, sd_t, 1.0),
+                      0.0)
+        zp = np.where(has_p, (p - mu_p) / np.where(sd_p > 1e-12, sd_p, 1.0),
+                      0.0)
+        # φ：两维齐备行上的 Pearson 相关（n<5 或退化 → 0）
+        zt_v = np.where(valid, zt, np.nan)
+        zp_v = np.where(valid, zp, np.nan)
+        nphi = valid.sum(axis=-2, keepdims=True)
+        bar_t = np.nanmean(zt_v, axis=-2, keepdims=True)
+        bar_p = np.nanmean(zp_v, axis=-2, keepdims=True)
+        cov = np.nansum(np.where(valid, (zt_v - bar_t) * (zp_v - bar_p), 0.0),
+                        axis=-2, keepdims=True)
+        sdt_phi = np.sqrt(np.nansum(np.where(valid, (zt_v - bar_t) ** 2, 0.0),
+                                    axis=-2, keepdims=True))
+        sdp_phi = np.sqrt(np.nansum(np.where(valid, (zp_v - bar_p) ** 2, 0.0),
+                                    axis=-2, keepdims=True))
+        phi = np.where((nphi >= 5) & (sdt_phi > 1e-12) & (sdp_phi > 1e-12),
+                       cov / np.where((sdt_phi * sdp_phi) > 1e-12,
+                                      sdt_phi * sdp_phi, 1.0), 0.0)
+        phi = np.clip(phi, -1.0, 1.0)
+    if rho_t is None:
+        rel_t = np.ones_like(mu_t)
+    else:
+        rel_t = np.broadcast_to(np.asarray(rho_t, dtype=float), t.shape[:-2] + (1, t.shape[-1]))
+    if rho_p is None:
+        rel_p = np.ones_like(mu_p)
+    else:
+        rel_p = np.broadcast_to(np.asarray(rho_p, dtype=float), t.shape[:-2] + (1, t.shape[-1]))
+    if not reliability:
+        rel_t = np.ones_like(rel_t)
+        rel_p = np.ones_like(rel_p)
+    if gate_t is None:
+        gate_t = np.ones_like(has_t, dtype=bool)
+    else:
+        gate_t = np.broadcast_to(np.asarray(gate_t, dtype=bool),
+                                 t.shape[:-2] + (1, t.shape[-1]))
+    if gate_p is None:
+        gate_p = np.ones_like(has_p, dtype=bool)
+    else:
+        gate_p = np.broadcast_to(np.asarray(gate_p, dtype=bool),
+                                 t.shape[:-2] + (1, t.shape[-1]))
+    active_t = has_t & (n_t >= int(min_models)) & gate_t
+    active_p = has_p & (n_p >= int(min_models)) & gate_p
+    out = composite_from_z(zt, zp, alpha=alpha, rho_t=rel_t, rho_p=rel_p,
+                           phi=phi, scale=scale,
+                           active_t=active_t, active_p=active_p)
+    out.update({
+        "mu_t": np.broadcast_to(mu_t, t.shape), "mu_p": np.broadcast_to(mu_p, t.shape),
+        "sd_t": np.broadcast_to(sd_t, t.shape), "sd_p": np.broadcast_to(sd_p, t.shape),
+        "rel_t": np.broadcast_to(rel_t, t.shape),
+        "rel_p": np.broadcast_to(rel_p, t.shape),
+        "phi": np.broadcast_to(phi, t.shape),
+        "n_both": np.broadcast_to(n_both, t.shape),
+    })
+    return out
+
+
 def _rank_bucket_normalize(t_score: np.ndarray, p_score: np.ndarray,
                           alpha, *, min_models: int = 3,
                           prior_sd: tuple[float, float] = (8.77, 3.73),
                           prior_n: float = 5.0,
-                          floor_frac: float = 0.25) -> np.ndarray:
-    """跨模型桶内标准化后的名次分：α·z(T)+(1−α)·z(P)。
+                          floor_frac: float = 0.25,
+                          rho_t=None, rho_p=None,
+                          gate_t=None, gate_p=None,
+                          winsor_k: float = 3.5,
+                          scale: float = 10.0,
+                          return_parts: bool = False):
+    """敏感性链的名次分：调用**同一个** `rank_from_scores`。
 
-    t_score/p_score 形状 (..., m, b)；沿**模型轴**（倒数第二维）做桶内标准化。
-    α 可以是标量，也可以是 (runs,1,1) 的逐 run 权重。两维缺一即缺；某列不足
-    `min_models`（<3）时整列判无相对信息（NaN），不再伪造 z=0 或 ±1。
-    桶内 sd 先向长期尺度收缩（n0 先验）并设下限，切断参赛集合依赖（发现 12/18）。
-    这是 skill-v5 的 R；非 skill-v5 路径不调用，保持旧线性 α 合成。
+    扰动的是权重而不是数据，ρ 的变化是二阶，调用方传基线 ρ；未传时按 1
+    （ρ=1 只改变 R 幅度，不改变两维份额）。
     """
-    t = np.asarray(t_score, dtype=float)
-    p = np.asarray(p_score, dtype=float)
-    valid = np.isfinite(t) & np.isfinite(p)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        mu_t = np.nanmean(np.where(valid, t, np.nan), axis=-2, keepdims=True)
-        mu_p = np.nanmean(np.where(valid, p, np.nan), axis=-2, keepdims=True)
-        sd_t = np.nanstd(np.where(valid, t, np.nan), axis=-2, keepdims=True)
-        sd_p = np.nanstd(np.where(valid, p, np.nan), axis=-2, keepdims=True)
-        cnt = valid.sum(axis=-2, keepdims=True).astype(float)
-    pt, pp = float(prior_sd[0]), float(prior_sd[1])
-    n0 = float(max(prior_n, 0.0))
-    with np.errstate(invalid="ignore", divide="ignore"):
-        sd_t = np.where(np.isfinite(sd_t) & (sd_t > 1e-9), sd_t, pt)
-        sd_p = np.where(np.isfinite(sd_p) & (sd_p > 1e-9), sd_p, pp)
-        sd_t = np.sqrt((cnt * sd_t ** 2 + n0 * pt ** 2) / (cnt + n0))
-        sd_p = np.sqrt((cnt * sd_p ** 2 + n0 * pp ** 2) / (cnt + n0))
-        sd_t = np.maximum(sd_t, pt * float(floor_frac))
-        sd_p = np.maximum(sd_p, pp * float(floor_frac))
-        zt = np.where(sd_t > 1e-12, (t - mu_t) / sd_t, 0.0)
-        zp = np.where(sd_p > 1e-12, (p - mu_p) / sd_p, 0.0)
-        r = alpha * zt + (1.0 - alpha) * zp
-    active = valid & (cnt >= int(min_models))
-    return np.where(active, r, np.nan)
+    got = rank_from_scores(
+        t_score, p_score, alpha=alpha, rho_t=rho_t, rho_p=rho_p,
+        gate_t=gate_t, gate_p=gate_p, min_models=min_models,
+        prior_sd=prior_sd, prior_n=prior_n, floor_frac=floor_frac,
+        winsor_k=winsor_k, scale=scale)
+    if return_parts:
+        return got
+    # 旧接口返回 z 尺度（调用方按 50+scale·z 映射）；这里由唯一 R 核心反解。
+    return (got["rank_score"] - 50.0) / max(float(scale), 1e-9)
 
 
 def weight_champion_distribution(
@@ -2687,6 +2930,8 @@ def weight_champion_distribution(
     adj_w: np.ndarray | None = None,
     adj_ridge: float = 0.0,
     rank_normalize: bool = False,
+    rho_t: float | None = None,
+    rho_p: float | None = None,
 ) -> list[dict]:
     """权重敏感性（P0-2.2）：把各项权重各扰动 ±40%，统计冠军分布。
 
@@ -2739,7 +2984,8 @@ def weight_champion_distribution(
     v_p = np.isfinite(p_score)
     with np.errstate(invalid="ignore", divide="ignore"):
         if rank_normalize:
-            bucket = _rank_bucket_normalize(t_score, p_score, w_macro)
+            bucket = _rank_bucket_normalize(
+                t_score, p_score, w_macro, rho_t=rho_t, rho_p=rho_p)
         else:
             bucket = np.where(v_t & v_p,
                               w_macro * np.where(v_t, t_score, 0.0)
@@ -2779,7 +3025,9 @@ def macro_champion_at_alpha(temp_sub: np.ndarray, precip_sub: np.ndarray,
                             adj_col: np.ndarray | None = None,
                             adj_w: np.ndarray | None = None,
                             adj_ridge: float = 0.0,
-                            rank_normalize: bool = False) -> dict | None:
+                            rank_normalize: bool = False,
+                            rho_t: float | None = None,
+                            rho_p: float | None = None) -> dict | None:
     """固定"温度占综合分比例 α"下的冠军（P0-2 的前置披露，2026-10-25）。
 
     随机权重敏感性回答"权重一起扰动时冠军换不换"；读者真正要问的却是
@@ -2808,7 +3056,8 @@ def macro_champion_at_alpha(temp_sub: np.ndarray, precip_sub: np.ndarray,
     with np.errstate(invalid="ignore", divide="ignore"):
         # 缺一即缺：与正式综合分同纪律，缺项重归一不得进入宏观端点冠军。
         if rank_normalize:
-            bucket = _rank_bucket_normalize(t_score, p_score, float(alpha))
+            bucket = _rank_bucket_normalize(
+                t_score, p_score, float(alpha), rho_t=rho_t, rho_p=rho_p)
         else:
             bucket = np.where(vt & vp,
                               alpha * np.where(vt, t_score, 0.0)

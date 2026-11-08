@@ -116,13 +116,13 @@ eval:
   score_ref_window_days: 15             # 参照平滑窗的基础厚度（固定气候态；run_anchored 回放仍为起报前 W 天）
   score_ref_min_days: 5                 # 不足 5 天 → 参照不可用，不出分
   # —— skill-v5 参照模式（2026-11 优化：参照必须是 lead 无关的共同标尺）——
-  # fixed = 固定日历气候态：同一（站, 有效时刻）对所有起报日/所有源共用一个
-  #         M_ref（±7 天同日历平滑 + 跨站异常场收缩），参照难度不再随 lead 上升。
-  # run_anchored = 起报日前 15 天线性外推（2026-11 旧 v5，保留对照/回放）
-  # target = 目标日前 15 天（v3/v4 归档回放）
-  score_ref_mode: fixed
+  # fixed_trailing = 固定日历气候态，窗口为目标日之前 2×smooth 天（生产实时榜；
+  #                  因果封闭：只用目标日之前的信息）
+  # fixed          = 固定日历气候态，对称窗 ±smooth 天（归档月报回放）
+  # run_anchored   = 起报日前 15 天线性外推（2026-11 旧 v5，保留对照/回放）
+  # target         = 目标日前 15 天（v3/v4 归档回放）
+  score_ref_mode: fixed_trailing
   score_ref_smooth_days: 7
-  score_ref_shrink_n: 3.0
   # skill-v5 下已退役、只留给归档回放的参数：报告 meta 只披露清单，
   # 不把旧值冒充当期口径（单一事实源见 SCORING.md §6）。
   deprecated_in_skill_v5:
@@ -132,11 +132,13 @@ eval:
     - score_penalty_lambda_temp
     - score_penalty_lambda_precip
     - score_slopes
-  # 信度加权（2026-11 复核 P0-2 修正）：z̃ = √ρ·(X−μ)/σ。
-  # **乘以 √ρ 是收缩**（ρ=1 时与裸 z 相同，ρ↓ 则影响力单调衰减）；旧口径
-  # 除以 √ρ 会把纯噪声方差放大到 (1−ρ)/ρ（ρ=0.2 时 ×4），方向相反。
+  # 信度加权（2026-11 复核 P0-2 / 优化 A2-A4）：z̃ = √ρ·z。
+  # ρ 用 ICC(1)（剥掉 7 天块效应、组间组内同一模型集）；ρ < exit 的维在该
+  # 天桶退出 R（只发布 S）。门按（轨道 × 天桶）判定，降水另用"|ETS|≤0.05
+  # 占比 >60%"的桶级备用判据（与 rain_no_skill_buckets 同一判据）。
   score_reliability_weighting: true
   score_reliability_min: 0.20
+  score_reliability_exit: 0.20
   # 桶内尺度的稳健化（P0-2）：中位数 ± k·1.4826·MAD 双侧 Winsorize 后再算
   # μ/σ，防止单家故障源绑架整列尺度；k<=0 关闭（旧口径逐位回放）。
   score_winsor_k: 3.5
@@ -152,11 +154,11 @@ eval:
   # **τ=1.0 是 C¹ 光滑约束的解**（x=0 处左右导数须相等）；旧值 0.9 在锚点
   # 留了 1.111 倍的斜率跳变（2026-11 复核 P1-3）。
   score_skill_tau: 1.0
-  # 降水频率校准阻尼（P0-1）：d(B)=exp(−γ·max(0,|lnB|−lnB_tol)²)，只压不抬。
-  # ETS 在低基率下对固定判别力的最优频率偏差 B*∈[1.5,2.5]，故 B>1.25 起
-  # 平滑压制过度报雨；γ=0 等价关闭（归档回放/对照）。
-  score_freq_damp_gamma: 0.8
-  score_freq_damp_tol: 1.25
+  # 降水频率校准阻尼（P0-1 / B2）：d(B)=exp(−γ·max(0,|lnB|−lnB_tol)²)，只压不抬。
+  # 乘到整个判别/分档族（ets/ord/grade）；B_tol 收紧到 1.10，γ 按
+  # "argmax_B ETS·d(B) ∈ [0.95,1.10]" 重标定；γ=0 等价关闭（归档回放/对照）。
+  score_freq_damp_gamma: 1.2
+  score_freq_damp_tol: 1.10
   score_v5_display_gain: 1.0            # 冻结仿射 g(x)=clip(50+γ(x−50),0,100)
   # —— skill-v4 雨量分母下限（锚点安全：零雨参照仍为 0）——
   score_amt_floor_hourly_mm: 0.05       # 小时轨 κ（1mm/h 评分阈的 5%，起点值）

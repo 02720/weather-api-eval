@@ -585,15 +585,24 @@
     <span class="hero-badge">🤖 自动检验 · 每天 6:00 / 13:00 / 20:00（北京时）更新</span>
     {% endif %}
     <h1>谁家天气预报<span class="q">最准</span>？</h1>
+    {% if report.meta.is_monthly %}
+    <p class="champ-ci">本报告为 {{ report.meta.get('score_scheme') }} 口径，
+      与当前生产口径不可直接比较（跨期比较请使用技能分 S）。</p>
+    {% endif %}
     <p class="lede">把 <b>{{ report.meta.models|length }} 家预报源</b>与
       <b>{{ report.meta.stations|length }} 个气象站的逐小时实况</b>逐时对账。
       这是 {% if report.meta.is_monthly %}{{ report.meta.period_label }} 月{% else %}{{ report.meta.period_label }}{% endif %}
       的对账结果——预报先封存、后验证，不看谁嗓门大，只看谁报得准。</p>
 
     {% if champ %}
+    {% set cv = report.meta.get('champion_view') or {} %}
     <div class="champ">
       <div>
+        {% if cv.get('downgraded') %}
+        <div class="champ-kicker">第一梯队（{{ cv.get('tier_models')|length }} 家，统计不可分辨）</div>
+        {% else %}
         <div class="champ-kicker">第一梯队领先者（综合名次分）</div>
+        {% endif %}
         <div class="champ-name">
           <i class="dot" style="background:{{ model_colors.get(champ.model, '#64748b') }}"></i>
           {{ model_labels.get(champ.model, champ.model) }}
@@ -650,7 +659,7 @@
       <div class="champ-score-box">
         {% if ns.fallback %}<div class="champ-ci">提前 1 天（小时口径）得分 · 数据积累中</div>
         {% elif report.meta.get('score_scheme') in ['skill-v3', 'skill-v4'] %}<div class="champ-ci">难度对齐技能分 · 50=气候平均 · 100=完美</div>
-        {% elif report.meta.get('score_scheme') == 'skill-v5' %}<div class="champ-ci">难度对齐名次分 · 50=本档同台平均 · ±10≈1 个桶内标准差 · 绝对技能分见 §02</div>
+        {% elif report.meta.get('score_scheme') == 'skill-v5' %}<div class="champ-ci">难度对齐名次分 · 50=本档同台平均 · ±10 是 ρ=1 时的 1 个桶内标准差；本期实测约 {{ '%.1f'|format(((report.meta.get('bucket_sd_R') or {}).get('hourly') or 10.0)) }} 分 · 绝对技能分见 §02</div>
         {% else %}<div class="champ-ci">难度对齐综合分 · 0~100</div>{% endif %}
         <div class="champ-score">{{ num(champ.score) }}<small>分</small></div>
         {{ thermo(champ.score, champ.get('ci90'), 'lg') }}
@@ -761,7 +770,7 @@
             {%- if r.get('sig_vs_top') is sameas false %}<sup class="dagger" title="与第一名的差距经 max-T（族内极值）多重比较校正后仍不显著：前后名次更多是抽样运气">†</sup>{% endif -%}
             {%- if r.get('disputed') %}<span class="warn-badge" title="{{ (r.get('disputed_reasons') or [])|join('；') }}">⚠️</span>{% endif -%}
             {%- if r.get('ci_degenerate') %}<span class="warn-badge" title="{{ r.get('ci_degenerate_reason') or '区间退化' }}">区间退化</span>{% endif -%}
-            {%- if r.get('ci_wide') %}<span class="warn-badge" title="90% 置信区间宽度 >10 分：证据不足，不参与等价判定">证据不足</span>{% endif -%}
+            {%- if r.get('ci_wide') %}<span class="warn-badge" title="CI 宽度超过 2×实测桶内 R 标准差（阈值 {{ r.get('ci_wide_threshold') }} 分）">证据不足</span>{% endif -%}
             {%- if r.get('ci_unstable') %}<span class="warn-badge" title="bootstrap 分布均值与榜面点估计相差 >2 分：区间中心不稳">区间不稳</span>{% endif -%}
             <span class="mid" title="{{ r.model }}">{{ r.model }}</span>
             {% if not r.get('qualified') %}<span class="mid" title="{{ r.get('evidence_note') or '样本积累中' }}">· {{ r.get('evidence_short') or r.get('evidence_note') or '样本积累中' }}</span>{% endif %}
@@ -855,13 +864,14 @@
               {% endfor %}</tbody>
             </table>
             {% if report.meta.get('score_scheme') == 'skill-v5' %}
-            <p class="why"><b>温度维是“相对共同气候参照的技能分”</b>：正向 5 项权重
-              （RMSE 55% / MAE 13% / ±2°C 20% / ±1°C 5% / 异常相关 7%）。
+            <p class="why"><b>温度维是“相对共同气候参照的技能分”</b>：正向 4 项权重
+              （RMSE 40% / MAE 15% / ±2°C 25% / 异常相关 20%）。
               <b>50 = 与固定日历气候态打平</b>（同一（站, 有效时刻）对所有源、
               所有起报日用同一个参照；参照难度与 lead 无关）；100 = 完美。
-              命中项用分段线性（保 ±1 端点），子项末端软压缩、不硬触底。
-              MBE 与回归斜率<b>只披露、不扣分</b>，与降水维（BIAS 只披露）对称；
-              r_anom 权重已按其实测方差兑现降到 7%。</p>
+              命中项用分段线性（保端点），子项末端软压缩、不硬触底。
+              MBE 与回归斜率<b>只披露、不扣分</b>，与降水维（BIAS 只披露）对称。
+              证据族门按<b>源级结构性缺席</b>判定：源从不提供 r_anom 时幅度族可
+              单独撑起整维；源在别处提供、本格缺 → 半截证据，判缺测。</p>
             {% elif report.meta.get('score_scheme') == 'skill-v4' %}
             <p class="why"><b>温度维是“相对气候平均的技能分”</b>：正向 5 项权重不变
               （RMSE 45% / MAE 10% / ±2°C 20% / ±1°C 5% / 异常相关 20%）。
@@ -899,12 +909,13 @@
               {% endfor %}</tbody>
             </table>
             {% if report.meta.get('score_scheme') == 'skill-v5' %}
-            <p class="why"><b>降水维是“相对无技巧基准的技能分”</b>：晴雨 ETS 50%
-              ＞对数雨量技能 25%＞有序雨强技能 15%＞中雨/大雨档 ETS 10%。
-              <b>50 = ETS 0（同边际随机）</b>；100 = 完美。<b>ETS 是必须项</b>，
-              且必须满足<b>证据族门槛</b>：判别/分档族（ETS/有序雨强/雨强分辨力）
-              与雨量族（对数雨量）至少两族有证据，或单族完整存活；只有 ETS 一项、
-              或判别族缺项时整维判缺测，<b>不把剩余权重重归一成 100%</b>。
+            <p class="why"><b>降水维是“相对无技巧基准的技能分”</b>：判别/分档族 60%
+              （晴雨 ETS 40% / 有序雨强 12% / 雨强分辨力 8%）＞雨量族 40%
+              （全样本相对雨量技能）。<b>50 = ETS 0（同边际随机）</b>；100 = 完美。
+              判别项的频率校准阻尼乘到整族（ets/ord/grade），雨量项已是 proper 的
+              相对 MAE，超报必罚。<b>证据族门槛</b>：判别族与雨量族至少两族有证据，
+              或单族在源级结构性缺席时完整存活；只有 ETS 一项、或判别族半截缺项时
+              整维判缺测，<b>不把剩余权重重归一成 100%</b>。
               BIAS、POD、FAR、amt_bias、雨量误差只列明细，不重复计罚。</p>
             {% elif report.meta.get('score_scheme') == 'skill-v4' %}
             <p class="why"><b>降水维是“相对无技巧基准的技能分”</b>：晴雨 ETS 50%
@@ -942,7 +953,7 @@
             {% endif %}
           </div>
         </div>
-        <p class="why">某项缺数据时按<b>剩余权重</b>折算（缺数据 ≠ 差数据）；{% if report.meta.get('score_scheme') == 'skill-v5' %}名次分 = 温度/降水按 α 加权（两维缺一即缺），技能分 = 两维绝对技能分按同一 α 加权。{% else %}综合分 = 温度分与降水分各半。{% endif %}
+        <p class="why">某项缺数据时按<b>剩余权重</b>折算（缺数据 ≠ 差数据）；{% if report.meta.get('score_scheme') == 'skill-v5' %}技能分 S 两维缺一即缺；名次分 R 允许单维存活（另一维贡献固定 50，且按同一合成式给分）。{% else %}综合分 = 温度分与降水分各半。{% endif %}
           <b>小时榜与日榜之间按 2:1 合成</b>（<code>daily_track_weight</code>={{ '%.2f'|format(report.meta.get('daily_track_weight', 0.5)) }}）：
           日轨的日最高/最低、日累计降水对多数源是同一份逐小时预报重新分箱，独立证据有限，
           降为 1/3 可避免把"日极值"这一类信息计两遍；单轨榜与单维内合成不受影响。</p>
@@ -970,18 +981,20 @@
           低权重项（r 7.5%）的 λ 膨胀到 100~150、子分饱和率跳到 30%~77%，是拿区分度
           换公式好看，故不做、只披露两种口径。</p>
         {% elif report.meta.get('score_scheme') == 'skill-v5' %}
-        <p class="why"><b>两个综合分，各自只回答一个问题</b>：<b>名次分</b>（总榜/分时效榜）
-          先把每一档的同台分数桶内标准化，再按 α={{ '%.0f%%'|format((report.meta.get('score_composite', {}).get('alpha', 0.5)) * 100) }}
-          温度 + {{ '%.0f%%'|format((1 - report.meta.get('score_composite', {}).get('alpha', 0.5)) * 100) }} 降水合成，
-          50 = 本档同台平均；<b>技能分</b>（§02 走势图）是两维绝对技能按同一 α 加权，
-          50 = 两维都打平同类朴素参照，100 = 完美。名次分不随时效衰减，技能分不桶内标准化。</p>
+        <p class="why"><b>两个综合分，各自只回答一个问题</b>：<b>名次分 R</b>（总榜/分时效榜）
+          先逐列算两维标准分 z（Winsor 只进 μ/σ，标准化用原始值），再按
+          α={{ '%.0f%%'|format((report.meta.get('score_composite', {}).get('alpha', 0.5)) * 100) }}
+          温度 + {{ '%.0f%%'|format((1 - report.meta.get('score_composite', {}).get('alpha', 0.5)) * 100) }} 降水合成；
+          信度 ρ 只作为**公共收缩因子** √ρ_c；50 = 本档同台平均。
+          <b>技能分 S</b>（§02 走势图）是两维绝对技能按同一 α 加权，
+          50 = 两维都打平同类朴素参照，100 = 完美。α 管方向、ρ 管置信、证据门管退出。</p>
         <p class="why"><b>每一分都有证据</b>：温度参照是<b>固定日历气候态</b>
-          （±{{ report.meta.get('score_ref_smooth_days') or 7 }} 天同日历平滑 + 跨站异常场收缩，
+          （{{ report.meta.get('score_ref_mode') }}：目标日之前 {{ 2 * (report.meta.get('score_ref_smooth_days') or 7) }} 天，
           同一（站, 有效时刻）对所有源、所有起报日共用一个参照，难度不随 lead 上升）；
-          参照自身误差随 lead 的曲线在下方"参照难度"折叠区发布。雨量技能只在
-          “观测有雨”子样本上比较，判别（ETS）与量级分离；BIAS 与 amt_bias 只披露、
-          不重复计罚。任一维没有证据（无雨事件/证据族不完整/样本不足）→ 该格
-          <b>N/A</b>，不进取分矩阵、不画实线、不进综合均值。子项末端用软压缩，
+          参照自身误差与命中项斜率比在下方"参照难度"折叠区发布。雨量技能改为**全样本相对 MAE**
+          （无阈值、无事件并集，评分域不依赖被评预报）；判别（ETS）与量级分离；BIAS 与
+          amt_bias 只披露、不重复计罚。证据门按（轨道 × 天桶）判定：ρ 低或无技巧的桶
+          退出该维，单维存活格按同一合成式给分。子项末端用软压缩，
           不再把“比参照差一点”和“差十倍”压成同一个 −1。</p>
         {% else %}
         <p class="why"><b>综合分是技能分，不是扣分制</b>：每个指标先相对“过去-only 气候参照”
@@ -1411,6 +1424,12 @@
               （剔掉后与冠军的名次相关性 {{ jw.get('spearman') }}、前十换 {{ jw.get('top10_changed', 0) }} 家）。
               {% elif br.get('n_bridge') == br.get('n_models') %}
               全部源都跨越两条轨道，榜不由任何少数桥梁源单独撑起。
+              {% endif %}
+              {% set d5 = ((br.get('participant_sensitivity') or {}).get('drop_5_worst')) or none %}
+              {% if d5 %}
+              剔除 5 家最差源后，幸存者的分数整体位移中位 <b>{{ d5.get('shift_median') }}</b>
+              分、最大 <b>{{ d5.get('shift_max_abs') }}</b> 分——R 是相对本档同台的构念，
+              零点随参赛集合移动；跨期/跨集合比较请改用技能分 S。
               {% endif %}</p>
             {% endif %}
 

@@ -42,9 +42,10 @@ def test_scoring_doc_states_current_alpha_and_reference_mode():
     text = SCORING.read_text(encoding="utf-8")
     assert "α = 0.5" in text
     assert "score_ref_mode: fixed" in text
+    assert "score_ref_mode: fixed_trailing" in text
     cfg = load_config(None)
     assert float(cfg.eval["score_composite_alpha"]) == 0.5
-    assert str(cfg.eval["score_ref_mode"]) == "fixed"
+    assert str(cfg.eval["score_ref_mode"]) == "fixed_trailing"
 
 
 def test_deprecated_params_are_declared_not_active_knobs():
@@ -57,3 +58,20 @@ def test_deprecated_params_are_declared_not_active_knobs():
     # 其中任何一项（grep 级断言由源码导出的口径测试覆盖；这里锁清单本身）。
     assert isinstance(DEFAULT_EVAL["score_skill_k"], float)
     assert isinstance(cfg.eval["score_skill_k"], float)
+
+
+def test_v5_copy_and_dead_params_are_cleaned():
+    """A7/C1：页面模板与单一事实源不得残留旧机制文案/死参数。"""
+    template = (ROOT / "src" / "weather_eval" / "report" / "templates"
+                / "report.html.j2").read_text(encoding="utf-8")
+    scoring = SCORING.read_text(encoding="utf-8")
+    assert "±10≈1 个桶内标准差" not in template
+    assert "全样本相对雨量技能" in template
+    assert "判别/分档族 60%" in template
+    assert "r_anom 权重已按其实测方差兑现降到 7%" not in template
+    assert "s(a_ref)=0 / s(1)=1 / s(0)=−1" not in scoring
+    # 死参数已从配置与评分指纹中彻底删除
+    cfg = load_config(None)
+    assert "score_ref_shrink_n" not in cfg.eval
+    assert "score_ref_shrink_n" not in (ROOT / "src" / "weather_eval"
+                                        / "evaluate.py").read_text(encoding="utf-8")

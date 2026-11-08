@@ -327,6 +327,12 @@ def _slim_report(report_data: dict) -> dict:
             "ok": bool(row.get("qualified")),
             # bootstrap 分布中心与点估计的偏差（原始分），负值=重采样均值偏低
             "bcd": row.get("bootstrap_center_delta"),
+            # C2：行级 CI 质量标记——宽/退化/不稳的区间不得混进"并列/第一梯队"
+            "ci_width": row.get("ci_width"),
+            "ci_wide": row.get("ci_wide"),
+            "ci_degenerate": row.get("ci_degenerate"),
+            "ci_degenerate_reason": row.get("ci_degenerate_reason"),
+            "ci_unstable": row.get("ci_unstable"),
         })
 
     def _curve(track: dict) -> dict:
@@ -520,10 +526,23 @@ def _slim_report(report_data: dict) -> dict:
         "min_sample": meta.get("min_sample"),
         # 评分口径：归档重渲染据此回放；skill-v3 还要 k/参照窗口。
         "score_scheme": meta.get("score_scheme"),
-        "score_skill_k": meta.get("score_skill_k"),
         "score_ref_window_days": meta.get("score_ref_window_days"),
         "score_ref_min_days": meta.get("score_ref_min_days"),
+        "score_ref_mode": meta.get("score_ref_mode"),
+        "score_ref_smooth_days": meta.get("score_ref_smooth_days"),
         "rain_no_skill_buckets": meta.get("rain_no_skill_buckets"),
+        # A7：R 的可审计披露（与 meta 同源，前端可逐项展示）
+        "score_composite": meta.get("score_composite"),
+        "score_skill_parts": meta.get("score_skill_parts"),
+        "score_skill_anchors": meta.get("score_skill_anchors"),
+        "score_skill_penalties": meta.get("score_skill_penalties"),
+        "reference_profile": meta.get("reference_profile"),
+        "rank_reliability": meta.get("rank_reliability"),
+        "gate_counts": meta.get("gate_counts"),
+        "single_dim_summary": meta.get("single_dim_summary"),
+        "bucket_sd_R": meta.get("bucket_sd_R"),
+        "champion_view": meta.get("champion_view"),
+        "composite_share": (meta.get("diagnostics") or {}).get("composite_share"),
     }
     return {"meta": slim_meta, "board": board, "lb": lb, "lbtemp": lbtemp,
             "trend": trend,
