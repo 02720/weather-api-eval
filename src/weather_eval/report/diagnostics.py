@@ -809,13 +809,97 @@ def score_slope_influence(report: dict) -> dict[str, Any]:
     （温度:降水的宏观话语权）覆盖披露。
     """
     from ..evaluate import (TEMP_SCORE_PARTS, PRECIP_SCORE_PARTS, score_map_text,
-                            SCORE_SCHEME, SKILL_SCHEMES)
+                            SCORE_SCHEME, SKILL_SCHEMES, TEMP_SKILL_PARTS,
+                            PRECIP_SKILL_PARTS, _skill_value)
     if SCORE_SCHEME in SKILL_SCHEMES:
-        # λ 斜率标定只属于 slope-v2；skill-v3/v4 没有 λ，实际话语权改由
-        # exact_variance_contribution 逐项发布（同一把 s 尺）。
-        return {"available": False,
-                "reason": "skill-v3/v4 不使用 score_slopes λ；见 exact_variance_contribution",
-                "scheme": SCORE_SCHEME}
+        # skill 口径没有 λ，但"名义 vs 兑现"的审计同样必须做（发现 14）：
+        # realized_share_i = w_i·sd_bucket(s_i) / Σ_j w_j·sd_bucket(s_j)。
+        # 桶内中心化后再取 sd，去掉"这一档整体难/易"的共同信号。
+        parts_by_dim = {"temp": TEMP_SKILL_PARTS, "precip": PRECIP_SKILL_PARTS}
+
+        def _dim_rows(src: dict, parts, daily: bool) -> list[dict]:
+            keys = [k for k, *_ in parts]
+            by_bucket: dict[str, list[list[float]]] = defaultdict(list)
+            for per in (src or {}).values():
+                for b, met in (per or {}).items():
+                    met = met or {}
+                    halves = ([met.get("max") or {}, met.get("min") or {}]
+                              if daily and "max" in met else [met])
+                    vals = []
+                    for k in keys:
+                        sv = [_skill_value(k, h) for h in halves]
+                        sv = [s for s in sv if s is not None]
+                        if not sv:
+                            vals = []
+                            break
+                        vals.append(float(np.mean(sv)))
+                    if vals:
+                        by_bucket[b].append(vals)
+            devs: list[list[float]] = []
+            for bucket in by_bucket.values():
+                if len(bucket) < 3:
+                    continue
+                arr = np.asarray(bucket, dtype=float)
+                devs.extend((arr - arr.mean(axis=0)).tolist())
+            if len(devs) < 8:
+                return []
+            X = np.asarray(devs, dtype=float)
+            w = np.asarray([wt for _k, wt, *_ in parts], dtype=float)
+            sd = np.asarray([X[:, i].std(ddof=1) for i in range(len(keys))])
+            total = float((w * sd).sum())
+            if total <= 0:
+                return []
+            out = []
+            wv = np.asarray([wt for _k, wt, *_ in parts], dtype=float)
+            var_total = float(((wv * sd) ** 2).sum())
+            for i, (key, _wt, *_r) in enumerate(parts):
+                share = float(w[i] * sd[i] / total)
+                out.append({
+                    "key": key, "nominal_weight": round(float(w[i]), 4),
+                    "swing": round(float(sd[i]), 3),
+                    "effective_share": round(share, 3),
+                    "effective_variance_share": (round(float((w[i] * sd[i]) ** 2)
+                                                       / var_total, 3)
+                                                 if var_total > 0 else None),
+                })
+            return sorted(out, key=lambda r: -r["effective_share"])
+
+        cell_sources = {
+            "hourly": {"temp": report.get("temp_hourly") or {},
+                       "precip": (report.get("precip_hourly_score")
+                                  or report.get("precip_hourly") or {})},
+            "daily": {"temp": report.get("temp_daily") or {},
+                      "precip": report.get("precip_score_daily")
+                      or report.get("precip_daily") or {}},
+        }
+        tracks: dict[str, Any] = {}
+        gaps = []
+        for track, dims in cell_sources.items():
+            for dim, src in dims.items():
+                rows = _dim_rows(src, parts_by_dim[dim], track == "daily")
+                if not rows:
+                    continue
+                tracks.setdefault(track, {})[dim] = rows
+                for r in rows:
+                    gaps.append({"key": r["key"], "dim": dim, "track": track,
+                                 "nominal": r["nominal_weight"],
+                                 "effective": r["effective_share"],
+                                 "ratio": (round(r["effective_share"]
+                                                 / r["nominal_weight"], 2)
+                                           if r["nominal_weight"] else None)})
+        if not tracks:
+            return {"available": False,
+                    "reason": "报告里没有逐桶技能变量，无法估算"}
+        worst = max(gaps, key=lambda g: (abs((g["ratio"] or 1.0) - 1.0))) \
+            if gaps else None
+        return {"available": True, "scheme": SCORE_SCHEME, "tracks": tracks,
+                "temp": (tracks.get("hourly", {}) or {}).get("temp", []),
+                "precip": (tracks.get("hourly", {}) or {}).get("precip", []),
+                "nominal_vs_effective": gaps,
+                "most_influential": worst,
+                "note": ("effective_share = 名义权重 × 子项桶内 sd ÷ Σ(同维全部项)"
+                         "（技能 s 尺度）；effective_variance_share = 方差份额。"
+                         "它是**维度内**口径，回答'这一维内部谁在说话'。")}
 
     def _side_swing(parts: tuple, view: dict) -> dict[str, float]:
         """一侧（{model: {bucket: 平铺指标 dict}}）逐项的桶内中心化 sd（键 → swing）。
@@ -1054,21 +1138,178 @@ def exact_variance_contribution(report: dict) -> dict[str, Any]:
     return out
 
 
+def score_item_survival(report: dict) -> dict[str, Any]:
+    """每个入分子项的**存活率**与重归一后的**有效权重**（发现 3 的披露）。
+
+    缺项按剩余权重归一是对的，但读者必须能看见"这一维实际由哪几项说话"。
+    skill-v5 下还要额外披露降水证据门的通过率——ETS 存活但证据族不完整的
+    格子会被整维判缺测，这些格子不应被读成"降水表现中等"。
+
+    存活率 = 该键可换算成 s（非 None）的格子占比；
+    有效权重 = 存活键的名义权重 ÷ 存活键权重之和（只对该维可评的格子）。
+    """
+    from ..evaluate import (TEMP_SKILL_PARTS, PRECIP_SKILL_PARTS,
+                            SCORE_SCHEME, SKILL_SCHEMES, _skill_value,
+                            precip_score)
+    from .. import stats as _st_gate
+
+    if SCORE_SCHEME not in SKILL_SCHEMES:
+        return {"available": False,
+                "reason": "survival 仅对技能口径有意义；slope-v2 见 exact_variance_contribution"}
+
+    def _collect(src: dict, parts, daily: bool) -> tuple[list[dict], int, int]:
+        keys = [k for k, *_ in parts]
+        counts = {k: 0 for k in keys}
+        evaluated = 0
+        for per in (src or {}).values():
+            for _b, md in (per or {}).items():
+                if daily and isinstance(md, dict) and "max" in md:
+                    halves = [md.get("max") or {}, md.get("min") or {}]
+                else:
+                    halves = [md or {}]
+                if not any(h for h in halves):
+                    continue
+                evaluated += 1
+                for k in keys:
+                    if any(_skill_value(k, h) is not None for h in halves):
+                        counts[k] += 1
+        return ([{"key": k, "alive_cells": counts[k]} for k in keys], evaluated,
+                len(keys))
+
+    out: dict[str, Any] = {"available": True, "scheme": SCORE_SCHEME, "tracks": {}}
+    for track, (t_src, p_src) in (
+            ("hourly", (report.get("temp_hourly") or {},
+                        report.get("precip_hourly_score")
+                        or report.get("precip_hourly") or {})),
+            ("daily", (report.get("temp_daily") or {},
+                       report.get("precip_score_daily")
+                       or report.get("precip_daily") or {}))):
+        for dim, parts, src, daily in (
+                ("temp", TEMP_SKILL_PARTS, t_src, track == "daily"),
+                ("precip", PRECIP_SKILL_PARTS, p_src, False)):
+            items, evaluated, _n = _collect(src, parts, daily)
+            if not evaluated:
+                continue
+            alive_rows = []
+            for it, (key, w, *_r) in zip(items, parts):
+                rate = it["alive_cells"] / evaluated
+                alive_rows.append({
+                    "key": key, "nominal_weight": round(float(w), 4),
+                    "survival_rate": round(rate, 3),
+                    "effective_weight": None,
+                })
+            # 有效权重：按"该维可评格子"的存活键归一（与评分函数的归一一致）
+            alive_w = sum(w for (_k, w, *_r), it in zip(parts, items)
+                          if it["alive_cells"] > 0)
+            for it, (_k, w, *_r) in zip(alive_rows, parts):
+                it["effective_weight"] = (round(float(w) / alive_w, 4)
+                                          if alive_w > 0 and it["survival_rate"] > 0
+                                          else None)
+            dim_out: dict[str, Any] = {
+                "cells": evaluated,
+                "items": alive_rows,
+            }
+            if dim == "precip":
+                # 证据门通过率：降水维"不是缺测"的格子占比
+                ok = bad = 0
+                for per in (src or {}).values():
+                    for _b, md in (per or {}).items():
+                        if not md:
+                            continue
+                        if precip_score(md) is not None:
+                            ok += 1
+                        else:
+                            bad += 1
+                dim_out["evidence_gate"] = {
+                    "passed": ok, "rejected": bad,
+                    "pass_rate": round(ok / (ok + bad), 3) if (ok + bad) else None,
+                    "min_weight_frac": float(_st_gate.PRECIP_MIN_WEIGHT_FRAC),
+                }
+            out["tracks"].setdefault(track, {})[dim] = dim_out
+    out["note"] = ("survival_rate = 该子项可换算成 s 的格子占比；"
+                   "effective_weight = 存活项名义权重 ÷ 存活权重之和"
+                   "（与评分函数的缺项归一逐格同式）。")
+    return out
+
+
 def composite_dimension_share(report: dict) -> dict[str, Any]:
     """综合分"温度各半"的**实际兑现度**：方差里温度与降水各占多少（审查 P1-3）。
 
-    综合分 =（温度分 + 降水分）/ 2，50:50 是名义权重；名次上的实际话语权由两维
-    分数在同期数据里的离散度决定。2026-09 实测小时轨：温度 23% / 降水 68% /
-    协方差 9%——名次约七成由降水分决定。这里逐轨做桶内中心化的方差分解把这件事
-    摆到台面上：读者能自己判断 50:50 与 23:68 的差距该不该按现在的口径用。
-
-    注意分母：方差份额之和 = 100%（含协方差项，可为负）。
+    skill-v5 下综合分是**名次分 R**（桶内 z 加权），两维贡献列是 R 的分解量；
+    这里直接对榜面的 `score / temp_score / precip_score` 做方差分解，回答
+    "名义 α 在当期数据里兑现成了多少话语权"。斜率/展示增益都是仿射，不改变份额。
     """
-    # 直接调用**生产评分函数**（2026-10-25 修正）：旧实现自己重算加权平均，
-    # 漏掉了 P8"最小存活权重"门槛——于是"该桶没有可评降水事件、生产降水分判
-    # 缺测"的格子仍被算进方差分解，份额与榜面口径分叉。生产函数同时带维度
-    # gain（仿射，不改变份额）与同一套缺项/门槛纪律，这里不再维护第二份公式。
-    from ..evaluate import temp_score, daily_temp_score, precip_score
+    from ..evaluate import (SCORE_SCHEME, SCORE_COMPOSITE_ALPHA,
+                            temp_score, daily_temp_score, precip_score)
+    if SCORE_SCHEME == "skill-v5":
+        rows = [r for r in ((report.get("leaderboards") or {}).get("all") or [])
+                if isinstance(r.get("score"), (int, float))
+                and isinstance(r.get("temp_score"), (int, float))
+                and isinstance(r.get("precip_score"), (int, float))]
+        if len(rows) < 8:
+            return {"available": False,
+                    "reason": "总榜两维贡献齐备的行不足 8 个"}
+        t = np.asarray([float(r["temp_score"]) - 50.0 for r in rows])
+        p = np.asarray([float(r["precip_score"]) - 50.0 for r in rows])
+        var_t, var_p = float(t.var()), float(p.var())
+        cov = float((t * p).mean())
+        var_r = var_t + var_p + 2.0 * cov
+        if var_r <= 0:
+            return {"available": False, "reason": "名次分方差为 0"}
+        # 原始信息量比与触底率：从逐格原始 T/P 分数（未对齐）估计
+        t_raw: list[float] = []
+        p_raw: list[float] = []
+        bottom = total_p = 0
+        for m, per in (report.get("temp_hourly") or {}).items():
+            for b, md in (per or {}).items():
+                pm = ((report.get("precip_hourly_score")
+                       or report.get("precip_hourly") or {}).get(m) or {}).get(b)
+                ts = temp_score(md or {})
+                ps = precip_score(pm or {})
+                if ts is not None:
+                    t_raw.append(float(ts))
+                if ps is not None:
+                    p_raw.append(float(ps))
+                    total_p += 1
+                    if float(ps) <= 0.5:
+                        bottom += 1
+        alpha = float(SCORE_COMPOSITE_ALPHA)
+        return {
+            "available": True,
+            "scheme": SCORE_SCHEME,
+            "alpha": alpha,
+            "effective_variance_share": round(alpha ** 2 /
+                                              (alpha ** 2 + (1 - alpha) ** 2), 3),
+            "tracks": {"all": {
+                "temp_share": round(var_t / var_r, 3),
+                "precip_share": round(var_p / var_r, 3),
+                "cov_share": round(2.0 * cov / var_r, 3),
+                "temp_sd": round(float(t.std(ddof=1)), 2),
+                "precip_sd": round(float(p.std(ddof=1)), 2),
+                "cells": len(rows),
+                "raw_temp_sd": (round(float(np.std(t_raw, ddof=1)), 2)
+                                if len(t_raw) >= 2 else None),
+                "raw_precip_sd": (round(float(np.std(p_raw, ddof=1)), 2)
+                                  if len(p_raw) >= 2 else None),
+                "raw_info_ratio": (round(float(np.std(t_raw, ddof=1)
+                                               / np.std(p_raw, ddof=1)), 2)
+                                   if len(t_raw) >= 2 and len(p_raw) >= 2
+                                   and float(np.std(p_raw, ddof=1)) > 0 else None),
+                "precip_bottom_rate": (round(bottom / total_p, 3)
+                                       if total_p else None),
+            }},
+            "note": ("skill-v5：份额 = 两维贡献的方差 ÷ 名次分方差（含协方差），"
+                     "直接对榜面 score/temp_score/precip_score 复算；"
+                     "名义 α 的**理想**方差份额是 α²/(α²+(1−α)²)，"
+                     "只有 α=0.5 时恰好等于 α。raw_info_ratio = 原始 T/P 桶内 sd 比，"
+                     "precip_bottom_rate = 降水原始分触底（≤0.5）的格子占比。"),
+        }
+    cell_sources = {
+        "hourly": (report.get("temp_hourly") or {},
+                   report.get("precip_hourly_score") or report.get("precip_hourly") or {}),
+        "daily": (report.get("temp_daily") or {},
+                  report.get("precip_score_daily") or report.get("precip_daily") or {}),
+    }
 
     def _temp_score(md: dict, daily: bool) -> float | None:
         return daily_temp_score(md or {}) if daily else temp_score(md or {})
@@ -1076,12 +1317,6 @@ def composite_dimension_share(report: dict) -> dict[str, Any]:
     def _precip_score(md: dict) -> float | None:
         return precip_score(md or {})
 
-    cell_sources = {
-        "hourly": (report.get("temp_hourly") or {},
-                   report.get("precip_hourly_score") or report.get("precip_hourly") or {}),
-        "daily": (report.get("temp_daily") or {},
-                  report.get("precip_score_daily") or report.get("precip_daily") or {}),
-    }
     out: dict[str, Any] = {"available": True, "tracks": {}}
     for track, (temp_src, precip_src) in cell_sources.items():
         t_vals: list[float] = []
@@ -1263,4 +1498,5 @@ def compute_all(report: dict, data_root: Path, months: list[str] | None = None,
     out["slope_influence"] = score_slope_influence(report)
     out["composite_share"] = composite_dimension_share(report)
     out["exact_variance_contribution"] = exact_variance_contribution(report)
+    out["item_survival"] = score_item_survival(report)
     return out

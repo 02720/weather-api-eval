@@ -1887,7 +1887,8 @@ def block_bootstrap_scores(S: np.ndarray, W: np.ndarray,
                            runs: int = 500, seed: int = 20260906,
                            ridge: float = 0.0, max_iter: int = 50,
                            tol: float = 1e-4, chunk: int = 100,
-                           cell_valid: np.ndarray | None = None) -> np.ndarray:
+                           cell_valid: np.ndarray | None = None,
+                           min_valid_cells: int = 0) -> np.ndarray:
     """按 **7 天块**重采样 + 重拟合 + 经验贝叶斯收缩，返回 (runs, M) 行分。
 
     为什么不是按天重采样（旧 `day_block_bootstrap`）：分块模型的行效应由
@@ -1933,6 +1934,7 @@ def block_bootstrap_scores(S: np.ndarray, W: np.ndarray,
         S_b = np.take(S, idx, axis=1).transpose(1, 0, 2)
         W_b = np.take(W0, idx, axis=1).transpose(1, 0, 2)
         V_b = np.take(V0, idx, axis=1).transpose(1, 0, 2)
+        valid_cells = V_b.sum(axis=-1)            # (r, M) 本次重采样的有效格数
         # 与点估计共用 `_fit_parts`：它负责列效应归一化（让保留列平均难度=0）
         # 与 μ 的定义（残差加权均值）。旧实现手工重写了一遍这两步，却没做
         # `_fit_parts` 的 beta 归一化 → bootstrap 的 μ 与点估计不同，CI 中心
@@ -1971,6 +1973,12 @@ def block_bootstrap_scores(S: np.ndarray, W: np.ndarray,
         scores = mu[:, None] + a_shrunk
         scores = np.where(info["n_blocks"] > 0, scores, np.nan)
         scores[:, ~row_keep] = np.nan
+        if min_valid_cells and min_valid_cells > 0:
+            # 稀疏源的病态 CI（发现 7）：某次重采样里这家只剩 1 个有效格时，
+            # EB 收缩把它拉向面板均值，分位数下界会出现多家完全相同的哨兵值
+            # （实测 3 家下界都是 4.58）。有效格不足的重采样不计入该源的
+            # 抽样分布——"证据不足"必须是可披露的状态，而不是一个假区间。
+            scores = np.where(valid_cells >= int(min_valid_cells), scores, np.nan)
         out[lo:hi] = scores
     return out
 
@@ -2587,12 +2595,16 @@ def macro_scores_from_weights(
 
 
 def _rank_bucket_normalize(t_score: np.ndarray, p_score: np.ndarray,
-                          alpha) -> np.ndarray:
+                          alpha, *, min_models: int = 3,
+                          prior_sd: tuple[float, float] = (8.77, 3.73),
+                          prior_n: float = 5.0,
+                          floor_frac: float = 0.25) -> np.ndarray:
     """跨模型桶内标准化后的名次分：α·z(T)+(1−α)·z(P)。
 
     t_score/p_score 形状 (..., m, b)；沿**模型轴**（倒数第二维）做桶内标准化。
-    α 可以是标量，也可以是 (runs,1,1) 的逐 run 权重。两维缺一即缺；某列只有
-    1 家或 sd=0 时 z=0（该桶不提供相对信息，而不是伪造 ±∞）。
+    α 可以是标量，也可以是 (runs,1,1) 的逐 run 权重。两维缺一即缺；某列不足
+    `min_models`（<3）时整列判无相对信息（NaN），不再伪造 z=0 或 ±1。
+    桶内 sd 先向长期尺度收缩（n0 先验）并设下限，切断参赛集合依赖（发现 12/18）。
     这是 skill-v5 的 R；非 skill-v5 路径不调用，保持旧线性 α 合成。
     """
     t = np.asarray(t_score, dtype=float)
@@ -2604,11 +2616,21 @@ def _rank_bucket_normalize(t_score: np.ndarray, p_score: np.ndarray,
         mu_p = np.nanmean(np.where(valid, p, np.nan), axis=-2, keepdims=True)
         sd_t = np.nanstd(np.where(valid, t, np.nan), axis=-2, keepdims=True)
         sd_p = np.nanstd(np.where(valid, p, np.nan), axis=-2, keepdims=True)
+        cnt = valid.sum(axis=-2, keepdims=True).astype(float)
+    pt, pp = float(prior_sd[0]), float(prior_sd[1])
+    n0 = float(max(prior_n, 0.0))
     with np.errstate(invalid="ignore", divide="ignore"):
+        sd_t = np.where(np.isfinite(sd_t) & (sd_t > 1e-9), sd_t, pt)
+        sd_p = np.where(np.isfinite(sd_p) & (sd_p > 1e-9), sd_p, pp)
+        sd_t = np.sqrt((cnt * sd_t ** 2 + n0 * pt ** 2) / (cnt + n0))
+        sd_p = np.sqrt((cnt * sd_p ** 2 + n0 * pp ** 2) / (cnt + n0))
+        sd_t = np.maximum(sd_t, pt * float(floor_frac))
+        sd_p = np.maximum(sd_p, pp * float(floor_frac))
         zt = np.where(sd_t > 1e-12, (t - mu_t) / sd_t, 0.0)
         zp = np.where(sd_p > 1e-12, (p - mu_p) / sd_p, 0.0)
         r = alpha * zt + (1.0 - alpha) * zp
-    return np.where(valid, r, np.nan)
+    active = valid & (cnt >= int(min_models))
+    return np.where(active, r, np.nan)
 
 
 def weight_champion_distribution(
@@ -2766,6 +2788,15 @@ def macro_champion_at_alpha(temp_sub: np.ndarray, precip_sub: np.ndarray,
     if not finite.any():
         return None
     best = int(np.where(finite, np.round(scores, 6), -np.inf).argmax())
+    if rank_normalize:
+        # scores 是**名次分 R**（z 尺度，50 已由调用方加），不是 skill-v5
+        # 的展示刻度。这里若再套 composite_gain（slope-v2 的综合分展示增益），
+        # 会把 R≈0 映射成 50+2.863·(0−50) → 截断 0，端点冠军分数恒为 50.0
+        # （发现 6）。原样返回，由调用方按 50+rank_scale·R 映射一次。
+        return {"index": best, "score": round(float(scores[best]), 6)}
+    # 名次在**原始分**上定（展示增益是仿射单调，不改 argmax）；返回给披露的
+    # score 才映射到展示刻度，读者才能和榜上的数字对照（否则会以为端点冠军
+    # 只有 47 分）。
     shown = composite_gain(scores[best])
     return {"index": best, "score": round(float(shown), 2)}
 

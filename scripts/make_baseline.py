@@ -70,6 +70,8 @@ BOARD_FIELDS = (
     "sig_vs_top", "qualified", "comparable", "n", "n_precip", "n_eff",
     "n_eff_rain", "acc2", "rmse", "ts", "ets", "lead_days", "n_days",
     "track_gap", "hourly_score", "daily_score",
+    # CI 质量标记（发现 7）：退化/过宽/中心不稳不参与"并列"判定，必须随基线冻结
+    "ci_width", "ci_degenerate", "ci_wide", "ci_unstable",
     # 入设计格子数门（2026-10-25，复核 P0-1）：门槛的输入与判定结果一并冻结，
     # 否则"某源为何未达标"在基线上不可复核
     "n_cells_hourly_design", "n_cells_daily_design", "n_cells_design",

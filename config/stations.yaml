@@ -113,8 +113,29 @@ eval:
   #   · 技能分 S：α·T+(1−α)·P 的绝对尺度，喂给 §02 走势图，不做桶内标准化
   # 50/100 在 S 上仍是"打平同类朴素参照 / 完美"；R 的 50 是"本档同台平均"。
   score_scheme: skill-v5
-  score_ref_window_days: 15             # 只取起报前 15 天观测做气候参照（严格 past-only）
+  score_ref_window_days: 15             # 参照平滑窗的基础厚度（固定气候态；run_anchored 回放仍为起报前 W 天）
   score_ref_min_days: 5                 # 不足 5 天 → 参照不可用，不出分
+  # —— skill-v5 参照模式（2026-11 优化：参照必须是 lead 无关的共同标尺）——
+  # fixed = 固定日历气候态：同一（站, 有效时刻）对所有起报日/所有源共用一个
+  #         M_ref（±7 天同日历平滑 + 跨站异常场收缩），参照难度不再随 lead 上升。
+  # run_anchored = 起报日前 15 天线性外推（2026-11 旧 v5，保留对照/回放）
+  # target = 目标日前 15 天（v3/v4 归档回放）
+  score_ref_mode: fixed
+  score_ref_smooth_days: 7
+  score_ref_shrink_n: 3.0
+  # skill-v5 下已退役、只留给归档回放的参数：报告 meta 只披露清单，
+  # 不把旧值冒充当期口径（单一事实源见 SCORING.md §6）。
+  deprecated_in_skill_v5:
+    - score_skill_k
+    - score_index_gain
+    - score_composite_gain
+    - score_penalty_lambda_temp
+    - score_penalty_lambda_precip
+    - score_slopes
+  # 可靠性加权（发现 4/21）：桶内 z 除以 √ρ，让 α 在真实信号方差上兑现。
+  # ρ 由 7 天块的重复测量估计；ρ < min 的维在该桶退出 R（只发布 S）。
+  score_reliability_weighting: true
+  score_reliability_min: 0.20
   score_skill_k: 2.303                  # 仅 skill-v3/v4 回放使用；skill-v5 用冻结仿射
   # —— skill-v5 综合分参数（显式声明、冻结进配置）——
   score_composite_alpha: 0.5            # 温度:降水 = 1:1（显式业务价值，非隐含缺省）

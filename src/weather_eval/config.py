@@ -16,9 +16,27 @@ DEFAULT_EVAL = {
                                        # skill-v5（2026-11，名次分/技能分双口径）；
                                        # 代码内缺省保留 slope-v2，供旧夹具/归档月报
                                        # 与直接调用回放。
-    "score_ref_window_days": 15,      # skill-v5 气候参照：只用**起报日之前** W 天观测
-                                       # （v3/v4 回放仍为目标日之前 W 天）
+    "score_ref_window_days": 15,      # skill-v5 气候参照：固定气候态平滑窗的
+                                       # 基础厚度；run_anchored 回放仍为起报前 W 天
     "score_ref_min_days": 5,          # 参照最少历史天数；不足 → 参照不可用，不出分
+    # skill-v5 参照模式（2026-11 第一性原理复核）：
+    #   fixed       固定日历气候态：同一（站, 有效时刻）对所有起报日/所有源
+    #               共用一个 M_ref，参照难度与 lead 无关（生产口径）
+    #   run_anchored 起报日之前 15 天线性外推（2026-11 旧 v5，保留对照/回放）
+    #   target      目标日之前 15 天（v3/v4 归档回放）
+    "score_ref_mode": "fixed",
+    "score_ref_smooth_days": 7,       # 固定气候态的日历平滑半窗（±7 天，剔除目标日）
+    "score_ref_shrink_n": 3.0,        # 跨站异常场收缩的先验样本量 n0
+    # skill-v5 下已退役、只留给归档回放的参数清单（单一事实源披露）。
+    "deprecated_in_skill_v5": [
+        "score_skill_k", "score_index_gain", "score_composite_gain",
+        "score_penalty_lambda_temp", "score_penalty_lambda_precip",
+        "score_slopes",
+    ],
+    # 可靠性加权（发现 4/21）：桶内 z 除以 √ρ（ρ = 该维跨期信度），
+    # 让 α 在**真实信号方差**上兑现；ρ 低于下限的维在该桶退出 R。
+    "score_reliability_weighting": True,
+    "score_reliability_min": 0.20,
     "score_skill_k": 1.535,           # skill 下半段指数压缩参数（50→0 的衰减）
     # ---- skill-v5（2026-11）综合分口径 ----
     # 温度:降水的**声明业务价值** α；综合分与敏感性分析都以它为唯一宏观权重。

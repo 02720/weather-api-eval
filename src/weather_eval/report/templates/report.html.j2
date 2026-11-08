@@ -539,16 +539,24 @@
   {% if lb1_q %}{% set ns.champ = lb1_q[0] %}{% set ns.fallback = true %}{% endif %}
 {% endif %}
 {% set champ = ns.champ %}
-{# 与第一名置信区间重叠（= 统计上并列）的源数 #}
+{# 与第一名置信区间重叠（= 统计上并列）的源数。
+   发现 7：退化区间（下界哨兵值/多家相同）与过宽区间（>10 分）不参与"并列"，
+   它们归入"证据不足"——两者是完全不同的结论，不能混在一个数字里。 #}
+{% set champ_ci_w = (champ.get('ci90')[1] - champ.get('ci90')[0]) if champ and champ.get('ci90') else none %}
 {% set ns2 = namespace(lo=champ.get('ci90')[0] if champ and champ.get('ci90') else none,
                        hi=champ.get('ci90')[1] if champ and champ.get('ci90') else none,
-                       tied=0) %}
-{% for r in lb_all %}
-  {% if r.get('ci90') and r.get('score') is not none and ns2.lo is not none
+                       tied=0, equiv=0, insufficient=0,
+                       margin=(champ_q[0].score - champ_q[1].score) if champ_q|length > 1 else none) %}
+{% for r in champ_q %}
+  {% if r.get('ci90') and not r.get('ci_degenerate') and not r.get('ci_wide')
+        and ns2.lo is not none
         and not (r.get('ci90')[1] < ns2.lo or r.get('ci90')[0] > ns2.hi) %}
-    {% set ns2.tied = ns2.tied + 1 %}
+    {% set ns2.equiv = ns2.equiv + 1 %}
+  {% elif r.get('ci_wide') or (r.get('qualified') and not r.get('ci90')) or r.get('ci_degenerate') %}
+    {% set ns2.insufficient = ns2.insufficient + 1 %}
   {% endif %}
 {% endfor %}
+{% set ns2.tied = ns2.equiv %}
 {% set cw = [] %}
 {% for r in lb_all %}{% if r.get('ci90') %}{% set _ = cw.append(r.get('ci90')[1] - r.get('ci90')[0]) %}{% endif %}{% endfor %}
 {% set cw_sorted = cw | sort %}
@@ -585,7 +593,7 @@
     {% if champ %}
     <div class="champ">
       <div>
-        <div class="champ-kicker">综合表现领先</div>
+        <div class="champ-kicker">第一梯队领先者（综合名次分）</div>
         <div class="champ-name">
           <i class="dot" style="background:{{ model_colors.get(champ.model, '#64748b') }}"></i>
           {{ model_labels.get(champ.model, champ.model) }}
@@ -605,8 +613,12 @@
         <div class="champ-honest">
           📏 <b>读榜须知：</b>样本期 {{ report.meta.bootstrap_days }} 天，分块重采样
           {{ report.meta.bootstrap_runs }} 次的 90% 置信区间中位宽
-          <b>{{ '%.1f'|format(cw_sorted[cw_sorted|length // 2]) if cw_sorted else '—' }} 分</b>{% if ns2.tied > 1 %}，
-          与第一名<b>统计上并列</b>的有 {{ ns2.tied - 1 }} 家——前后名次未必是一分高下{% endif %}；
+          <b>{{ '%.1f'|format(cw_sorted[cw_sorted|length // 2]) if cw_sorted else '—' }} 分</b>{% if ns2.margin is not none and champ_ci_w and champ_ci_w > 0 %}；
+          领先第二名 <b>{{ '%.1f'|format(ns2.margin) }} 分</b>（≈{{ '%.2f'|format(ns2.margin / champ_ci_w) }} 个 CI 宽）{% endif %}；
+          与第一名<b>统计上等价</b>的有 {{ [ns2.equiv - 1, 0]|max }} 家{% if ns2.insufficient %}；
+          另有 <b>{{ ns2.insufficient }} 家证据不足</b>（区间过宽 >10 分或未发布区间），
+          不参与"并列"判定{% endif %}；
+          前 10 名全距约 {{ '%.1f'|format(champ_q[0].score - champ_q[9].score) if champ_q|length > 9 else '—' }} 分——前后名次未必是一分高下。
           {# 权重敏感性的展示集合 = 夺冠频率前二 ∪ 现榜冠军（含 0% 情形）。
              这一行披露的宾语是"现榜冠军有多稳"，不是"谁才是冠军"：旧实现截断前二后，
              冠军排第三时整行完全不提它，与上方横幅自相矛盾（2026-10-10 实测：伏羲中期
@@ -626,13 +638,19 @@
           {% set mc = ws.macro_champions %}宏观权重（温度占综合分比例）挪到两端时：
           <b>{% for c in mc %}温度 {{ (c.alpha * 100)|round|int }}% → {{ model_labels.get(c.model, c.model) }}{% if not loop.last %}；{% endif %}{% endfor %}</b>——
           两端的冠军若不同家，说明"谁最准"对这条价值判断仍敏感，当前 50:50 不是唯一答案；
+          {% if report.meta.get('score_scheme') == 'skill-v5' %}<b>注意：α 的方差话语权 = α²/(α²+(1−α)²)</b>，
+          所以 α=30%/70% 对应的有效话语权约 <b>15.5% / 84.5%</b>，而不是 30%/70%——
+          端点冠军读的是"温度占名义权重三成/七成"，不是"温度占方差三成/七成"。
+          {% set _cs = (diag.get('composite_share') or {}).get('tracks', {}).get('all') or {} %}
+          {% if _cs %}本期榜面兑现份额：温度 {{ '%.0f%%'|format(_cs.temp_share * 100) }} ·
+          降水 {{ '%.0f%%'|format(_cs.precip_share * 100) }} · 协方差 {{ '%.0f%%'|format(_cs.cov_share * 100) }}{% endif %}。{% endif %}
           {% endif %}名字带 † = 差距在统计上还分不开。<a href="#board" style="color:#9fc3e8">看完整榜单 →</a>
         </div>
       </div>
       <div class="champ-score-box">
         {% if ns.fallback %}<div class="champ-ci">提前 1 天（小时口径）得分 · 数据积累中</div>
         {% elif report.meta.get('score_scheme') in ['skill-v3', 'skill-v4'] %}<div class="champ-ci">难度对齐技能分 · 50=气候平均 · 100=完美</div>
-        {% elif report.meta.get('score_scheme') == 'skill-v5' %}<div class="champ-ci">难度对齐名次分 · 50=本档同台平均 · 100=本档最强</div>
+        {% elif report.meta.get('score_scheme') == 'skill-v5' %}<div class="champ-ci">难度对齐名次分 · 50=本档同台平均 · ±10≈1 个桶内标准差 · 绝对技能分见 §02</div>
         {% else %}<div class="champ-ci">难度对齐综合分 · 0~100</div>{% endif %}
         <div class="champ-score">{{ num(champ.score) }}<small>分</small></div>
         {{ thermo(champ.score, champ.get('ci90'), 'lg') }}
@@ -655,7 +673,7 @@
     <p class="desc">「综合分」由温度 {{ score_temp_parts|length }} 项 + 降水 {{ score_precip_parts|length }} 项指标加权而成，先把每一档提前量的
       难度统一扣掉再比——能报 3 天的和能报 15 天的同榜也公平。
       {% if report.meta.get('score_scheme') in ['skill-v3', 'skill-v4'] %}<b>50 = 与过去 {{ report.meta.get('score_ref_window_days') or 15 }} 天平滑气候平均一样（无技巧），100 = 完美；低于 50 = 比气候平均差。</b>{% endif %}
-      {% if report.meta.get('score_scheme') == 'skill-v5' %}<b>总榜这一列是「名次分」：先把每一档的温度/降水桶内标准化（50=本档同台平均），再按声明的 α={{ '%.0f%%'|format((report.meta.get('score_composite', {}).get('alpha', 0.5)) * 100) }} 温度 + {{ '%.0f%%'|format((1 - report.meta.get('score_composite', {}).get('alpha', 0.5)) * 100) }} 降水合成；它不随时间长短衰减。绝对技能分（50=打平同类朴素参照、100=完美）见 §02 走势图。</b>{% endif %}
+      {% if report.meta.get('score_scheme') == 'skill-v5' %}{% set _sc = (lb_all | selectattr('score') | map(attribute='score') | list) %}<b>总榜这一列是「名次分」：先把每一档的温度/降水桶内标准化（50=本档同台平均），再按声明的 α={{ '%.0f%%'|format((report.meta.get('score_composite', {}).get('alpha', 0.5)) * 100) }} 温度 + {{ '%.0f%%'|format((1 - report.meta.get('score_composite', {}).get('alpha', 0.5)) * 100) }} 降水合成；它不随时间长短衰减。{% if _sc %}实际可达区间随窗口变化（本期约 {{ '%.0f'|format(_sc|min) }}~{{ '%.0f'|format(_sc|max) }} 分，±10 分≈1 个桶内标准差），{% endif %}不是 0~100 的绝对刻度。绝对技能分（50=打平同类朴素参照、100=完美）见 §02 走势图。</b>{% endif %}
       {% if report.meta.get('effective_days') %}<span class="only-wide">有效观测 <b>{{ report.meta.get('effective_days') }} 天</b>（{{ report.meta.get('effective_start') }} ~ {{ report.meta.get('effective_end') }}）；报告标签窗口含无观测的前置日期，参照与评分按有效窗口计算。</span>{% endif %}
       {% set nsk = report.meta.get('rain_no_skill_buckets') or {} %}
       {% if nsk.get('hourly') or nsk.get('daily') %}<span class="only-wide">⚠ 降水技巧未检出（该桶 >60% 格 |ETS|≤0.05）：
@@ -685,8 +703,8 @@
           <th class="c-rk">#</th>
           <th class="l c-name">预报源</th>
           <th class="ov-only" data-key="score" data-type="num" data-dir="desc">综合分<span class="ind">▼</span></th>
-          <th class="sh-temp h-temp" data-key="temp" data-type="num">温度分<span class="ind"></span></th>
-          <th class="sh-rain h-rain" data-key="precip" data-type="num">降水分<span class="ind"></span></th>
+          <th class="sh-temp h-temp" data-key="temp" data-type="num"{% if report.meta.get('score_scheme') == 'skill-v5' %} title="名次分的温度贡献：50=同台平均，不是绝对技能分；绝对技能分见 §02"{% endif %}>{% if report.meta.get('score_scheme') == 'skill-v5' %}温度贡献{% else %}温度分{% endif %}<span class="ind"></span></th>
+          <th class="sh-rain h-rain" data-key="precip" data-type="num"{% if report.meta.get('score_scheme') == 'skill-v5' %} title="名次分的降水贡献：50=同台平均，不是绝对技能分；绝对技能分见 §02"{% endif %}>{% if report.meta.get('score_scheme') == 'skill-v5' %}降水贡献{% else %}降水分{% endif %}<span class="ind"></span></th>
           <th class="t-only h-temp" data-key="acc2" data-type="num" title="预报与实况相差不超过 2°C 的样本占比，越高越好">±2°C</th>
           <th class="r-only h-rain" data-key="ts" data-type="num" id="lbTsHead" title="命中 ÷（命中 + 空报 + 漏报），越高越好；总榜为两轨拼接的对齐值，分榜为该档原始口径">晴雨 TS</th>
           <th class="t-only h-temp" data-key="acc1" data-type="num" title="相差不超过 1°C 的样本占比（更严的一档），越高越好">±1°C</th>
@@ -742,6 +760,9 @@
           <td class="l c-name"><i class="dot" style="background:{{ c }}"></i><b>{{ model_labels.get(r.model, r.model) }}</b>
             {%- if r.get('sig_vs_top') is sameas false %}<sup class="dagger" title="与第一名的差距经 max-T（族内极值）多重比较校正后仍不显著：前后名次更多是抽样运气">†</sup>{% endif -%}
             {%- if r.get('disputed') %}<span class="warn-badge" title="{{ (r.get('disputed_reasons') or [])|join('；') }}">⚠️</span>{% endif -%}
+            {%- if r.get('ci_degenerate') %}<span class="warn-badge" title="{{ r.get('ci_degenerate_reason') or '区间退化' }}">区间退化</span>{% endif -%}
+            {%- if r.get('ci_wide') %}<span class="warn-badge" title="90% 置信区间宽度 >10 分：证据不足，不参与等价判定">证据不足</span>{% endif -%}
+            {%- if r.get('ci_unstable') %}<span class="warn-badge" title="bootstrap 分布均值与榜面点估计相差 >2 分：区间中心不稳">区间不稳</span>{% endif -%}
             <span class="mid" title="{{ r.model }}">{{ r.model }}</span>
             {% if not r.get('qualified') %}<span class="mid" title="{{ r.get('evidence_note') or '样本积累中' }}">· {{ r.get('evidence_short') or r.get('evidence_note') or '样本积累中' }}</span>{% endif %}
           </td>
@@ -749,8 +770,8 @@
             {{ thermo(r.get('score'), r.get('ci90'), 'sm') }}
             <b class="score-num">{{ num(r.get('score')) }}</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">{{ thermo(r.get('temp_score'), None, 'sm') }}</div><b class="score-num">{{ num(r.get('temp_score')) }}</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">{{ thermo(r.get('precip_score'), None, 'sm') }}</div><b class="score-num">{{ num(r.get('precip_score')) }}</b></td>
+          <td class="sh-temp" data-label="{% if report.meta.get('score_scheme') == 'skill-v5' %}温度贡献{% else %}温度分{% endif %}"><div class="score-bar">{{ thermo(r.get('temp_score'), None, 'sm') }}</div><b class="score-num">{{ num(r.get('temp_score')) }}</b></td>
+          <td class="sh-rain" data-label="{% if report.meta.get('score_scheme') == 'skill-v5' %}降水贡献{% else %}降水分{% endif %}"><div class="score-bar">{{ thermo(r.get('precip_score'), None, 'sm') }}</div><b class="score-num">{{ num(r.get('precip_score')) }}</b></td>
           <td class="t-only" data-label="±2°C">{{ pct(r.get('acc2')) }}</td>
           <td class="r-only" data-label="晴雨TS">{{ num(r.get('ts'), 2) }}</td>
           <td class="t-only" data-label="±1°C">{{ pct(r.get('acc1')) }}</td>
@@ -822,7 +843,7 @@
       <div class="fold-body">
         <div class="weights-grid">
           <div>
-            <h3>🌡️ 温度分（{{ score_temp_parts|length }} 项）<span class="sub">该维占综合分 50%</span></h3>
+            <h3>🌡️ 温度分（{{ score_temp_parts|length }} 项）<span class="sub">该维占综合分 α={{ '%.0f%%'|format((report.meta.get('score_composite', {}).get('alpha', 0.5)) * 100) }}</span></h3>
             <table class="plain">
               <thead><tr><th class="l">指标</th><th class="w-col">权重</th><th class="l">换算/技能说明</th></tr></thead>
               <tbody>{% for p in score_temp_parts %}
@@ -834,13 +855,13 @@
               {% endfor %}</tbody>
             </table>
             {% if report.meta.get('score_scheme') == 'skill-v5' %}
-            <p class="why"><b>温度维是“相对起报时刻可得参照的技能分”</b>：正向 5 项权重不变
-              （RMSE 45% / MAE 10% / ±2°C 20% / ±1°C 5% / 异常相关 20%）。
-              <b>50 = 与起报前 {{ report.meta.get('score_ref_window_days') or 15 }} 天观测拟合的气候趋势打平</b>；
-              100 = 完美；低于 50 = 比参照差。命中项的换算按对称归一（保持 ±1 端点），
-              子项末端用软压缩、不再硬触底。MBE 与回归斜率仍是校准扣分项
-              （60% / 40%，合计最多扣 {{ report.meta.get('score_skill_penalties', {}).get('temp', {}).get('max_points') }} 分），
-              只罚“比参照更偏/幅度更失准”。</p>
+            <p class="why"><b>温度维是“相对共同气候参照的技能分”</b>：正向 5 项权重
+              （RMSE 55% / MAE 13% / ±2°C 20% / ±1°C 5% / 异常相关 7%）。
+              <b>50 = 与固定日历气候态打平</b>（同一（站, 有效时刻）对所有源、
+              所有起报日用同一个参照；参照难度与 lead 无关）；100 = 完美。
+              命中项用分段线性（保 ±1 端点），子项末端软压缩、不硬触底。
+              MBE 与回归斜率<b>只披露、不扣分</b>，与降水维（BIAS 只披露）对称；
+              r_anom 权重已按其实测方差兑现降到 7%。</p>
             {% elif report.meta.get('score_scheme') == 'skill-v4' %}
             <p class="why"><b>温度维是“相对气候平均的技能分”</b>：正向 5 项权重不变
               （RMSE 45% / MAE 10% / ±2°C 20% / ±1°C 5% / 异常相关 20%）。
@@ -866,7 +887,7 @@
             {% endif %}
           </div>
           <div>
-            <h3>🌧️ 降水分（{{ score_precip_parts|length }} 项）<span class="sub">该维占综合分 50% · 日雨量 ≥{{ report.meta.rain_daily_threshold_mm }}mm 口径</span></h3>
+            <h3>🌧️ 降水分（{{ score_precip_parts|length }} 项）<span class="sub">该维占综合分 {{ '%.0f%%'|format((1 - report.meta.get('score_composite', {}).get('alpha', 0.5)) * 100) }} · 日雨量 ≥{{ report.meta.rain_daily_threshold_mm }}mm 口径</span></h3>
             <table class="plain">
               <thead><tr><th class="l">指标</th><th class="w-col">权重</th><th class="l">换算/技能说明</th></tr></thead>
               <tbody>{% for p in score_precip_parts %}
@@ -877,7 +898,15 @@
                 </tr>
               {% endfor %}</tbody>
             </table>
-            {% if report.meta.get('score_scheme') == 'skill-v4' %}
+            {% if report.meta.get('score_scheme') == 'skill-v5' %}
+            <p class="why"><b>降水维是“相对无技巧基准的技能分”</b>：晴雨 ETS 50%
+              ＞对数雨量技能 25%＞有序雨强技能 15%＞中雨/大雨档 ETS 10%。
+              <b>50 = ETS 0（同边际随机）</b>；100 = 完美。<b>ETS 是必须项</b>，
+              且必须满足<b>证据族门槛</b>：判别/分档族（ETS/有序雨强/雨强分辨力）
+              与雨量族（对数雨量）至少两族有证据，或单族完整存活；只有 ETS 一项、
+              或判别族缺项时整维判缺测，<b>不把剩余权重重归一成 100%</b>。
+              BIAS、POD、FAR、amt_bias、雨量误差只列明细，不重复计罚。</p>
+            {% elif report.meta.get('score_scheme') == 'skill-v4' %}
             <p class="why"><b>降水维是“相对无技巧基准的技能分”</b>：晴雨 ETS 50%
               ＞对数雨量技能 25%＞有序雨强技能 15%＞中雨/大雨档 ETS 10%。
               <b>50 = ETS 0（同边际随机）且 BIAS=1</b>；
@@ -946,9 +975,12 @@
           温度 + {{ '%.0f%%'|format((1 - report.meta.get('score_composite', {}).get('alpha', 0.5)) * 100) }} 降水合成，
           50 = 本档同台平均；<b>技能分</b>（§02 走势图）是两维绝对技能按同一 α 加权，
           50 = 两维都打平同类朴素参照，100 = 完美。名次分不随时效衰减，技能分不桶内标准化。</p>
-        <p class="why"><b>每一分都有证据</b>：温度参照只取起报前 {{ report.meta.get('score_ref_window_days') or 15 }} 天观测，
-          并做线性去趋势外推；雨量技能只在“观测有雨”子样本上比较，判别（ETS）与量级分离；
-          BIAS 与 amt_bias 只披露、不重复计罚。任一维没有证据（无雨事件/样本不足）→ 该格
+        <p class="why"><b>每一分都有证据</b>：温度参照是<b>固定日历气候态</b>
+          （±{{ report.meta.get('score_ref_smooth_days') or 7 }} 天同日历平滑 + 跨站异常场收缩，
+          同一（站, 有效时刻）对所有源、所有起报日共用一个参照，难度不随 lead 上升）；
+          参照自身误差随 lead 的曲线在下方"参照难度"折叠区发布。雨量技能只在
+          “观测有雨”子样本上比较，判别（ETS）与量级分离；BIAS 与 amt_bias 只披露、
+          不重复计罚。任一维没有证据（无雨事件/证据族不完整/样本不足）→ 该格
           <b>N/A</b>，不进取分矩阵、不画实线、不进综合均值。子项末端用软压缩，
           不再把“比参照差一点”和“差十倍”压成同一个 −1。</p>
         {% else %}
@@ -963,22 +995,81 @@
           和 RMSE/ETS 一起加权会把同一份误差数两遍。长时效降水若多数格 ETS≈0，
           标“本窗口未检出降水技巧”，而不是把 50 分读成“表现不错”。</p>
         {% endif %}
-        {% if report.meta.get('score_scheme') not in ['skill-v3', 'skill-v4', 'skill-v5'] %}
         {% set cs = diag.get('composite_share') or {} %}
         {% if cs.get('available') and cs.get('tracks') %}
         {% for trk, cvs in cs.tracks.items() %}
-        <p class="why"><b>"温度:降水各半"的兑现度</b>（{{ '小时轨' if trk == 'hourly' else '日轨' }}）：
-          本期综合分方差中温度贡献 <b>{{ '%.0f%%'|format(cvs.temp_share * 100) }}</b> ·
+        <p class="why"><b>"名义 α"兑现成了多少话语权</b>（{{ '总榜' if trk == 'all' else ('小时轨' if trk == 'hourly' else '日轨') }}）：
+          本期名次分方差中温度贡献 <b>{{ '%.0f%%'|format(cvs.temp_share * 100) }}</b> ·
           降水贡献 <b>{{ '%.0f%%'|format(cvs.precip_share * 100) }}</b> ·
-          协方差 {{ '%.0f%%'|format(cvs.cov_share * 100) }}（两维桶内标准差
-          {{ cvs.temp_sd }} vs {{ cvs.precip_sd }} 分，样本 {{ cvs.cells }} 格）。
+          协方差 {{ '%.0f%%'|format(cvs.cov_share * 100) }}（贡献列标准差
+          {{ cvs.temp_sd }} vs {{ cvs.precip_sd }} 分，样本 {{ cvs.cells }} 行）。
+          {% if cs.get('scheme') == 'skill-v5' %}
+          α={{ '%.0f%%'|format(cs.get('alpha', 0.5) * 100) }} 的**理想**方差份额是
+          α²/(α²+(1−α)²) = {{ '%.1f%%'|format(cs.get('effective_variance_share', 0.5) * 100) }}，
+          只有 α=50% 时才恰好等于 α；两维原始信息量比
+          {{ cvs.raw_info_ratio if cvs.raw_info_ratio is not none else '—' }}、
+          降水原始分触底率 {{ '%.1f%%'|format(cvs.precip_bottom_rate * 100) if cvs.precip_bottom_rate is not none else '—' }}。
+          名义权重是价值判断，兑现份额是当期数据的实现——两者并列披露，不互相冒充。
+          {% else %}
           50:50 是<b>名义</b>权重，名次上的实际话语权由两维离散度决定——
-          温度:降水的宏观权重已在冠军频率敏感性里按 U(30%,70%) 扰动（{{ report.meta.macro_weight_range }}）。</p>
+          温度:降水的宏观权重已在冠军频率敏感性里按 U(30%,70%) 扰动（{{ report.meta.macro_weight_range }}）。
+          {% endif %}</p>
         {% endfor %}
-        {% endif %}
         {% endif %}
       </div>
     </details>
+
+    {% set rp = report.meta.get('reference_profile') or {} %}
+    {% if rp.get('hourly') or rp.get('daily') %}
+    <details class="fold"><summary>📐 参照自身有多准：rmse_ref 随 lead 的曲线（长时效高分 ≠ 模型变准）</summary>
+      <div class="fold-body">
+        <p class="why">技能分是"相对参照"的分数。<b>参照不是真值</b>——它自己也有一份误差。
+          旧口径下参照误差随 lead 从 2.1°C 升到 4.6°C，模型分被参照退化机械抬高；
+          固定气候态的目标是让这条曲线<b>不随 lead 单调变差</b>。下表逐天桶发布参照误差中位数
+          与参照类型构成，读者可以把 §02 的技能曲线与这条参照曲线并读。</p>
+        {% for trk, rows in rp.items() %}
+        {% if rows %}
+        <p class="why"><b>{{ '小时轨' if trk == 'hourly' else '日轨' }}</b>：
+          {% for row in rows %}
+          第 {{ row.day }} 天：rmse_ref {{ row.rmse_ref_median if row.rmse_ref_median is not none else '—' }}°C、
+          ±2°C 参照命中 {{ row.acc2_ref_median if row.acc2_ref_median is not none else '—' }}%
+          （{{ row.cells }} 格）{% if not loop.last %}；{% endif %}
+          {% endfor %}</p>
+        {% endif %}
+        {% endfor %}
+        <p class="why">参照类型构成见 `report.meta.reference_profile[*].ref_type_counts`；
+          14% 的格在旧口径下参照不可用且榜上完全不可见——现在逐格记录 `ref_type`。</p>
+      </div>
+    </details>
+    {% endif %}
+
+    {% set lws = ((report.meta.get('score_composite') or {}).get('rank') or {}).get('lead_weight_shares') or {} %}
+    {% if lws %}
+    <details class="fold"><summary>⚖️ 名义 lead 权重 vs 实际合成权重（长时效被 √n_eff 二次降权）</summary>
+      <div class="fold-body">
+        <p class="why">配置里的 lead 权重（1–3d 1.0 / 4–7d 0.7 / 8–14d 0.4 / 15–16d 0.2）不是实际话语权：
+          格子权重还乘了 √n_eff，长时效样本更薄，实际占比会再降一次。下表按轨道归一。</p>
+        {% for trk, obj in lws.items() %}
+        <p class="why"><b>{{ '小时轨' if trk == 'hourly' else '日轨' }}</b>：
+          {% for row in obj.get('rows', []) %}
+          {{ row.from_day }}–{{ row.to_day }}d 名义 {{ '%.0f%%'|format(row.nominal_weight * 100) }}
+          → 实际 <b>{{ '%.1f%%'|format(row.realized_weight_share * 100) }}</b>{% if not loop.last %}；{% endif %}
+          {% endfor %}</p>
+        {% endfor %}
+        {% set ls = ws.get('lead_schemes') or [] %}
+        {% if ls %}
+        <p class="why"><b>换一种 lead 权重，冠军会不会换？</b>
+          {% for s in ls %}{{ s.scheme }} → <b>{{ model_labels.get(s.champion, s.champion) if s.champion else '—' }}</b>{% if not loop.last %}；{% endif %}{% endfor %}。</p>
+        {% endif %}
+        {% set lh = report.meta.get('lead_hours_profile') or {} %}
+        {% if lh %}
+        <p class="why"><b>「提前 N 天」的真实小时数</b>：
+          {% for k, v in lh.items() %}{{ k }} = 提前 {{ v.p50_h }}h（P10 {{ v.p10_h }}h / P90 {{ v.p90_h }}h）{% if not loop.last %}；{% endif %}{% endfor %}。
+          同一日历天桶内的真实提前量并不相同，跨桶比较时请以小时为准。</p>
+        {% endif %}
+      </div>
+    </details>
+    {% endif %}
 
     <details class="fold"><summary>📏 「能报 3 天的和能报 15 天的」为什么能同榜：难度对齐与名次的稳健性</summary>
       <div class="fold-body">
@@ -1092,7 +1183,10 @@
     </div>
     <div id="chartDecay" class="chart"></div>
     <p class="hint">💡 <b>怎么看：</b>线向右下掉是自然规律（越远越难报）；谁在右边还站得高，
-      谁的长期预报就更可靠。线中断 = 该时效样本不足。</p>
+      谁的长期预报就更可靠。线中断 = 该时效样本不足。
+      {% if report.meta.get('score_scheme') == 'skill-v5' %}<b>⚠️ 本曲线是「相对同时效参照」的技巧，不可跨 lead 比较</b>：
+      第 1 天与第 16 天的 50 分都指"打平那一档的参照"，不是同一个绝对水平；
+      参照自身误差的曲线见 §01「参照自身有多准」折叠区。{% endif %}</p>
   </section>
   {% endif %}
 
@@ -1363,21 +1457,24 @@
 
             {% set si = diag.get('slope_influence') or {} %}
             {% if si.get('available') %}
-            <h3>评分斜率的实测影响力：名义权重兑现了吗</h3>
-            <p class="why">一项指标对名次的实际影响力 = <b>名义权重 × 换算斜率 × 数据离散度</b>——
+            {% set _skill = report.meta.get('score_scheme') == 'skill-v5' %}
+            <h3>{% if _skill %}名义权重 vs 兑现份额（技能 s 尺度）{% else %}评分斜率的实测影响力：名义权重兑现了吗{% endif %}</h3>
+            <p class="why">{% if _skill %}兑现份额 = 名义权重 × 子项桶内 sd ÷ Σ(同维全部项)——
+              它回答"这一维内部谁在真正说话"。名义权重是价值判断，兑现份额是当期数据的实现；
+              偏离大时应检查该项是否被缺测/证据门大量剔除（见下方"证据存活率"表）。{% else %}一项指标对名次的实际影响力 = <b>名义权重 × 换算斜率 × 数据离散度</b>——
               三者耦合，只声明前两个，第三个（数据的偶然分布）就会替你决定名次。斜率现已按
               "子分桶内跨源 sd ≈ 8 分"标定（<code>scripts/calibrate_score_slopes.py</code>，
               值随配置季度重标定），下表用本轮真实分桶指标<b>核验</b>标定是否兑现：
               实际占比 / 名义权重 ≈ 1 即达标，逐轨列出。
               单一斜率无法同时把两条轨校准（同一 λ，小时轨与日轨的离散度本就不同），
-              分轨残差由这张表逐项暴露。</p>
+              分轨残差由这张表逐项暴露。{% endif %}</p>
             {% for trk, tw in (si.get('tracks') or {}).items() %}
             <table class="plain">
               <thead><tr><th>轨道·维度</th><th>指标</th><th>换算式</th><th>名义权重</th><th>子分桶内 SD</th><th>实际影响力</th><th>名义 vs 实际</th></tr></thead>
               <tbody>
               {% for r in (tw.get('temp') or []) + (tw.get('precip') or []) %}
                 <tr><td>{{ '小时' if trk == 'hourly' else '日' }}·{{ '温度' if r in (tw.get('temp') or []) else '降水' }}</td>
-                    <td>{{ r.get('key') }}</td><td class="l">{{ r.get('formula') }}</td>
+                    <td>{{ r.get('key') }}</td><td class="l">{{ r.get('formula') or '—' }}</td>
                     <td class="num">{{ '%.3f'|format(r.get('nominal_weight')) }}</td>
                     <td class="num">{{ r.get('swing') }}</td>
                     <td class="num">{{ '%.3f'|format(r.get('effective_share')) }}</td>
@@ -1419,6 +1516,38 @@
                       <td class="num">{{ it.get('sd') }}</td>
                       <td class="num">{{ it.get('corr_with_dim') }}</td></tr>
                 {% endfor %}
+                </tbody>
+              </table>
+              {% endfor %}
+            {% endfor %}
+            {% endif %}
+
+            {% set sv = diag.get('item_survival') or {} %}
+            {% if sv.get('available') and sv.get('tracks') %}
+            <h3>证据存活率与重归一后的有效权重</h3>
+            <p class="why">缺项按剩余权重归一是对的，但"这一维实际由哪几项说话"必须可查。
+              <code>survival_rate</code> = 该子项可换算成技能 s 的格子占比；
+              <code>effective_weight</code> = 存活项名义权重 ÷ 存活权重之和。
+              降水维额外披露<b>证据门通过率</b>：ETS 存活但证据族不完整的格子整维判缺测
+              （不是"表现中等"）。</p>
+            {% for trk, dims in sv.tracks.items() %}
+              {% for dim, x in dims.items() %}
+              <table class="plain">
+                <thead><tr><th>轨道·维度</th><th>子项</th><th>名义权重</th><th>存活率</th><th>有效权重</th></tr></thead>
+                <tbody>
+                {% for it in x.get('items') or [] %}
+                  <tr><td>{{ '小时' if trk == 'hourly' else '日' }}·{{ '温度' if dim == 'temp' else '降水' }}</td>
+                      <td>{{ it.get('key') }}</td>
+                      <td class="num">{{ '%.3f'|format(it.get('nominal_weight')) }}</td>
+                      <td class="num">{{ '%.1f%%'|format(it.get('survival_rate') * 100) }}</td>
+                      <td class="num">{% if it.get('effective_weight') is not none %}{{ '%.3f'|format(it.effective_weight) }}{% else %}—{% endif %}</td></tr>
+                {% endfor %}
+                {% if x.get('evidence_gate') %}
+                  {% set g = x.evidence_gate %}
+                  <tr><td colspan="5" class="num">证据门：通过 {{ g.get('passed') }} 格 / 拒 {{ g.get('rejected') }} 格
+                    （通过率 {{ '%.1f%%'|format(g.get('pass_rate') * 100) if g.get('pass_rate') is not none else '—' }}，
+                    门槛 = 存活权重 ≥ {{ '%.0f%%'|format(g.get('min_weight_frac') * 100) }} 名义总权重且证据族完整）</td></tr>
+                {% endif %}
                 </tbody>
               </table>
               {% endfor %}
