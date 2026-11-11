@@ -1,17 +1,17 @@
 {
-  "n_snapshots": 14375,
-  "merkle_root": "d0006b2deedce9ed7c92903fb2b817540d68600448d556f11e06f70bee65625c",
+  "n_snapshots": 14503,
+  "merkle_root": "f43ca3423cf70d8b2c683eac7231124e99362c79e7940c1c4a73a49592406d44",
   "fetched_first": "2026-09-19T21:50:42",
-  "fetched_last": "2026-11-10T21:26:02",
+  "fetched_last": "2026-11-11T09:51:15",
   "n_without_fetched_at": 4095,
   "n_hash_mismatch": 0,
   "n_legacy_hash": 0,
   "hash_mismatches": [],
-  "n_with_embedded_hash": 10280,
+  "n_with_embedded_hash": 10408,
   "period_label": "2026-11",
-  "generated_at": "2026-11-10 21:00",
+  "generated_at": "2026-11-11 09:00",
   "window": {
     "start": "2026-08-01 00:00",
-    "end": "2026-11-10 21:00"
+    "end": "2026-11-11 09:00"
   }
 }
