@@ -269,6 +269,57 @@ def _verify_daily_temp_halves(lb: dict, lbtemp: dict,
                     "发布契约（键集/精度/半映射）与赋分口径已分叉")
 
 
+def _slim_dvs(node) -> dict | None:
+    """把 `meta.dvs` 压成页面真正要画的部分（体积 ∝ 画的东西）。
+
+    * 保留完整榜行（DVS/T/P 五段、CI、MCS 档、排名区间、技巧寿命、Δ_L1、证据等级）；
+    * 保留对照源与配置快照——它们是"这一分意味着什么"的标尺，页面必须能直接画出
+      灰色参考行；
+    * 丢弃只在服务端用的中间量（`detail.murphy` 之外的大数组、逐站 facts 计数细节
+      只保留摘要）。
+    """
+    if not isinstance(node, dict) or not node:
+        return None
+    if not node.get("available"):
+        return {"available": False, "scheme": node.get("scheme"),
+                "reason": node.get("reason")}
+    board = []
+    for row in node.get("board") or []:
+        board.append({
+            "m": row.get("model"),
+            "s": _r(row.get("score"), 2),
+            "t": {k: _r(v, 3) for k, v in (row.get("temp") or {}).items()},
+            "p": {k: _r(v, 3) for k, v in (row.get("precip") or {}).items()},
+            "cov": _r(row.get("cover"), 2),
+            "ev": row.get("evidence"),
+            "d": row.get("days"), "wd": row.get("window_days"),
+            "av": _r(row.get("avail"), 3),
+            "ci": [_r(x, 2) for x in (row.get("ci90") or [])] or None,
+            "rk": row.get("rank"),
+            "pb": _r(row.get("p_best"), 3),
+            "tier": row.get("mcs_tier"),
+            "dl1": _r(row.get("delta_l1"), 2),
+            "al": _r(row.get("aligned"), 2),
+            "h": ((row.get("lifetime") or {}).get("H")),
+            "rc": _r(row.get("recent"), 2),
+            "dv": _r(row.get("delivered"), 2),
+        })
+    controls = [{"m": c.get("model"), "lb": c.get("label"), "nt": c.get("note"),
+                 "s": _r(c.get("score"), 2)}
+                for c in (node.get("controls") or [])]
+    stations = {sid: {"clim": v.get("climatology_source"),
+                      "tau": v.get("tau_hours"), "fit": v.get("tau_fitted"),
+                      "days": v.get("observed_days")}
+                for sid, v in (node.get("stations") or {}).items()}
+    return {
+        "available": True, "scheme": node.get("scheme"),
+        "doc": node.get("scoring_doc"), "l1": node.get("l1"),
+        "window": node.get("window"),
+        "board": board, "controls": controls, "tiers": node.get("tiers"),
+        "config": node.get("config"), "stations": stations,
+    }
+
+
 def _slim_report(report_data: dict) -> dict:
     """构建内联进页面的**精简数据视图**。
 
@@ -543,6 +594,10 @@ def _slim_report(report_data: dict) -> dict:
         "bucket_sd_R": meta.get("bucket_sd_R"),
         "champion_view": meta.get("champion_view"),
         "composite_share": (meta.get("diagnostics") or {}).get("composite_share"),
+        # dvs-v6：新口径的榜与对照源整块透传。渲染层只在 score_scheme == "dvs-v6"
+        # 时展示它，因此这里不做筛选——**展示决策留给模板，数据层保持完整**，
+        # 归档月报重渲染时同一份数据可以两种口径各画一遍。
+        "dvs": _slim_dvs(meta.get("dvs")),
     }
     return {"meta": slim_meta, "board": board, "lb": lb, "lbtemp": lbtemp,
             "trend": trend,

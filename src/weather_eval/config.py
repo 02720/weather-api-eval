@@ -11,6 +11,35 @@ import yaml
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "stations.yaml"
 
 # 评估默认参数（可被 stations.yaml 的 eval 段覆盖）
+#: dvs-v6 的缺省配置（生产值以 stations.yaml 的 `eval.dvs` 段为准）。
+#: 这里给出的都是**声明过的**参数：每一个都对应一个物理量或一个决策偏好，
+#: 没有一个是"按数据方差反解"出来的标定系数（那正是旧口径 13 个 λ 的病）。
+DEFAULT_DVS = {
+    "alpha_v": 0.50,                    # 温度:降水的宏观业务价值权重
+    "band_weights": [0.30, 0.25, 0.25, 0.12, 0.08],
+    "loss_shape": [0.6, 0.4],           # MAE（线性代价）: RMSE（大错厌恶）
+    "skill_floor": -1.0,                # 温度技能下限（误差达基准两倍）
+    "cost_loss_prior": [2, 5],          # 降水保护成本/灾损比 α ~ Beta(2,5)
+    "cost_loss_grid": 20,
+    "rain_shrink_n0_days": 15,          # 稀疏事件收缩的虚拟事件日数
+    "min_lead_h": 1,                    # 防时效 0 的实况冒充预报
+    "obs_latency_h": 3,                 # 观测入库滞后（基准因果边界）
+    "daily_min_hours": 20,              # 日聚合的最小共同小时数
+    "batch_cluster_min": 30,            # 抓取批次的聚簇窗（分钟）
+    "max_lead_days": 16,
+    "offset_days": 30,                  # 站点静态偏移的因果窗
+    "recent_hours": 3,                  # 最近异常窗
+    "bootstrap_runs": 2000,
+    "min_block_days": 3,
+    "mcs_level": 0.10,
+    "mcs_max_tiers": 5,
+    "l1_baseline": "ecmwf_ifs025",      # 永久免费锚点（Δ_L1 与短窗时期校准）
+    "recent_halflife_days": 45,
+    "enable_controls": True,
+    "enable_bootstrap": True,
+    "climatology_path": "data/climatology/era5land_1991_2020.json",
+}
+
 DEFAULT_EVAL = {
     "score_scheme": "slope-v2",       # 评分口径：stations.yaml 的生产配置显式设为
                                        # skill-v5（2026-11，名次分/技能分双口径）；
