@@ -3622,13 +3622,23 @@
   "2026-11-14T08:00": {
     "time": "2026-11-14T08:00",
     "source": "wd",
-    "temp": 21.3,
-    "pressure": 1010.1,
+    "temp": 22.2,
+    "pressure": 1010.4,
     "humidity": 98.0,
     "rain": 0.0,
     "wind_speed": 0.1,
     "wind_dir": null,
-    "visibility": null
+    "visibility": null,
+    "revisions": [
+      {
+        "at": "2026-11-15T01:58:51",
+        "prev": {
+          "temp": 21.3,
+          "rain": 0.0,
+          "time": "2026-11-14T08:00"
+        }
+      }
+    ]
   },
   "2026-11-14T07:00": {
     "time": "2026-11-14T07:00",
@@ -3859,6 +3869,72 @@
     "rain": 0.0,
     "wind_speed": 0.8,
     "wind_dir": 60.0,
+    "visibility": null
+  },
+  "2026-11-15T01:00": {
+    "time": "2026-11-15T01:00",
+    "source": "wd",
+    "temp": 23.2,
+    "pressure": 1009.2,
+    "humidity": 89.0,
+    "rain": 0.0,
+    "wind_speed": 0.9,
+    "wind_dir": 33.0,
+    "visibility": null
+  },
+  "2026-11-15T00:00": {
+    "time": "2026-11-15T00:00",
+    "source": "wd",
+    "temp": 23.7,
+    "pressure": 1009.8,
+    "humidity": 88.0,
+    "rain": 0.0,
+    "wind_speed": 1.5,
+    "wind_dir": 21.0,
+    "visibility": null
+  },
+  "2026-11-14T23:00": {
+    "time": "2026-11-14T23:00",
+    "source": "wd",
+    "temp": 24.1,
+    "pressure": 1009.9,
+    "humidity": 87.0,
+    "rain": 0.0,
+    "wind_speed": 1.5,
+    "wind_dir": 22.0,
+    "visibility": null
+  },
+  "2026-11-14T22:00": {
+    "time": "2026-11-14T22:00",
+    "source": "wd",
+    "temp": 24.5,
+    "pressure": 1010.0,
+    "humidity": 85.0,
+    "rain": 0.0,
+    "wind_speed": 2.0,
+    "wind_dir": 56.0,
+    "visibility": null
+  },
+  "2026-11-14T21:00": {
+    "time": "2026-11-14T21:00",
+    "source": "wd",
+    "temp": 25.5,
+    "pressure": 1009.6,
+    "humidity": 89.0,
+    "rain": 0.0,
+    "wind_speed": 1.6,
+    "wind_dir": 96.0,
+    "visibility": null
+  },
+  "2026-11-14T20:00": {
+    "time": "2026-11-14T20:00",
+    "source": "wd",
+    "temp": 25.5,
+    "pressure": 1009.1,
+    "humidity": 88.0,
+    "rain": 0.0,
+    "wind_speed": 1.4,
+    "wind_dir": 181.0,
     "visibility": null
   }
 }
