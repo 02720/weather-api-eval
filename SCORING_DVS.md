@@ -2,7 +2,8 @@
 
 > **口径标识**：`score_scheme = dvs-v6`
 > **代码入口**：`src/weather_eval/dvs*.py`（协议 / 基准 / 度量 / 仓 / 推断 / 引擎 / 对照）
-> **状态**：影子口径（与 `skill-v5` 并存，`meta.dvs` 并列发布；切换默认口径见 §9）
+> **状态**：**生产默认口径**（2026-11 起 `config/stations.yaml` 的 `score_scheme: dvs-v6`）。
+> `skill-v5` 保留为影子口径，两套分数并存于同一份 `meta`（见 §9）。
 
 ---
 
@@ -248,11 +249,16 @@ DVS_aligned(m) = DVS(L1; W) + [DVS(m; D_m) − DVS(L1; D_m)]
 | P0 基建 | 静态气候表接口、能力矩阵、统计量仓读写 | ✅ 完成（ERA5 静态表待生成，缺失时降级并披露） |
 | P1 引擎 | `protocol`/`reference`/`dvs`/`stats_store`/`uncertainty`/`controls` 全链路 | ✅ 完成 |
 | P2 影子双跑 | `score_scheme: dvs-v6` 时两套分数并存于 `meta`，旧榜照常产出 | ✅ 已就绪 |
-| P3 正式切换 | 报告主页面按 `score_scheme` 展示 DVS 榜 | ⏳ 渲染层接入 |
+| P3 正式切换 | 生产 `score_scheme: dvs-v6`；`_slim_dvs` 输出新榜与对照行 | ✅ 2026-11 完成 |
 | P4 清理 | 归档 `two_way_adjust`/`eb_shrink`/`λ` 标定脚本 | ⏳ 待切换后 |
 
-**切换方式**：把 `config/stations.yaml` 的 `score_scheme` 改为 `dvs-v6` 即可；旧月报按
-各自的 `meta.score_scheme` 回放，不受影响。
+**切换方式**：`config/stations.yaml` 的 `score_scheme` 即开关——`dvs-v6` 时新榜并行写入
+`meta.dvs`、旧榜照常产出；改回 `skill-v5` 即回到单一旧口径（DVS 一行都不跑）。
+历史月报按各自的 `meta.score_scheme` 回放，不受影响。
+
+**代价**：dvs-v6 的构建明显更慢（全链路需重算 L0 基准与逐日充分统计量，并跑配对块自助）。
+`eval.dvs.bootstrap_runs` 默认取 200（白皮书曾建议 2000）——取舍理由与精度影响见
+`dvs_uncertainty.DEFAULT_RUNS` 的注释；需要更窄区间时把它调大即可。
 
 ---
 

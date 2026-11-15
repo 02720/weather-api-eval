@@ -1524,7 +1524,7 @@ def precip_amount_metrics(obs_vals, fcst_vals, min_sample,
     #   * 空报必罚：干样本 O=0 而 F>0 直接进分子；
     #   * 可加充分统计量（Σo / n / Σ|f−o|），bootstrap 可逐位重算。
     # 不做硬截断，交给 `_soft_skill` 渐近压缩（恢复"不硬触底"的声明）。
-    if SCORE_SCHEME in ("skill-v5", "dvs-v6") and amt_floor is not None:
+    if is_v5_family() and amt_floor is not None:
         den = max(so, float(amt_floor) * n)
         if den > 0:
             s = 1.0 - float(np.abs(f - o).sum()) / den
@@ -1987,11 +1987,23 @@ PRECIP_SKILL_ATTRIBUTES = ("pod", "far", "bias", "amt_bias", "amt_mae")
 SCORE_SCHEME = "slope-v2"
 SCORE_SKILL_K = 1.535
 SCORE_SKILL_CENTER = 50.0
-# dvs-v6 沿用 skill-v5 的**影子口径**：旧榜仍然算出来（P2 双跑期需要两套分数并存），
-# 只是 meta.dvs 会额外挂上新榜、渲染层按 score_scheme 决定展示哪一套。
-# 把 dvs-v6 放进这里，是为了让所有"skill 家族"的分支（软压缩、展示增益、
-# 指数权重）在影子口径上也一致，而不是让 dvs-v6 落进 slope-v2 的旧分支。
+#: "技能量表"家族：这些口径的分都是 50=无技巧 / 100=完美（相对 slope-v2 的
+#: 0~100 换算分）。`dvs-v6` 必须在这里——它的**影子旧榜**就是 v5 量表。
 SKILL_SCHEMES = ("skill-v3", "skill-v4", "skill-v5", "dvs-v6")
+
+#: **影子口径**：`dvs-v6` 的旧榜必须与 `skill-v5` 逐位相同。
+#:
+#: 为什么单独一张表而不是把 "dvs-v6" 塞进 `SKILL_SCHEMES`：那张表分流的是
+#: "v3/v4/v5 之间的差异"，而 v5 内部还有若干只在 v5 生效的分支（σ 收缩、
+#: 软压缩参数、10 段 lead 权重）。把 dvs-v6 混进去会让它一路落进 v3/v4 的老分支，
+#: 影子榜与基线漂移（实测 Golden 前 7 名里有 6 名错位）。
+#: 这里显式列出"v5 的全部判据"，让 dvs-v6 **精确继承 skill-v5**。
+SHADOW_OF_V5 = ("skill-v5", "dvs-v6")
+
+
+def is_v5_family(scheme: str | None = None) -> bool:
+    """当前口径是否按 **skill-v5 语义**计算（dvs-v6 的影子榜即走这条）。"""
+    return (SCORE_SCHEME if scheme is None else scheme) in SHADOW_OF_V5
 
 # skill-v4：雨量技能分母下限（mm；按轨分别配置）与校准扣分项的下行预算。
 SCORE_AMT_FLOOR_HOURLY = 0.05
@@ -2249,7 +2261,7 @@ def _skill_value(key: str, metrics: dict) -> float | None:
         if m is None or r is None or r <= 0:
             return None
         raw = float(1.0 - float(m) / float(r))
-        return _soft_skill(raw) if SCORE_SCHEME in ("skill-v5", "dvs-v6") else \
+        return _soft_skill(raw) if is_v5_family() else \
             max(-1.0, min(1.0, raw))
     if key in ("acc1", "acc2"):
         a = metrics.get(key)
@@ -2260,7 +2272,7 @@ def _skill_value(key: str, metrics: dict) -> float | None:
         ar = float(ar) / 100.0
         if ar >= 1.0:
             return 1.0 if a >= 1.0 else None
-        if SCORE_SCHEME in ("skill-v5", "dvs-v6"):
+        if is_v5_family():
             # 对称命中：分段线性（上侧 /(1−a_ref)、下侧 /a_ref）。
             # 旧实现用 Möbius 归一，局部斜率随 a_ref 漂移（同一 +5pp 改进在
             # a_ref=0.95 时直接满分、在 0.70 时只值 1/3），是一个未声明的
@@ -2278,13 +2290,13 @@ def _skill_value(key: str, metrics: dict) -> float | None:
         # 是"参照自己与观测的相关"，把它填进模型技能是语义错误（发现 23）。
         if v is None:
             return None
-        return _soft_skill(float(v)) if SCORE_SCHEME in ("skill-v5", "dvs-v6") else \
+        return _soft_skill(float(v)) if is_v5_family() else \
             max(-1.0, min(1.0, float(v)))
     if key in ("ets", "grade_ets", "ord_skill"):
         v = metrics.get(key)
         if v is None:
             return None
-        if SCORE_SCHEME in ("skill-v5", "dvs-v6"):
+        if is_v5_family():
             # 同类朴素参照的最佳值是 ETS 的**可达上界**：0.05 的 ETS 在
             # "上界=1"的旧读法里像 5% 的技巧，在这里显式声明它不是满分制 5%。
             den = max(1.0 - float(SCORE_REACH_PRECIP_BEST),
@@ -2302,7 +2314,7 @@ def _skill_value(key: str, metrics: dict) -> float | None:
         v = metrics.get("amt_skill")
         if v is None:
             return None
-        return _soft_skill(float(v)) if SCORE_SCHEME in ("skill-v5", "dvs-v6") else \
+        return _soft_skill(float(v)) if is_v5_family() else \
             max(-1.0, min(1.0, float(v)))
     return None
 
@@ -2447,7 +2459,7 @@ def skill_display(x):
     这正是"综合分与两维列可逐位复算"的前提；指数映射会破坏该恒等式。
     """
     arr = np.asarray(x, dtype=float)
-    if SCORE_SCHEME in ("skill-v5", "dvs-v6"):
+    if is_v5_family():
         with np.errstate(invalid="ignore"):
             out = 50.0 + float(SCORE_V5_DISPLAY_GAIN) * (arr - 50.0)
         out = np.clip(out, 0.0, 100.0)
@@ -2584,7 +2596,7 @@ def _composite_score(ts: float | None, ps: float | None) -> float | None:
     """
     if ts is None or ps is None:
         return None
-    if SCORE_SCHEME in ("skill-v5", "dvs-v6"):
+    if is_v5_family():
         a = float(SCORE_COMPOSITE_ALPHA)
         return round(a * float(ts) + (1.0 - a) * float(ps), 2)
     return _mean2(ts, ps)
@@ -2762,7 +2774,7 @@ def temp_score(t: dict, absent_families: set[str] | None = None) -> float | None
             return None
         q = _weighted_penalty(((_q_mbe(t), 0.60), (_q_slope(t), 0.40)))
         return float(50.0 + 50.0 * (s - SCORE_PENALTY_LAMBDA_TEMP * q))
-    if SCORE_SCHEME in ("skill-v5", "dvs-v6"):
+    if is_v5_family():
         # 对称化（发现 15）：温度维不再有 MBE/slope 扣分预算，与降水维
         # （BIAS 只披露）对称。MBE/slope 仍作为属性列随行披露。
         # 证据族门（2026-11 B4）：族在源级可用、本格缺 → 半截证据判缺测；
@@ -2923,7 +2935,7 @@ def precip_score(p: dict, absent_families: set[str] | None = None) -> float | No
         q = _q_fbias(p)
         return float(50.0 + 50.0 * (
             s - SCORE_PENALTY_LAMBDA_PRECIP * (0.0 if q is None else q)))
-    if SCORE_SCHEME in ("skill-v5", "dvs-v6"):
+    if is_v5_family():
         # P1-4：BIAS 是 POD/(1−FAR) 的恒等式函数，与 ETS 同源；再扣一次
         # 是重复计罚，且 |log₂BIAS|/3 在实际区间几乎全员同罚、无区分度。
         # BIAS 与 CI 保留为披露列，不再占降水分预算。
@@ -4050,7 +4062,7 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
                                DEFAULT_EVAL.get("score_ref_min_days", 5)))
     ref_index = _build_reference_index(
         station_ids, obs_maps, window_days=ref_window, min_days=ref_min,
-        mode=(SCORE_REF_MODE if SCORE_SCHEME in ("skill-v5", "dvs-v6") else "target"),
+        mode=(SCORE_REF_MODE if is_v5_family() else "target"),
         daily_min_hours=int(daily_min_hours))
     excluded_incomplete = _count_incomplete(snapshots)
     collect_stats: dict = {}
@@ -4487,12 +4499,12 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
     logger.info("权重敏感性（分块面板）用时 %.1fs",
                 _time.perf_counter() - _t_ws)
     _ws_parts = ((TEMP_SKILL_PARTS, PRECIP_SKILL_PARTS)
-                 if SCORE_SCHEME in SKILL_SCHEMES
+                 if SCORE_SCHEME in SKILL_SCHEMES or is_v5_family()
                  else (TEMP_SCORE_PARTS, PRECIP_SCORE_PARTS))
     # lead 权重方案敏感性（发现 10）：当前 / 等权 / 只到 7d。与点估计同一张
     # 设计、同一批列、同一个 rank_score 矩阵，只改格子权重。
     lead_schemes: list[dict] = []
-    if SCORE_SCHEME in ("skill-v5", "dvs-v6") and all_win:
+    if is_v5_family() and all_win:
         lead_schemes = _lead_weight_sensitivity(
             models, resolution_out["scores"]["all"],
             resolution_out["weights"].get("all"),
@@ -4561,7 +4573,7 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
             "score_ref_min_days": int(ref_min),
             # 参照是共同标尺：模式与平滑窗必须可复核；固定气候态不再有
             # "跨站收缩先验"这个参与缓存却不参与计算的死参数（2026-11）。
-            "score_ref_mode": (SCORE_REF_MODE if SCORE_SCHEME in ("skill-v5", "dvs-v6")
+            "score_ref_mode": (SCORE_REF_MODE if is_v5_family()
                                else "target"),
             "score_ref_smooth_days": int(SCORE_REF_SMOOTH_DAYS),
             "score_reliability_exit": float(SCORE_RELIABILITY_EXIT),
@@ -4582,15 +4594,15 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
             "score_skill_penalties": {
                 "temp": {"mbe_share": 0.60, "slope_share": 0.40,
                          # skill-v5：MBE/slope 退出扣分预算（只披露），与降水对称
-                         "lambda": (0.0 if SCORE_SCHEME in ("skill-v5", "dvs-v6")
+                         "lambda": (0.0 if is_v5_family()
                                     else float(SCORE_PENALTY_LAMBDA_TEMP)),
-                         "max_points": (0.0 if SCORE_SCHEME in ("skill-v5", "dvs-v6")
+                         "max_points": (0.0 if is_v5_family()
                                         else round(50.0 * SCORE_PENALTY_LAMBDA_TEMP, 2))},
                 # skill-v5：BIAS 是列联表恒等式，退出扣分预算（只披露）。
                 "precip": {"bias_share": 1.0,
-                           "lambda": (0.0 if SCORE_SCHEME in ("skill-v5", "dvs-v6")
+                           "lambda": (0.0 if is_v5_family()
                                       else float(SCORE_PENALTY_LAMBDA_PRECIP)),
-                           "max_points": (0.0 if SCORE_SCHEME in ("skill-v5", "dvs-v6")
+                           "max_points": (0.0 if is_v5_family()
                                           else round(50.0 * SCORE_PENALTY_LAMBDA_PRECIP, 2))},
             },
             "score_amt_floors": {
@@ -4602,17 +4614,17 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
                 "temp": ("50=与固定日历气候态打平（同一（站, 有效时刻）对所有源、"
                          "所有起报日共用；参照难度与 lead 无关）；"
                          "100=正向技能完美"
-                         if SCORE_SCHEME in ("skill-v5", "dvs-v6") else
+                         if is_v5_family() else
                          "50=与 15 天气候参照打平；100=正向技能完美且校准不差于参照"),
                 "precip": (("50=ETS 0（同边际随机）；BIAS 只披露、不扣分"
-                            if SCORE_SCHEME in ("skill-v5", "dvs-v6") else
+                            if is_v5_family() else
                             "50=ETS 0（同边际随机）且 BIAS=1；"
                             "永远报零雨因 BIAS=0 会低于 50")),
                 "composite": ("50=两维均打平同类参照的技能综合分 S（绝对尺度）"
-                              if SCORE_SCHEME in ("skill-v5", "dvs-v6") else
+                              if is_v5_family() else
                               "50=两维各半的组合零点，不对应单一预报"),
                 "rank": ("50=本档同台平均水平；σ/τ 冻结后，温度与降水按 α 贡献"
-                         "名次方差" if SCORE_SCHEME in ("skill-v5", "dvs-v6") else None),
+                         "名次方差" if is_v5_family() else None),
             },
             # skill-v5 双综合分定义与冻结参数：S 用于 §02 绝对曲线，R 用于
             # 总榜/分时效榜名次；两者不可互相替代（AX3 一号一义）。
@@ -5197,7 +5209,7 @@ def _weight_sensitivity_champions_panel(
         if m not in qualified:
             t_sub[i, :, :] = np.nan
             p_sub[i, :, :] = np.nan
-    _rank_normalize = SCORE_SCHEME in ("skill-v5", "dvs-v6")
+    _rank_normalize = is_v5_family()
     # A1.4：敏感性链传入**基线池化 ρ**（扰动的是权重不是数据，ρ 的变化是二阶）
     rho_t_base = rho_p_base = None
     if _rank_normalize:
@@ -5651,7 +5663,7 @@ def _track_lead_boards(models, track: str, src: dict, days: int) -> dict[str, li
         # skill-v5：同一桶内的分数先做桶内标准化（R），名次由 R 决定；
         # 绝对技能分 S 仍以 temp_skill/precip_skill 随行发布，供 §02 对照。
         rank_map = (_bucket_rank_rows([(m, ts, ps) for m, _t, _p, ts, ps in cells])
-                    if SCORE_SCHEME in ("skill-v5", "dvs-v6") else None)
+                    if is_v5_family() else None)
         rows = []
         for m, t, p, ts, ps in cells:
             if rank_map is not None:
@@ -5747,7 +5759,7 @@ def _combined_day_boards(models, track_sources, days: int,
             cells.append((m, t_row, p_row, t_s, p_s,
                           _track_mean(comp_h, comp_d, daily_track_weight)))
         rank_map = (_bucket_rank_rows([(m, t_s, p_s) for m, _tr, _pr, t_s, p_s, _c in cells])
-                    if SCORE_SCHEME in ("skill-v5", "dvs-v6") else None)
+                    if is_v5_family() else None)
         rows = []
         for m, t_row, p_row, t_s, p_s, comp in cells:
             if rank_map is not None:
@@ -6293,7 +6305,7 @@ def _block_panel(models, blocks, hourly, daily, *, obs_maps, station_ids,
     if ref_index is None:
         ref_index = _build_reference_index(
             station_ids, obs_maps,
-            mode=(SCORE_REF_MODE if SCORE_SCHEME in ("skill-v5", "dvs-v6") else "target"))
+            mode=(SCORE_REF_MODE if is_v5_family() else "target"))
     model_set = set(models)
     day_map: dict[str, str] = {}
     for b in blocks:
@@ -6680,7 +6692,7 @@ def _panel_matrices(models: list[str], panel: dict, blocks: list[dict],
                     v = vals.get(key)
                     if v is not None:
                         mats[key][mi, col] = v
-    if SCORE_SCHEME in ("skill-v5", "dvs-v6"):
+    if is_v5_family():
         mats = _attach_rank_matrices(mats, n_blocks=K, days=days)
     return mats
 
@@ -7053,7 +7065,7 @@ def _panel_track_tensor_skill(models, panel, blocks, track, parts, days):
                 else:
                     if alive.get("ets") is None:
                         T[mi, col, :] = np.nan
-                    elif SCORE_SCHEME in ("skill-v5", "dvs-v6") and not _precip_evidence_family_ok(
+                    elif is_v5_family() and not _precip_evidence_family_ok(
                             parts, alive, families=PRECIP_SKILL_FAMILIES):
                         T[mi, col, :] = np.nan
     return T
@@ -7157,7 +7169,7 @@ def _apply_lead_weights(W, S: np.ndarray, name: str, K: int, H: int, D: int):
     的 w_b 除以该段 √n_eff 的典型值（列中位数），使 w_b 表达的是**相对偏好**
     而不是绝对缩放；实际份额因此接近名义，且不再随覆盖长度二次衰减。
     """
-    if SCORE_SCHEME != "skill-v5":
+    if not is_v5_family():
         return W
     lw = _lead_weight_columns(name, K, H, D)[None, :]
     V = np.isfinite(S)
@@ -7337,7 +7349,7 @@ def _resolution_boards_blocks(
         # skill-v5：总榜/分轨榜的名次依据是**桶内名次分 R**；技能分 S 只进
         # §02 走势图。v3/v4 回放仍用 composite=S，历史归档不受影响。
         S0 = (spec["mat"]["rank_score"]
-              if SCORE_SCHEME in ("skill-v5", "dvs-v6") else spec["mat"]["composite"])
+              if is_v5_family() else spec["mat"]["composite"])
         W0, _cell_min_w = _board_cell_weights(spec["mat"]["neff_t"],
                                               spec["mat"]["neff_r"],
                                               cell_weighting, min_cell_neff)
@@ -7543,7 +7555,7 @@ def _resolution_boards_blocks(
         S = d["S"]
         W = d["W_cell"] if d["W_cell"] is not None else np.where(
             np.isfinite(S) & np.asarray(d["adj"]["cell_valid"], dtype=bool), 1.0, 0.0)
-        if SCORE_SCHEME in ("skill-v5", "dvs-v6"):
+        if is_v5_family():
             # A6：CI 不由单列 rank_score 单独劈分，而是把**两维贡献**分别走
             # 与点估计同一套逐列 EB，再按 R = t_c + p_c − 50 合成。这样
             # 榜面分、分解列与 CI 中心是同一个泛函。
@@ -8013,7 +8025,7 @@ def _build_board_rows(models, name, design, *, by_model,
     _METRIC_COLS = ("acc2", "rmse", "acc1", "mae", "mbe", "r", "slope",
                     "mbe_bdisp", "ts", "ets", "accr", "pod", "far", "bias",
                     "amt_mae", "amt_bias", "grade_ets")
-    if SCORE_SCHEME in ("skill-v5", "dvs-v6"):
+    if is_v5_family():
         _ALIGNED_KEYS = ("temp_contrib", "precip_contrib", "rank_score",
                          "temp_score", "precip_score", *_METRIC_COLS)
     else:
@@ -8049,7 +8061,7 @@ def _build_board_rows(models, name, design, *, by_model,
                              - beta_i[None, :], 0.0)
             rb, wb = _stats.block_residuals(resid, Wres, block_ids, n_blocks)
             present = np.isfinite(rb) & (wb > 0)
-            if SCORE_SCHEME in ("skill-v5", "dvs-v6"):
+            if is_v5_family():
                 # v5 的综合分由 tc+pc−50 构造，不依赖"各列同尺"，因此收缩
                 # 系数必须**逐列**估计：拿温度列的 τ/σ 去收缩降水列，会把
                 # 降水真实信号当成噪声压掉（实测降水贡献 sd 1.74→0.49）。
@@ -8062,7 +8074,7 @@ def _build_board_rows(models, name, design, *, by_model,
             row_keep[None, :],
             np.asarray(a_mu, dtype=float)[:, None] + alpha_shrunk, np.nan)
         aligned = {k: aligned_mat[i] for i, k in enumerate(_ALIGNED_KEYS)}
-        if SCORE_SCHEME in ("skill-v5", "dvs-v6"):
+        if is_v5_family():
             # 名次分 R 与其两维分解：t_contrib + p_contrib − 50 = R。
             # 三者走同一张设计、同一组权重、同一套 EB，恒等式逐行成立。
             tc = aligned["temp_contrib"]
@@ -8121,7 +8133,7 @@ def _build_board_rows(models, name, design, *, by_model,
                                           f["d_temp"], f["d_rain"])
         neff, neff_rain = neff_t_map.get(m), neff_r_map.get(m)
         score_raw = _fin(aligned["composite"][i], 2)
-        if SCORE_SCHEME in ("skill-v5", "dvs-v6"):
+        if is_v5_family():
             # 总榜的 score/temp/precip 三列是 R 与 R 的两维分解；
             # temp_skill/precip_skill 另行保留绝对技能分（§02 同尺）。
             t_score = _fin(aligned["temp_contrib"][i], 2)
@@ -8225,7 +8237,7 @@ def _build_board_rows(models, name, design, *, by_model,
             # 全 lead 的配对数（含起报当日）：明细口径核对用，不参与名次
             n_all_leads=n_all_leads,
             n_buckets=int(np.isfinite(
-                mat["rank_score" if SCORE_SCHEME in ("skill-v5", "dvs-v6") else "composite"][i]).sum()),
+                mat["rank_score" if is_v5_family() else "composite"][i]).sum()),
             lead_days=_max_or_none(lead_temp, lead_rain),
             rain_days=lead_rain,
             lead_temp_days=lead_temp,

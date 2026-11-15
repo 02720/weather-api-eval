@@ -1,6 +1,14 @@
 # 评分口径（单一事实源）
 
-本文件是 **skill-v5 生产口径**的唯一文字定义源。代码里的权重表
+> ⚠️ **2026-11 口径切换**：生产默认口径已改为 **`score_scheme=dvs-v6`**
+> （增量决策价值分）。**新口径的唯一定义源是 [SCORING_DVS.md](SCORING_DVS.md)**；
+> 本文件保留为 **skill-v5 影子口径**（以及 slope-v2/v3/v4 历史口径回放）的定义源。
+> 切换后 `build_report` 仍按 skill-v5 算全套旧榜并写进同一份 meta，
+> dvs-v6 的榜并行写进 `meta.dvs`——两套分数可对照，旧月报按各自
+> `meta.score_scheme` 回放，不受影响。把 `config/stations.yaml` 的
+> `score_scheme` 改回 `skill-v5` 即回到单一旧口径。
+
+本文件是 **skill-v5 影子口径**的唯一文字定义源。代码里的权重表
 （`TEMP_SKILL_PARTS` / `PRECIP_SKILL_PARTS`）、配置（`config/stations.yaml`）、
 报告页"评分构成"表与测试都以此为准；任何一处改动必须同步本文件，
 `tests/test_scoring_contract.py` 会在 CI 里逐项对拍。

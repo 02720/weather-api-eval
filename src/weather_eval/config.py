@@ -29,7 +29,7 @@ DEFAULT_DVS = {
     "max_lead_days": 16,
     "offset_days": 30,                  # 站点静态偏移的因果窗
     "recent_hours": 3,                  # 最近异常窗
-    "bootstrap_runs": 2000,
+    "bootstrap_runs": 200,
     "min_block_days": 3,
     "mcs_level": 0.10,
     "mcs_max_tiers": 5,

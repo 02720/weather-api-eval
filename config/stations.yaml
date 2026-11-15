@@ -112,7 +112,14 @@ eval:
   #   · 名次分 R：桶内标准化（μ/σ 扣掉该档难度与两维离散度差），喂给总榜/分时效榜
   #   · 技能分 S：α·T+(1−α)·P 的绝对尺度，喂给 §02 走势图，不做桶内标准化
   # 50/100 在 S 上仍是"打平同类朴素参照 / 完美"；R 的 50 是"本档同台平均"。
-  score_scheme: skill-v5
+  #
+  # 2026-11 起**生产口径切换为 dvs-v6**（增量决策价值分，见 SCORING_DVS.md）。
+  # skill-v5 保留为影子口径：build_report 仍按 skill-v5 算出全套旧榜
+  # （meta.score_scheme="dvs-v6" 时 SKILL_SCHEMES 家族分支照常生效），
+  # 新口径的榜并行写进 meta.dvs。这样切换是**纯增量**：旧结论可回放、
+  # 新结论可对照，任何时候把这里改回 skill-v5 即回到单一旧口径。
+  # 历史月报按各自 meta.score_scheme 回放，不受本次切换影响。
+  score_scheme: dvs-v6
   # —— dvs-v6（2026-11，增量决策价值分，见 SCORING_DVS.md）——
   # 一句话定义：在用户实际发起请求的决策时刻 t_run，用该源的预报替代一套免费、
   # 因果可得的无技巧基准（L0），在声明的时效与决策权重下平均消除了多少决策损失。
@@ -143,7 +150,8 @@ eval:
                                        # 静态 ERA5-Land 1991–2020 气候表；缺失时退回
                                        # 站点自有观测的因果气候态并在报告里披露
     l1_baseline: ecmwf_ifs025          # 永久免费锚点：Δ_L1 与短窗新源时期校准
-    bootstrap_runs: 2000               # 配对平稳块自助次数
+    bootstrap_runs: 200                # 配对平稳块自助次数（成本与精度的显式取舍，见
+                                       # dvs_uncertainty.DEFAULT_RUNS 的说明）
     min_block_days: 3                  # 块长下限（天气尺度）
     mcs_level: 0.10                    # 模型置信集显著性水平
     mcs_max_tiers: 5
