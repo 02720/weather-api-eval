@@ -245,10 +245,10 @@ def test_evidence_tier_thresholds():
 
 # ---------------------------------------------------------------- 旁路隔离
 def test_dvs_is_opt_in_and_does_not_touch_other_schemes():
-    """DVS 只在 `score_scheme == "dvs-v6"` 时构建（旁路，不拖慢/不改动旧口径）。
+    """DVS 只在 `score_scheme == "dvs-v6"` 时构建（旁路叠加，不替换旧口径）。
 
-    这条测试守的是一个具体的承诺：**把默认口径留给 skill-v5 时，DVS 一行代码都
-    不跑**。它同时解释了为什么基线性能预算不受影响——两条路径互斥。
+    守两个承诺：①改回 `skill-v5` 即回到单一旧口径（DVS 一行都不跑）；
+    ②切换后 skill 家族分支（影子旧榜）仍然生效，两套分数并存可对照。
     """
     import inspect
     from weather_eval import evaluate
@@ -259,6 +259,6 @@ def test_dvs_is_opt_in_and_does_not_touch_other_schemes():
     # 影子口径：dvs-v6 与 skill 家族走同一套旧分支（旧榜照常产出）
     assert "dvs-v6" in evaluate.SKILL_SCHEMES
     assert "skill-v5" in evaluate.SKILL_SCHEMES
-    # 默认口径不动：生产配置仍是 skill-v5，DVS 是显式开关
+    # 生产配置已于 2026-11 切换为 dvs-v6（本测试守的就是这个开关本身）
     from weather_eval.config import load_config
-    assert load_config().eval.get("score_scheme") == "skill-v5"
+    assert load_config().eval.get("score_scheme") == "dvs-v6"

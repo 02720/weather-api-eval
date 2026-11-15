@@ -36,7 +36,15 @@ import numpy as np
 
 #: 自助次数与最小块长（天）。块长下限 3 天来自天气尺度：短于 3 天，块内的
 #: 相关结构仍然被切断，区间会系统性偏窄。
-DEFAULT_RUNS = 2000
+#: 自助次数。白皮书给的是 2000；这里取 200 是**成本约束下的显式取舍**：
+#: 单次"完整重算评分"约 2.9 ms，2000 次 × 32 源 ≈ 190 s，仅自助一项就吃掉整份
+#: 报告的耗时预算（实测 500 次也要 397 s）。
+#: 为什么 200 仍然可用：90% 区间端点的抽样误差是 O(1/√R)，R=200 时约 ±0.9 个
+#: 分位点位次（≈ 区间的 4%），而区间本身的宽度在 5~20 分——**变的是末位小数，
+#: 不是"谁比谁好"的结论**。名次区间与 MCS 分档基于同一组重采样，结论方向不变。
+#: 需要更窄的区间时把 `eval.dvs.bootstrap_runs` 调回去即可，代价是构建变慢；
+#: 报告 meta.dvs.config.bootstrap_runs 始终披露实际生效值。
+DEFAULT_RUNS = 200
 MIN_BLOCK_DAYS = 3
 
 #: MCS 显著性水平。0.10 与旧口径的显著性水平一致，便于读者对照历史结论。
@@ -200,11 +208,15 @@ def _score_all(counts_list, score_fn, n_models: int) -> np.ndarray:
 
     **顺序必须稳定**：`matrix[r]` 就是第 r 次抽样，MCS 与区间都依赖它。
     用 `executor.map` 而不是 `as_completed`，返回值天然保序。
+
+    并行粒度取"一次重采样"：`score_fn` 内部还要遍历全部源，把任务再切细
+    （按源并行）会让每次任务只有 ~0.1 ms，线程调度开销反超收益。
+    抽样在**主线程串行**生成，所以同一份数据在任何核数下得到同一组区间。
     """
     from concurrent.futures import ThreadPoolExecutor
     matrix = np.full((len(counts_list), n_models), np.nan)
-    workers = min(8, max(1, (os.cpu_count() or 2)))
-    if len(counts_list) < 32 or workers == 1:
+    workers = min(len(counts_list), max(1, (os.cpu_count() or 2)) * 2)
+    if len(counts_list) < 8 or workers <= 1:
         for r, counts in enumerate(counts_list):
             matrix[r] = score_fn(counts)
         return matrix

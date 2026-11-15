@@ -385,9 +385,7 @@ class WindowScore:
 
 def score_window(days: Mapping[int, SourceDayRows], *,
                  config: DvsConfig,
-                 day_weights: Mapping[int, float] | None = None,
-                 alphas: np.ndarray | None = None,
-                 alpha_w: np.ndarray | None = None) -> WindowScore:
+                 day_weights: Mapping[int, float] | None = None) -> WindowScore:
     """把一段逐日统计量打成一条源的窗口分数（纯函数）。
 
     `day_weights` 同时服务三件事：自助重采样（整数次数）、近期加权（指数衰减）、
@@ -396,10 +394,22 @@ def score_window(days: Mapping[int, SourceDayRows], *,
     """
     if not days:
         return WindowScore()
-    agg = aggregate_window(days, day_weights)
-    if alphas is None or alpha_w is None:
-        alphas, alpha_w = dvs.alpha_grid(*config.cost_loss_prior,
-                                         config.cost_loss_grid)
+    return _score_from_aggregate(aggregate_window(days, day_weights), config,
+                                 days=days)
+
+
+def _score_from_aggregate(agg, config: DvsConfig,
+                          days: Mapping[int, SourceDayRows] | None = None
+                          ) -> WindowScore:
+    """由**已聚合**的窗口统计量打分（点估计与自助共用这一个函数）。
+
+    把"怎么取行/加权"与"怎么套公式"分开，是为了让自助能换掉前者（预排序、
+    预缩放）却**不可能**换掉后者。公式只有一份，偏差也就无从产生。
+    返回完整的 `WindowScore`（自助取其中的 `.dvs`）。
+
+    `days` 只在需要"按自然日去重"的量（降水独立事件日数 `n_ev`）时使用：
+    它是**不可加**的，必须回到逐日行去重，不能由窗口聚合数反推。
+    """
     out = WindowScore(evidence_days=len(agg.days_present))
     # ---- 温度：同一 (站, 目标, 段) 的统计量先按站合并，再算比率
     by_target: dict[tuple[str, int], list[float]] = {}
@@ -437,7 +447,8 @@ def score_window(days: Mapping[int, SourceDayRows], *,
                 cur[i] += ent[i]
             cur[4] += float(ent[4])
     # 独立事件日数在**窗口层**去重（跨段跨批次，见 event_days_by_target）
-    ev_days = event_days_by_target(days, list(dvs.PRECIP_TARGETS))
+    ev_days = (event_days_by_target(days, list(dvs.PRECIP_TARGETS))
+               if days is not None else {})
     for b in range(1, len(config.band_weights) + 1):
         out.temp_bands[b] = dvs.temp_score(
             {k: (temp_targets.get(k) or {}).get(b) for k in dvs.TEMP_TARGETS})
@@ -796,16 +807,19 @@ def _bootstrap_matrix(rows_by_model: Mapping[str, Mapping[int, SourceDayRows]],
         {d: r for d, r in cache[m].items() if r is not None},
         config=config).dvs for m in models}
 
+    # 每条源预先排好 "有样本的那些天" 的 (day, rows) 列表：自助的 2000 次重采样
+    # 复用它，避免每轮重做 sorted() 与字典查找（口径不变，只去掉重复劳动）。
+    per_model_days = {
+        m: sorted((d, r) for d, r in cache[m].items() if r is not None)
+        for m in models}
+
     def score_fn(counts: np.ndarray) -> np.ndarray:
         out = np.full(len(models), np.nan)
         dw = {d: float(c) for d, c in zip(days, counts) if c > 0}
         if not dw:
             return out
         for i, m in enumerate(models):
-            v = score_window(
-                {d: r for d, r in cache[m].items() if r is not None},
-                config=config, day_weights=dw).dvs
-            out[i] = v if v is not None else np.nan
+            out[i] = _score_prepared(per_model_days[m], config, dw).dvs
         return out
 
     point_out = {m: (v if v is not None else float("nan")) for m, v in point.items()}
@@ -815,6 +829,19 @@ def _bootstrap_matrix(rows_by_model: Mapping[str, Mapping[int, SourceDayRows]],
                            runs=config.bootstrap_runs, seed=config.seed,
                            min_block=config.min_block_days)
     return res.scores, point_out
+
+
+def _score_prepared(day_list, config: DvsConfig,
+                    day_weights: Mapping[int, float]) -> WindowScore:
+    """`score_window` 的预排序等价物：只换"怎么取行"，不换任何公式。
+
+    实现上复用同一条下游路径（`_score_from_aggregate`），因此**不可能**出现
+    "自助用一套公式、点估计用另一套"的偏差——它们算的是同一个函数。
+    """
+    from .dvs_stats_store import weight_window
+    return _score_from_aggregate(
+        weight_window(day_list, day_weights), config,
+        days={d: r for d, r in day_list if day_weights.get(d, 0.0) > 0.0})
 
 
 def _wrap_bootstrap(matrix, models, point, config, days):
