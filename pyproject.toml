@@ -59,6 +59,20 @@ packages = ["weather_eval", "weather_eval.forecast", "weather_eval.obs",
 [tool.uv]
 override-dependencies = ["pint==0.24.4"]
 
+# 类型检查闸门（2026-11 优化轮）。此前 mypy 在 dev 依赖里、CI 却从不运行，
+# 于是 280 处类型债静默累积，其中不少是运行期真缺陷（None 未收窄、异构 dict
+# 推断错、外部响应缺字段）。分阶段启用：先锁住已清理的边界模块（provider /
+# 存档 / 渲染 / 协议），评分内核（evaluate/stats/dvs_engine/diagnostics）保留
+# 到下一轮——一次全量开启等于把"类型债"变成"几百行 # type: ignore"，那不是
+# 优化而是把问题藏进注释。
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+follow_imports = "silent"
+warn_unused_ignores = false
+# 逐模块推进：新增模块若已注解完整，从 exclude 里删掉即自动纳入检查。
+exclude = "(^|/)(evaluate|stats|dvs_engine|dvs_reference|diagnostics|parallel|graded|config)\\.py$"
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]

@@ -94,7 +94,7 @@ def _parse_caiyun_dt(s: str) -> datetime:
         )
 
 
-def _redact(text: str, token: str) -> str:
+def _redact(text: str, token: str | None) -> str:
     """把文本中的 Token 抹掉，避免它随异常/日志泄露（Token 在 URL 路径里）。"""
     if token:
         text = text.replace(token, "***")

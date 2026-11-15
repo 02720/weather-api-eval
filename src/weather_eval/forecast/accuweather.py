@@ -720,7 +720,7 @@ class AccuWeatherProvider(ForecastProvider):
 _APIKEY_IN_URL_RE = re.compile(r"(apikey=)[^&\s'\"<>]+", re.IGNORECASE)
 
 
-def _masked(text: str, key: str) -> str:
+def _masked(text: str, key: str | None) -> str:
     """Enterprise 契约下 Key 经 apikey query 参数进入 URL——日志/异常中的 URL、
     底层异常消息、服务端回显都可能外带 Key，入日志前一律掩码（承重防御）。
 

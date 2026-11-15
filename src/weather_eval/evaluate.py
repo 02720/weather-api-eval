@@ -432,7 +432,10 @@ def _sanitize_hourly_arrays(snap: dict) -> dict:
     return out
 
 
-_SNAP_SANITIZE_CACHE: dict[int, dict | bool] = {}
+# 值 = (原始快照对象, 缓存结论)。只按 id() 记忆时，上一轮 collect 结束后对象
+# 释放、本轮新建的 dict 可能落在同一地址上，读到一份**已失效**的清洗结论。缓存
+# 持有原对象，地址就不会被复用；再核对一次身份，连"手动预置缓存"的误命中也挡住。
+_SNAP_SANITIZE_CACHE: dict[int, tuple[dict, dict | bool]] = {}
 _SNAP_MISSING = object()
 
 
@@ -459,7 +462,9 @@ def _snaps_for(sid: str, model: str, snapshots: dict | None,
     for s in snaps:
         # 用 dict.get 的一次哨兵对象判"未缓存"，而不是两次 get：后者在 12,285 次
         # 调用上多一次哈希查找；语义相同（缓存值可能是 False）。
-        cached = cache.get(id(s), _SNAP_MISSING)
+        hit = cache.get(id(s), _SNAP_MISSING)
+        cached = (hit[1] if hit is not _SNAP_MISSING and hit[0] is s
+                  else _SNAP_MISSING)
         if cached is _SNAP_MISSING:
             if not _snapshot_struct_valid(s):
                 cached = False
@@ -472,7 +477,7 @@ def _snaps_for(sid: str, model: str, snapshots: dict | None,
                 cached = s
             else:
                 cached = _sanitize_hourly_arrays(s)
-            cache[id(s)] = cached
+            cache[id(s)] = (s, cached)
         if cached is False:
             if stats is not None:
                 stats["n_malformed_snaps"] = stats.get("n_malformed_snaps", 0) + 1
@@ -498,18 +503,23 @@ def _integrity_summary_cached(snapshots: list[dict]) -> dict:
     """
     global _INTEGRITY_CACHE
     key = tuple(id(s) for s in snapshots)
+    refs = tuple(snapshots)
     hit = _INTEGRITY_CACHE.get(key)
-    if hit is not None:
-        return hit
+    # 逐位核对对象身份：id() 元组相同只说明"地址序列相同"，不说明是同一批快照。
+    # 缓存持有 refs 让原对象存活（地址不会被回收复用），身份核对再兜住人为预置的
+    # 陈旧条目。Merkle 根是存档完整性的唯一凭据，绝不允许命中另一批数据的摘要。
+    if (hit is not None and len(hit[0]) == len(refs)
+            and all(a is b for a, b in zip(hit[0], refs))):
+        return hit[1]
     out = integrity_summary(snapshots)
     # 只保留最近若干批，避免一次长跑进程里缓存无界增长；每批报告通常只调用一次。
     if len(_INTEGRITY_CACHE) >= 4:
         _INTEGRITY_CACHE.clear()
-    _INTEGRITY_CACHE[key] = out
+    _INTEGRITY_CACHE[key] = (refs, out)
     return out
 
 
-_INTEGRITY_CACHE: dict[tuple[int, ...], dict] = {}
+_INTEGRITY_CACHE: dict[tuple[int, ...], tuple[tuple[dict, ...], dict]] = {}
 
 
 def _day_bucket(store: dict, day_key: str) -> dict:
@@ -6040,16 +6050,15 @@ def _block_source_digest() -> str | None:
             h.update(b"\0")
     except (OSError, TypeError):
         return None
+    # 只哈希**真正的源码常量**。下面这批模块级名字是 build_report 入口按 config
+    # 装载的运行时参数（apply_score_scheme / apply_score_composite_params ...），
+    # 把它们塞进"源码指纹"会让同一份代码在装载前后算出两个值：CI 里先按未装载
+    # 状态算指纹写缓存，下一轮装载后指纹又变，历史块每轮白重算一遍。
+    # 配置本身已由 _block_scoring_fingerprint 的 eval 载荷覆盖，此处重复只会
+    # 把"代码视图"和"配置视图"混成第三条不可复现的口径。
     for const in (TEMP_SCORE_FAMILIES, _TEMP_FAMILY_MEMBER_SHARES,
                   PRECIP_SCORE_FAMILIES, _PRECIP_FAMILY_MEMBER_SHARES,
-                  TEMP_SKILL_PARTS, PRECIP_SKILL_PARTS, SKILL_SCHEMES,
-                  SCORE_SCHEME, SCORE_SKILL_TAU, SCORE_COMPOSITE_ALPHA,
-                  SCORE_COMPOSITE_SD_TEMP, SCORE_COMPOSITE_SD_PRECIP,
-                  SCORE_RANK_SCALE, SCORE_LEAD_WEIGHTS,
-                  SCORE_REF_MODE, SCORE_REF_SMOOTH_DAYS,
-                  SCORE_RELIABILITY_EXIT, SCORE_RELIABILITY_MIN,
-                  SCORE_WINSOR_K,
-                  SCORE_REACH_PRECIP_BEST, SCORE_REACH_FLOOR):
+                  TEMP_SKILL_PARTS, PRECIP_SKILL_PARTS, SKILL_SCHEMES):
         h.update(repr(const).encode("utf-8"))
         h.update(b"\0")
     return h.hexdigest()[:16]

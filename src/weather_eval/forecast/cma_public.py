@@ -205,7 +205,7 @@ def parse_dt_bj(s: Any) -> datetime:
     if not m:
         raise ValueError(
             f"CMA 公众网时间串格式异常（契约应为 'YYYY/MM/DD HH:MM' 北京时）: {s!r}")
-    return datetime(*map(int, m.groups()))
+    return datetime(*(int(x) for x in m.groups()))  # type: ignore[arg-type]
 
 
 def _num(v: Any) -> float | None:

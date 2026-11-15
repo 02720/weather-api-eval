@@ -67,7 +67,8 @@ _TLS_FALLBACK_WARNED: set[str] = set()
 # verify=False 时 urllib3 会对每个请求发 InsecureRequestWarning；降级本身已有
 # 专门的 WARNING 告警（且做了去重），这条重复噪声在降级重发期间抑制掉。
 try:
-    from urllib3.exceptions import InsecureRequestWarning as _InsecureRequestWarning
+    import urllib3.exceptions as _u3e
+    _InsecureRequestWarning: Any = _u3e.InsecureRequestWarning
 except Exception:  # noqa: BLE001  非 requests/urllib3 环境（测试假会话）不抑制
     _InsecureRequestWarning = None
 

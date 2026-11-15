@@ -87,7 +87,7 @@ HEADERS = {"User-Agent": DEFAULT_UA}
 
 
 
-def _redact(text: str, key: str) -> str:
+def _redact(text: str, key: str | None) -> str:
     """抹掉文本中的 API Key，避免它随日志/异常泄露。"""
     if key:
         text = text.replace(key, "***")

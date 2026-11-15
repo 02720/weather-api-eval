@@ -120,7 +120,7 @@ def graded_metrics_from_counts(h: int, mi: int, fa: int, c: int,
 
 
 def precip_graded_metrics(obs, fcst, kind: str,
-                          levels: tuple[str, ...]) -> dict[str, dict[str, float] | None]:
+                          levels: tuple[str, ...]) -> dict[str, dict[str, float | None] | None]:
     """分级指标：`{级别: {acc, pod, far, miss, ts, ets, bias}}`，NaN 处记 None。
 
     与 `PrecipitationComparison.calc_*(kind=, lev=)` 同口径；对拍脚本
@@ -128,10 +128,11 @@ def precip_graded_metrics(obs, fcst, kind: str,
     `tests/test_graded_parity.py` 把这条不变量钉在 CI 里。
     """
     counts = graded_counts(obs, fcst, kind, levels)
-    out: dict[str, dict[str, float] | None] = {}
+    out: dict[str, dict[str, float | None] | None] = {}
     for lev, (h, mi, fa, c, total) in counts.items():
         m = graded_metrics_from_counts(h, mi, fa, c, total)
-        out[lev] = ({k: (None if (v is None or math.isnan(v) or math.isinf(v)) else v)
-                     for k, v in m.items()}
-                    if total > 0 else None)
+        out[lev] = (
+            {k: (None if (v is None or math.isnan(v) or math.isinf(v)) else v)
+             for k, v in m.items()}  # type: ignore[misc]  # 元素允许 None（缺测）
+            if total > 0 else None)
     return out

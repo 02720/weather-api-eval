@@ -215,13 +215,13 @@ def _parse_daily(payload: dict, models: list[str], allow_bare: bool,
     逐日块是可选扩展，绝不因为它缺失而丢掉整份逐小时起报快照——起报快照错过
     即无法追补，而日产品只是延长线。缺块本身以 WARNING 暴露（契约漂移可见）。
     """
-    daily = payload.get("daily")
+    daily: Any = payload.get("daily")
     dtimes = daily.get("time") if isinstance(daily, dict) else None
     if not isinstance(dtimes, list) or not dtimes:
         logger.warning("Open-Meteo 站点 %s 响应缺少 daily 组（契约漂移），"
                        "本次快照不带逐日预报块，按天评估将只用逐小时聚合", station_id)
         return None
-    units = payload.get("daily_units") or {}
+    units: dict = payload.get("daily_units") or {}
     # 第四轮 P2-7：日轴必须升序、去重、合法 ISO 日期（base 契约）。畸形值
     # （None→"None"）此前会变成垃圾日键、重复日后者在评估侧静默覆盖前者。
     # 过滤/去重必须同步作用于数值数组：否则轴与数组按索引错位，评估侧按
@@ -232,24 +232,24 @@ def _parse_daily(payload: dict, models: list[str], allow_bare: bool,
     keep_idx: list[int] = []
     for i, t in enumerate(dtimes):
         try:
-            key = _date.fromisoformat(str(t)[:10]).isoformat()
+            day_key = _date.fromisoformat(str(t)[:10]).isoformat()
         except (ValueError, TypeError):
             continue
-        if key not in seen:
-            seen.add(key)
-            axis.append(key)
+        if day_key not in seen:
+            seen.add(day_key)
+            axis.append(day_key)
             keep_idx.append(i)
     data: dict[str, dict] = {}
     for model in models:
         resolved: list[tuple[str, str]] = []   # [(响应键, 输出名)]
         for base, out in _DAILY_VARS:
-            key = _model_key(units, base, model, allow_bare=allow_bare)
+            key: str | None = _model_key(units, base, model, allow_bare=allow_bare)
             if key is None:
                 logger.warning("模型 %s 在 daily 组中缺变量 %s，该模型不写入逐日块",
                                model, base)
                 resolved = []
                 break
-            arr = daily.get(key)
+            arr = (daily or {}).get(key or "")
             resolved.append((key, out))
             if not isinstance(arr, list):
                 logger.warning("模型 %s 的 daily 变量 %s 缺失或非数组，该变量按全缺测"
@@ -258,7 +258,7 @@ def _parse_daily(payload: dict, models: list[str], allow_bare: bool,
             continue
         data[model] = {}
         for resp, out in resolved:
-            arr = daily.get(resp)
+            arr = (daily or {}).get(resp)
             if not isinstance(arr, list):
                 # 契约要求三条数组与 daily_time **等长**（缺测一律 null）；写标量
                 # None 会让下游 `_at(entry, key, i)` 的按位取值为该元素 fell back

@@ -419,17 +419,22 @@ def r_slope_numpy(x: np.ndarray, y: np.ndarray) -> tuple[float | None, float | N
         return None, None
     xs, ys = x[m], y[m]
     n = xs.size
-    sx, sy = xs.sum(), ys.sum()
-    sxy = float((xs * ys).sum())
-    sxx = float((xs * xs).sum())
-    syy = float((ys * ys).sum())
-    den_x = n * sxx - sx * sx
-    den_y = n * syy - sy * sy
-    if den_x <= 0 or den_y <= 0:
-        return None, None
-    cov = n * sxy - sx * sy
-    r = cov / np.sqrt(den_x * den_y)
-    slope = cov / den_x
+    # cyeva 的 r/slope 走 scipy.linregress：含 ±inf 时结果是 NaN，由调用方
+    # `_r` 归 None。这里用同一结论（NaN 照样进 _round4 → 调用方归 None），
+    # 但把 invalid/overflow 局部静音——每份报告刷几百条 RuntimeWarning 会把
+    # 真正的告警（源停摆/存档损坏）淹掉。NaN 仍是 NaN，不改任何分。
+    with np.errstate(invalid="ignore", over="ignore"):
+        sx, sy = xs.sum(), ys.sum()
+        sxy = float((xs * ys).sum())
+        sxx = float((xs * xs).sum())
+        syy = float((ys * ys).sum())
+        den_x = n * sxx - sx * sx
+        den_y = n * syy - sy * sy
+        if den_x <= 0 or den_y <= 0:
+            return None, None
+        cov = n * sxy - sx * sy
+        r = cov / np.sqrt(den_x * den_y)
+        slope = cov / den_x
     return _round4(r), _round4(slope)
 
 

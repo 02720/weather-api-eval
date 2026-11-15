@@ -119,12 +119,17 @@ def axis_is_pruned_safe(times: list[str]) -> bool:
     地址在此期间不会被复用——CPython 只在对象释放后才复用地址。缓存的生命周期
     与一次构建对齐（`clear_axis_cache()` 在入口清空），绝不跨调用残留。
     """
+    # 缓存值是 (对象, 结论)：`id()` 只在对象仍存活时唯一，上一轮释放的地址会
+    # 被本轮新建的 list 复用。只存 bool 时，一条**内容完全不同**的时间轴会读到
+    # 上一轮的 "可以二分"，于是 bisect 给出静默错误的窗口边界。持有原对象并
+    # 核对身份后，这个失败形态在物理上不可能发生；缓存仍随 clear_axis_cache()
+    # 回收，不做成永久强引用。
     key = id(times)
     hit = _AXIS_SAFE_CACHE.get(key)
-    if hit is not None:
-        return hit
+    if hit is not None and hit[0] is times:
+        return hit[1]
     ok = _scan_axis_safe(times)
-    _AXIS_SAFE_CACHE[key] = ok
+    _AXIS_SAFE_CACHE[key] = (times, ok)
     return ok
 
 
@@ -141,7 +146,7 @@ def _scan_axis_safe(times: list[str]) -> bool:
     return True
 
 
-_AXIS_SAFE_CACHE: dict[int, bool] = {}
+_AXIS_SAFE_CACHE: dict[int, tuple[list[str], bool]] = {}
 
 
 def clear_axis_cache() -> None:
@@ -257,7 +262,7 @@ def minute_index(s: str) -> int | None:
     """
     v = _MINUTE_INDEX.get(s, _MISSING)
     if v is not _MISSING:
-        return v
+        return v  # type: ignore[return-value]  # 哨兵对象使 mypy 推成 object
     try:
         dt = datetime.strptime(s, _ISO_MIN_FMT)
     except (ValueError, TypeError):

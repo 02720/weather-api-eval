@@ -18,6 +18,7 @@
 """
 from __future__ import annotations
 
+from typing import Any
 
 from .snapshot_meta import ISSUE_SOURCE_LABELS, snapshot_complete
 from .timeutil import now_beijing, parse_iso
@@ -39,7 +40,7 @@ def truth_transport(stations: list) -> dict:
     """
     from urllib.parse import urlparse
 
-    rows = []
+    rows: list[dict[str, Any]] = []
     for s in stations or []:
         url = getattr(s, "obs_url", "") or ""
         if not url:
@@ -58,7 +59,7 @@ def truth_transport(stations: list) -> dict:
         "n_plaintext": len(plaintext),
         "n_total": len(rows),
         "all_encrypted": not plaintext,
-        "plaintext_hosts": sorted({r["host"] for r in plaintext}),
+        "plaintext_hosts": sorted({str(r["host"]) for r in plaintext}),  # type: ignore[misc]
         # 给模板用的一句话结论
         "verdict": ("全部真值源走加密传输（HTTPS）" if not plaintext else
                     f"{len(plaintext)}/{len(rows)} 个真值源走明文 HTTP："
@@ -104,8 +105,8 @@ def of(snapshots: dict, station_ids: list[str], models: list[str]) -> dict:
             "truncated": truncated,
             "stations_covered": sum(1 for v in per_station.values() if v),
             "n_stations": len(station_ids),
-            "last_issue": max(issues) if issues else None,
-            "last_fetched": max(fetched) if fetched else None,
+            "last_issue": max(str(v) for v in issues) if issues else None,
+            "last_fetched": max(str(v) for v in fetched) if fetched else None,
             # 有多少份快照连抓取时刻都没有：这个数字应当随新契约逐步归零，
             # 它是"可审计性是否已经覆盖全部存档"的直接指标
             "without_fetched_at": sum(1 for s in snaps if not s.get("fetched_at_bj")),

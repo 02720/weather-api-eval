@@ -346,7 +346,10 @@ def _slim_report(report_data: dict) -> dict:
     # 默认值而触发 P2 复算不变量报错（发布分 74.2 vs 复算 63.1）。
     scheme = str(meta.get("score_scheme") or "slope-v2")
     apply_score_scheme(scheme)
-    if scheme in ("skill-v3", "skill-v4", "skill-v5"):
+    # dvs-v6 的影子旧榜按 skill-v5 语义回放（见 evaluate.SHADOW_OF_V5）：
+    # 这里若只列三个 vN，归档页重渲染会用代码缺省的 τ/σ/lead 权重去复算一份
+    # 按 v5 尺度发布的日温度分，P2 发布不变量随即误炸。
+    if scheme in ("skill-v3", "skill-v4", "skill-v5") or scheme == "dvs-v6":
         apply_score_skill_k(meta.get("score_skill_k"))
         if scheme in ("skill-v4", "skill-v5"):
             _floors = meta.get("score_amt_floors") or {}
@@ -531,8 +534,8 @@ def _slim_report(report_data: dict) -> dict:
             continue
         if not any(r.get("score") is not None for r in rows):
             continue
-        lbtemp[day_n] = [{"mx": _half_keys((r.get("temp_halves") or {}).get("max")),
-                          "mn": _half_keys((r.get("temp_halves") or {}).get("min"))}
+        lbtemp[day_n] = [{"mx": _half_keys((r.get("temp_halves") or {}).get("max") or {}),
+                          "mn": _half_keys((r.get("temp_halves") or {}).get("min") or {})}
                          for r in rows if r["model"] in rank_idx]
     # 复算不变量（P2）：发布出来的分半指标走 daily_temp_score 同一把尺，
     # 必须逐位复现发布出来的温度分。这条锁的是**发布契约**（键集/精度/半映射/
@@ -560,7 +563,7 @@ def _slim_report(report_data: dict) -> dict:
 
     # 分站对比：每站每源带上全部已评测指标（温度 6 项 + 降水 6 项，与 §03 的
     # 指标下拉同一集合；降水为逐小时 0.1mm 诊断口径，与 §03 同源）
-    stations = {}
+    stations: dict[str, dict] = {}
     for st, per_model in (report_data.get("per_station") or {}).items():
         stations[st] = {}
         for m, dims in per_model.items():
@@ -942,6 +945,12 @@ def render_report_html(report_data: dict, title: str | None = None,
 
     _scheme = str((report_data.get("meta") or {}).get("score_scheme")
                   or "slope-v2")
+    # 生产口径切到 dvs-v6 后，meta.dvs 里已算好一份完整新榜，但模板此前只
+    # 把它塞进内联 JSON、从没渲染——读者看到的仍是 skill-v5 影子旧榜，而
+    # 报告正文却按 dvs-v6 描述结论。这里按服务端表格把新榜排好，无 JS 也能读。
+    _dvs = report_data.get("meta", {}).get("dvs") or {}
+    dvs_board = list(_dvs.get("board") or [])
+    dvs_controls = list(_dvs.get("controls") or [])
     _skill_scheme = _scheme in ("skill-v3", "skill-v4", "skill-v5")
     _temp_parts = TEMP_SKILL_PARTS if _skill_scheme else TEMP_SCORE_PARTS
     _precip_parts = (PRECIP_SKILL_PARTS if _skill_scheme
@@ -959,6 +968,9 @@ def render_report_html(report_data: dict, title: str | None = None,
         model_labels_json=labels_json,
         model_colors_json=colors_json,
         model_families_json=_js_json(MODEL_FAMILIES),
+        dvs=_dvs, dvs_board=dvs_board, dvs_controls=dvs_controls,
+        dvs_labels={c.get("model"): c.get("label")
+                    for c in dvs_controls if c.get("model")},
         score_temp_parts=_score_parts_rows(_temp_parts),
         score_precip_parts=_score_parts_rows(_precip_parts),
         station_labels=station_labels or {},

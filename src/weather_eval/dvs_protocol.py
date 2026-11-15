@@ -31,13 +31,19 @@ DVS v6 的分数语义是"在用户真正发起请求的那一刻（决策零点
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, fields
 from datetime import datetime, timedelta
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from .snapshot_meta import FCST_PLAUSIBLE
 from .timeutil import parse_iso
+
+#: 与 snapshot_meta 的写入口同源，避免这里再抄一份阈值表。
+_FCST_TEMP_RANGE = FCST_PLAUSIBLE["temperature_2m"]
+_FCST_RAIN_RANGE = FCST_PLAUSIBLE["precipitation"]
 
 # ---------------------------------------------------------------- 常量与契约
 #: 五段时效聚合窗（天）。段号 b=1..5，与 `band_weights` 一一对应。
@@ -323,7 +329,7 @@ def build_hourly_facts(runs: Sequence[RunBatch], *,
     cols: dict[str, list[np.ndarray]] = {name: [] for name, _dt in _FACT_FIELDS}
     # 时间轴缓存跨批次共享：cron 每小时抓一次，同一份 provider 的时间轴在几十个批次里
     # 逐字符相同。按 `id(times)` 记忆解析结果，每份快照只解析一次。
-    axis_cache: dict[int, dict[str, np.ndarray]] = {}
+    axis_cache: dict[int, tuple[list, dict[str, np.ndarray]]] = {}
     for batch in runs:
         t_run_min = batch.t_run_minute
         t_run_day = batch.t_run.toordinal()
@@ -355,8 +361,10 @@ def build_hourly_facts(runs: Sequence[RunBatch], *,
             vdays = axis["vday"][sel]
             hours = axis["hour"][sel]
             t_obs, r_obs = obs.lookup(minutes)
-            temp_fcst = _pick(arr_t, idx, lt)
-            rain_fcst = _pick(arr_p, idx, lp)
+            # 与写入口同一张物理合理域：旧存档里的 999°C / 9999mm / 负降水
+            # 不能因为新口径绕过了读侧清洗就重新变成真样本。
+            temp_fcst = _pick(arr_t, idx, lt, *_FCST_TEMP_RANGE)
+            rain_fcst = _pick(arr_p, idx, lp, *_FCST_RAIN_RANGE)
             k = lead_to_day(lead)
             n = idx.size
             cols["run_minute"].append(np.full(n, t_run_min, dtype=np.int64))
@@ -383,7 +391,7 @@ def build_hourly_facts(runs: Sequence[RunBatch], *,
         for name, dt in _FACT_FIELDS})
 
 
-def _axis(times: list, cache: dict[int, dict[str, np.ndarray]]
+def _axis(times: list, cache: dict[int, tuple[list, dict[str, np.ndarray]]]
           ) -> dict[str, np.ndarray]:
     """按时间轴对象记忆的解析结果（分钟序号 / 年内日序 / 钟点）。
 
@@ -393,10 +401,10 @@ def _axis(times: list, cache: dict[int, dict[str, np.ndarray]]
     """
     key = id(times)
     hit = cache.get(key)
-    if hit is not None:
-        return hit
+    if hit is not None and hit[0] is times:
+        return hit[1]
     res = _axis_from_strings(times)
-    cache[key] = res
+    cache[key] = (times, res)
     return res
 
 
@@ -455,12 +463,36 @@ def _minute_to_dt(minute: int) -> datetime:
         hour=rem // 60, minute=rem % 60)
 
 
-def _pick(arr: list, idx: np.ndarray, length: int) -> np.ndarray:
-    """按整数下标取数组值，越界为 NaN（畸形存档降级为该点缺测，不炸整份报告）。"""
+def _finite_or_nan(v: Any, lo: float, hi: float) -> float:
+    """单个预报值的缺测归一：与 snapshot_meta.plausible_fcst_value 同一判据。
+
+    只保留**有限**且落在物理合理域内的数值；NaN/inf/字符串/bool/越界哨兵一律
+    NaN。NaN 在事实层就是"这个点没有值"，下游 `*_ok` 掩膜据此排除，绝不进入
+    任何指标或分母。温度与降水共用判据，但各自的合理域不同（见 FCST_PLAUSIBLE）。
+    """
+    if v is None or isinstance(v, bool) or not isinstance(v, (int, float)):
+        return float("nan")
+    f = float(v)
+    if not math.isfinite(f) or not lo <= f <= hi:
+        return float("nan")
+    return f
+
+
+def _pick(arr: list, idx: np.ndarray, length: int,
+          lo: float, hi: float) -> np.ndarray:
+    """按整数下标取数组值；越界/非数值一律 NaN（=该点缺测，绝不折算成 0）。
+
+    新口径绕过了 `evaluate._snaps_for` 的读侧清洗闸门，直接吃原始快照。历史存档
+    里确实存在字符串/哨兵（旧 provider 落盘前没有统一闸门），一个 `float('x')`
+    的 ValueError 会让 `attach_dvs` 整条旁路降级、页面静默少一张新榜。缺测语义
+    必须与写入口（snapshot_meta.sanitize_hourly_arrays）一致：非法值记 NaN。
+    """
     out = np.full(idx.size, np.nan)
     ok = idx < length
     if ok.any():
-        vals = np.asarray([arr[j] for j in idx[ok]], dtype=float)
+        picked = [arr[j] for j in idx[ok]]
+        vals = np.asarray(
+            [_finite_or_nan(v, lo, hi) for v in picked], dtype=float)
         out[ok] = vals
     return out
 

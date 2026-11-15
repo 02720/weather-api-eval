@@ -436,7 +436,8 @@ def daily_precip_from_hourly(axis: list[datetime],
             out[day] = None          # 覆盖不全：不得拿部分小时的和冒充全天
             continue
         vals = [hours[k] for k in range(24)]
-        out[day] = None if any(v is None for v in vals) else round(sum(vals), 4)
+        out[day] = (None if any(v is None for v in vals)
+                    else round(sum(v for v in vals if v is not None), 4))
     return out
 
 

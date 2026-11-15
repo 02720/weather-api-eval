@@ -21,6 +21,14 @@ DEFAULT_DVS = {
     "skill_floor": -1.0,                # 温度技能下限（误差达基准两倍）
     "cost_loss_prior": [2, 5],          # 降水保护成本/灾损比 α ~ Beta(2,5)
     "cost_loss_grid": 20,
+    # 多尺度阈值与尺度权重：这是"哪些决策算分"的显式契约（SCORING_DVS.md §3.2），
+    # 不是实现细节。此前只写在 dvs.py 的模块常量与 YAML 里，DEFAULT_DVS 缺项——
+    # 文档说"缺项回落 DEFAULT_DVS"，结果这两个参数在缺段配置里无处可回落。
+    "rain_events": {
+        "r3": ((1.0, 0.6), (5.0, 0.4)),
+        "r24": ((1.0, 0.5), (10.0, 0.3), (25.0, 0.2)),
+    },
+    "scale_weights": {"r3": 0.5, "r24": 0.5},
     "rain_shrink_n0_days": 15,          # 稀疏事件收缩的虚拟事件日数
     "min_lead_h": 1,                    # 防时效 0 的实况冒充预报
     "obs_latency_h": 3,                 # 观测入库滞后（基准因果边界）
@@ -311,6 +319,10 @@ DEFAULT_EVAL = {
     # 读取、DEFAULT_EVAL 里**没有**这一项——"这个阈值可以配、默认是多少"只存在于
     # 调用点，配置者无从得知（第五轮 P3-c）。登记在此即为它的唯一声明处。
     "source_stale_hours": 30,
+    # dvs-v6 的缺省参数：`DEFAULT_DVS` 是它们唯一的声明处（SCORING_DVS.md §8）。
+    # 放进 eval 后，Config 的深拷贝合并会一并覆盖它——以前它只是个孤立常量：
+    # 文档/配置都写"缺项回落 DEFAULT_DVS"，实际 `eval.dvs` 缺段时谁也不读它。
+    "dvs": copy.deepcopy(DEFAULT_DVS),
 }
 
 
@@ -371,6 +383,13 @@ class Config:
         # 而 lru_cache(maxsize=1) 让这类污染在一次长跑里完全静默。
         self.eval: dict[str, Any] = {**copy.deepcopy(DEFAULT_EVAL),
                                      **(data.get("eval") or {})}
+        # `eval.dvs` 是嵌套字典：整段覆盖会把 DEFAULT_DVS 里未在本期 YAML 写出的
+        # 参数全部丢掉（例如 climatology_path / scale_weights / rain_events）。
+        # 按 key 合并，让 "YAML 写多少就覆盖多少、其余回落声明默认值" 这条契约
+        # 对嵌套段也成立；仍然是深拷贝，绝不共享可变对象。
+        user_dvs = (data.get("eval") or {}).get("dvs")
+        if isinstance(user_dvs, dict):
+            self.eval["dvs"] = {**copy.deepcopy(DEFAULT_DVS), **copy.deepcopy(user_dvs)}
         # 观测源优先级（高 → 低）：主源在前，备用源在后。缺省与
         # obs/chain.py 的 OBS_SOURCE_PRIORITY 一致；在此可被配置覆盖，
         # 但**顺序语义**由编排层实现，配置只负责"登记哪些源、谁先谁后"。

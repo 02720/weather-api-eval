@@ -58,6 +58,12 @@ jobs:
       - name: ruff
         run: python -m ruff check src scripts tests
 
+      # 类型闸门（分阶段启用，见 pyproject.toml 的 [tool.mypy]）。此前 mypy 只在
+      # dev 依赖里、CI 从不执行，280 处类型债里混着真实的运行期缺陷（None 未收窄、
+      # 外部响应缺字段、异构 dict 推断错）。评分内核仍在 exclude 里逐轮清理。
+      - name: mypy（已清理模块）
+        run: python -m mypy src
+
       - name: 快层测试
         run: python -m pytest -m "not golden and not slow" -n auto -q
 
@@ -71,7 +77,7 @@ jobs:
         run: |
           BASE="${{ github.event.pull_request.base.sha }}"
           if git diff --name-only "$BASE"...HEAD \
-              | grep -qE '(^|/)(src/weather_eval/(evaluate|stats|graded)\.py|config/stations\.yaml|tests/baseline/|scripts/calibrate_)'; then
+              | grep -qE '(^|/)(src/weather_eval/(evaluate|stats|graded|dvs|dvs_engine|dvs_protocol|dvs_reference|dvs_stats_store|dvs_uncertainty|dvs_controls|dvs_report)\.py|config/stations\.yaml|tests/baseline/|scripts/calibrate_)'; then
             echo "评分/口径路径有变更"
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else

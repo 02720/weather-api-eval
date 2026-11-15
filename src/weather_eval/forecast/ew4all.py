@@ -261,7 +261,7 @@ def build_series(tem: list[tuple[datetime, float | None]],
                  prc_1h: list[tuple[datetime, float | None]],
                  prc_accum: list[tuple[datetime, float | None]],
                  accum_window_hours: int) \
-        -> tuple[list[datetime], list, list, str | None]:
+        -> tuple[list[datetime], list[float | None], list[float | None], datetime | None]:
     """把各要素的 UTC 采样序列展开为统一的逐小时（北京时）四元组。
 
     - 温度：线性插值到逐小时（resample.interpolate_hourly）；首末采样之外为 None。
@@ -283,8 +283,9 @@ def build_series(tem: list[tuple[datetime, float | None]],
     interp = dict(interpolate_hourly(tem_bj))
     temps = [interp.get(h) for h in axis]
     # 兜底轨道：全时效的累计量平铺均摊
-    precips = spread_accumulation(acc_bj, axis, accum_window_hours) if acc_bj \
-        else [None] * len(axis)
+    precips: list[float | None] = (
+        list(spread_accumulation(acc_bj, axis, accum_window_hours)) if acc_bj
+        else [None] * len(axis))
     # 1 小时产品覆盖到的整点直接透传（优先，精度更高）；覆盖边界之外保持摊薄值
     # 或 None——两条轨道给出的都是"前 1 小时累计"，配对口径一致，故可逐点择一。
     one_hours = {h: v for h, v in one_bj.items() if v is not None}
@@ -416,7 +417,8 @@ class Ew4allProvider(ForecastProvider):
             self._issue_cache[cache_key] = run
             # 探测结果顺带留给本站点的落盘复用（省最多 3 次请求，也避免"探测与落盘
             # 之间服务端状态变化"导致的竞态）
-            self._probe_cache[(spec.model, probe_station.id)] = (tem, prc, one)
+            self._probe_cache[(spec.model, probe_station.id)] = (  # type: ignore[assignment]
+                tem, prc, one)  # noqa: E501
             return run
         raise RuntimeError(
             f"EW4ALL {spec.model} 最近 {len(candidates)} 个起报轮次（"
@@ -457,9 +459,9 @@ class Ew4allProvider(ForecastProvider):
     def _build_snapshot(self, station: Any, spec: ModelSpec, run: datetime) -> dict:
         # 探测那一站的原始行直接复用（省最多 3 次请求，且消除"探测与落盘之间服务端
         # 状态变化"的竞态）；其余站点照常抓取
-        cached = self._probe_cache.pop((spec.model, station.id), None)
+        cached: Any = self._probe_cache.pop((spec.model, station.id), None)
         if cached is not None:
-            tem, prc, one = cached
+            tem, prc, one = cached  # type: ignore[misc]  # 探测缓存恒为三元组
         else:
             tem = self._fetch_series(station, spec.mode, TEM_ELEMENT, run)
             prc = self._fetch_opt(station, spec.mode, spec.precip_element, run)
@@ -529,7 +531,8 @@ class Ew4allProvider(ForecastProvider):
             "run_label_utc": run.strftime("%Y%m%d%H"),
             # 1 小时降水实际覆盖到的最后一个整点（北京时）：口径切换点的机器可读留档，
             # 便于日后核对"哪一段是原生 1 小时产品、哪一段是 3/6 小时摊薄"
-            "precip_1h_until": one_until.strftime("%Y-%m-%dT%H:00") if one_until else None,
+            "precip_1h_until": (one_until.strftime("%Y-%m-%dT%H:00")
+                                if one_until is not None else None),
             "expansion": "; ".join(expansion),
             "hourly_time": [h.strftime("%Y-%m-%dT%H:00") for h in axis],
             "data": {spec.model: {

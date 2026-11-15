@@ -151,7 +151,7 @@ def _parse_tj_response(payload: Any, factor_code: str) -> dict[str, list[float |
             pairs.append((t, _value_of(d)))
         pairs.sort(key=lambda x: x[0])
         # 去重（保留首见），保证时间轴严格递增且与数值按下标对齐
-        seen: dict[str, float | None] = {}
+        seen: dict[str, Any] = {}
         for t, v in pairs:
             seen.setdefault(t, v)
         times = list(seen.keys())
@@ -209,7 +209,7 @@ class TianjiProvider(ForecastProvider):
     def _fetch_one(self, station: Any, model: str) -> dict:
         mode, t_prod, t_factor, p_prod, p_factor, expected = MODEL_SPECS[model]
         temp: dict[str, list] | None = None
-        base = self._base_cache.get(model)
+        base: str | None = self._base_cache.get(model)
         if base is not None:
             temp, echoed = self._fetch_series(station, mode, t_prod, t_factor, base)
             if echoed:
@@ -223,7 +223,7 @@ class TianjiProvider(ForecastProvider):
                 self._base_cache.pop(model, None)
                 base = None
                 temp = None
-        if temp is None:
+        if temp is None or base is None:
             base, temp = self._resolve_base_time(model, mode, t_prod, t_factor, station)
             self._base_cache[model] = base
         # 探测刚返回的 temp 序列与正式请求同参同址，直接复用（省一次请求）。

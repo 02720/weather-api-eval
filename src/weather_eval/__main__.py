@@ -176,7 +176,7 @@ def _build_obs_sources(cfg, source: str, station):
     """
     from .obs import CmaDataObsSource
     wanted = list(cfg.obs_sources) if source == "auto" else [source]
-    out = {}
+    out: dict[str, Any] = {}
     for name in wanted:
         if name == "eia_data":
             out[name] = EiaDataObsSource()
@@ -283,6 +283,7 @@ def _build_provider(source: str, cfg):
     独立源的凭据缺失属于配置错误：在构造期即失败并给出可操作提示，
     而非带着 traceback 崩溃（此前缺 Token 时会直接抛出未捕获异常）。
     """
+    prov: Any
     if source == "caiyun":
         prov = CaiyunProvider()
         return prov, [prov.name]

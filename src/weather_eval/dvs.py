@@ -386,7 +386,9 @@ def adoptable_rate(station_counts: "RainCounts",
 def economic_value(counts: RainCounts, alphas: np.ndarray = ALPHAS,
                    weights: np.ndarray = ALPHA_W,
                    n0_days: float = RAIN_SHRINK_N0_DAYS,
-                   climatology_rate: float | None = None) -> dict:
+                   climatology_rate: float | None = None,
+                   cost_loss_prior: tuple[float, float] = COST_LOSS_PRIOR,
+                   cost_loss_grid: int = COST_LOSS_GRID) -> dict:
     """Richardson (2000) 经济价值 `V̄⁺` 与稀疏收缩后的降水分 `P`。
 
     分站分层（`k` 遍历站点）：
@@ -410,6 +412,12 @@ def economic_value(counts: RainCounts, alphas: np.ndarray = ALPHAS,
       * 与基率同分布的随机预报 ⇒ `E[V̄⁺] = 0`（只有采样噪声带来的正偏置，
         由 `shrink` 压制）。
     """
+    if (tuple(float(x) for x in cost_loss_prior) != tuple(float(x) for x in COST_LOSS_PRIOR)
+            or int(cost_loss_grid) != int(COST_LOSS_GRID)):
+        # 配置改了先验/格点数就必须用配置算：默认实参在 import 时已绑定模块级
+        # ALPHAS，光把它们写进 meta.config 而不进公式等于仪表盘说谎。
+        alphas, weights = alpha_grid(float(cost_loss_prior[0]),
+                                     float(cost_loss_prior[1]), int(cost_loss_grid))
     n = counts.total.astype(float)
     keep = n > 0
     out = {"v_plus": 0.0, "score": 0.0, "shrink": 0.0,
@@ -447,7 +455,9 @@ def economic_value(counts: RainCounts, alphas: np.ndarray = ALPHAS,
 def rain_target_score(counts_by_event: Mapping[str, RainCounts],
                       events: Mapping[str, Sequence[tuple[float, float]]]
                       = RAIN_EVENTS,
-                      *, n0_days: float = RAIN_SHRINK_N0_DAYS) -> dict:
+                      *, n0_days: float = RAIN_SHRINK_N0_DAYS,
+                      cost_loss_prior: tuple[float, float] = COST_LOSS_PRIOR,
+                      cost_loss_grid: int = COST_LOSS_GRID) -> dict:
     """同一尺度下多个阈值的加权合成（如 3h：`≥1mm` 0.6 + `≥5mm` 0.4）。
 
     **缺项处理**：某阈值没有样本时**不是**按剩余权重归一（那会让唯一的稀疏重阈值
@@ -469,7 +479,9 @@ def rain_target_score(counts_by_event: Mapping[str, RainCounts],
                 per_event[key] = {"score": 0.0, "v_plus": 0.0, "shrink": 0.0,
                                   "n": 0.0, "threshold_mm": thr, "weight": w}
                 continue
-            r = economic_value(c, n0_days=n0_days)
+            r = economic_value(c, n0_days=n0_days,
+                               cost_loss_prior=cost_loss_prior,
+                               cost_loss_grid=cost_loss_grid)
             per_event[key] = {**{k: r[k] for k in
                                  ("score", "v_plus", "shrink", "n", "n_ev_days")},
                               "threshold_mm": thr, "weight": w}
@@ -615,9 +627,9 @@ def composite_from_parts(temp_bands: Mapping[int, float | None],
     return {
         "score": float(composite(seg, band_weights)),
         "S_b": [float(seg[b]) for b in sorted(seg)],
-        "T_b": [None if temp_bands.get(b) is None else float(temp_bands[b])
+        "T_b": [None if (tv := temp_bands.get(b)) is None else float(tv)
                 for b in range(1, len(band_weights) + 1)],
-        "P_b": [None if precip_bands.get(b) is None else float(precip_bands[b])
+        "P_b": [None if (pv := precip_bands.get(b)) is None else float(pv)
                 for b in range(1, len(band_weights) + 1)],
     }
 

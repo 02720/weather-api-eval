@@ -109,7 +109,7 @@ def parse_weather_info(payload: Any, issue_iso: str) -> dict[str, list]:
         if not isinstance(it, dict):
             continue
         try:
-            step = int(it.get("step"))
+            step = int(it.get("step"))  # type: ignore[arg-type]  # None 走 except 分支
         except (TypeError, ValueError):
             continue
         t = issue + timedelta(hours=step)

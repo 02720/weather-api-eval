@@ -361,6 +361,11 @@ def _issue_filename(issue_iso: str) -> str:
     return issue_iso.replace(":", "") + ".json"
 
 
+def _as_int(v: object) -> int:
+    """配置值 → int（str/float/int 均可，非法值由调用方 except 兜底）。"""
+    return int(float(str(v)))
+
+
 def _eval_daily_max_offset() -> int:
     """日产品评测范围（eval.daily_max_offset_days）的读取。
 
@@ -370,10 +375,11 @@ def _eval_daily_max_offset() -> int:
     """
     from .config import DEFAULT_EVAL, load_config
     try:
-        return int(load_config().eval.get("daily_max_offset_days",
-                                          DEFAULT_EVAL["daily_max_offset_days"]))
-    except Exception:  # noqa: BLE001  配置文件缺失/损坏时回退内置默认
-        return int(DEFAULT_EVAL["daily_max_offset_days"])
+        raw = load_config().eval.get("daily_max_offset_days",
+                                    DEFAULT_EVAL["daily_max_offset_days"])
+        return _as_int(raw)
+    except (TypeError, ValueError, OSError):  # 配置文件缺失/损坏时回退内置默认
+        return _as_int(DEFAULT_EVAL["daily_max_offset_days"])
 
 
 def save_forecast_snapshot(station_id: str, model: str, snapshot: dict, *,
@@ -925,7 +931,7 @@ def reports_footprint(root: Path | None = None) -> dict:
     """
     base = Path(root) if root is not None else Path(__file__).resolve().parents[2] / "reports"
     keys = ("main", "monthly", "data", "assets", "vendor", "other")
-    out = {f"{k}_files": 0 for k in keys}
+    out: dict[str, Any] = {f"{k}_files": 0 for k in keys}
     out.update({f"{k}_bytes": 0 for k in keys})
     out.update({"total_files": 0, "total_bytes": 0, "largest": [],
                 "over_single_threshold": []})

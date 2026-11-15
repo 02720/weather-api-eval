@@ -128,8 +128,13 @@ class DvsConfig:
 
     @classmethod
     def from_eval_cfg(cls, eval_cfg: Mapping | None) -> "DvsConfig":
-        """从 `stations.yaml` 的 `eval.dvs` 段构造（缺项一律回落到声明默认值）。"""
-        node = dict((eval_cfg or {}).get("dvs") or {})
+        """从 `stations.yaml` 的 `eval.dvs` 段构造（缺项一律回落到声明默认值）。
+
+        缺段时也走 `config.DEFAULT_DVS`（而不是只依赖 dataclass 默认值）：
+        那是 dvs-v6 参数的**唯一声明处**，dataclass 的字段缺省只是它的镜像。
+        """
+        from .config import DEFAULT_DVS
+        node = {**DEFAULT_DVS, **dict((eval_cfg or {}).get("dvs") or {})}
         kw: dict = {}
         simple = {
             "alpha_v": float, "loss_shape": tuple, "skill_floor": float,
@@ -487,7 +492,9 @@ def _score_from_aggregate(agg, config: DvsConfig,
                 continue
             res = dvs.rain_target_score(
                 counts_by_event, {scale: specs},
-                n0_days=config.rain_shrink_n0_days)
+                n0_days=config.rain_shrink_n0_days,
+                cost_loss_prior=tuple(config.cost_loss_prior),
+                cost_loss_grid=config.cost_loss_grid)
             per_scale[scale] = res
             for k, v in (res.get("events") or {}).items():
                 if isinstance(v, dict) and "threshold_mm" in v:

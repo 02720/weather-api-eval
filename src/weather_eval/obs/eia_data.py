@@ -122,7 +122,7 @@ def _records_from_wd(wd: dict, cnt: _NonHourCounter) -> list[dict]:
             dt = cnt.floor(parse_obs_time(times[i]))
         except ValueError:
             continue
-        rec = {"time": iso(dt), "source": "wd"}
+        rec: dict[str, Any] = {"time": iso(dt), "source": "wd"}
         for src_key, out_key in NUMERIC_KEYS.items():
             arr = wd.get(src_key)
             rec[out_key] = plausible(
@@ -178,7 +178,7 @@ def _records_from_table(html: str, cnt: _NonHourCounter) -> list[dict]:
             dt = cnt.floor(parse_obs_time(tds[col["time"]].get_text(strip=True)))
         except ValueError:
             continue
-        rec = {"time": iso(dt), "source": "table"}
+        rec: dict[str, Any] = {"time": iso(dt), "source": "table"}
         # **固定键集**契约（与 NUMERIC_KEYS、_records_from_wd 同一口径）：逐
         # NUMERIC_KEYS 输出，表头缺哪列该要素就写 None——绝不省略键。旧实现
         # 只输出 col 里实际匹配到的列，表头少一列（站方移除"湿度"列、或本

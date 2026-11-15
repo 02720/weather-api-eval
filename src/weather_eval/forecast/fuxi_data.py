@@ -109,7 +109,7 @@ def parse_avail_hours(payload: Any) -> list[str]:
     return [str(h) for h in data]
 
 
-def parse_query_response(payload: Any) -> dict[str, list]:
+def parse_query_response(payload: Any) -> dict[str, Any]:
     """把 queryWeatherInfo 响应展开为统一序列。
 
     返回 {"issue_echo": str|None, "grid_lat": float|None, "grid_lon": float|None,
@@ -130,7 +130,7 @@ def parse_query_response(payload: Any) -> dict[str, list]:
         raise RuntimeError("伏羲数据响应 data 缺失或非对象（token 失效/无数据）")
     timestamps = data.get("timestamp")
     var_names = data.get("var_names")
-    values = data.get("values")
+    values: Any = data.get("values")
     if not (isinstance(timestamps, list) and timestamps
             and isinstance(var_names, list) and isinstance(values, list)):
         raise RuntimeError(
@@ -146,11 +146,12 @@ def parse_query_response(payload: Any) -> dict[str, list]:
     except ValueError:
         raise RuntimeError(f"伏羲数据响应缺 tp 变量: var_names={var_names}") from None
 
-    units = data.get("units") if isinstance(data.get("units"), list) else []
+    units: Any = data.get("units") if isinstance(data.get("units"), list) else []
     t2m_unit = str(units[i_t2m]) if i_t2m < len(units) and units[i_t2m] is not None else None
 
     def conv(idx: int) -> list[float | None]:
-        row = values[idx] if idx < len(values) else []
+        raw_row: Any = values[idx] if idx < len(values) else None  # type: ignore[index,arg-type]
+        row: list[Any] = raw_row if isinstance(raw_row, list) else []
         out: list[float | None] = []
         for v in row:
             if v is None or isinstance(v, bool):
@@ -209,8 +210,8 @@ def parse_query_response(payload: Any) -> dict[str, list]:
         "grid_lat": grid_lat,
         "grid_lon": grid_lon,
         "time": times,
-        "t2m": col(i_t2m),
-        "tp": col(i_tp),
+        "t2m": list(col(i_t2m)),
+        "tp": list(col(i_tp)),
         "t2m_unit": t2m_unit,
     }
 
