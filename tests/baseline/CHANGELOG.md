@@ -1,4 +1,29 @@
 
+## 2026-11-15 · 生产口径切到 dvs-v6（成本预算随之拆成四道闸）
+
+性质：**口径切换 + 成本记账方式变更**。基线数字（`report_baseline.json`）沿用
+第二十二次重冻结——dvs-v6 的影子旧榜与 skill-v5 逐位相同，对拍断言一位没动；
+变的是"一次构建现在包含两段工作量"这一事实必须被预算如实记账。
+
+- **切换**：`config/stations.yaml` 的 `score_scheme: dvs-v6`；`build_report` 仍
+  按 skill-v5 算全套旧榜（影子口径），新口径的榜并行写进 `meta.dvs`。口径定义
+  见 `SCORING_DVS.md`，`SCORING.md` 降级为影子口径定义源。
+- **预算拆四道闸**：`max_seconds`/`max_peak_rss_mb` 只量影子口径（与切换前同一
+  份代码路径，基准 83.9s / 4076.9MB，一格不松）；新增
+  `max_dvs_seconds`/`max_dvs_rss_mb` 量 DVS 叠加段。合成一个总耗时会让"旧榜
+  变慢"与"新口径本来很贵"互相掩护，棘轮失去归因能力。基准与倍数（耗时 2×、
+  RSS 1.5×）的来历逐条写在 `perf_budget.json` 的 note 里。
+- **同批优化**（同一份数据、逐位不变的结论）：DVS 复用 evaluate 的进程内预加载
+  缓存（同一进程不再把数千份快照 JSON 解析两遍）；站构建并发按内存定到 2 路
+  （峰值 7.1 → 5.1 GB，耗时反而更快）；合并后立刻释放事实表母本与对照源中间
+  副本。叠加段实测：本机 4 核 202.6 s / 5075 MB（切换后首次实测 216 s / 8535 MB）。
+- **发布侧修正**：`report/render.py` 的 P2 复算不变量改按 `SKILL_SCHEMES`
+  单一事实源判定适用范围。此前手写的 `("skill-v3","skill-v4","skill-v5")` 漏了
+  影子口径 dvs-v6，`python -m weather_eval report` 因此在**每个**日榜首格上抛
+  `RuntimeError`（发布 59.3 / 复算 None），pages 作业全红。回归锁见
+  `tests/test_render.py::test_daily_temp_halves_invariant_skips_skill_family_by_construction`
+  （它同时断言"该口径确实无法由发布字段复算"这一前提——前提变了会先红）。
+
 ---
 ## 2026-11-08 · 第二十二次重冻结（综合分口径优化 A/B 批）
 

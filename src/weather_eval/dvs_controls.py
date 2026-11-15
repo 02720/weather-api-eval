@@ -23,7 +23,7 @@ DVS v6 的做法是：每次构建都自动生成一组**已知答案的合成�
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Sequence
 
 import numpy as np
@@ -141,10 +141,13 @@ def build_control_facts(hourly: HourlyFacts, *,
         ))
     if not chunks:
         return hourly.take(np.zeros(hourly.n, dtype=bool))
-    out = chunks[0]
-    for c in chunks[1:]:
-        out = out + c
-    return out
+    # 一次 `np.concatenate` 合并全部对照源，而不是 `out = out + c` 逐个相加：
+    # 逐个相加要合并 7 次，每次都为**全部列**重新分配一份"已合并"数组，峰值约
+    # 为最终尺寸的 2 倍（实测 1.37 GB/站，其中近一半是中间副本）；一次合并只需
+    # "输入 + 输出"两份。dtype 由同一模板保证一致，逐列直接拼接。
+    return HourlyFacts(**{
+        f.name: np.concatenate([getattr(c, f.name) for c in chunks])
+        for f in fields(chunks[0])})
 
 
 def control_model_codes(controls: Sequence[ControlSource] = CONTROLS,

@@ -27,6 +27,10 @@ logger = logging.getLogger(__name__)
 
 SCHEME = "dvs-v6"
 
+#: 站构建并发度。**按内存定，不按站数定**（理由见 `build_dvs_node` 内的注释：
+#: 进程峰值 ≈ 并发站数 × 单站峰值，而站构建只占 DVS 总时长的零头）。
+STATION_WORKERS = 2
+
 
 def attach_dvs(report: dict, station_ids: Sequence[str], models: Sequence[str],
                eval_cfg: Mapping | None, start_dt: datetime,
@@ -51,8 +55,7 @@ def build_dvs_node(station_ids: Sequence[str], models: Sequence[str],
     models_c = canonical_models(list(models))
     start_day = start_dt.toordinal()
     end_day = end_dt.toordinal()
-    obs_all = _load_obs(station_ids)
-    snaps_all = _load_snapshots(station_ids, models_c)
+    obs_all, snaps_all = _preloaded_inputs(station_ids, models_c)
     clim = engine.load_climatology(config) if config.climatology_path else None
     merged: dict[str, dict] = {}
     station_meta: dict[str, dict] = {}
@@ -69,11 +72,21 @@ def build_dvs_node(station_ids: Sequence[str], models: Sequence[str],
             models=models_c, station_code=0, start_day=start_day,
             end_day=end_day, config=config, climatology=station_clim)
 
-    # 站间完全独立（各自的观测、各自的快照），并发是纯收益：实测 4 站串行 54 s
-    # → 并行约 16 s。用线程池而不是进程池：numpy 的重活会释放 GIL，而进程池要
-    # 把上百万行的快照序列化一遍，代价反而更高。
+    # 站间完全独立（各自的观测、各自的快照），并发是纯收益：实测 4 站串行 ~58 s
+    # → 4 路并行 ~20 s。用线程池而不是进程池：numpy 的重活会释放 GIL，而进程池
+    # 要把上百万行的快照序列化一遍，代价反而更高。
+    #
+    # 并发度按**内存**定，不按站数定：单站构建的峰值来自列式事实表（真实源 33 源
+    # + 对照源 8 份，逐小时 ~7.6M 行）与日聚合/累积的叠加，站与站之间不共享，于是
+    # 进程峰值 ≈ 并发站数 × 单站峰值。同一台 4 核机器、同一窗口实测：
+    #   4 路并发 → 峰值 7.1 GB（耗时 216~271 s，两次同口径跑出来的抖动就有 25%）
+    #   2 路并发 → 峰值 5.1 GB（耗时 203 s）
+    # 也就是说"拉满并发"既不多买时间（站段只占零头，自助 200 次与出榜是串行的，
+    # numpy 的 BLAS 线程在 4 核上互抢反而更慢），却要多占 2 GB —— 在"13 个月数据
+    # 下 ~20 GB 会 OOM"这条硬约束下，并发度必须按内存定（预算见 perf_budget.json）。
     from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=min(len(station_ids), 8) or 1) as pool:
+    with ThreadPoolExecutor(max_workers=min(len(station_ids), STATION_WORKERS)
+                            or 1) as pool:
         builds = list(pool.map(_one, station_ids))
     for sid, build in zip(station_ids, builds):
         station_meta[sid] = {
@@ -133,16 +146,27 @@ def _merge_rows(cur, rows) -> None:
                 got[i] += ent[i]
 
 
-def _load_obs(station_ids: Sequence[str]) -> dict[str, dict]:
-    from .storage import load_obs
-    return {sid: load_obs(sid) for sid in station_ids}
+def _preloaded_inputs(station_ids: Sequence[str], models: Sequence[str]
+                      ) -> tuple[dict[str, dict], dict[str, dict[str, list[dict]]]]:
+    """取观测与快照：**复用 evaluate 的进程内预加载缓存**。
 
+    为什么必须复用：`build_report` 里 dvs-v6 分支是**叠加**在 skill-v5 影子口径
+    之后的，影子口径已经用 `evaluate._preload` 把全部观测与快照读进内存；这里
+    再 `list_forecast_snapshots` / `load_obs` 读一遍，等于同一进程把同一批文件
+    （数千份快照 JSON）解析两遍。成本是双份的：那两遍解析（本机 page cache 已热
+    时仍要 4 s，CI runner 冷盘上更高），以及两份已解析字典同时驻留的峰值内存。
+    正确性不依赖任何时序假设：缓存键含 `data_version()`，写路径落盘即失效；不命中
+    时 `_preload` 自己读盘，返回内容与直接调用 storage **逐位相同**
+    （`_preload` 只做 listing，不清洗、不过滤——清洗在 `_snaps_for` 里按 `id()`
+    记忆并返回副本，不回写缓存对象）。
 
-def _load_snapshots(station_ids: Sequence[str],
-                    models: Sequence[str]) -> dict[str, dict[str, list[dict]]]:
-    from .storage import list_forecast_snapshots
-    return {sid: {m: list_forecast_snapshots(sid, m) for m in models}
-            for sid in station_ids}
+    独立进程（例如只跑 DVS 的调用方）语义不变：一样是"读一次、用一次"。
+    """
+    from .evaluate import _preload
+    models_c = canonical_models(list(models))
+    obs_maps, snaps = _preload(list(station_ids), list(models_c))
+    return obs_maps, {sid: {m: snaps.get((sid, m)) or [] for m in models_c}
+                      for sid in station_ids}
 
 
 __all__ = ["attach_dvs", "build_dvs_node"]

@@ -232,6 +232,10 @@ def build_station(station: str, obs_map: Mapping[str, dict],
     )
     if facts.n == 0 or clim is None:
         return build
+    # 观测实际存在的自然日：由**真实源**事实算（绝不能用含对照源的 facts_all —
+    # 对照源会把每一天都填满，可用率分母就假了）。提前算出并在合并后释放母本，
+    # 见下方 `del` 处的说明。
+    observed_days = len({int(d) for d in np.unique(facts.valid_day)})
     # 对照源与真实源共用同一批观测与协议护栏（见 dvs_controls）。对照源的模型编码
     # 由 `control_model_codes` 从 100 起编，直接整体并入同一套 model_codes，
     # 这样 `build_control_facts` 里写的 100+i 与这里的名字一一对应。
@@ -248,6 +252,12 @@ def build_station(station: str, obs_map: Mapping[str, dict],
             control_model_codes()[control_name(c.key)]: all_codes[control_name(c.key)]
             for c in CONTROLS})
         facts_all = facts_real + facts_ctl
+        # 合并后母本立刻放手。`_recode` 只换 `model` 一列（其余列是**同一份**数组
+        # 的引用），于是"共享"正是母本不死的根：不显式删，真实源与对照源的 9 份
+        # 列式事实会一直活到本函数返回，与 facts_all / daily / 累积结果叠成单站
+        # ~2.8 GB 的峰值（4 站并发实测 8.5 GB）。缓存里那份快照已由
+        # `_preloaded_inputs` 复用，事实层再留两份就是纯浪费。
+        del facts_real, facts_ctl, facts, controls
     else:
         all_models = list(models)
         all_codes = model_codes
@@ -259,10 +269,13 @@ def build_station(station: str, obs_map: Mapping[str, dict],
     rows = accumulate_day(facts_all, base=base_all,
                           station_ids=[station], models=all_models,
                           events=config.rain_events)
+    # 逐小时事实与它的基准到此为止（日轨累积只读 `daily` / `base_daily`）：
+    # 先放手再进下一步，别让 7.6M 行的逐小时列与日聚合、累积字典同时驻留。
+    del facts_all, base_all
     accumulate_daily(rows, daily, base=base_daily, station_ids=[station],
                      models=all_models, events=config.rain_events)
     build.rows = rows
-    build.observed_days = len({int(d) for d in np.unique(facts.valid_day)})
+    build.observed_days = observed_days
     return build
 
 

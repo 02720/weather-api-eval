@@ -726,6 +726,44 @@ def test_daily_temp_halves_invariant_tolerates_absent_halves():
     _verify_daily_temp_halves(lb, lbtemp)     # 不抛 = 通过
 
 
+def test_daily_temp_halves_invariant_skips_skill_family_by_construction():
+    """技能量表家族（含影子口径 dvs-v6）不设这把锁——**前提当场验证**。
+
+    两件事缺一不可：
+
+    1. 前提成立：技能家族（v3/v4/v5 与影子 dvs-v6）的日温度分不是分半 8 个
+       原始指标的纯函数（还差每半的 `ref`/`r_anom`），复算必然得 None——所以
+       "跳过"不是掩盖失败，而是这把锁在该口径上不成立；
+    2. 跳过生效：正因如此，构建路径不得在此炸。2026-11 生产口径切到 dvs-v6
+       时，跳过硬编码的 `("skill-v3","skill-v4","skill-v5")` 漏了影子口径，
+       报告构建在 `lb.daily[1][0]` 上直接 RuntimeError（发布 59.3 / 复算 None），
+       CI 的 pages 作业因此全红。
+
+    判据取自 `SKILL_SCHEMES`（单一事实源），不在这里重列名单：哪天某个 skill
+    口径把 `ref`/`r_anom` 也发布进 lbtemp，第 1 条断言会先红，提醒把这把锁
+    重新打开——而不是悄悄少守一条。
+    """
+    from weather_eval.evaluate import (SKILL_SCHEMES, _DAILY_TEMP_VIEW_KEYS,
+                                       apply_score_scheme, daily_temp_score)
+    from weather_eval.report.render import _verify_daily_temp_halves
+
+    assert "dvs-v6" in SKILL_SCHEMES, "影子口径必须在技能量表家族里（见 SKILL_SCHEMES）"
+    lb, lbtemp, expect = _half_case()
+    keys = list(_DAILY_TEMP_VIEW_KEYS)
+    halves = {"max": dict(zip(keys, lbtemp["1"][0]["mx"])),
+              "min": dict(zip(keys, lbtemp["1"][0]["mn"]))}
+    lb["daily"]["1"][0][2] = round(expect, 1)
+    try:
+        for scheme in SKILL_SCHEMES:
+            apply_score_scheme(scheme)
+            assert daily_temp_score(halves) is None, (
+                f"{scheme} 已能由发布的 8 个分半指标复算——请把它移出跳过名单，"
+                "并对该口径重新打开复算不变量")
+            _verify_daily_temp_halves(lb, lbtemp, scheme=scheme)   # 不抛 = 通过
+    finally:
+        apply_score_scheme("slope-v2")
+
+
 def test_render_replays_score_slopes_before_any_recompute():
     """斜率回放必须发生在任何复算**之前**（时序缺陷回归锁）。
 

@@ -63,12 +63,28 @@ def _load(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _peak_rss_mb() -> float:
+    """进程峰值 RSS（MB）。`ru_maxrss` 是**单调**高水位，所以"某一段的峰值"只能用
+    "段末水位 − 段初水位"来度量——这正是下面把 dvs 叠加单独记账的办法。"""
+    import resource
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
+
+
 @pytest.fixture(scope="session")
 def frozen_report():
-    """用冻结窗口构建一次报告（session 级：对拍与预算共用，不重复花 100 秒）。"""
+    """用冻结窗口构建一次报告（session 级：对拍与预算共用，不重复花 100 秒）。
+
+    **成本按口径分开记账**（2026-11 dvs-v6 切换后）：生产配置是 dvs-v6，而它的
+    实现是"skill-v5 影子口径全套 + DVS 增量叠加"两段。合成一个总耗时只能回答
+    "这份报告贵不贵"，回答不了"贵在哪一段"，于是任何一段的退化都会被平均掉，
+    而棘轮预算最需要的恰恰是归因。这里的做法是**只测边界**：`attach_dvs` 是
+    两段之间唯一的接缝（`build_report` 里 dvs 分支的入口），在它前后各取一次
+    计时与 RSS 水位即可切开，生产代码一行不改、报告内容一个字节不变。
+    """
     import os
 
     os.environ.setdefault("TZ", "Asia/Shanghai")
+    from weather_eval import dvs_report
     from weather_eval.config import load_config
     from weather_eval.evaluate import build_report
     from weather_eval.timeutil import parse_iso
@@ -77,14 +93,40 @@ def frozen_report():
     cfg = load_config(None)
     start, end = parse_iso(win["start_dt"]), parse_iso(win["end_dt"])
 
-    t0 = time.perf_counter()
-    report = build_report(cfg.station_ids, cfg.models, cfg.eval, start, end,
-                          period_label=win["period_label"])
-    elapsed = time.perf_counter() - t0
+    marks: dict[str, float] = {}
+    real_attach = dvs_report.attach_dvs
 
-    import resource
-    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
-    report["__bench__"] = {"seconds": elapsed, "peak_rss_mb": rss}
+    def _measured_attach(*args, **kwargs):
+        rss_before = _peak_rss_mb()
+        t_attach = time.perf_counter()
+        try:
+            return real_attach(*args, **kwargs)
+        finally:
+            marks["seconds"] = time.perf_counter() - t_attach
+            marks["peak_rss_mb"] = max(0.0, _peak_rss_mb() - rss_before)
+            marks["rss_before_mb"] = rss_before
+
+    # 只在本次构建期间替换（dvs 分支是函数内 `from .dvs_report import attach_dvs`，
+    # 调用时刻解析模块属性，所以这一层是最小侵入的观测点）；构建结束立刻还原，
+    # 后续用例（例如两次构建的可复现性对拍）走的仍是生产函数。
+    dvs_report.attach_dvs = _measured_attach
+    try:
+        t0 = time.perf_counter()
+        report = build_report(cfg.station_ids, cfg.models, cfg.eval, start, end,
+                              period_label=win["period_label"])
+        elapsed = time.perf_counter() - t0
+    finally:
+        dvs_report.attach_dvs = real_attach
+
+    dvs_seconds = marks.get("seconds", 0.0)
+    report["__bench__"] = {
+        # 影子口径（skill-v5 全套旧榜）——预算的原义，与切换前同一份工作量
+        "seconds": elapsed - dvs_seconds,
+        "peak_rss_mb": marks.get("rss_before_mb", _peak_rss_mb()),
+        # dvs-v6 叠加段（新增工作量，单独设闸，见 perf_budget.json 的 note）
+        "dvs": {"seconds": dvs_seconds,
+                "peak_rss_mb": marks.get("peak_rss_mb", 0.0)},
+    }
     return report
 
 
@@ -277,13 +319,31 @@ def test_diagnostics_unchanged(frozen_report):
 
 @pytest.mark.slow
 def test_perf_budget(frozen_report):
-    """I12：单轮成本有界。预算随优化推进**单向收紧**（见 perf_budget.json）。"""
+    """I12：单轮成本有界。预算随优化推进**单向收紧**（见 perf_budget.json）。
+
+    四道闸、两段工作量（口径=工作量的单位，见 fixture）：
+
+    * 影子口径（skill-v5 全套旧榜）：预算沿用切换前那把尺（基准 83.9s / 4076.9MB），
+      切换后这一段的代码路径没动，所以**一格都不许松**；
+    * dvs-v6 叠加段：这是切换新增的工作量（双跑期要两套分数并存）。把它并进
+      同一个总耗时会把"旧榜变慢"与"新口径本来很贵"混成一个数，谁都无法归因，
+      所以它单独立闸——基准与倍数写在 note 里，此后同样只降不升。
+    """
     budget = _load(BUDGET_PATH)
     bench = frozen_report["__bench__"]
+    dvs = bench.get("dvs") or {}
     assert bench["seconds"] <= budget["max_seconds"], (
-        f"报告构建 {bench['seconds']:.1f}s 超过预算 {budget['max_seconds']}s")
+        f"影子口径（skill-v5 全套）构建 {bench['seconds']:.1f}s 超过预算 "
+        f"{budget['max_seconds']}s")
     assert bench["peak_rss_mb"] <= budget["max_peak_rss_mb"], (
-        f"峰值内存 {bench['peak_rss_mb']:.0f} MB 超过预算 {budget['max_peak_rss_mb']} MB")
+        f"影子口径峰值内存 {bench['peak_rss_mb']:.0f} MB 超过预算 "
+        f"{budget['max_peak_rss_mb']} MB")
+    assert dvs.get("seconds", 0.0) <= budget["max_dvs_seconds"], (
+        f"dvs-v6 叠加段构建 {dvs.get('seconds', 0.0):.1f}s 超过预算 "
+        f"{budget['max_dvs_seconds']}s（点估计 + 自助 + 出榜）")
+    assert dvs.get("peak_rss_mb", 0.0) <= budget["max_dvs_rss_mb"], (
+        f"dvs-v6 叠加段峰值内存增量 {dvs.get('peak_rss_mb', 0.0):.0f} MB 超过预算 "
+        f"{budget['max_dvs_rss_mb']} MB")
 
 
 @pytest.mark.slow

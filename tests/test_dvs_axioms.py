@@ -262,3 +262,35 @@ def test_dvs_is_opt_in_and_does_not_touch_other_schemes():
     # 生产配置已于 2026-11 切换为 dvs-v6（本测试守的就是这个开关本身）
     from weather_eval.config import load_config
     assert load_config().eval.get("score_scheme") == "dvs-v6"
+
+
+def test_dvs_inputs_are_reused_from_the_shared_preload_cache(monkeypatch):
+    """DVS 的观测/快照取自 evaluate 的进程内预加载缓存，**且不做副本**。
+
+    守两条：
+
+    * 成本：`build_report` 跑完 skill-v5 影子口径后缓存已经是热的，DVS 若再
+      `list_forecast_snapshots` 一遍，就是把数千份快照 JSON 在同一进程里解析
+      两次（双份解析时间 + 双份已解析字典同时驻留）；
+    * 正确性：DVS 拿到的是缓存里的**同一批对象**。代价是"在 DVS 里原地改写
+      快照"从此会污染同进程的第二次构建——那类改动由
+      `test_baseline.py::test_determinism_two_builds` 抓（两次构建必须逐位相同），
+      所以这里不必重复，但必须锁住"是同一对象"这个前提：一旦有人为了"安全"
+      改成深拷贝，那条守卫会失效，"只读一遍"省下的成本也会重新长出来。
+    """
+    from weather_eval import dvs_report, evaluate
+
+    snapshot_list = [{"issue_iso": "2026-08-01T00:00", "data": {}}]
+    snaps = {("wuzhou", "ecmwf_ifs"): snapshot_list}
+    seen: dict[str, list[str]] = {}
+
+    def fake_preload(stations, models):
+        seen["stations"] = list(stations)
+        seen["models"] = list(models)
+        return {"wuzhou": {"2026-08-01T00:00": {"temperature_2m": 25.0}}}, snaps
+
+    monkeypatch.setattr(evaluate, "_preload", fake_preload)
+    obs, per_station = dvs_report._preloaded_inputs(["wuzhou"], ["ecmwf_ifs"])
+    assert seen == {"stations": ["wuzhou"], "models": ["ecmwf_ifs"]}
+    assert obs["wuzhou"]["2026-08-01T00:00"] == {"temperature_2m": 25.0}
+    assert per_station["wuzhou"]["ecmwf_ifs"] is snapshot_list

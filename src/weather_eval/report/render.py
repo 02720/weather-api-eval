@@ -41,7 +41,8 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 
 from ..evaluate import (_DAILY_TEMP_VIEW_KEYS, PRECIP_SCORE_PARTS,
-                        PRECIP_SKILL_PARTS, TEMP_SCORE_PARTS, TEMP_SKILL_PARTS,
+                        PRECIP_SKILL_PARTS, SKILL_SCHEMES, TEMP_SCORE_PARTS,
+                        TEMP_SKILL_PARTS,
                         apply_composite_gain, apply_score_index_gain,
                         apply_score_skill_k, apply_score_scheme,
                         apply_score_amt_floors, apply_score_penalty_lambdas,
@@ -239,13 +240,20 @@ def _verify_daily_temp_halves(lb: dict, lbtemp: dict,
       内部 96.95 发布成 97.0，按 2 位判等会在每个正常格上误炸；
     * 只锁 daily 轨的分时效榜（lb.daily）：总榜与综合天榜温度维是难度对齐/
       两轨合成口径，不是单格 daily_temp_score，不在不变量覆盖面内；
+    * 只对**发布字段足以复算**的口径设锁：`SKILL_SCHEMES`（v3/v4/v5 及其影子
+      `dvs-v6`）的日温度分依赖每半的 `ref`/`r_anom`，lbtemp 只发布 8 个原始
+      指标，复算结果必然为 None——那不是"契约破了"，是"这把锁不适用于这个
+      口径"。判据必须取自 `SKILL_SCHEMES` 这个单一事实源：2026-11 生产口径
+      切到 dvs-v6 时，这里若还手写 `("skill-v3","skill-v4","skill-v5")`，
+      报告构建就会在**每个**日榜首格上炸（实测 lb.daily[1][0] 发布 59.3、
+      复算 None），而不是守住任何东西；
     * 分半字段整体缺席（旧结论摘要数据重渲染）时无事可对，跳过不误伤；
       一旦有任何分半值，对不上就是发布坏了，就地炸。
     """
-    if scheme in ("skill-v3", "skill-v4", "skill-v5"):
-        # skill 口径的日温度分依赖每半的 ref/r_anom；lbtemp 只发布 8 个原始指标，
-        # 无法从发布字段逐位复算。技能分的“子分→维度”一致性由 evaluate 的
-        # 性质测试锁定；这里只保留 slope-v2 的发布契约检查。
+    if scheme in SKILL_SCHEMES:
+        # 技能量表家族：分半 8 指标不是温度分的充分统计量（还差 ref/r_anom），
+        # 无法从发布字段逐位复算。“子分→维度”的一致性由 evaluate 的性质测试
+        # 锁定；这里只保留 slope-v2 家族（分半指标即全部输入）的发布契约检查。
         return
     for day, hal_rows in (lbtemp or {}).items():
         lb_rows = ((lb or {}).get("daily") or {}).get(day) or []
