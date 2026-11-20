@@ -1,4 +1,22 @@
 
+## 2026-11-21 · dvs-v6 口径整体退役，生产回退 skill-v5
+
+性质：**口径回退 + 代码删除**。基线数字（`report_baseline.json`）不动——它本就
+是 skill-v5 口径冻结的，对拍断言一位没变；`max_seconds`/`max_peak_rss_mb`
+两道闸的基准（83.9s / 4076.9MB）与棘轮一格未松，撤销的只有切换时新增的
+`max_dvs_seconds`/`max_dvs_rss_mb` 两道叠加段闸门（性能只会更好，预算失去对象）。
+
+- **回退**：`config/stations.yaml` 的 `score_scheme: skill-v5`，恢复单一生产
+  口径；`SCORING.md` 恢复为 skill-v5 的唯一文字定义源，`SCORING_DVS.md` 删除。
+- **删除**：`src/weather_eval/dvs*.py`（8 个模块）、`tests/test_dvs_axioms.py`、
+  渲染层 §00 增量决策价值榜（模板/_slim_dvs/dvs 渲染上下文）。`build_report`
+  不再有任何 dvs 分支；`SKILL_SCHEMES` 回到三元素，`apply_score_scheme` 不再
+  识别 `dvs-v6`（历史 dvs-v6 页随视图指纹变化在下轮评测按 skill-v5 重建）。
+- **测试**：`test_first_principles_optimizations` 里 5 条 dvs 接线/渲染锁删除
+  （指纹测试改用 skill-v5 装载）；`test_render` 的技能家族跳过名单前提不变。
+- 历史记录（2026-11-15 的切换条目）保留不动，按"只追加"惯例。
+
+---
 ## 2026-11-15 · 生产口径切到 dvs-v6（成本预算随之拆成四道闸）
 
 性质：**口径切换 + 成本记账方式变更**。基线数字（`report_baseline.json`）沿用

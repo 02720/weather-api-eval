@@ -240,13 +240,10 @@ def _verify_daily_temp_halves(lb: dict, lbtemp: dict,
       内部 96.95 发布成 97.0，按 2 位判等会在每个正常格上误炸；
     * 只锁 daily 轨的分时效榜（lb.daily）：总榜与综合天榜温度维是难度对齐/
       两轨合成口径，不是单格 daily_temp_score，不在不变量覆盖面内；
-    * 只对**发布字段足以复算**的口径设锁：`SKILL_SCHEMES`（v3/v4/v5 及其影子
-      `dvs-v6`）的日温度分依赖每半的 `ref`/`r_anom`，lbtemp 只发布 8 个原始
-      指标，复算结果必然为 None——那不是"契约破了"，是"这把锁不适用于这个
-      口径"。判据必须取自 `SKILL_SCHEMES` 这个单一事实源：2026-11 生产口径
-      切到 dvs-v6 时，这里若还手写 `("skill-v3","skill-v4","skill-v5")`，
-      报告构建就会在**每个**日榜首格上炸（实测 lb.daily[1][0] 发布 59.3、
-      复算 None），而不是守住任何东西；
+    * 只对**发布字段足以复算**的口径设锁：`SKILL_SCHEMES`（v3/v4/v5）的日温度
+      分依赖每半的 `ref`/`r_anom`，lbtemp 只发布 8 个原始指标，复算结果必然为
+      None——那不是"契约破了"，是"这把锁不适用于这个口径"。判据必须取自
+      `SKILL_SCHEMES` 这个单一事实源，而不是在这里手写名单；
     * 分半字段整体缺席（旧结论摘要数据重渲染）时无事可对，跳过不误伤；
       一旦有任何分半值，对不上就是发布坏了，就地炸。
     """
@@ -277,57 +274,6 @@ def _verify_daily_temp_halves(lb: dict, lbtemp: dict,
                     "发布契约（键集/精度/半映射）与赋分口径已分叉")
 
 
-def _slim_dvs(node) -> dict | None:
-    """把 `meta.dvs` 压成页面真正要画的部分（体积 ∝ 画的东西）。
-
-    * 保留完整榜行（DVS/T/P 五段、CI、MCS 档、排名区间、技巧寿命、Δ_L1、证据等级）；
-    * 保留对照源与配置快照——它们是"这一分意味着什么"的标尺，页面必须能直接画出
-      灰色参考行；
-    * 丢弃只在服务端用的中间量（`detail.murphy` 之外的大数组、逐站 facts 计数细节
-      只保留摘要）。
-    """
-    if not isinstance(node, dict) or not node:
-        return None
-    if not node.get("available"):
-        return {"available": False, "scheme": node.get("scheme"),
-                "reason": node.get("reason")}
-    board = []
-    for row in node.get("board") or []:
-        board.append({
-            "m": row.get("model"),
-            "s": _r(row.get("score"), 2),
-            "t": {k: _r(v, 3) for k, v in (row.get("temp") or {}).items()},
-            "p": {k: _r(v, 3) for k, v in (row.get("precip") or {}).items()},
-            "cov": _r(row.get("cover"), 2),
-            "ev": row.get("evidence"),
-            "d": row.get("days"), "wd": row.get("window_days"),
-            "av": _r(row.get("avail"), 3),
-            "ci": [_r(x, 2) for x in (row.get("ci90") or [])] or None,
-            "rk": row.get("rank"),
-            "pb": _r(row.get("p_best"), 3),
-            "tier": row.get("mcs_tier"),
-            "dl1": _r(row.get("delta_l1"), 2),
-            "al": _r(row.get("aligned"), 2),
-            "h": ((row.get("lifetime") or {}).get("H")),
-            "rc": _r(row.get("recent"), 2),
-            "dv": _r(row.get("delivered"), 2),
-        })
-    controls = [{"m": c.get("model"), "lb": c.get("label"), "nt": c.get("note"),
-                 "s": _r(c.get("score"), 2)}
-                for c in (node.get("controls") or [])]
-    stations = {sid: {"clim": v.get("climatology_source"),
-                      "tau": v.get("tau_hours"), "fit": v.get("tau_fitted"),
-                      "days": v.get("observed_days")}
-                for sid, v in (node.get("stations") or {}).items()}
-    return {
-        "available": True, "scheme": node.get("scheme"),
-        "doc": node.get("scoring_doc"), "l1": node.get("l1"),
-        "window": node.get("window"),
-        "board": board, "controls": controls, "tiers": node.get("tiers"),
-        "config": node.get("config"), "stations": stations,
-    }
-
-
 def _slim_report(report_data: dict) -> dict:
     """构建内联进页面的**精简数据视图**。
 
@@ -346,10 +292,9 @@ def _slim_report(report_data: dict) -> dict:
     # 默认值而触发 P2 复算不变量报错（发布分 74.2 vs 复算 63.1）。
     scheme = str(meta.get("score_scheme") or "slope-v2")
     apply_score_scheme(scheme)
-    # dvs-v6 的影子旧榜按 skill-v5 语义回放（见 evaluate.SHADOW_OF_V5）：
-    # 这里若只列三个 vN，归档页重渲染会用代码缺省的 τ/σ/lead 权重去复算一份
+    # 这里若漏掉某个 vN，归档页重渲染会用代码缺省的 τ/σ/lead 权重去复算一份
     # 按 v5 尺度发布的日温度分，P2 发布不变量随即误炸。
-    if scheme in ("skill-v3", "skill-v4", "skill-v5") or scheme == "dvs-v6":
+    if scheme in ("skill-v3", "skill-v4", "skill-v5"):
         apply_score_skill_k(meta.get("score_skill_k"))
         if scheme in ("skill-v4", "skill-v5"):
             _floors = meta.get("score_amt_floors") or {}
@@ -605,10 +550,6 @@ def _slim_report(report_data: dict) -> dict:
         "bucket_sd_R": meta.get("bucket_sd_R"),
         "champion_view": meta.get("champion_view"),
         "composite_share": (meta.get("diagnostics") or {}).get("composite_share"),
-        # dvs-v6：新口径的榜与对照源整块透传。渲染层只在 score_scheme == "dvs-v6"
-        # 时展示它，因此这里不做筛选——**展示决策留给模板，数据层保持完整**，
-        # 归档月报重渲染时同一份数据可以两种口径各画一遍。
-        "dvs": _slim_dvs(meta.get("dvs")),
     }
     return {"meta": slim_meta, "board": board, "lb": lb, "lbtemp": lbtemp,
             "trend": trend,
@@ -945,12 +886,6 @@ def render_report_html(report_data: dict, title: str | None = None,
 
     _scheme = str((report_data.get("meta") or {}).get("score_scheme")
                   or "slope-v2")
-    # 生产口径切到 dvs-v6 后，meta.dvs 里已算好一份完整新榜，但模板此前只
-    # 把它塞进内联 JSON、从没渲染——读者看到的仍是 skill-v5 影子旧榜，而
-    # 报告正文却按 dvs-v6 描述结论。这里按服务端表格把新榜排好，无 JS 也能读。
-    _dvs = report_data.get("meta", {}).get("dvs") or {}
-    dvs_board = list(_dvs.get("board") or [])
-    dvs_controls = list(_dvs.get("controls") or [])
     _skill_scheme = _scheme in ("skill-v3", "skill-v4", "skill-v5")
     _temp_parts = TEMP_SKILL_PARTS if _skill_scheme else TEMP_SCORE_PARTS
     _precip_parts = (PRECIP_SKILL_PARTS if _skill_scheme
@@ -968,9 +903,6 @@ def render_report_html(report_data: dict, title: str | None = None,
         model_labels_json=labels_json,
         model_colors_json=colors_json,
         model_families_json=_js_json(MODEL_FAMILIES),
-        dvs=_dvs, dvs_board=dvs_board, dvs_controls=dvs_controls,
-        dvs_labels={c.get("model"): c.get("label")
-                    for c in dvs_controls if c.get("model")},
         score_temp_parts=_score_parts_rows(_temp_parts),
         score_precip_parts=_score_parts_rows(_precip_parts),
         station_labels=station_labels or {},

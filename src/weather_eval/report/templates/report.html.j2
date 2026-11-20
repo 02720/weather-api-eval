@@ -660,7 +660,6 @@
         {% if ns.fallback %}<div class="champ-ci">提前 1 天（小时口径）得分 · 数据积累中</div>
         {% elif report.meta.get('score_scheme') in ['skill-v3', 'skill-v4'] %}<div class="champ-ci">难度对齐技能分 · 50=气候平均 · 100=完美</div>
         {% elif report.meta.get('score_scheme') == 'skill-v5' %}<div class="champ-ci">难度对齐名次分 · 50=本档同台平均 · ±10 是 ρ=1 时的 1 个桶内标准差；本期实测约 {{ '%.1f'|format(((report.meta.get('bucket_sd_R') or {}).get('hourly') or 10.0)) }} 分 · 绝对技能分见 §02</div>
-        {% elif report.meta.get('score_scheme') == 'dvs-v6' %}<div class="champ-ci">此卡为 <b>skill-v5 影子口径</b>（名次分，供历史对照）；生产口径 dvs-v6 的增量决策价值榜见下方 §00</div>
         {% else %}<div class="champ-ci">难度对齐综合分 · 0~100</div>{% endif %}
         <div class="champ-score">{{ num(champ.score) }}<small>分</small></div>
         {{ thermo(champ.score, champ.get('ci90'), 'lg') }}
@@ -676,89 +675,7 @@
 
 <div class="wrap">
 
-  {# ==================== §00 生产口径：dvs-v6 ====================
-     生产配置已切到 dvs-v6，而 §01 仍是 skill-v5 影子旧榜（两套分数并存）。
-     此前新榜只进内联 JSON、页面上一个字都没有：读者按 dvs-v6 的说明读的
-     却是一张旧口径表。这里用服务端表格发布新榜，与 §01 同一条"无 JS 也能读"
-     纪律；对照源是标尺不是选手，单列灰色参考行。 #}
-  {% if report.meta.get('score_scheme') == 'dvs-v6' and dvs and dvs.get('available') %}
-  <section class="card" id="dvs-board">
-    <p class="eyebrow">§00 · 当前生产口径（dvs-v6）</p>
-    <h2>增量决策价值榜（DVS）</h2>
-    <p class="desc">在用户真正发起请求的时刻，用这家预报替代一套免费、因果可得的
-      无技巧基准（L0），平均消除了多少决策期望损失：<b>0 = 与基准持平、100 = 完美、负分 = 不如什么都不做</b>。
-      两端点由公式代数保证，不靠标定斜率；增删榜上任意其他源，本源分数逐位不变。
-      口径全文见 <a href="https://github.com/hyx2230/weather-api-eval/blob/main/SCORING_DVS.md">SCORING_DVS.md</a>。
-      {% if dvs.get('window') %}<span class="only-wide">窗口 {{ dvs.window.get('days') }} 天；免费锚点 L1 = {{ model_labels.get(dvs.get('l1'), dvs.get('l1') or '—') }}。</span>{% endif %}
-      「S|覆盖」只在该源实际覆盖的时效段内归一，识别短临专家；「DVS_del」把可用率折进交付质量。
-      MCS 档位与 90% 区间回答"谁和谁在统计上还分不开"，名次区间给的是自助重采样下的可能位次。</p>
-    <div class="lb-scroll">
-    <table class="lb-table" id="dvsTable">
-      <thead><tr>
-        <th class="c-rk">#</th><th class="l c-name">预报源</th>
-        <th data-key="score" data-type="num">DVS</th>
-        <th data-key="ci" data-type="num" title="配对块自助的 90% 置信区间">90% 区间</th>
-        <th data-key="rank" data-type="num" title="自助重采样下的名次区间">名次区间</th>
-        <th data-key="tier" data-type="num" title="模型置信集分档：同档内在统计上不可分辨">MCS 档</th>
-        <th data-key="cover" data-type="num" title="只在有样本的时效段内归一">S｜覆盖</th>
-        <th data-key="delivered" data-type="num" title="把可用率折进交付质量">DVS_del</th>
-        <th data-key="recent" data-type="num" title="半衰期指数加权的近期表现">近期</th>
-        <th data-key="delta" data-type="num" title="相对免费锚点 L1 的同窗口差值">Δ_L1</th>
-        <th data-key="days" data-type="num" title="窗口内有可评样本的独立验证日数">验证日</th>
-        <th data-key="avail" data-type="num" title="声明提供的决策时刻里实际拿到预报的比例">可用率</th>
-        <th data-key="evidence" data-type="str" title="A/B/C/D：证据等级，C/D 或短窗新源需看时期校准">证据</th>
-      </tr></thead>
-      <tbody>
-      {% for r in dvs_board %}
-        <tr{% if loop.first %} class="is-top"{% endif %}>
-          <td class="c-rk">{{ loop.index }}</td>
-          <td class="l c-name"><b>{{ model_labels.get(r.get('model'), r.get('model')) }}</b></td>
-          <td class="num"><b>{{ num(r.get('score'), 2) }}</b></td>
-          <td class="num">{% if r.get('ci90') %}{{ num(r.ci90[0], 1) }} ~ {{ num(r.ci90[1], 1) }}{% else %}—{% endif %}</td>
-          <td class="num">{% if r.get('rank') %}{{ r['rank'][0] }}–{{ r['rank'][1] }}{% else %}—{% endif %}</td>
-          <td class="num">{{ r.get('mcs_tier') or '—' }}</td>
-          <td class="num">{{ num(r.get('cover'), 2) }}</td>
-          <td class="num">{{ num(r.get('delivered'), 2) }}</td>
-          <td class="num">{{ num(r.get('recent'), 2) }}</td>
-          <td class="num">{{ num(r.get('delta_l1'), 2) }}</td>
-          <td class="num">{{ r.get('days') if r.get('days') is not none else '—' }}{% if r.get('window_days') %}/{{ r.window_days }}{% endif %}</td>
-          <td class="num">{{ pct(r.get('avail')) }}</td>
-          <td class="num">{{ r.get('evidence') or '—' }}</td>
-        </tr>
-      {% endfor %}
-      </tbody>
-    </table>
-    </div>
-    <p class="desc" style="margin-top:14px"><b>灰色参考行（标尺，不参与排名）</b>：
-      Oracle（=100 上限的实际可达值）、L0（=0 点）、滞后 3h 实况、全报雨 / 全不报雨 / 随机基率等对照源与真实源走<b>完全相同</b>的管道，
-      因此「多少分对应多大误差」可以直接读出来。恒报雨与恒不报雨的降水维必须为 0——这是 properness 的定理。</p>
-    <div class="lb-scroll">
-    <table class="lb-table" id="dvsControls">
-      <thead><tr><th class="l c-name">对照源</th><th>DVS</th><th>说明</th></tr></thead>
-      <tbody>{% for c in dvs_controls %}
-        <tr><td class="l c-name">{{ dvs_labels.get(c.get('model'), c.get('model')) }}</td>
-            <td class="num">{{ num(c.get('score'), 2) }}</td>
-            <td class="l">{{ c.get('note') or '' }}</td></tr>
-      {% endfor %}</tbody>
-    </table>
-    </div>
-    {% if dvs.get('tiers') %}<details style="margin-top:12px"><summary>模型置信集（MCS）分档</summary>
-      <p class="desc">同档内的源在 90% 置信下不能被排除为最好；档内不做无根据的排序。</p>
-      <ol>{% for group in dvs.tiers %}<li>{{ group | map('default', '') | join('、') }}</li>{% endfor %}</ol>
-    </details>{% endif %}
-    <p class="desc" style="margin-top:12px">⚠️ 下方 §01 及后续各图仍是 <b>skill-v5 影子口径</b>（历史对照）。
-      两套分数的量表和语义不同，<b>不可直接比较数值</b>；本期结论以本榜为准。</p>
-  </section>
-  {% elif report.meta.get('score_scheme') == 'dvs-v6' %}
-  <section class="card" id="dvs-board">
-    <p class="eyebrow">§00 · 当前生产口径（dvs-v6）</p>
-    <h2>增量决策价值榜暂不可用</h2>
-    <p class="desc">本轮 DVS 构建失败，主报告继续发布 skill-v5 影子口径（见 §01）。
-      失败原因：<b>{{ (dvs or {}).get('reason', '未提供原因') }}</b>。这不代表"本期没有 DVS"，而是本轮证据不足。</p>
-  </section>
-  {% endif %}
-
-  <!-- ==================== §01 总榜（影子口径对照） ==================== -->
+  <!-- ==================== §01 总榜 ==================== -->
   <section class="card" id="board">
     <p class="eyebrow">§01 · 证据</p>
     <h2>预报源总榜</h2>

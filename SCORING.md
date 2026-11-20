@@ -1,20 +1,14 @@
 # 评分口径（单一事实源）
 
-> ⚠️ **2026-11 口径切换**：生产默认口径已改为 **`score_scheme=dvs-v6`**
-> （增量决策价值分）。**新口径的唯一定义源是 [SCORING_DVS.md](SCORING_DVS.md)**；
-> 本文件保留为 **skill-v5 影子口径**（以及 slope-v2/v3/v4 历史口径回放）的定义源。
-> 切换后 `build_report` 仍按 skill-v5 算全套旧榜并写进同一份 meta，
-> dvs-v6 的榜并行写进 `meta.dvs`——两套分数可对照，旧月报按各自
-> `meta.score_scheme` 回放，不受影响。把 `config/stations.yaml` 的
-> `score_scheme` 改回 `skill-v5` 即回到单一旧口径。
+> **生产口径：`score_scheme=skill-v5`**（2026-11 复核修订；同月曾短暂切换到
+> dvs-v6 增量决策价值分，随即整体退役回退——该口径的代码与定义已从仓库删除，
+> 历史页面随视图指纹变化按本口径重建）。归档月报的 `score_scheme=slope-v2` /
+> `skill-v3` / `skill-v4` 是历史口径，不在本文件定义范围内，按各自归档版本回放。
 
-本文件是 **skill-v5 影子口径**的唯一文字定义源。代码里的权重表
+本文件是 **skill-v5 生产口径**的唯一文字定义源。代码里的权重表
 （`TEMP_SKILL_PARTS` / `PRECIP_SKILL_PARTS`）、配置（`config/stations.yaml`）、
 报告页"评分构成"表与测试都以此为准；任何一处改动必须同步本文件，
 `tests/test_scoring_contract.py` 会在 CI 里逐项对拍。
-
-> 归档月报的 `score_scheme=slope-v2` / `skill-v3` / `skill-v4` 是历史口径，
-> 不在本文件定义范围内，按各自归档版本回放。
 
 > **2026-11 第一性原理复核（skill-v5 修订）**：本轮改的是"测量机制"而不是
 > "调参"。机制改动全部有第一性原理依据与可测断言，逐条列在 §7/§9 的变更表里。

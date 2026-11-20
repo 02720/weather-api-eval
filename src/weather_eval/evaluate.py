@@ -1998,22 +1998,13 @@ SCORE_SCHEME = "slope-v2"
 SCORE_SKILL_K = 1.535
 SCORE_SKILL_CENTER = 50.0
 #: "技能量表"家族：这些口径的分都是 50=无技巧 / 100=完美（相对 slope-v2 的
-#: 0~100 换算分）。`dvs-v6` 必须在这里——它的**影子旧榜**就是 v5 量表。
-SKILL_SCHEMES = ("skill-v3", "skill-v4", "skill-v5", "dvs-v6")
-
-#: **影子口径**：`dvs-v6` 的旧榜必须与 `skill-v5` 逐位相同。
-#:
-#: 为什么单独一张表而不是把 "dvs-v6" 塞进 `SKILL_SCHEMES`：那张表分流的是
-#: "v3/v4/v5 之间的差异"，而 v5 内部还有若干只在 v5 生效的分支（σ 收缩、
-#: 软压缩参数、10 段 lead 权重）。把 dvs-v6 混进去会让它一路落进 v3/v4 的老分支，
-#: 影子榜与基线漂移（实测 Golden 前 7 名里有 6 名错位）。
-#: 这里显式列出"v5 的全部判据"，让 dvs-v6 **精确继承 skill-v5**。
-SHADOW_OF_V5 = ("skill-v5", "dvs-v6")
+#: 0~100 换算分）。
+SKILL_SCHEMES = ("skill-v3", "skill-v4", "skill-v5")
 
 
 def is_v5_family(scheme: str | None = None) -> bool:
-    """当前口径是否按 **skill-v5 语义**计算（dvs-v6 的影子榜即走这条）。"""
-    return (SCORE_SCHEME if scheme is None else scheme) in SHADOW_OF_V5
+    """当前口径是否按 **skill-v5 语义**计算。"""
+    return (SCORE_SCHEME if scheme is None else scheme) == "skill-v5"
 
 # skill-v4：雨量技能分母下限（mm；按轨分别配置）与校准扣分项的下行预算。
 SCORE_AMT_FLOOR_HOURLY = 0.05
@@ -2073,7 +2064,7 @@ def apply_score_scheme(scheme: str | None) -> None:
     """装载评分方案：`slope-v2`（归档旧报）、`skill-v3` / `skill-v4` / `skill-v5`。"""
     global SCORE_SCHEME
     s = str(scheme or "slope-v2").strip().lower()
-    if s not in ("slope-v2", "skill-v3", "skill-v4", "skill-v5", "dvs-v6"):
+    if s not in ("slope-v2", "skill-v3", "skill-v4", "skill-v5"):
         raise ValueError(f"未知 score_scheme: {scheme!r}")
     SCORE_SCHEME = s
 
@@ -8468,11 +8459,4 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
         report = _build_report_unlocked(
             station_ids, models, eval_cfg, start_dt, end_dt,
             period_label, is_monthly=is_monthly)
-    # dvs-v6 分支在 skill-v5 的出分之后**叠加**，不替换它：
-    #   * 旧路径保留为影子口径（方案 §8.2 的 P2 双跑期正是要两套分数并存）；
-    #   * 新路径把自己的榜写进 meta.dvs，渲染层按 score_scheme 选择是否显示。
-    # 这样"切换口径"是一次纯增量，而不是一次不可回退的替换。
-    if scheme == "dvs-v6":
-        from .dvs_report import attach_dvs
-        attach_dvs(report, station_ids, models, eval_cfg, start_dt, end_dt)
     return report
