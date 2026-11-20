@@ -1,7 +1,9 @@
 {
-  "generated_at": "2026-11-20T11:04:02",
+  "generated_at": "2026-11-20T22:03:34",
   "stale_hours": 30,
   "stale_sources": [
-    "cma_public_v1"
+    "cma_gfs_ew4all",
+    "cma_ndfs",
+    "fengqing_ai"
   ]
 }
