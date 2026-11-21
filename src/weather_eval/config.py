@@ -73,6 +73,9 @@ DEFAULT_EVAL = {
     "score_penalty_lambda_temp": 0.15,   # 温度 MBE/slope 扣分，最多 7.5 分
     "score_penalty_lambda_precip": 0.10, # 降水 BIAS 扣分，最多 5 分
     "temp_accuracy_limits": [1, 2],   # ±1°C、±2°C 准确率
+    # cyeva「降水量误差准确率」容差（mm）：|预报−实况| ≤ limit 的样本占比。
+    # 只披露、不进综合分；三档覆盖 0.1mm 小雨下沿 / 1mm 常用误差 / 2mm 宽口径。
+    "rain_error_accuracy_limits_mm": [0.1, 1.0, 2.0],
     "rain_threshold_mm": 0.1,          # 有无降水阈值（国内业务：≥0.1mm 记为有降水）
     "rain_daily_threshold_mm": 1.0,    # 降水分（日榜·降水维）阈值：24h 累计 ≥1mm 记"有效降水日"
                                        # （2026-09-06 标定：逐小时 0.1mm 口径全模式 ETS≤0.054

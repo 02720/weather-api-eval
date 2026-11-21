@@ -57,16 +57,20 @@ def test_temp_metrics_handcalc():
     assert m["acc1"] == 75.0
     assert abs(m["rmse"] - 1.0) < 1e-6
     assert abs(m["mae"] - 0.5) < 1e-6
-    # cyeva 全量指标键齐备（相关系数/斜率 4 点样本可算）
-    for k in ("mbe", "rss", "chi2", "r", "slope"):
+    # cyeva 全量指标键齐备（相关系数/斜率/截距/P 值 4 点样本可算）
+    for k in ("mbe", "rss", "chi2", "r", "slope", "intercept", "pvalue"):
         assert m[k] is not None, k
 
 
 def test_temp_metrics_tiny_sample_regress_none():
-    # 2 个点不足以做线性回归：r/slope 应为 None 而非崩溃
+    """cyeva 两点回归仍给 slope/r，但 P 值无定义；1 点/零方差才整体缺失。"""
     m = temp_metrics([20, 21], [20, 23], [1, 2], 0)
     assert m["rmse"] is not None
-    assert m["r"] is None and m["slope"] is None
+    assert round(m["slope"], 3) == 0.333 and round(m["intercept"], 3) == 13.333
+    assert m["pvalue"] is None
+
+    one = temp_metrics([20.0], [21.0], [1, 2], 0)
+    assert all(one[k] is None for k in ("r", "slope", "intercept", "pvalue"))
 
 
 def test_precip_metrics_handcalc():
@@ -86,6 +90,12 @@ def test_precip_metrics_handcalc():
     # 连续量指标键齐备
     for k in ("rmse", "mae", "mbe"):
         assert m[k] is not None, k
+
+    # cyeva 降水量误差准确率：|Δ雨量| ≤ 0.1 / 1 / 2 mm 三档（只披露不入分）
+    from cyeva import PrecipitationComparison
+    pc = PrecipitationComparison([0, 1, 1, 0, 0, 1], [0, 1, 0, 0, 1, 1], unit="mm")
+    for lim, key in ((0.1, "accerr_0p1"), (1.0, "accerr_1p0"), (2.0, "accerr_2p0")):
+        assert m[key] == round(float(pc.calc_diff_accuracy_ratio(limit=lim)), 3)
 
 
 def test_precip_metrics_graded_structure():
@@ -1135,6 +1145,39 @@ def test_daily_temp_only_extension_disclosed_not_scored(tmp_path, monkeypatch):
         assert row["precip_score"] is None, off
 
 
+def test_temp_metrics_cyeva_regression_args_complete():
+    """cyeva calc_linregress_args 的四项均已发布（截距、P 值补齐）。
+
+    权威值直接取 cyeva 0.2.3；本项目对外统一 3 位，cyeva 保留 4 位，故按
+    同一舍入终点比较。两个后端必须给出完全相同的四元组，避免切后端改数字。
+    """
+    import numpy as np
+    from cyeva import Comparison
+
+    rng = np.random.default_rng(20261121)
+    obs = np.round(rng.normal(22.0, 4.0, 30), 1)
+    fcst = np.round(obs + rng.normal(0.0, 1.5, 30), 1)
+    slope, intercept, r, pvalue = Comparison(obs, fcst).calc_linregress_args()
+    for backend in ("cyeva", "numpy"):
+        got = temp_metrics(obs, fcst, [1, 2], 2, backend=backend)
+        # cyeva 已在内核里 round4，本项目指标对外只保留 3 位，直接比对外值
+        assert got["slope"] == float(slope)
+        assert got["intercept"] == float(intercept)
+        assert got["r"] == float(r)
+        assert got["pvalue"] == float(pvalue)
+        assert got["intercept_pooled"] == got["intercept"]
+        assert got["pvalue_pooled"] == got["pvalue"]
+
+
+def test_temp_regression_args_degenerate_are_missing():
+    """零方差/单点回归不给伪数值；截距与 P 值同纪律缺失。"""
+    flat = temp_metrics([20.0] * 5, [20.0] * 5, [1, 2], 0)
+    assert flat["r"] is None and flat["slope"] is None
+    assert flat["intercept"] is None and flat["pvalue"] is None
+    one = temp_metrics([20.0], [21.0], [1, 2], 0)
+    assert one["intercept"] is None and one["pvalue"] is None
+
+
 def test_daily_prefers_hourly_aggregation_when_covered(tmp_path, monkeypatch):
     """逐小时覆盖充足的日子继续用逐小时聚合——补位不得改变已有口径的样本。
 
@@ -1447,7 +1490,7 @@ def test_temp_metrics_per_station_fisher_z(tmp_path):
 
 
 def test_numpy_fast_paths_match_cyeva(tmp_path, monkeypatch):
-    """快速路径（曲线 rmse/acc2、按天二分类 6 项）与 cyeva 全量路径同数值。
+    """快速路径（曲线 rmse/acc2、按天二分类 8 项）与 cyeva 全量路径同数值。
 
     用真实随机数据对拍：报告里的数字不允许"曲线一套、表格一套"。"""
     import numpy as np
@@ -1466,7 +1509,7 @@ def test_numpy_fast_paths_match_cyeva(tmp_path, monkeypatch):
     rf = (rng.random(400) < 0.3).astype(float) * rng.uniform(0, 25, 400).round(1)
     mine = precip_binary_metrics(ro, rf, 1.0, 5)
     cy = precip_metrics(ro, rf, 1.0, 5)
-    for k in ("acc", "pod", "far", "ts", "ets", "bias"):
+    for k in ("acc", "pod", "far", "miss", "ts", "ets", "bias", "farate"):
         assert mine[k] == cy[k], (k, mine[k], cy[k])
 
 

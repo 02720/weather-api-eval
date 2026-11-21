@@ -80,6 +80,7 @@ def run(window_file: str | None, max_cells: int) -> dict:
     limits = ev["temp_accuracy_limits"]
     min_sample = ev["min_sample"]
     thr = ev["rain_threshold_mm"]
+    err_limits = tuple(ev.get("rain_error_accuracy_limits_mm", ()))
     hourly, daily = E.collect(
         cfg.station_ids, cfg.models, start, end,
         ev["hourly_lead_days"], ev["daily_max_offset_days"],
@@ -113,7 +114,8 @@ def run(window_file: str | None, max_cells: int) -> dict:
             cells.append((
                 f"precip/{m}/{tag}",
                 (*E._farrays(pool, ("rain_obs", "rain_fcst")), thr, min_sample),
-                {"n_eff": E._n_eff_rain(pool, thr, "valid_iso", "lead")}))
+                {"n_eff": E._n_eff_rain(pool, thr, "valid_iso", "lead"),
+                 "error_limits": err_limits}))
         buckets: dict[int, list] = defaultdict(list)
         for r in recs:
             buckets[r["bucket"]].append(r)
@@ -128,7 +130,8 @@ def run(window_file: str | None, max_cells: int) -> dict:
                 f"precip/{m}/{b}d",
                 (*E._farrays(pool, ("rain_obs", "rain_fcst")), thr, min_sample),
                 {"kind": "1h", "graded_levs": E.HOURLY_GRADED_LEVS,
-                 "n_eff": E._n_eff_rain(pool, thr, "valid_iso", "lead")}))
+                 "n_eff": E._n_eff_rain(pool, thr, "valid_iso", "lead"),
+                 "error_limits": err_limits}))
     for m in cfg.models:
         by_off: dict[int, list] = defaultdict(list)
         for r in daily_by_model.get(m, []):

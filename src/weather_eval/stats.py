@@ -24,6 +24,7 @@ import math
 import warnings
 from typing import Any
 
+from scipy import stats as scipy_stats
 import numpy as np
 
 # 分级阈值**只此一处**：直接读 cyeva 的配置模块，与 weather_eval.graded 同源，
@@ -438,6 +439,37 @@ def r_slope_numpy(x: np.ndarray, y: np.ndarray) -> tuple[float | None, float | N
     return _round4(r), _round4(slope)
 
 
+def linregress_args_numpy(
+    x: np.ndarray, y: np.ndarray
+) -> tuple[float | None, float | None, float | None, float | None]:
+    """cyeva ``calc_linregress_args`` 的完整快速路径（x=预报, y=观测）。
+
+    cyeva 实现是 ``scipy.stats.linregress(forecast, observation)[:4]``：
+    斜率、截距、相关系数、P 值，四项各自 ``round(4)``。这里直接调用同一个
+    scipy 内核，只把 NaN 对按 ``drop_nan`` 语义剔除，避免再写一份容易被数值
+    边界带偏的手工公式。回归标准误是 scipy 的第 5 项，cyeva 没有导出，故
+    不纳入本项目的 cyeva 指标清单。
+    """
+    m = _nan_pair_mask(np.asarray(x, dtype=float), np.asarray(y, dtype=float))
+    if int(m.sum()) < 2:
+        return None, None, None, None
+    xs, ys = np.asarray(x, dtype=float)[m], np.asarray(y, dtype=float)[m]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        try:
+            res = scipy_stats.linregress(xs, ys)
+        except (ValueError, FloatingPointError):
+            return None, None, None, None
+    values: list[float | None] = []
+    for value in (res.slope, res.intercept, res.rvalue, res.pvalue):
+        try:
+            f = float(value)
+        except (TypeError, ValueError):
+            f = float("nan")
+        values.append(None if not np.isfinite(f) else _round4(f))
+    return values[0], values[1], values[2], values[3]
+
+
 def temp_core_numpy(o: np.ndarray, f: np.ndarray) -> dict:
     """温度核心指标的 numpy 快速路径（cyeva 同口径：剔 NaN 对、结果 round4）。
 
@@ -486,18 +518,21 @@ def binary_counts(o: np.ndarray, f: np.ndarray, thr: float) -> tuple[int, int, i
 def binary_metrics_from_counts(h: int, fa: int, mi: int, c: int) -> dict:
     """列联计数 → 二分类指标（与 cyeva threshold_* 同定义，结果 round4）。
 
-    ts/ets 为 0~1 比值；acc/pod/far 为 0~100 百分数；bias 为比值——
+    ts/ets 为 0~1 比值；acc/pod/far/miss 为 0~100 百分数；bias 为比值——
     与既有 precip_metrics 的单位约定一致，评分换算函数依赖这一约定。
+    cyeva ``gather_all_indicators`` 发布 missing_ratio，但旧评分轨只借用了
+    这张表的 acc/pod/far/ts/ets/bias；补齐 miss 后才能逐项声明“晴雨 8 项齐全”。
     分母为 0 的项返回 NaN（调用方按缺项处理），与 cyeva 的 nan→None 链一致。
     """
     n = h + fa + mi + c
     out = {"hits": h, "false_alarms": fa, "misses": mi, "correct_negatives": c,
            "n": n, "acc": np.nan, "pod": np.nan, "far": np.nan,
-           "ts": np.nan, "ets": np.nan, "bias": np.nan}
+           "miss": np.nan, "ts": np.nan, "ets": np.nan, "bias": np.nan}
     if n == 0:
         return out
     out["acc"] = 100.0 * (h + c) / n
     if h + mi:
+        out["miss"] = 100.0 * mi / (h + mi)
         out["pod"] = 100.0 * h / (h + mi)
     if h + fa:
         out["far"] = 100.0 * fa / (h + fa)

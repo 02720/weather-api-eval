@@ -3,10 +3,11 @@
 评估口径（详见 README，并在报告中注明）：
 - 逐小时：按起报后时效（小时）分 1..16 天桶。
   温度（cyeva TemperatureComparison 全量）：RMSE / MAE / MBE / RSS / χ² /
-    ±1°C·±2°C 准确率 / 相关系数 r / 回归斜率。
+    ±1°C·±2°C 准确率 / 相关系数 r / 回归斜率 / 回归截距 / 回归 P 值。
   降水（cyeva PrecipitationComparison 全量）：晴雨二分类（阈值默认 0.1mm）
     准确率 / 命中率 POD / 空报率 FAR / 空报频率 / 漏报率 / TS / ETS / 频率偏差 BIAS，
-    连续量 RMSE / MAE / MBE，及 1h 雨强分级（小雨..大暴雨）每级 7 项指标。
+    连续量 RMSE / MAE / MBE / 降水量误差准确率（|Δ雨量|≤0.1/1/2mm），
+    及 1h 雨强分级（小雨..大暴雨）每级 7 项指标。
   **逐小时降水自 2026-09 起为诊断轨道，不再进综合分**（见下"评分轨道"）。
 - 按天：北京时自然日聚合日最高/最低气温、日降水量；按"有效日 − 起报日"的日偏移
   1..16 天分组。温度最高/最低全套指标；降水晴雨 + 连续量 + 24h 累计分级
@@ -1121,13 +1122,13 @@ def temp_metrics(obs_vals, fcst_vals, limits, min_sample, *,
 
     n_eff：有效样本量（考虑误差自相关，见 stats.effective_n）。n 或 n_eff 低于
     min_sample 视为样本不足——名义 n 达标但 n_eff 不达标同样不出结论（P1-2）。
-
     groups：按站分组的 [(obs, fcst), ...]（P1-3）。相关系数 r 与回归斜率在
     各站内部计算（站内样本 ≥ `min_group_n` 才参与；缺省 30，**日轨须传 5**——
     7 天块内每站最多 7 个日样本，沿用 30 会让站内合并恒不触发），r 按 Fisher-z
     加权合并、斜率按样本量加权合并——跨站池化的 r 混入"复现站间气候差异"这一
     容易得多的任务，不是对"站内起伏同步程度"的度量。池化口径保留在
-    r_pooled/slope_pooled 并列披露。单组/缺省时直接对池化样本计算（r_pooled 即 r）。
+    r_pooled/slope_pooled/intercept_pooled/pvalue_pooled 并列披露；
+    截距与 P 值沿用 cyeva ``calc_linregress_args`` 的池化样本口径。
 
     backend：标量六项与 ±N°C 准确率走哪条实现（默认 numpy 快速路径，见
     `DEFAULT_METRIC_BACKEND`）。两条路径逐位同值，由 scripts/parity_temp.py
@@ -1139,7 +1140,10 @@ def temp_metrics(obs_vals, fcst_vals, limits, min_sample, *,
     out = {"n": n, "n_eff": n_eff,
            "rmse": None, "mae": None, "mbe": None, "rss": None,
            "chi2": None, "r": None, "slope": None,
-           "r_pooled": None, "slope_pooled": None, "mbe_bdisp": None,
+           "intercept": None, "pvalue": None,
+           "r_pooled": None, "slope_pooled": None,
+           "intercept_pooled": None, "pvalue_pooled": None,
+           "mbe_bdisp": None,
            **{f"acc{lim}": None for lim in limits}}
     if n < min_sample or n == 0 or (n_eff is not None and n_eff < min_sample):
         return out
@@ -1158,12 +1162,17 @@ def temp_metrics(obs_vals, fcst_vals, limits, min_sample, *,
     out["chi2"] = _r(chi2)
     for lim in limits:
         out[f"acc{lim}"] = _r(accs[lim])
-    # r/slope：numpy 充分统计量公式（与 scipy.linregress 同定义，cyeva 亦委托之，
-    # 一致性由测试锁定）。池化与站内合并两条口径都算，缺项回退池化。
-    r_pooled, slope_pooled = r_slope_numpy(fcst, obs)   # x=预报, y=观测（cyeva 口径）
-    out["r_pooled"] = r_pooled
-    out["slope_pooled"] = slope_pooled
-    r, slope = r_pooled, slope_pooled
+    # 回归四参数：cyeva calc_linregress_args 返回 slope/intercept/r/pvalue。
+    # 用与权威包同一个 scipy 内核，backed 两路同值；池化口径原样披露，站内
+    # 合并只覆盖 r/slope（Fisher-z / 样本量加权），截距和 P 值仍取池化样本。
+    slope_p, intercept_p, r_p, pvalue_p = _stats.linregress_args_numpy(fcst, obs)
+    out["r_pooled"] = r_p
+    out["slope_pooled"] = slope_p
+    out["intercept_pooled"] = intercept_p
+    out["pvalue_pooled"] = pvalue_p
+    out["intercept"] = intercept_p
+    out["pvalue"] = pvalue_p
+    r, slope = r_p, slope_p
     if groups and len(groups) >= 1:
         rs, ns, ss = [], [], []
         gn_all, ge_all = [], []
@@ -1184,8 +1193,8 @@ def temp_metrics(obs_vals, fcst_vals, limits, min_sample, *,
             ge_all.append(float((gfa[gm] - goa[gm]).sum()))
         r_c = _stats.fisher_z_combine(rs, ns)
         s_c = _stats.weighted_mean_combine(ss, ns)
-        r = r_c if r_c is not None else r_pooled
-        slope = s_c if s_c is not None else slope_pooled
+        r = r_c if r_c is not None else r_p
+        slope = s_c if s_c is not None else slope_p
         if len(gn_all) >= _stats.MIN_STATIONS_BDISP:
             v = _stats.between_station_mbe_sd(np.asarray(gn_all), np.asarray(ge_all))
             v = float(np.asarray(v).reshape(()))
@@ -1283,8 +1292,12 @@ def precip_metrics(obs_vals, fcst_vals, threshold, min_sample,
                    kind: str | None = None, graded_levs: tuple = (),
                    n_eff: int | None = None,
                    graded_backend: str | None = None,
-                   backend: str | None = None) -> dict:
+                   backend: str | None = None,
+                   error_limits: tuple | None = None) -> dict:
     """降水全套指标：晴雨二分类 8 项 + 连续量 3 项（+ 可选分级每级 7 项）。
+
+    二分类 8 项 = cyeva ``gather_all_indicators`` 的晴雨 6 项（准确率、命中、
+    漏报、空报、TS、BIAS）＋同族的空报频率与 ETS。
 
     kind/graded_levs：传 "1h"+("1".."5") 算逐小时雨强区间分级，
     传 "24h"+("+1".."+6") 算按天累计分级；不传则只算晴雨与连续量。
@@ -1296,14 +1309,22 @@ def precip_metrics(obs_vals, fcst_vals, threshold, min_sample,
     backend：连续量 rmse/mae/mbe 走哪条实现（默认 numpy 快速路径，见
     `DEFAULT_METRIC_BACKEND`；晴雨二分类与分级不受它控制——它们各有自己
     的后端开关与对拍锁定）。
+
+    error_limits：降水量误差准确率容差（mm）；每档输出 `accerr_<上限>` =
+    |预报−实况| ≤ 上限 的样本占比（cyeva calc_diff_accuracy_ratio 同口径）。
+    只披露不进评分；None 时沿用配置 `rain_error_accuracy_limits_mm` 缺省。
     """
     obs = np.asarray(obs_vals, dtype=float)
     fcst = np.asarray(fcst_vals, dtype=float)
     n = _valid_n(obs, fcst)
+    err_limits = (tuple(error_limits) if error_limits is not None
+                  else tuple(DEFAULT_EVAL["rain_error_accuracy_limits_mm"]))
+    err_keys = {lim: f"accerr_{str(lim).replace('.', 'p')}" for lim in err_limits}
     out = {"n": n, "n_eff": n_eff,
            "acc": None, "pod": None, "far": None, "farate": None,
            "miss": None, "ts": None, "ets": None, "bias": None,
-           "rmse": None, "mae": None, "mbe": None}
+           "rmse": None, "mae": None, "mbe": None,
+           **{key: None for key in err_keys.values()}}
     if graded_levs:
         out["graded"] = {lev: None for lev in graded_levs}
     if n < min_sample or n == 0 or (n_eff is not None and n_eff < min_sample):
@@ -1352,6 +1373,13 @@ def precip_metrics(obs_vals, fcst_vals, threshold, min_sample,
     out["rmse"] = _r(rmse)
     out["mae"] = _r(mae)
     out["mbe"] = _r(mbe)
+    # 降水量误差准确率：同一份有效样本，直接复刻 cyeva calc_diff_accuracy_ratio
+    # （NaN 对剔除、原值比较、结果先 round4，与温度误差准确率同一装饰器栈）。
+    valid = ~np.isnan(obs) & ~np.isnan(fcst)
+    abs_err = np.abs(obs[valid] - fcst[valid])
+    for lim, key in err_keys.items():
+        out[key] = _r(_cyv_div(float((abs_err <= lim).sum()), float(abs_err.size),
+                              pct=True))
     if graded_levs and kind:
         if str(graded_backend or DEFAULT_GRADED_BACKEND).lower() != "cyeva":
             # 分级指标占全部 cyeva 调用的 70%（实测 26.65s / 38.06s）。它的数学
@@ -1401,13 +1429,17 @@ def precip_binary_metrics(obs_vals, fcst_vals, threshold, min_sample,
     m = ~np.isnan(obs) & ~np.isnan(fcst)
     n = int(m.sum())
     out = {"n": n, "n_eff": n_eff, "acc": None, "pod": None, "far": None,
-           "ts": None, "ets": None, "bias": None, "grade_ets": None}
+           "miss": None, "ts": None, "ets": None, "bias": None,
+           "farate": None, "grade_ets": None}
     if n < min_sample or n == 0 or (n_eff is not None and n_eff < min_sample):
         return out
     h, fa, mi, c = binary_counts(obs[m], fcst[m], threshold)
+    ob = obs[m] >= threshold
+    fb = fcst[m] >= threshold
     bm = binary_metrics_from_counts(h, fa, mi, c)
-    for k in ("acc", "pod", "far", "ts", "ets", "bias"):
+    for k in ("acc", "pod", "far", "miss", "ts", "ets", "bias"):
         out[k] = _r(bm[k])
+    out["farate"] = _r(_stat_farate(ob, fb))
     if gbounds:
         g = _stats.grade_ets_point(_stats.grade_counts(obs[m], fcst[m], gbounds),
                                    n, min_sample)
@@ -4097,6 +4129,7 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
     # 每次 temp_metrics / precip_metrics 调用对应一个 (模型, 天桶, 轨道) 格子，
     # 彼此独立、无共享状态。攒成一批再分派，才能在 runner 的多核上真正并行；
     # 逐格内联调用只能串行。收集阶段只做"取数 + 算 n_eff"，不做 cyeva 计算。
+    rain_error_limits = tuple(eval_cfg.get("rain_error_accuracy_limits_mm", ()))
     graded_backend = str(eval_cfg.get("graded_backend", DEFAULT_GRADED_BACKEND))
     jobs_temp: list[tuple[tuple, dict]] = []
     slots_temp: list[tuple[dict, str]] = []
@@ -4153,13 +4186,13 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
                  {"n_eff": ne_all, "groups": gall})
         add_precip(cell, "precip_24h",
                    (*_farrays(h24, ("rain_obs", "rain_fcst")), thr, min_sample),
-                   {"n_eff": re24})
+                   {"n_eff": re24, "error_limits": rain_error_limits})
         add_precip(cell, "precip_72h",
                    (*_farrays(h72, ("rain_obs", "rain_fcst")), thr, min_sample),
-                   {"n_eff": re72})
+                   {"n_eff": re72, "error_limits": rain_error_limits})
         add_precip(cell, "precip_all",
                    (*_farrays(recs, ("rain_obs", "rain_fcst")), thr, min_sample),
-                   {"n_eff": re_all})
+                   {"n_eff": re_all, "error_limits": rain_error_limits})
 
     # ---- 逐小时按天桶：温度（入分）/ 逐小时降水（诊断，含 1h 雨强分级） ----
     # 按天桶分组只做**一次**：下面的温度/诊断降水循环与"小时榜入分降水"循环此前
@@ -4193,7 +4226,8 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
                                                limits, min_sample))
             add_precip(precip_hourly[m], f"{b}d", (ro, rf, thr, min_sample),
                        {"kind": "1h", "graded_levs": HOURLY_GRADED_LEVS,
-                        "n_eff": ne_r, "graded_backend": graded_backend})
+                        "n_eff": ne_r, "graded_backend": graded_backend,
+                        "error_limits": rain_error_limits})
 
     # ---- 小时榜的降水维：逐小时晴雨 @ rain_hourly_threshold_mm ----
     # 同一份逐小时样本，两个用途不能混：precip_hourly（上）用 0.1mm 口径算全套
@@ -4310,7 +4344,8 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
                         np.asarray(by_off[off]["rain"][1], dtype=float),
                         thr, min_sample),
                        {"kind": "24h", "graded_levs": DAILY_GRADED_LEVS,
-                        "graded_backend": graded_backend})
+                        "graded_backend": graded_backend,
+                        "error_limits": rain_error_limits})
 
     # ---- 分站概览（24h 桶）：按（站, 模型）分一次组，避免 O(站×模型×全量) 重扫 ----
     by_station_model: dict[tuple, list] = {(sid, m): [] for sid in station_ids for m in models}
@@ -4327,7 +4362,8 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
             ro, rf = _farrays(h, ("rain_obs", "rain_fcst"))
             cell = per_station[sid].setdefault(m, {})
             add_temp(cell, "temp", (to, tf, limits, min_sample), {})
-            add_precip(cell, "precip", (ro, rf, thr, min_sample), {})
+            add_precip(cell, "precip", (ro, rf, thr, min_sample),
+                       {"error_limits": rain_error_limits})
 
     # ---- 一次性分派：全部分时效格子走同一批调用（并行或串行由 parallel 决定）----
     from .parallel import map_metric_calls
