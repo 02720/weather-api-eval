@@ -280,7 +280,7 @@ def test_sparkline_svg_server_rendered(tmp_path, monkeypatch):
 def test_board_metric_dimension_tabs(tmp_path, monkeypatch):
     """§01 指标列页签（2026-10）：总榜呈现全部已评测指标，横排不拉长。
 
-    15 项已评测指标全铺成列会把横排拉到两千像素开外；页签把温度/降水两维各收成
+    19 项已评测指标全铺成列会把横排拉到两千像素开外；页签把温度/降水两维各收成
     一个列组（radio + 兄弟选择器，纯 CSS，无 JS 也可切换），默认「概览」只看总分。
     「选了哪一维就按哪一维排」的排序语义见 test_board_dimension_tab_is_sort_order。
     单项指标与综合分走同一张劈分设计（_build_board_rows 的 _aligned），行内
@@ -310,10 +310,14 @@ def test_board_metric_dimension_tabs(tmp_path, monkeypatch):
     # 全部已评测指标都在表头（数据通路锁点：_board_row 透传 + 对齐矩阵）
     for key in ("acc1", "rmse", "mae", "mbe", 'data-key="r"', "slope",
                 "accr", "ets", "pod", "far", "bias", "amt_mae", "amt_bias",
-                "grade_ets"):
+                "grade_ets",
+                # 2026-11 全指标披露：入分项 r_anom/amt_skill/ord_skill
+                "r_anom", "amt_skill", "ord_skill"):
         assert key in html, f"表头缺指标列 {key}"
     # 行内 data-* 与页签列一一对应（列排序的数据源）
     assert 'data-grade_ets="' in html and 'data-bdisp="' in html
+    assert 'data-r_anom="' in html and 'data-amt_skill="' in html \
+        and 'data-ord_skill="' in html
     # 隐藏 radio 显式钉在页签行（top:0/left:0）——零尺寸 abspos 的 static
     # position 在 flex 容器里会被 Chrome 解析到远处，聚焦即页面下跳（实测回归）
     assert ".lb-dims input { position:absolute; top:0; left:0;" in html
@@ -321,19 +325,21 @@ def test_board_metric_dimension_tabs(tmp_path, monkeypatch):
     # 降级路径、数值可为 None，但键缺失 = 数据通路断了）
     row = data["leaderboards"]["all"][0]
     for key in ("acc1", "mae", "mbe", "r", "slope", "mbe_bdisp",
-                "accr", "pod", "far", "bias", "amt_mae", "amt_bias", "grade_ets"):
+                "accr", "pod", "far", "bias", "amt_mae", "amt_bias",
+                "grade_ets", "r_anom", "amt_skill", "ord_skill"):
         assert key in row, f"总榜行缺指标键 {key}"
     # accr 与 pod 出自同一张 2×2 列联表，缺有必须一致——锁 _board_row 的
     # 改名约定（p 里传原始键 acc，_build_board_rows 曾传 accr 导致整列 None）
     assert (row["accr"] is None) == (row["pod"] is None)
     row_h = data["leaderboards"]["hourly:1d"][0]
     assert "acc1" in row_h and (row_h["accr"] is None) == (row_h["pod"] is None)
-    # 分榜 slim 行数组与 LB_METRIC_COLS 的下标约定同步：21 槽全指标
+    # 分榜 slim 行数组与 LB_METRIC_COLS 的下标约定同步：24 槽全指标
+    # （2026-11：尾部追加 r_anom/amt_skill/ord_skill，0..20 下标不变）
     from weather_eval.report.render import _slim_report
     slim = _slim_report(data)
     bad = [(tk, d, len(r)) for tk, days in slim["lb"].items()
-           for d, rows in days.items() for r in rows if len(r) != 21]
-    assert slim["lb"] and not bad, f"slim lb 行数组应为 21 槽，异常：{bad[:5]}"
+           for d, rows in days.items() for r in rows if len(r) != 24]
+    assert slim["lb"] and not bad, f"slim lb 行数组应为 24 槽，异常：{bad[:5]}"
     # 切到分榜时页签不再隐藏（页签在所有榜单下可用）
     assert 'id="lbDims"' in html and ".lb-dims.sub" not in html
 
@@ -646,16 +652,18 @@ def _half_case(mb_max=-1.22, mb_min=0.32):
 
     mbe 刻意取**异号**——那正是 P2 的病根（显示列取均值会让两半偏差相消，
     分数不会），异号时"用均值复算"必然对不上，用分半复算才对得上。
+    分半数组的键集 = 发布方（render._half_keys）的同一把尺：
+    _DAILY_TEMP_RECON_KEYS（复算充分集；r_anom 属显示集，走 §03 分半矩阵）。
     """
-    from weather_eval.evaluate import (_DAILY_TEMP_VIEW_KEYS, daily_temp_score,
+    from weather_eval.evaluate import (_DAILY_TEMP_RECON_KEYS, daily_temp_score,
                                        display_dim_score)
     mx = {"acc2": 80.4, "acc1": 45.2, "rmse": 1.63, "mae": 1.29,
           "mbe": mb_max, "r": 0.71, "slope": 0.96, "mbe_bdisp": 0.42}
     mn = {"acc2": 91.7, "acc1": 61.3, "rmse": 1.05, "mae": 0.86,
           "mbe": mb_min, "r": 0.83, "slope": 1.02, "mbe_bdisp": 0.31}
-    keys = list(_DAILY_TEMP_VIEW_KEYS)
+    keys = list(_DAILY_TEMP_RECON_KEYS)
     return (
-        {"daily": {"1": [[0, None, None, None] + [None] * 17]},
+        {"daily": {"1": [[0, None, None, None] + [None] * 20]},
          "hourly": {}},                                   # 行占位，仅第 2 列(温度分)参与
         {"1": [{"mx": [mx[k] for k in keys], "mn": [mn[k] for k in keys]}]},
         display_dim_score(daily_temp_score({"max": mx, "min": mn})),
@@ -693,12 +701,12 @@ def test_daily_temp_halves_invariant_catches_corrupted_half_value():
 def test_daily_temp_halves_invariant_catches_dropped_key():
     """键集被改窄（少发一项指标）必须被抓——半映射/键集是这条锁的主要宾语。"""
     import pytest
-    from weather_eval.evaluate import _DAILY_TEMP_VIEW_KEYS
+    from weather_eval.evaluate import _DAILY_TEMP_RECON_KEYS
     from weather_eval.report.render import _verify_daily_temp_halves
     lb, lbtemp, expect = _half_case()
     lb["daily"]["1"][0][2] = round(expect, 1)
     # 少发 slope（它在 TEMP_SCORE_PARTS 里，且非线性），复算必然漂
-    idx = list(_DAILY_TEMP_VIEW_KEYS).index("slope")
+    idx = list(_DAILY_TEMP_RECON_KEYS).index("slope")
     lbtemp["1"][0]["mx"][idx] = None
     lbtemp["1"][0]["mn"][idx] = None
     with pytest.raises(RuntimeError, match="复算不变量"):
@@ -711,17 +719,18 @@ def test_daily_temp_halves_invariant_catches_row_misalignment():
     from weather_eval.report.render import _verify_daily_temp_halves
     lb, lbtemp, expect = _half_case()
     lb["daily"]["1"][0][2] = round(expect, 1)
-    lb["daily"]["1"].append([0, None, None, None] + [None] * 17)
+    lb["daily"]["1"].append([0, None, None, None] + [None] * 20)
     with pytest.raises(RuntimeError, match="行数不一致"):
         _verify_daily_temp_halves(lb, lbtemp)
 
 
 def test_daily_temp_halves_invariant_tolerates_absent_halves():
     """旧结论摘要重渲染时没有分半字段：无可对账，不得误伤。"""
+    from weather_eval.evaluate import _DAILY_TEMP_RECON_KEYS
     from weather_eval.report.render import _verify_daily_temp_halves
     lb, lbtemp, _ = _half_case()
-    lbtemp["1"][0]["mx"] = [None] * 8
-    lbtemp["1"][0]["mn"] = [None] * 8
+    lbtemp["1"][0]["mx"] = [None] * len(_DAILY_TEMP_RECON_KEYS)
+    lbtemp["1"][0]["mn"] = [None] * len(_DAILY_TEMP_RECON_KEYS)
     lb["daily"]["1"][0][2] = 97.0
     _verify_daily_temp_halves(lb, lbtemp)     # 不抛 = 通过
 
@@ -730,20 +739,22 @@ def test_daily_temp_halves_invariant_skips_skill_family_by_construction():
     """技能量表家族（v3/v4/v5）不设这把锁——**前提当场验证**。
 
     1. 前提成立：技能家族的日温度分不是分半 8 个原始指标的纯函数（还差每半的
-       `ref`/`r_anom`），复算必然得 None——所以"跳过"不是掩盖失败，而是这把锁
+       `ref`），复算必然得 None——所以"跳过"不是掩盖失败，而是这把锁
        在该口径上不成立；
     2. 跳过生效：正因如此，构建路径不得在此炸。
 
     判据取自 `SKILL_SCHEMES`（单一事实源），不在这里重列名单：哪天某个 skill
-    口径把 `ref`/`r_anom` 也发布进 lbtemp，第 1 条断言会先红，提醒把这把锁
+    口径把 `ref` 也发布进 lbtemp，第 1 条断言会先红，提醒把这把锁
     重新打开——而不是悄悄少守一条。
+    （2026-11 显示/复算键集分家：r_anom 进了显示集（daily_temp_view 与 §03
+    分半矩阵），**不进** lbtemp 复算集——本测试的前提因此不受影响。）
     """
-    from weather_eval.evaluate import (SKILL_SCHEMES, _DAILY_TEMP_VIEW_KEYS,
+    from weather_eval.evaluate import (SKILL_SCHEMES, _DAILY_TEMP_RECON_KEYS,
                                        apply_score_scheme, daily_temp_score)
     from weather_eval.report.render import _verify_daily_temp_halves
 
     lb, lbtemp, expect = _half_case()
-    keys = list(_DAILY_TEMP_VIEW_KEYS)
+    keys = list(_DAILY_TEMP_RECON_KEYS)
     halves = {"max": dict(zip(keys, lbtemp["1"][0]["mx"])),
               "min": dict(zip(keys, lbtemp["1"][0]["mn"]))}
     lb["daily"]["1"][0][2] = round(expect, 1)
@@ -751,7 +762,7 @@ def test_daily_temp_halves_invariant_skips_skill_family_by_construction():
         for scheme in SKILL_SCHEMES:
             apply_score_scheme(scheme)
             assert daily_temp_score(halves) is None, (
-                f"{scheme} 已能由发布的 8 个分半指标复算——请把它移出跳过名单，"
+                f"{scheme} 已能由发布的 {len(keys)} 个分半指标复算——请把它移出跳过名单，"
                 "并对该口径重新打开复算不变量")
             _verify_daily_temp_halves(lb, lbtemp, scheme=scheme)   # 不抛 = 通过
     finally:

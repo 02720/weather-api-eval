@@ -2842,11 +2842,20 @@ def daily_temp_score(md: dict, absent_families: set[str] | None = None) -> float
     return round((hi + lo) / 2, 2)
 
 
-# 日温度维的显示指标集：日最高/最低是两个独立交付量，各算一份全量指标，
+# 日温度维的**复算**指标集：slope-v2（归档口径）的日温度分恰好是这 8 项的
+# 纯函数——render 的 lbtemp 分半块以此发布，"发布分可由分半指标逐位复算"
+# 的复算不变量（_verify_daily_temp_halves）也以此对账。
+_DAILY_TEMP_RECON_KEYS = ("acc2", "acc1", "rmse", "mae", "mbe", "r",
+                          "slope", "mbe_bdisp")
+# 日温度维的**显示**指标集：日最高/最低是两个独立交付量，各算一份全量指标，
 # 显示时逐项取均值（纪律见 daily_temp_view）。总榜的单项指标列与 acc2/rmse
 # 走同一条路，新增指标时这里与 _track_matrices 同步扩。
-_DAILY_TEMP_VIEW_KEYS = ("acc2", "acc1", "rmse", "mae", "mbe", "r",
-                         "slope", "mbe_bdisp")
+# 2026-11 全指标披露补齐：r_anom（异常相关）是 skill-v5 温度维 20% 权重的
+# 入分项，此前只在评分路径里使用、榜面与分半视图都看不到——入分指标必须
+# 逐源可见（与 rmse/mae 同一纪律），故进显示集。它**不进**上面的复算集：
+# 分半复算块的内容由"复算需要什么"定义（skill 口径还缺 ref，本来就不可
+# 复算），r_anom 的分半值改经 §03 的日最高/最低指标矩阵披露。
+_DAILY_TEMP_VIEW_KEYS = _DAILY_TEMP_RECON_KEYS + ("r_anom",)
 
 
 def daily_temp_view(md: dict) -> dict:
@@ -2876,18 +2885,19 @@ def daily_temp_halves_view(md: dict) -> dict:
     max|Δ|=8.28，异号格 3.26 vs 同号格 0.66）。这是当初为了堵"站间 MBE
     抵消"而加 mbe_bdisp 的同一个坑，在 max/min 维度的**显示层**复现。
 
-    所以分半视图把两半的 8 个指标**原样**发布（键集即 _DAILY_TEMP_VIEW_KEYS，
+    所以分半视图把两半的复算指标**原样**发布（键集即 _DAILY_TEMP_RECON_KEYS，
     精度同 temp_metrics 的计算精度、不做二次取整——任何"发布时再取整"都会给
     复算引入舍入差，把核对从"逐位相等"放松成"近似成立"，披露就不再可判准）。
     消费端：report/render.py 的 lbtemp 内联块 + 复算不变量（_verify_daily_
     temp_halves）以本字段为唯一数据源；日榜行（_track_lead_boards 的 daily 轨）
-    随行发布。小时轨没有分半语义，不发布。
+    随行发布。小时轨没有分半语义，不发布。r_anom 属显示集不入此块（skill 口径
+    复算还缺 ref，发了也复算不了；其分半值走 §03 的日最高/最低矩阵）。
     """
     mx = (md or {}).get("max") or {}
     mn = (md or {}).get("min") or {}
     return {
-        "max": {k: mx.get(k) for k in _DAILY_TEMP_VIEW_KEYS},
-        "min": {k: mn.get(k) for k in _DAILY_TEMP_VIEW_KEYS},
+        "max": {k: mx.get(k) for k in _DAILY_TEMP_RECON_KEYS},
+        "min": {k: mn.get(k) for k in _DAILY_TEMP_RECON_KEYS},
         "n": mx.get("n") or mn.get("n") or 0,
     }
 
@@ -5564,10 +5574,16 @@ def _board_row(m: str, t: dict, p: dict, **extra) -> dict:
         "acc2": t.get("acc2"), "rmse": t.get("rmse"),
         "acc1": t.get("acc1"), "mae": t.get("mae"), "mbe": t.get("mbe"),
         "r": t.get("r"), "slope": t.get("slope"), "mbe_bdisp": t.get("mbe_bdisp"),
+        # r_anom（异常相关）：skill-v5 温度维入分项（20%），必须与 rmse/mae
+        # 同样逐源可见——评分的每一项输入都该能被读者核对（2026-11 全指标披露）。
+        "r_anom": t.get("r_anom"),
         "ts": p.get("ts"), "ets": p.get("ets"),
         "accr": p.get("acc"), "pod": p.get("pod"), "far": p.get("far"),
         "bias": p.get("bias"), "amt_mae": p.get("amt_mae"),
         "amt_bias": p.get("amt_bias"), "grade_ets": p.get("grade_ets"),
+        # amt_skill / ord_skill：skill-v5 降水维入分项（40% / 12%），同上披露。
+        # 只有评分轨（_precip_score_cell）的格子有它们；诊断口径格子缺键 → None → —。
+        "amt_skill": p.get("amt_skill"), "ord_skill": p.get("ord_skill"),
         "n": t.get("n", 0), "n_precip": p.get("n", 0),
     }
     row.update(extra)
@@ -5791,7 +5807,8 @@ def _combined_day_boards(models, track_sources, days: int,
             t_row["n"] = (t_h.get("n") or 0)
             p_row = {k: _mean2(p_h.get(k), p_d.get(k))
                      for k in ("ts", "ets", "acc", "pod", "far", "bias",
-                               "amt_mae", "amt_bias", "grade_ets")}
+                               "amt_mae", "amt_bias", "grade_ets",
+                               "amt_skill", "ord_skill")}
             p_row["n"] = (p_d.get("n") or 0)
             cells.append((m, t_row, p_row, t_s, p_s,
                           _track_mean(comp_h, comp_d, daily_track_weight)))
@@ -6672,8 +6689,10 @@ _PANEL_METRIC_KEYS = (
     "composite", "temp_score", "precip_score",
     "rank_score", "temp_contrib", "precip_contrib",
     "acc2", "rmse", "acc1", "mae", "mbe", "r", "slope", "mbe_bdisp",
+    "r_anom",
     "ts", "ets", "accr", "pod", "far", "bias", "amt_mae", "amt_bias",
-    "grade_ets", "neff_t", "neff_r", "n_temp", "n_rain",
+    "grade_ets", "amt_skill", "ord_skill", "neff_t", "neff_r",
+    "n_temp", "n_rain",
 )
 
 
@@ -6698,10 +6717,14 @@ def _panel_cell_values(cell: dict, track: str,
         "acc2": tv.get("acc2"), "rmse": tv.get("rmse"), "acc1": tv.get("acc1"),
         "mae": tv.get("mae"), "mbe": tv.get("mbe"), "r": tv.get("r"),
         "slope": tv.get("slope"), "mbe_bdisp": tv.get("mbe_bdisp"),
+        # 入分项逐源披露（2026-11）：r_anom 小时轨直接在 t、日轨经
+        # daily_temp_view（分半均值）；amt_skill/ord_skill 在评分轨 p 格。
+        "r_anom": tv.get("r_anom"),
         "ts": p.get("ts"), "ets": p.get("ets"), "accr": p.get("acc"),
         "pod": p.get("pod"), "far": p.get("far"), "bias": p.get("bias"),
         "amt_mae": p.get("amt_mae"), "amt_bias": p.get("amt_bias"),
         "grade_ets": p.get("grade_ets"),
+        "amt_skill": p.get("amt_skill"), "ord_skill": p.get("ord_skill"),
         "neff_t": ne_t, "neff_r": p.get("n_eff"),
         "n_temp": n_temp, "n_rain": p.get("n"),
     }
@@ -8041,7 +8064,7 @@ def _build_board_rows(models, name, design, *, by_model,
     # 榜面显示列与综合分走**同一张设计**（同一批格子、同一组权重、同一收缩）：
     # P1-3 的口径纪律从 4 列扩到两维全部已评测指标——页面上任何两列都不允许
     # 来自两批不同的格子。
-    # 19 个派生列共享同一套 row/col/权重/掩膜，唯一不同的是待劈分的分数矩阵。
+    # 22 个派生列共享同一套 row/col/权重/掩膜，唯一不同的是待劈分的分数矩阵。
     # 旧实现逐个调用 difficulty_adjusted，等于把同一套 300 轮 ALS 的 Python
     # 开销重复 19 次（三张榜 ≈ 6 s）。two_way_fit 本来就支持 (r, m, b) 批量，
     # 把指标堆成 r 维一次拟合：每行的迭代只读自己的切片，结果与逐列调用逐位
@@ -8059,8 +8082,10 @@ def _build_board_rows(models, name, design, *, by_model,
     # skill-v5：综合分是**名次分 R**，两维列是 R 的分解量；绝对技能分 T/P 仍
     # 对齐发布为 temp_skill/precip_skill，供读者区分"名次"与"技能"。
     _METRIC_COLS = ("acc2", "rmse", "acc1", "mae", "mbe", "r", "slope",
-                    "mbe_bdisp", "ts", "ets", "accr", "pod", "far", "bias",
-                    "amt_mae", "amt_bias", "grade_ets")
+                    "mbe_bdisp", "r_anom",
+                    "ts", "ets", "accr", "pod", "far", "bias",
+                    "amt_mae", "amt_bias", "grade_ets", "amt_skill",
+                    "ord_skill")
     if is_v5_family():
         _ALIGNED_KEYS = ("temp_contrib", "precip_contrib", "rank_score",
                          "temp_score", "precip_score", *_METRIC_COLS)
@@ -8255,6 +8280,7 @@ def _build_board_rows(models, name, design, *, by_model,
              "mbe": _fin(aligned["mbe"][i], 3), "r": _fin(aligned["r"][i], 3),
              "slope": _fin(aligned["slope"][i], 3),
              "mbe_bdisp": _fin(aligned["mbe_bdisp"][i], 3),
+             "r_anom": _fin(aligned["r_anom"][i], 3),
              "n": n_temp},
             {"ts": _fin(aligned["ts"][i], 3), "ets": _fin(aligned["ets"][i], 3),
              # _board_row 按原始桶键取数并自行改名（acc → accr），这里传原始键
@@ -8263,6 +8289,8 @@ def _build_board_rows(models, name, design, *, by_model,
              "amt_mae": _fin(aligned["amt_mae"][i], 3),
              "amt_bias": _fin(aligned["amt_bias"][i], 3),
              "grade_ets": _fin(aligned["grade_ets"][i], 3),
+             "amt_skill": _fin(aligned["amt_skill"][i], 3),
+             "ord_skill": _fin(aligned["ord_skill"][i], 3),
              "n": n_rain},
             score=score,
             temp_score=t_score, precip_score=p_score,

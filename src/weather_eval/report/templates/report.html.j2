@@ -12,11 +12,14 @@
     服务端渲染（无 JS 可读的硬约束不破），切到某个「提前 N 天」后由前端把
     服务端排好序的行填进同一张表（前端只搬运、不重算名次）。分时效的直接
     对照也可在 §02 衰减曲线上读。
-  - 2026-10 指标页签：两维全部已评测指标（温度 8 项 / 降水 9 项）收进
+  - 2026-10 指标页签：两维全部已评测指标（温度 9 项 / 降水 10 项）收进
     「概览 / 🌡️ 温度 / 🌧️ 降水」列组——radio + 兄弟选择器纯 CSS 切换，无 JS 时
     页签照常可切；默认「概览」只看总分，横排不因指标扩表而拉长。页签在分时效
     榜同样可用：总榜的单项与综合分走同一张劈分设计，分榜是同档直接对照的原始
     口径（slim 行数组按下标携带全指标，与 JS LB_METRIC_COLS 三处同步）。
+    2026-11 全指标披露：补上 skill-v5 三个此前算而不示的**入分**项
+    （r_anom / amt_skill / ord_skill）与 2026-11 新增披露项（accerr_*、
+    回归截距/P 值、降水连续量）——评分的每一项输入与声明的披露都须有页面出口。
     隐藏 radio 必须显式钉在页签行内：零尺寸 abspos 元素的 static position 在
     flex 容器里会被 Chrome 解析到表格中部，聚焦即页面下跳（实测教训，CSS 有注）。
   - 榜单表格、得分走势线（SVG）、Hero 实况曲线都在 Python 侧生成：无 JS 也能
@@ -198,7 +201,7 @@
   .ci-cell { color:var(--muted); font-size:12px; }
 
   /* ===== §01 指标列页签：概览 / 温度 / 降水（纯 CSS，无 JS 也能用） =====
-     15 项已评测指标全铺成列会把横排拉到两千像素开外；页签把"这一维的全部
+     19 项已评测指标全铺成列会把横排拉到两千像素开外；页签把"这一维的全部
      指标"收进一个列组，同一时刻只展开一族，默认概览保持总榜的原有宽度。
      实现是 radio + 兄弟选择器（.lb-scroll 必须是 input 的后续兄弟），不依赖
      JS——服务端渲染的榜单在无 JS 环境里页签照常可切、榜单照常可读。 */
@@ -721,6 +724,7 @@
           <th class="t-only h-temp" data-key="mae" data-type="num" title="平均绝对误差（°C），最朴素的「平均差多少度」，越低越好">MAE</th>
           <th class="t-only h-temp" data-key="mbe" data-type="num" title="系统偏差（°C）：正 = 习惯性报偏高，负 = 报偏低，越接近 0 越好">MBE</th>
           <th class="t-only h-temp" data-key="r" data-type="num" title="与实况起伏的同步程度（站内合并口径），越接近 1 越好">相关 r</th>
+          <th class="t-only h-temp" data-key="r_anom" data-type="num" title="异常相关：预报与实况各自减去气候参照后（距平）的相关，衡量对「异常起伏」的把握；0=无技巧，越接近 1 越好。温度维技能分 20% 权重的入分项">异常相关</th>
           <th class="t-only h-temp" data-key="slope" data-type="num" title="回归斜率：&gt;1 = 起伏幅度偏小（该热不热），&lt;1 = 反应过激，越接近 1 越好">斜率</th>
           <th class="t-only h-temp" data-key="bdisp" data-type="num" title="各站系统偏差的离散度（°C），越低 = 在不同站点表现越一致">站间偏差</th>
           <th class="r-only h-rain" data-key="accr" data-type="num" title="报对「下没下雨」的比例，越高越好（与 TS/POD/FAR 同一张列联表）">晴雨准确率</th>
@@ -728,8 +732,10 @@
           <th class="r-only h-rain" data-key="pod" data-type="num" title="真下雨的次数里预报也报出的比例（命中率），越高越好">POD</th>
           <th class="r-only h-rain" data-key="far" data-type="num" title="报了雨却没下的比例（「狼来了」），越低越好">FAR</th>
           <th class="r-only h-rain" data-key="bias" data-type="num" title="报雨次数 ÷ 实际下雨次数：=1 频率正好，&gt;1 爱报雨，&lt;1 不爱报雨">BIAS</th>
+          <th class="r-only h-rain" data-key="amt_skill" data-type="num" title="全样本相对雨量技能 1−Σ|预报−实况|/max(Σ实况, κ·n)：0=打平「永远报零雨」的朴素参照，1=完美，低于 0=比参照还差；降水维技能分 40% 权重的入分项">雨量技能</th>
           <th class="r-only h-rain" data-key="amt_mae" data-type="num" title="相对雨量量级误差（Σ|预报−实况| ÷ Σ实况），越低越好">雨量误差</th>
           <th class="r-only h-rain" data-key="amt_bias" data-type="num" title="预报总雨量 ÷ 实况总雨量：=1 总量正好，&gt;1 偏多，&lt;1 偏少">雨量比</th>
+          <th class="r-only h-rain" data-key="ord_skill" data-type="num" title="有序雨强技能：5/6 档雨强分档的顺序信息得分（漏档越远罚越重），0=无技巧，越高越好；降水维技能分 12% 权重的入分项">有序雨强</th>
           <th class="r-only h-rain" data-key="grade_ets" data-type="num" title="中雨/大雨档（1h：2~4.9、5~9.9 mm/h；24h：≥10、≥25 mm）的 ETS，衡量对雨强分档的分辨力，越高越好">雨强ETS</th>
           <th data-key="lead" data-type="num">覆盖时效</th>
           <th>90% 置信区间</th>
@@ -751,6 +757,7 @@
             data-mae="{{ r.get('mae') if r.get('mae') is not none else '' }}"
             data-mbe="{{ r.get('mbe') if r.get('mbe') is not none else '' }}"
             data-r="{{ r.get('r') if r.get('r') is not none else '' }}"
+            data-r_anom="{{ r.get('r_anom') if r.get('r_anom') is not none else '' }}"
             data-slope="{{ r.get('slope') if r.get('slope') is not none else '' }}"
             data-bdisp="{{ r.get('mbe_bdisp') if r.get('mbe_bdisp') is not none else '' }}"
             data-accr="{{ r.get('accr') if r.get('accr') is not none else '' }}"
@@ -758,8 +765,10 @@
             data-pod="{{ r.get('pod') if r.get('pod') is not none else '' }}"
             data-far="{{ r.get('far') if r.get('far') is not none else '' }}"
             data-bias="{{ r.get('bias') if r.get('bias') is not none else '' }}"
+            data-amt_skill="{{ r.get('amt_skill') if r.get('amt_skill') is not none else '' }}"
             data-amt_mae="{{ r.get('amt_mae') if r.get('amt_mae') is not none else '' }}"
             data-amt_bias="{{ r.get('amt_bias') if r.get('amt_bias') is not none else '' }}"
+            data-ord_skill="{{ r.get('ord_skill') if r.get('ord_skill') is not none else '' }}"
             data-grade_ets="{{ r.get('grade_ets') if r.get('grade_ets') is not none else '' }}"
             data-lead="{{ r.get('lead_days') if r.get('lead_days') else '' }}"
             data-rain-events="{{ r.get('rain_events_h') if r.get('rain_events_h') is not none else '' }}"
@@ -788,6 +797,7 @@
           <td class="t-only" data-label="MAE">{{ num(r.get('mae'), 2) }}</td>
           <td class="t-only" data-label="MBE">{{ num(r.get('mbe'), 2) }}</td>
           <td class="t-only" data-label="相关r">{{ num(r.get('r'), 2) }}</td>
+          <td class="t-only" data-label="异常相关">{{ num(r.get('r_anom'), 2) }}</td>
           <td class="t-only" data-label="斜率">{{ num(r.get('slope'), 2) }}</td>
           <td class="t-only" data-label="站间偏差">{{ num(r.get('mbe_bdisp'), 2) }}</td>
           <td class="r-only" data-label="晴雨准确率">{{ pct(r.get('accr')) }}</td>
@@ -795,8 +805,10 @@
           <td class="r-only" data-label="POD">{{ pct(r.get('pod')) }}</td>
           <td class="r-only" data-label="FAR">{{ pct(r.get('far')) }}</td>
           <td class="r-only" data-label="BIAS">{{ num(r.get('bias'), 2) }}</td>
+          <td class="r-only" data-label="雨量技能">{{ num(r.get('amt_skill'), 2) }}</td>
           <td class="r-only" data-label="雨量误差">{{ num(r.get('amt_mae'), 2) }}</td>
           <td class="r-only" data-label="雨量比">{{ num(r.get('amt_bias'), 2) }}</td>
+          <td class="r-only" data-label="有序雨强">{{ num(r.get('ord_skill'), 2) }}</td>
           <td class="r-only" data-label="雨强ETS">{{ num(r.get('grade_ets'), 2) }}</td>
           <td data-label="覆盖"
               title="验证日数 {{ r.get('n_days') or 0 }}；起报轮次 {{ r.get('n_issues') or 0 }}；n_eff 温度 {{ r.get('n_eff_temp_hourly') if r.get('n_eff_temp_hourly') is not none else '—' }}/{{ r.get('n_eff_temp_daily') if r.get('n_eff_temp_daily') is not none else '—' }}、降水 {{ r.get('n_eff_rain_hourly') if r.get('n_eff_rain_hourly') is not none else '—' }}/{{ r.get('n_eff_rain_daily') if r.get('n_eff_rain_daily') is not none else '—' }}（小时/日）；降水事件 {{ r.get('rain_events_h') if r.get('rain_events_h') is not none else '—' }} 个 / 雨日 {{ r.get('rain_days_d') if r.get('rain_days_d') is not none else '—' }} 个">
@@ -811,8 +823,8 @@
       </div>
     </div>
     <p class="hint">💡 <b>怎么看：</b>综合分的<b>金色须线</b>是 90% 置信区间——须线重叠的两家，
-      先后在统计上还说不清；名字带 <b>†</b> 同理。单项指标怎么读：准确率 / 相关 r / POD / TS / ETS / 雨强ETS
-      <b>越高越好</b>，RMSE / MAE / 空报率 / 站间偏差 / 雨量误差 <b>越低越好</b>，
+      先后在统计上还说不清；名字带 <b>†</b> 同理。单项指标怎么读：准确率 / 相关 r / 异常相关 / POD / TS / ETS /
+      雨量技能 / 有序雨强 / 雨强ETS <b>越高越好</b>，RMSE / MAE / 空报率 / 站间偏差 / 雨量误差 <b>越低越好</b>，
       MBE 越接近 0、斜率 / BIAS / 雨量比 越接近 1 越好（悬停列名有逐项说明）。
       总榜的降水单项是小时（≥1mm/h）与日累计（≥{{ report.meta.rain_daily_threshold_mm }}mm/24h）两轨拼接的对齐值，
       分榜为该档原始口径；降水比温度难报得多，TS 到 0.3~0.5 已属正常水平，请按列内相对高低读。
@@ -822,7 +834,7 @@
     <p class="why">🌡️ <b>日榜的温度分怎么读</b>：它是日最高、日最低<b>各自过换算、各自评分后再取均值</b>，
       不是"先把两半指标平均再评分"。两半偏差方向相反的格子（占多数）里，|MBE| 的惩罚不会互相抵消——
       这是正确的，但均值指标列复算不出温度分（本窗口实测系统性差约 0.5 分、最坏近 5 分）。
-      要逐位复算，请展开行内的<b>分半视图</b>（日最高/最低 8 项指标原样发布），不要用均值列。</p>
+      要逐位复算，请展开行内的<b>分半视图</b>（日最高/最低 8 项复算指标原样发布），不要用均值列。</p>
 
     {% set dw = ((report.meta.get('difficulty_window') or {}).get('all') or {}) %}
     {% if report.meta.model_caveats %}
@@ -1231,9 +1243,10 @@
       <span class="metric-note" id="wxNote"></span>
     </div>
     <div id="chartWx" class="chart"></div>
-    <p class="hint">💡 <b>怎么看：</b>准确率/相关系数<b>越高越好</b>，RMSE/MAE/空报率<b>越低越好</b>；
-      MBE 越接近 0 越好（正 = 习惯性报偏高，负 = 报偏低）；BIAS 越接近 1 越好。
+    <p class="hint">💡 <b>怎么看：</b>准确率/相关系数/异常相关<b>越高越好</b>，RMSE/MAE/空报率/回归 P 值<b>越低越好</b>；
+      MBE / 回归截距越接近 0 越好（正 = 习惯性报偏高，负 = 报偏低）；BIAS / 斜率越接近 1 越好。
       日口径的降水为北京时自然日 24h 累计 ≥{{ report.meta.rain_daily_threshold_mm }}mm 的晴雨；
+      「误差≤N mm 占比」回答"离谱误差有多少"：|预报−实况| 不超过该容差的样本比例，越高越好；
       降水比温度难报得多，TS 到 0.3~0.5 已属正常水平。</p>
   </section>
   {% endif %}
@@ -1283,7 +1296,7 @@
     <h2>同一个预报，在不同站点的表现</h2>
     <p class="desc">选一家预报源，看它在各观测站的表现差异（地形、气候不同会有差异）；
       指标下拉含温度、降水两族的全部已评测指标，虚线 = 全体源在该站的中位水平。
-      坐标轴按指标类型取刻度：百分比 0~100、评分 0~1、误差从 0 起、MBE 正负对称、BIAS 标出「=1 正好」。</p>
+      坐标轴按指标类型取刻度：百分比 0~100、评分 0~1、误差从 0 起、MBE/截距正负对称、BIAS/斜率标出「=1 正好」。</p>
     <div class="controls">
       <label for="stModel">预报源</label><select id="stModel" aria-label="选择预报源"></select>
       <label for="stMetric">指标</label><select id="stMetric" aria-label="选择指标"></select>
@@ -1621,6 +1634,13 @@
           <div><dt>雨量误差 / 雨量比（amt_mae / amt_bias）</dt><dd>相对口径的雨量精度：量级误差 = Σ|预报−实况| ÷ Σ实况（越低越好）；总量比 = 预报总雨量 ÷ 实况总雨量（=1 正好，&gt;1 总量偏多）。相对口径让小时轨与日轨可用同一把尺比较。</dd></div>
           <div><dt>雨强分辨力（雨强 ETS）</dt><dd>中雨/大雨档（1h：2~4.9、5~9.9 mm/h；24h：≥10、≥25 mm）的 ETS——晴雨报对之外，雨下到没到量级也报得出来才算高分。</dd></div>
           <div><dt>站间偏差（mbe_bdisp）</dt><dd>各站系统偏差的离散度（°C）：越小 = 这家在同一场天气的不同站点表现越一致；池化的 |MBE| 会把站间差异平均掉，这一项专门暴露它。</dd></div>
+          <div><dt>异常相关（r_anom）</dt><dd>预报与实况各自减去<b>同一份气候参照</b>（距平）后的相关系数：普通 r 会拿"都跟着季节走"白拿分，异常相关只看谁抓得住<b>偏离气候的异常起伏</b>。0=无技巧，1=完美。它是温度维技能分 20% 权重的入分项（skill-v5）。</dd></div>
+          <div><dt>雨量技能（amt_skill）</dt><dd>全样本相对雨量技能 <code>1−Σ|预报−实况|/max(Σ实况, κ·n)</code>：0 = 打平"永远报零雨"的朴素参照，1 = 完美，低于 0 = 比闭嘴不报还差；评分域与预报无关，干样本上的空报也照罚。降水维技能分 40% 权重的入分项（skill-v5）。</dd></div>
+          <div><dt>有序雨强（ord_skill）</dt><dd>5/6 档雨强分档的顺序技能：报对档位顺序得正分，跳档越远罚越重（报"中雨"实际"暴雨"比报"小雨"错得少）。降水维技能分 12% 权重的入分项（skill-v5）；旁边的雨强 ETS 是其中雨/大雨两档的超越阈值 ETS。</dd></div>
+          <div><dt>雨量 RMSE / MAE / MBE</dt><dd>雨量误差的典型大小（mm，越小越好），与温度三项同族：RMSE 对大误差更重、MAE 最朴素、MBE 正 = 习惯性多报。属诊断口径（逐小时 ≥0.1mm / 日累计阈值下），不入分——相对口径的雨量误差/雨量技能才是同尺可比的那把尺。</dd></div>
+          <div><dt>降水量误差准确率（accerr_*）</dt><dd>|预报−实况| ≤ 0.1 / 1 / 2 mm 的样本占比（cyeva calc_diff_accuracy_ratio 同口径），越高越好。只披露不入分：它与 RMSE/MAE 同属误差幅度族，且阈值是口径选择而非新增证据。</dd></div>
+          <div><dt>回归截距 / P 值</dt><dd>实况对预报线性回归的两个参数：截距（°C）= 预报为 0°C 时对实况的系统性偏移，越接近 0 越好；P 值 = 这条回归线可能只是噪声的概率，越低越可信——样本少的桶（长时效/日轨）P 值大，r/斜率要打折读。只披露不入分。</dd></div>
+          <div><dt>为什么有些算出来的指标不在页面上</dt><dd>评测算过的每个指标都有交代，页面只呈现<b>不冗余</b>的那批：漏报率 = 100−POD、空报频率（POFD）与 TS/晴雨准确率是 {ETS, POD, FAR} 撑满的同一张 2×2 列联表的确定性函数；RSS/χ² 在数学上就是 RMSE² 与 n×RMSE²（实测残差 ≤2e−3）；5/6 档雨强分级全谱（每级 7 项）由入分的「有序雨强」「雨强 ETS」代理，不再按级铺开（内联体积 ∝ 页面画的东西）。省掉它们不是丢信息，是不把同一份证据数两遍。</dd></div>
           <div><dt>日雨评分（TS/ETS）</dt><dd>降水分的口径是北京时自然日 24h 累计雨量 ≥{{ report.meta.rain_daily_threshold_mm }}mm 记"有效降水日"（业务惯用口径）；24h 累计让毛毛雨超报在求和中自然抵消。</dd></div>
           <div><dt>观测覆盖率</dt><dd>评估窗口内成功抓到实况的小时占比（实况接入前的时段不算缺失）；本窗口实况自 {{ report.coverage.first_obs[:10] if report.coverage.first_obs else '—' }} 起。</dd></div>
         </dl>
@@ -1901,16 +1921,27 @@ function bindSeg(id, cb) {
 /* ---------------- §03 温度/降水 ---------------- */
 /* 温度指标含日温度的**分半复算通道**所需的全部键（P2）：日口径的温度按
  * max/min 切换，分半的斜率与站间偏差此前不曾展示，日温度分因此无法用旁边
- * 指标复算——补上后，8 个分半指标在两轨都可画、可查。 */
+ * 指标复算——补上后，分半指标在两轨都可画、可查。2026-11 全指标披露：
+ * 补入分项 r_anom 与回归四参数披露的截距/P 值。 */
 const TEMP_METRICS = [
   ["acc2", "±2°C 准确率", "%", 1, "high"], ["acc1", "±1°C 准确率", "%", 1, "high"],
   ["rmse", "RMSE 误差", "°C", 2, "low"], ["mae", "MAE 误差", "°C", 2, "low"],
   ["mbe", "偏差 MBE", "°C", 2, "zero"], ["r", "相关系数 r", "", 2, "high"],
-  ["slope", "回归斜率", "", 2, "one"], ["mbe_bdisp", "站间偏差", "°C", 2, "low"]];
+  ["r_anom", "异常相关 r_anom", "", 2, "high"],
+  ["slope", "回归斜率", "", 2, "one"], ["mbe_bdisp", "站间偏差", "°C", 2, "low"],
+  ["intercept", "回归截距", "°C", 2, "zero"], ["pvalue", "回归 P 值", "", 3, "low"]];
+/* 降水指标（诊断口径：逐小时 0.1mm / 日累计 0.1mm 阈值）此前只有晴雨 6 项；
+ * 连续量 rmse/mae（小时轨）其实早已内联，mbe 与降水量误差准确率三档
+ * （accerr_*）随 2026-11 全指标披露一并补齐——两轨键集一致，下拉不再半空。 */
 const RAIN_METRICS = [
   ["ts", "TS 评分", "", 2, "high"], ["ets", "ETS 评分", "", 2, "high"],
   ["pod", "命中率 POD", "%", 1, "high"], ["far", "空报率 FAR", "%", 1, "low"],
-  ["bias", "频率偏差 BIAS", "", 2, "one"], ["acc", "晴雨准确率", "%", 1, "high"]];
+  ["bias", "频率偏差 BIAS", "", 2, "one"], ["acc", "晴雨准确率", "%", 1, "high"],
+  ["rmse", "雨量 RMSE", "mm", 2, "low"], ["mae", "雨量 MAE", "mm", 2, "low"],
+  ["mbe", "雨量偏差 MBE", "mm", 2, "zero"],
+  ["accerr_0p1", "误差≤0.1mm 占比", "%", 1, "high"],
+  ["accerr_1p0", "误差≤1mm 占比", "%", 1, "high"],
+  ["accerr_2p0", "误差≤2mm 占比", "%", 1, "high"]];
 let wxTrack = "hourly", wxHalf = "max", wxTab = "temp", wxMetric = "acc2", wxPicker = null;
 function wxMetrics() { return wxTab === "temp" ? TEMP_METRICS : RAIN_METRICS; }
 /* 数据源随口径走：逐小时 = 全量逐小时样本按天分桶；日口径 = 日最高/最低温
@@ -2122,9 +2153,11 @@ function renderTs() {
  *   pct   有界百分数 0~100（诚实刻度，柱顶带数值读差异）
  *   score 有界评分 0~1
  *   abs0  误差类，从 0 到 nice 上取整的数据最大值
- *   zero  可正可负（MBE），正负对称，0 参考线
+ *   zero  可正可负（MBE/截距），正负对称，0 参考线
  *   corr  相关系数，下界含 0（可能为负）、上界 1
- *   one   频率偏差（BIAS），标出 "=1 频率正好" 参考线
+ *   one   频率偏差（BIAS）/回归斜率，标出 "=1 正好" 参考线
+ * 2026-11 全指标披露：单站口径本就是"该站自己的回归线"，补 slope/intercept
+ * 与降水连续量、误差准确率 1mm 档——此前算而未示。
  */
 const ST_METRICS = [
   ["t", "acc2", "±2°C 准确率", "%", 1, "pct"],
@@ -2133,12 +2166,18 @@ const ST_METRICS = [
   ["t", "mae", "温度 MAE", "°C", 2, "abs0"],
   ["t", "mbe", "偏差 MBE", "°C", 2, "zero"],
   ["t", "r", "相关系数 r", "", 2, "corr"],
+  ["t", "slope", "回归斜率", "", 2, "one"],
+  ["t", "intercept", "回归截距", "°C", 2, "zero"],
   ["r", "ts", "时雨 TS", "", 2, "score"],
   ["r", "ets", "时雨 ETS", "", 2, "score"],
   ["r", "acc", "晴雨准确率", "%", 1, "pct"],
   ["r", "pod", "命中率 POD", "%", 1, "pct"],
   ["r", "far", "空报率 FAR", "%", 1, "pct"],
   ["r", "bias", "频率偏差 BIAS", "", 2, "one"],
+  ["r", "rmse", "雨量 RMSE", "mm", 2, "abs0"],
+  ["r", "mae", "雨量 MAE", "mm", 2, "abs0"],
+  ["r", "mbe", "雨量偏差 MBE", "mm", 2, "zero"],
+  ["r", "accerr_1p0", "误差≤1mm 占比", "%", 1, "pct"],
 ];
 const ST_GROUPS = [["t", "温度"], ["r", "降水（逐小时 ≥0.1mm 口径）"]];
 /* nice 上取整：把自适应轴的最大值收整到 1/1.5/2/2.5/…×10^k，刻度不再怪异 */
@@ -2282,8 +2321,10 @@ function lbDesc(mode, dim) {
 }
 /* 分榜行与服务端总榜行共用同一份列定义：[列组类, 移动端标签, 排序键,
  * 行数组下标, 格式]，顺序与表头一一对应——新增列时服务端 thead/tbody 与
- * 这里（及 _slim_report 的行数组）三处同步。格式 "thermo" = 带得分条的分数
- * （条在 .score-bar 里：概览隐藏、子项页签显示，与总榜行同款）。 */
+ * 这里（及 _slim_report 的行数组）三处同步。2026-11 全指标披露：尾部追加
+ * 3 个入分指标（r_anom/amt_skill/ord_skill = 行数组下标 21/22/23），既有
+ * 0..20 下标保持不变。格式 "thermo" = 带得分条的分数（条在 .score-bar 里：
+ * 概览隐藏、子项页签显示，与总榜行同款）。 */
 const LB_METRIC_COLS = [
   ["sh-temp", "温度分", "temp", 2, "thermo"],
   ["sh-rain", "降水分", "precip", 3, "thermo"],
@@ -2294,6 +2335,7 @@ const LB_METRIC_COLS = [
   ["t-only", "MAE", "mae", 8, "n2"],
   ["t-only", "MBE", "mbe", 9, "n2"],
   ["t-only", "相关r", "r", 10, "n2"],
+  ["t-only", "异常相关", "r_anom", 21, "n2"],
   ["t-only", "斜率", "slope", 11, "n2"],
   ["t-only", "站间偏差", "bdisp", 12, "n2"],
   ["r-only", "晴雨准确率", "accr", 13, "pct"],
@@ -2301,8 +2343,10 @@ const LB_METRIC_COLS = [
   ["r-only", "POD", "pod", 15, "pct"],
   ["r-only", "FAR", "far", 16, "pct"],
   ["r-only", "BIAS", "bias", 17, "n2"],
+  ["r-only", "雨量技能", "amt_skill", 22, "n2"],
   ["r-only", "雨量误差", "amt_mae", 18, "n2"],
   ["r-only", "雨量比", "amt_bias", 19, "n2"],
+  ["r-only", "有序雨强", "ord_skill", 23, "n2"],
   ["r-only", "雨强ETS", "grade_ets", 20, "n2"],
 ];
 function leadRow(m, rk, a) {

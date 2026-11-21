@@ -40,7 +40,7 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader
 
-from ..evaluate import (_DAILY_TEMP_VIEW_KEYS, PRECIP_SCORE_PARTS,
+from ..evaluate import (_DAILY_TEMP_RECON_KEYS, PRECIP_SCORE_PARTS,
                         PRECIP_SKILL_PARTS, SKILL_SCHEMES, TEMP_SCORE_PARTS,
                         TEMP_SKILL_PARTS,
                         apply_composite_gain, apply_score_index_gain,
@@ -241,9 +241,10 @@ def _verify_daily_temp_halves(lb: dict, lbtemp: dict,
     * 只锁 daily 轨的分时效榜（lb.daily）：总榜与综合天榜温度维是难度对齐/
       两轨合成口径，不是单格 daily_temp_score，不在不变量覆盖面内；
     * 只对**发布字段足以复算**的口径设锁：`SKILL_SCHEMES`（v3/v4/v5）的日温度
-      分依赖每半的 `ref`/`r_anom`，lbtemp 只发布 8 个原始指标，复算结果必然为
-      None——那不是"契约破了"，是"这把锁不适用于这个口径"。判据必须取自
-      `SKILL_SCHEMES` 这个单一事实源，而不是在这里手写名单；
+      分依赖每半的 `ref`（r_anom 已在 §03 分半矩阵披露，但 ref 未发布），
+      lbtemp 只发布 8 个复算指标，复算结果必然不可信——那不是"契约破了"，
+      是"这把锁不适用于这个口径"。判据必须取自 `SKILL_SCHEMES` 这个单一事实
+      源，而不是在这里手写名单；
     * 分半字段整体缺席（旧结论摘要数据重渲染）时无事可对，跳过不误伤；
       一旦有任何分半值，对不上就是发布坏了，就地炸。
     """
@@ -263,8 +264,8 @@ def _verify_daily_temp_halves(lb: dict, lbtemp: dict,
             if all(v is None for v in mxs + mns):
                 continue    # 分半字段整体缺席（旧数据）：无可对账，不得误伤
             recon = display_dim_score(daily_temp_score({
-                "max": dict(zip(_DAILY_TEMP_VIEW_KEYS, mxs)),
-                "min": dict(zip(_DAILY_TEMP_VIEW_KEYS, mns))}))
+                "max": dict(zip(_DAILY_TEMP_RECON_KEYS, mxs)),
+                "min": dict(zip(_DAILY_TEMP_RECON_KEYS, mns))}))
             if not _recon_ok(recon, pub):
                 # 显式 raise 而非 assert（-O 会剥离 assert，让这道"发布不变量锁"
                 # 在优化模式下静默消失——锁必须与运行模式无关）
@@ -355,26 +356,36 @@ def _slim_report(report_data: dict) -> dict:
     # 日温度分是 max/min 两个**各自独立归一**的分半分数取均值，slope 与
     # mbe_bdisp 的分半值此前在任何产物里都不存在，分数无法复算。§03 的日口径
     # 温度图按 max/min 切换（wxHalf），现在两半的 8 个指标全部可画、可查。
+    # 2026-11 全指标披露补齐：r_anom（入分项）+ intercept/pvalue（2026-11
+    # 回归四参数披露）——入分与声明披露的指标都须有页面出口（逐桶明细不落盘，
+    # 页面是唯一披露面）。
     _TEMP_FIELDS = ("acc1", "acc2", "rmse", "mae", "mbe", "r",
-                    "slope", "mbe_bdisp")
+                    "slope", "mbe_bdisp", "r_anom", "intercept", "pvalue")
     for m, buckets in (report_data.get("temp_hourly") or {}).items():
         temp[m] = {b: {k: _r(v, 2) for k, v in d.items()
                        if k in _TEMP_FIELDS}
                    for b, d in buckets.items()}
 
     rain = {}
+    # 2026-11 全指标披露补齐：连续量 MBE（RMSE/MAE 已在此）+ 降水量误差准确率
+    # 三档（accerr_*，README 声明的"诊断列"）——§03 指标下拉按同一键集渲染。
     for m, buckets in (report_data.get("precip_hourly") or {}).items():
         rain[m] = {b: {k: _r(v, 2) for k, v in d.items()
                        if k in ("acc", "pod", "far", "ts", "ets", "bias",
-                                "rmse", "mae")}
+                                "rmse", "mae", "mbe", "accerr_0p1",
+                                "accerr_1p0", "accerr_2p0")}
                    for b, d in buckets.items()}
 
     # 日口径（§03 的"日口径"页签）：日最高/最低各一份温度指标矩阵 + 24h 累计
     # 降水的指标矩阵。字段集与逐小时侧一致，页面复用同一套指标下拉；日温度的
     # max/min 是日预报的两个独立交付量，分开成两张矩阵（最高/最低切换）而不
     # 合并——混成一条序列会让两端相互遮盖（与 daily_temp_score 同一原则）。
+    # 降水侧此前只发布晴雨 6 项，连续量（rmse/mae/mbe）与误差准确率三档其实
+    # 都已计算——页签下拉共享，键集必须两侧一致，否则日口径下拉是半空的。
     _TD_FIELDS = _TEMP_FIELDS
-    _RD_FIELDS = ("acc", "pod", "far", "ts", "ets", "bias")
+    _RD_FIELDS = ("acc", "pod", "far", "ts", "ets", "bias",
+                  "rmse", "mae", "mbe", "accerr_0p1", "accerr_1p0",
+                  "accerr_2p0")
     tdmax, tdmin, rdaily = {}, {}, {}
     for m, buckets in (report_data.get("temp_daily") or {}).items():
         tdmax[m] = {b: {k: _r(v, 2) for k, v in ((d.get("max") or {}).items())
@@ -426,14 +437,18 @@ def _slim_report(report_data: dict) -> dict:
     # 分时效榜（"hourly:Nd" / "daily:Nd" / "all:Nd"，服务端已按综合分排好序）：
     # 行压缩成 [总榜名次索引, 综合分, 温度分, 降水分, ±2°C, 晴雨TS, acc1, RMSE,
     # MAE, MBE, r, 斜率, 站间偏差, 晴雨准确率, ETS, POD, FAR, BIAS, 雨量误差,
-    # 雨量比, 雨强ETS] —— 键名只出现一次、模型只传索引；下标即模板 JS 侧
-    # LB_METRIC_COLS 的行数组下标，两处必须同步。置信区间/覆盖时效只在总榜
-    # 有意义（分榜不做 bootstrap）。单项指标值是分榜行自带的同档原始口径
-    # （_board_row 透传），页面页签直接渲染。无任何得分的榜不进内联（空榜没有读者）。
+    # 雨量比, 雨强ETS, 异常相关, 雨量技能, 有序雨强] —— 键名只出现一次、模型
+    # 只传索引；下标即模板 JS 侧 LB_METRIC_COLS 的行数组下标，两处必须同步。
+    # 2026-11 全指标披露：尾部追加 3 个**入分**指标槽（r_anom/amt_skill/
+    # ord_skill，skill-v5 温度 20% / 降水 40% / 12% 权重的输入）。只追加在
+    # 尾部、不动既有 0..20 的下标——行数组下标是页面 JS 与外部对账脚本共同
+    # 消费的 load-bearing 契约。置信区间/覆盖时效只在总榜有意义（分榜不做
+    # bootstrap）。单项指标值是分榜行自带的同档原始口径（_board_row 透传），
+    # 页面页签直接渲染。无任何得分的榜不进内联（空榜没有读者）。
     #
     # **布局决策（P2，score_review_proposal）**：日温度的**分半指标**不进这张
-    # 21 列行（不往行数组里加宽），改走独立的 `lbtemp` 块（下方）——行数组
-    # 的 21 列下标是页面 JS（LB_METRIC_COLS）与外部对账脚本都在消费的
+    # 24 列行（不往行数组里加宽），改走独立的 `lbtemp` 块（下方）——行数组
+    # 的 24 列下标是页面 JS（LB_METRIC_COLS）与外部对账脚本都在消费的
     # load-bearing 契约，加列就要三处同步并可能带坏既有消费者；分半值是
     # "日榜温度分如何复算" 的旁证数据，不是新的表列。两块靠
     # `lbtemp[day][i] ↔ lb.daily[day][i]`（第 i 项对第 i 行）对应。
@@ -457,19 +472,22 @@ def _slim_report(report_data: dict) -> dict:
              _r(r.get("mbe_bdisp"), 2), _r(r.get("accr"), 1), _r(r.get("ets"), 2),
              _r(r.get("pod"), 1), _r(r.get("far"), 1), _r(r.get("bias"), 2),
              _r(r.get("amt_mae"), 2), _r(r.get("amt_bias"), 2),
-             _r(r.get("grade_ets"), 2)]
+             _r(r.get("grade_ets"), 2), _r(r.get("r_anom"), 2),
+             _r(r.get("amt_skill"), 2), _r(r.get("ord_skill"), 2)]
             for r in rows if r["model"] in rank_idx
         ]
 
     # 日温度**分半**指标块（P2）：`{day: [{"mx": [8 值], "mn": [8 值]}, …]}`。
-    # mx/mn 数组按 _DAILY_TEMP_VIEW_KEYS 顺序（acc2, acc1, rmse, mae, mbe, r,
-    # slope, mbe_bdisp），第 i 项对应 `lb.daily[day][i]`（同序数组）。精度取
+    # mx/mn 数组按 _DAILY_TEMP_RECON_KEYS 顺序（acc2, acc1, rmse, mae, mbe, r,
+    # slope, mbe_bdisp），第 i 项对应 `lb.daily[day][i]`（同序数组）。这个块的
+    # 内容由"复算需要什么"定义（slope-v2 的充分统计量；r_anom 属显示集，
+    # 走 §03 的日最高/最低矩阵），不是"全部已评测指标"。精度取
     # 赋分时的原值（temp_metrics 的 round3），**不做二次取整**——否则复算
     # 从"逐位相等"掉回"近似成立"，核对就不再是可判准的断言。这是"发布"口径
     # 的唯一高精度分半通道：日榜行的均值列是给看数的读者，这个块是给复算的读者。
     def _half_keys(hal: dict) -> list:
         values = hal or {}
-        return [values.get(k) for k in _DAILY_TEMP_VIEW_KEYS]
+        return [values.get(k) for k in _DAILY_TEMP_RECON_KEYS]
 
     lbtemp: dict[str, list] = {}
     for key, rows in lbs.items():
@@ -506,8 +524,10 @@ def _slim_report(report_data: dict) -> dict:
                           "r": [_r(x.get("rain"), 2) for x in obs]},
                   "src": src}
 
-    # 分站对比：每站每源带上全部已评测指标（温度 6 项 + 降水 6 项，与 §03 的
-    # 指标下拉同一集合；降水为逐小时 0.1mm 诊断口径，与 §03 同源）
+    # 分站对比：每站每源带上全部已评测指标（温度 8 项 + 降水 10 项，与 §06
+    # 指标下拉同一集合；降水为逐小时 0.1mm 诊断口径，与 §03 同源）。
+    # 2026-11 全指标披露补齐：温度补 slope/intercept（单站口径就是该站自己的
+    # 回归线，此前算而未示）、降水补连续量 rmse/mae/mbe 与误差准确率 1mm 档。
     stations: dict[str, dict] = {}
     for st, per_model in (report_data.get("per_station") or {}).items():
         stations[st] = {}
@@ -515,9 +535,11 @@ def _slim_report(report_data: dict) -> dict:
             t, p = dims.get("temp") or {}, dims.get("precip") or {}
             stations[st][m] = {
                 "t": {k: _r(t.get(k), 2)
-                      for k in ("acc1", "acc2", "rmse", "mae", "mbe", "r")},
+                      for k in ("acc1", "acc2", "rmse", "mae", "mbe", "r",
+                                "slope", "intercept")},
                 "r": {k: _r(p.get(k), 2)
-                      for k in ("acc", "pod", "far", "ts", "ets", "bias")},
+                      for k in ("acc", "pod", "far", "ts", "ets", "bias",
+                                "rmse", "mae", "mbe", "accerr_1p0")},
             }
 
     slim_meta = {
