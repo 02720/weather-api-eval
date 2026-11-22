@@ -2830,7 +2830,8 @@ def rank_from_scores(t_score: np.ndarray, p_score: np.ndarray, *,
                      prior_sd: tuple[float, float] = (8.77, 3.73),
                      prior_n: float = 5.0, floor_frac: float = 0.25,
                      winsor_k: float = 3.5, scale: float = 10.0,
-                     reliability: bool = True) -> dict[str, np.ndarray]:
+                     reliability: bool = True,
+                     frozen_scale: dict | None = None) -> dict[str, np.ndarray]:
     """桶内名次分 R 的**唯一实现**（总榜 / 分时效榜 / 敏感性三条链共用）。
 
     t_score/p_score 形状 (..., m, c)，沿模型轴（倒数第二维）做逐列标准化。
@@ -2852,37 +2853,68 @@ def rank_from_scores(t_score: np.ndarray, p_score: np.ndarray, *,
     has_p = np.isfinite(p)
     n_t = has_t.sum(axis=-2, keepdims=True)
     n_p = has_p.sum(axis=-2, keepdims=True)
+    # D4（skill-v6）：冻结尺度的入口。给了 frozen_scale 就**不再从当期参评池**
+    # 估 μ/σ，直接用标定期录制的值。这是让 R 对参评集合严格不变的唯一方式：
+    # z 分的分母就是池的离散度，只要分母由当期数据算出，增删一个源就必然
+    # 移动所有幸存者的分数（实测加入一个源可让幸存者 R 变 7 分）。
+    # 缺省 None ⇒ 行为与旧口径逐位相同（历史归档与既有测试不受影响）。
+    frozen = None
+    if frozen_scale is not None:
+        fz = frozen_scale
+        frozen = {"mu_t": np.asarray(fz["mu_t"], dtype=float),
+                  "sd_t": np.asarray(fz["sd_t"], dtype=float),
+                  "mu_p": np.asarray(fz["mu_p"], dtype=float),
+                  "sd_p": np.asarray(fz["sd_p"], dtype=float)}
+        if fz.get("phi") is not None:
+            frozen["phi"] = np.asarray(fz["phi"], dtype=float)
     # 中心/尺度的样本：优先两维齐备行；该列两维齐备不足 min_models 时回落到
     # 该维自身有效行（单维存活格的 μ/σ 仍有定义）。
     mask_t = np.where(n_both >= int(min_models), valid, has_t)
     mask_p = np.where(n_both >= int(min_models), valid, has_p)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
-        wt = winsorize_column(t, mask_t, winsor_k)
-        wp = winsorize_column(p, mask_p, winsor_k)
-        mu_t = np.nanmean(np.where(mask_t, wt, np.nan), axis=-2, keepdims=True)
-        mu_p = np.nanmean(np.where(mask_p, wp, np.nan), axis=-2, keepdims=True)
-        sd_t_raw = np.nanstd(np.where(mask_t, wt, np.nan), axis=-2, keepdims=True)
-        sd_p_raw = np.nanstd(np.where(mask_p, wp, np.nan), axis=-2, keepdims=True)
-        cnt_t = mask_t.sum(axis=-2, keepdims=True).astype(float)
-        cnt_p = mask_p.sum(axis=-2, keepdims=True).astype(float)
-    pt, pp = float(prior_sd[0]), float(prior_sd[1])
-    n0 = float(max(prior_n, 0.0))
+    if frozen is not None:
+        # 冻结分支：μ/σ 直接来自标定期，与当前列里的家数、取值**完全无关**。
+        # 于是"加入/删除任意一个源 ⇒ 幸存者 R 逐位不变"成为可测恒等式。
+        mu_t = np.broadcast_to(frozen["mu_t"], t.shape[:-2] + (1, t.shape[-1])).astype(float)
+        mu_p = np.broadcast_to(frozen["mu_p"], t.shape[:-2] + (1, t.shape[-1])).astype(float)
+        sd_t = np.broadcast_to(frozen["sd_t"], t.shape[:-2] + (1, t.shape[-1])).astype(float)
+        sd_p = np.broadcast_to(frozen["sd_p"], t.shape[:-2] + (1, t.shape[-1])).astype(float)
+        cnt_t = np.zeros_like(mu_t)
+        cnt_p = np.zeros_like(mu_p)
+    else:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            wt = winsorize_column(t, mask_t, winsor_k)
+            wp = winsorize_column(p, mask_p, winsor_k)
+            mu_t = np.nanmean(np.where(mask_t, wt, np.nan), axis=-2,
+                              keepdims=True)
+            mu_p = np.nanmean(np.where(mask_p, wp, np.nan), axis=-2,
+                              keepdims=True)
+            sd_t_raw = np.nanstd(np.where(mask_t, wt, np.nan), axis=-2,
+                                 keepdims=True)
+            sd_p_raw = np.nanstd(np.where(mask_p, wp, np.nan), axis=-2,
+                                 keepdims=True)
+            cnt_t = mask_t.sum(axis=-2, keepdims=True).astype(float)
+            cnt_p = mask_p.sum(axis=-2, keepdims=True).astype(float)
+        pt, pp = float(prior_sd[0]), float(prior_sd[1])
+        n0 = float(max(prior_n, 0.0))
+        with np.errstate(invalid="ignore", divide="ignore"):
+            sd_t = np.where(np.isfinite(sd_t_raw) & (sd_t_raw > 1e-9),
+                            sd_t_raw, pt)
+            sd_p = np.where(np.isfinite(sd_p_raw) & (sd_p_raw > 1e-9),
+                            sd_p_raw, pp)
+            sd_t = np.sqrt((cnt_t * sd_t ** 2 + n0 * pt ** 2) / (cnt_t + n0))
+            sd_p = np.sqrt((cnt_p * sd_p ** 2 + n0 * pp ** 2) / (cnt_p + n0))
+            sd_t = np.maximum(sd_t, pt * float(floor_frac))
+            sd_p = np.maximum(sd_p, pp * float(floor_frac))
     with np.errstate(invalid="ignore", divide="ignore"):
-        sd_t = np.where(np.isfinite(sd_t_raw) & (sd_t_raw > 1e-9),
-                        sd_t_raw, pt)
-        sd_p = np.where(np.isfinite(sd_p_raw) & (sd_p_raw > 1e-9),
-                        sd_p_raw, pp)
-        sd_t = np.sqrt((cnt_t * sd_t ** 2 + n0 * pt ** 2) / (cnt_t + n0))
-        sd_p = np.sqrt((cnt_p * sd_p ** 2 + n0 * pp ** 2) / (cnt_p + n0))
-        sd_t = np.maximum(sd_t, pt * float(floor_frac))
-        sd_p = np.maximum(sd_p, pp * float(floor_frac))
         # 标准化用原始 X，不用截断值
         zt = np.where(has_t, (t - mu_t) / np.where(sd_t > 1e-12, sd_t, 1.0),
                       0.0)
         zp = np.where(has_p, (p - mu_p) / np.where(sd_p > 1e-12, sd_p, 1.0),
                       0.0)
         # φ：两维齐备行上的 Pearson 相关（n<5 或退化 → 0）
+        # 冻结分支下 φ 也来自标定期：它同样是**参评池**的函数（换一批对手，
+        # 两维在池内的相关就变），不冻结就仍会通过 σ_d 与 ρ_c 影响 R。
         zt_v = np.where(valid, zt, np.nan)
         zp_v = np.where(valid, zp, np.nan)
         nphi = valid.sum(axis=-2, keepdims=True)
@@ -2898,6 +2930,10 @@ def rank_from_scores(t_score: np.ndarray, p_score: np.ndarray, *,
                        cov / np.where((sdt_phi * sdp_phi) > 1e-12,
                                       sdt_phi * sdp_phi, 1.0), 0.0)
         phi = np.clip(phi, -1.0, 1.0)
+        if frozen is not None and "phi" in frozen:
+            phi = np.broadcast_to(
+                np.asarray(frozen["phi"], dtype=float),
+                t.shape[:-2] + (1, t.shape[-1])).astype(float)
     if rho_t is None:
         rel_t = np.ones_like(mu_t)
     else:

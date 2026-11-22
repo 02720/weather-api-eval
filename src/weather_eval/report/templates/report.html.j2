@@ -732,7 +732,7 @@
           <th class="r-only h-rain" data-key="pod" data-type="num" title="真下雨的次数里预报也报出的比例（命中率），越高越好">POD</th>
           <th class="r-only h-rain" data-key="far" data-type="num" title="报了雨却没下的比例（「狼来了」），越低越好">FAR</th>
           <th class="r-only h-rain" data-key="bias" data-type="num" title="报雨次数 ÷ 实际下雨次数：=1 频率正好，&gt;1 爱报雨，&lt;1 不爱报雨">BIAS</th>
-          <th class="r-only h-rain" data-key="amt_skill" data-type="num" title="全样本相对雨量技能 1−Σ|预报−实况|/max(Σ实况, κ·n)：0=打平「永远报零雨」的朴素参照，1=完美，低于 0=比参照还差；降水维技能分 40% 权重的入分项">雨量技能</th>
+          <th class="r-only h-rain" data-key="amt_skill" data-type="num" title="湿域雨量技能：只在实况有雨的样本上比对数误差 1−mean|ln(1+F)−ln(1+O)| / mean|ln(1+q_ref)−ln(1+O)|。0 = 打平「恒报 q_ref」的参照，1 = 完美，低于 0 = 比参照还差（「永远报零雨」现在是负分）；降水维技能分 40% 权重的入分项（skill-v6）">雨量技能</th>
           <th class="r-only h-rain" data-key="amt_mae" data-type="num" title="相对雨量量级误差（Σ|预报−实况| ÷ Σ实况），越低越好">雨量误差</th>
           <th class="r-only h-rain" data-key="amt_bias" data-type="num" title="预报总雨量 ÷ 实况总雨量：=1 总量正好，&gt;1 偏多，&lt;1 偏少">雨量比</th>
           <th class="r-only h-rain" data-key="ord_skill" data-type="num" title="有序雨强技能：5/6 档雨强分档的顺序信息得分（漏档越远罚越重），0=无技巧，越高越好；降水维技能分 12% 权重的入分项">有序雨强</th>
@@ -923,7 +923,7 @@
             {% if report.meta.get('score_scheme') == 'skill-v5' %}
             <p class="why"><b>降水维是“相对无技巧基准的技能分”</b>：判别/分档族 60%
               （晴雨 ETS 40% / 有序雨强 12% / 雨强分辨力 8%）＞雨量族 40%
-              （全样本相对雨量技能）。<b>50 = ETS 0（同边际随机）</b>；100 = 完美。
+              （湿域对数雨量技能）。<b>50 = ETS 0（同边际随机）</b>；100 = 完美。
               判别项的频率校准阻尼乘到整族（ets/ord/grade），雨量项已是 proper 的
               相对 MAE，超报必罚。<b>证据族门槛</b>：判别族与雨量族至少两族有证据，
               或单族在源级结构性缺席时完整存活；只有 ETS 一项、或判别族半截缺项时
@@ -1635,7 +1635,7 @@
           <div><dt>雨强分辨力（雨强 ETS）</dt><dd>中雨/大雨档（1h：2~4.9、5~9.9 mm/h；24h：≥10、≥25 mm）的 ETS——晴雨报对之外，雨下到没到量级也报得出来才算高分。</dd></div>
           <div><dt>站间偏差（mbe_bdisp）</dt><dd>各站系统偏差的离散度（°C）：越小 = 这家在同一场天气的不同站点表现越一致；池化的 |MBE| 会把站间差异平均掉，这一项专门暴露它。</dd></div>
           <div><dt>异常相关（r_anom）</dt><dd>预报与实况各自减去<b>同一份气候参照</b>（距平）后的相关系数：普通 r 会拿"都跟着季节走"白拿分，异常相关只看谁抓得住<b>偏离气候的异常起伏</b>。0=无技巧，1=完美。它是温度维技能分 20% 权重的入分项（skill-v5）。</dd></div>
-          <div><dt>雨量技能（amt_skill）</dt><dd>全样本相对雨量技能 <code>1−Σ|预报−实况|/max(Σ实况, κ·n)</code>：0 = 打平"永远报零雨"的朴素参照，1 = 完美，低于 0 = 比闭嘴不报还差；评分域与预报无关，干样本上的空报也照罚。降水维技能分 40% 权重的入分项（skill-v5）。</dd></div>
+          <div><dt>雨量技能（amt_skill）</dt><dd>湿域对数雨量技能 <code>1 − mean_W|ln(1+F)−ln(1+O)| / mean_W|ln(1+q_ref)−ln(1+O)|</code>（<code>W = {实况 ≥ 阈值}</code>，<code>q_ref</code> = 湿样本雨量的对数域中位数）：0 = 打平"恒报 q_ref"的参照，1 = 完美，低于 0 = 比参照还差。评分域**只由实况决定**、与被评预报无关，所以 everyone 在同一张卷子上；"永远报零雨"在 v6 下是**负分**（v5 的全样本口径反而给它 0 分 ≈ 参照，等于奖励不预报）。降水维技能分 40% 权重的入分项（skill-v6）。</dd></div>
           <div><dt>有序雨强（ord_skill）</dt><dd>5/6 档雨强分档的顺序技能：报对档位顺序得正分，跳档越远罚越重（报"中雨"实际"暴雨"比报"小雨"错得少）。降水维技能分 12% 权重的入分项（skill-v5）；旁边的雨强 ETS 是其中雨/大雨两档的超越阈值 ETS。</dd></div>
           <div><dt>雨量 RMSE / MAE / MBE</dt><dd>雨量误差的典型大小（mm，越小越好），与温度三项同族：RMSE 对大误差更重、MAE 最朴素、MBE 正 = 习惯性多报。属诊断口径（逐小时 ≥0.1mm / 日累计阈值下），不入分——相对口径的雨量误差/雨量技能才是同尺可比的那把尺。</dd></div>
           <div><dt>降水量误差准确率（accerr_*）</dt><dd>|预报−实况| ≤ 0.1 / 1 / 2 mm 的样本占比（cyeva calc_diff_accuracy_ratio 同口径），越高越好。只披露不入分：它与 RMSE/MAE 同属误差幅度族，且阈值是口径选择而非新增证据。</dd></div>
@@ -1647,6 +1647,44 @@
       </div>
     </details>
   </section>
+
+  <!-- ==================== P3 强降水专项（只披露、不进分） ==================== -->
+  {% if heavy_view %}
+  <section class="card">
+    <p class="eyebrow">🌧️ 强降水专项</p>
+    <h2>暴雨及以上：只披露，不并入综合分</h2>
+    <p class="desc">
+      高影响事件很稀有——把 8 次暴雨的 ETS 加进日常主分，等于让抽样噪声直接投票；
+      但把它删掉又会让"没检验"冒充"检验过"。所以这一块<b>只披露、不进任何分数</b>。
+      <b>未充分检验 ≠ 能力为 0，也 ≠ 能力良好。</b>
+      下表是 {{ heavy_view.model }}（{{ '小时' if heavy_view.track == 'hourly' else '日' }}轨 ·
+      提前 {{ heavy_view.bucket }}）的样例，全部源与档位见页面数据。
+    </p>
+    <table class="tbl">
+      <thead>
+        <tr><th>档位</th><th>阈值</th><th>观测事件</th><th>ETS</th>
+            <th>POD</th><th>FAR</th><th>BIAS</th><th>证据强度</th></tr>
+      </thead>
+      <tbody>
+      {% for lv in heavy_view.levels %}
+        <tr>
+          <td>{{ lv.lev }}</td>
+          <td>≥{{ lv.threshold_mm }} mm</td>
+          <td>{{ lv.obs_events if lv.obs_events is not none else '—' }}</td>
+          <td>{{ '%.3f'|format(lv.ets) if lv.ets is not none else '—' }}</td>
+          <td>{{ '%.1f%%'|format(lv.pod) if lv.pod is not none else '—' }}</td>
+          <td>{{ '%.1f%%'|format(lv.far) if lv.far is not none else '—' }}</td>
+          <td>{{ '%.2f'|format(lv.bias) if lv.bias is not none else '—' }}</td>
+          <td>{% if lv.evidence == 'formal' %}可发布（≥30 事件）
+              {% elif lv.evidence == 'low_conf' %}低置信（10–29）
+              {% else %}未充分检验（&lt;10）{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <p class="desc">{{ heavy_view.note }}</p>
+  </section>
+  {% endif %}
 
   <!-- ==================== 页脚：归档 ==================== -->
   {% if archives %}

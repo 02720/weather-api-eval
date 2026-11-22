@@ -295,9 +295,13 @@ def _slim_report(report_data: dict) -> dict:
     apply_score_scheme(scheme)
     # 这里若漏掉某个 vN，归档页重渲染会用代码缺省的 τ/σ/lead 权重去复算一份
     # 按 v5 尺度发布的日温度分，P2 发布不变量随即误炸。
-    if scheme in ("skill-v3", "skill-v4", "skill-v5"):
+    # 口径家族判定**必须与 evaluate.is_v5_family 同源**：这里漏掉 v6 会让归档页
+    # 重渲染用代码缺省的 τ/σ/lead 权重去复算一份按 v6 尺度发布的分数，P2 发布
+    # 不变量随即误炸（旧 bug 类别见下方注释）。
+    _SKILL_SCHEMES_HERE = ("skill-v3", "skill-v4", "skill-v5", "skill-v6")
+    if scheme in _SKILL_SCHEMES_HERE:
         apply_score_skill_k(meta.get("score_skill_k"))
-        if scheme in ("skill-v4", "skill-v5"):
+        if scheme in ("skill-v4", "skill-v5", "skill-v6"):
             _floors = meta.get("score_amt_floors") or {}
             apply_score_amt_floors(_floors.get("hourly_mm"),
                                   _floors.get("daily_mm"))
@@ -305,7 +309,7 @@ def _slim_report(report_data: dict) -> dict:
             apply_score_penalty_lambdas(
                 (_pen.get("temp") or {}).get("lambda"),
                 (_pen.get("precip") or {}).get("lambda"))
-        if scheme == "skill-v5":
+        if scheme in ("skill-v5", "skill-v6"):
             _c = meta.get("score_composite") or {}
             _rk = _c.get("rank") or {}
             _lw = {
@@ -573,7 +577,26 @@ def _slim_report(report_data: dict) -> dict:
         "champion_view": meta.get("champion_view"),
         "composite_share": (meta.get("diagnostics") or {}).get("composite_share"),
     }
+    # P3（skill-v6）：强降水专项卡。只披露、不进任何分数，因此不参与这里的
+    # 任何分数回放；按（轨道, 模型, 天桶）原样搬运，缺项留空。
+    heavy = {}
+    for src_key, out_key in (("precip_hourly_score", "hourly"),
+                             ("precip_score_daily", "daily")):
+        per_model = {}
+        for m, buckets in (report_data.get(src_key) or {}).items():
+            per_model[m] = {
+                b: card for b, cell in (buckets or {}).items()
+                if isinstance(card := (cell or {}).get("heavy_rain"), dict)}
+            if not per_model[m]:
+                del per_model[m]
+        if per_model:
+            heavy[out_key] = per_model
+    slim_meta["heavy_rain_note"] = (
+        "强降水（+4/+5/+6）只披露、不并入综合分：未检验 ≠ 能力为 0，"
+        "也 ≠ 能力良好；事件数 <10 的档位不参与任何平均。"
+        "1h 无独立第 6 级，只列到 +5。")
     return {"meta": slim_meta, "board": board, "lb": lb, "lbtemp": lbtemp,
+            "heavy": heavy,
             "trend": trend,
             "temp": temp, "rain": rain, "tdmax": tdmax, "tdmin": tdmin,
             "rdaily": rdaily, "heat": heat, "ts": ts,
@@ -906,9 +929,31 @@ def render_report_html(report_data: dict, title: str | None = None,
     # 起报锚点披露：挂旗的源在前、其余按语义归组（见 _issue_anchor_rows 的 docstring）
     anchors = _issue_anchor_rows(report_data)
 
+    # P3（skill-v6）：强降水专项卡的**服务端**视图。
+    # 只给小时轨最近一个提前量的卡片做样例展示（全部明细走 slim_json），
+    # 因为服务端表格的价值是"读者能一眼看到它存在且不参与综合分"，
+    # 而不是把 33 源 × 16 档铺满页面（内联体积 ∝ 页面画的东西）。
+    heavy_view = None
+    for _track, _src_key in (("hourly", "precip_hourly_score"),
+                             ("daily", "precip_score_daily")):
+        _per = report_data.get(_src_key) or {}
+        for _m, _buckets in _per.items():
+            for _bk, _cell in (_buckets or {}).items():
+                _card = (_cell or {}).get("heavy_rain")
+                if isinstance(_card, dict) and _card.get("levels"):
+                    heavy_view = {"track": _track, "model": _m,
+                                  "bucket": _bk, **(_card or {})}
+                    break
+            if heavy_view:
+                break
+        if heavy_view:
+            break
+
     _scheme = str((report_data.get("meta") or {}).get("score_scheme")
                   or "slope-v2")
-    _skill_scheme = _scheme in ("skill-v3", "skill-v4", "skill-v5")
+    # skill-v6 也是技能量表口径：漏掉它会让页面回落到 slope-v2 的旧权重表，
+    # 于是"评分构成"表与生产权重逐项不符（single-source-of-truth 破功）。
+    _skill_scheme = _scheme in ("skill-v3", "skill-v4", "skill-v5", "skill-v6")
     _temp_parts = TEMP_SKILL_PARTS if _skill_scheme else TEMP_SCORE_PARTS
     _precip_parts = (PRECIP_SKILL_PARTS if _skill_scheme
                      else PRECIP_SCORE_PARTS)
@@ -916,6 +961,7 @@ def render_report_html(report_data: dict, title: str | None = None,
         report=report_data,
         diag=diag,
         anchors=anchors,
+        heavy_view=heavy_view,
         slim_json=slim_json,
         spark_med=spark_med,
         spark_svg=spark_svg,

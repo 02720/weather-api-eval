@@ -1447,6 +1447,85 @@ def precip_binary_metrics(obs_vals, fcst_vals, threshold, min_sample,
     return out
 
 
+#: skill-v6 P3：强降水专项披露的档位（**只披露，不进任何分数**）。
+#: 阈值取自 cyeva 累积表，与 `stats.grade_bounds` 同一来源、同一二值化。
+#: 1h 没有独立的第 6 级（cyeva 把 "+6" 映射到第 5 级），故 1h 只列到 +5，
+#: 避免把同一档重复汇报成两档。
+HEAVY_RAIN_LEVS: dict[str, tuple[int, ...]] = {"1h": (4, 5), "24h": (4, 5, 6)}
+
+#: 强降水专项的样本门槛（冷启动值，可校准）：观测事件数决定证据强度标签。
+HEAVY_RAIN_N_FORMAL = 30      # ≥30：可发布正式专项结果
+HEAVY_RAIN_N_LOWCONF = 10     # 10–29：低置信；<10：未充分检验
+
+
+def heavy_rain_card(obs_vals, fcst_vals, kind: str,
+                    min_sample: int = 5) -> dict:
+    """强降水专项卡（skill-v6 P3）：+4/+5/+6 的事件数、ETS、POD、FAR、BIAS。
+
+    **为什么不并入综合分**（第一性原理）：
+      * 高影响事件稀有，`≥30` 才勉强够稳定；把 <10 次事件的 ETS 加进日常
+        主分，等于让抽样噪声直接投票；
+      * 不同雨级的损失含义不同（暴雨 vs 特大暴雨），简单平均会制造新的
+        不可解释性；
+      * 但**也不能静默删除**——"没检验"与"能力为 0"是两件事，藏起来会让
+        日常降水分掩盖安全短板。
+
+    所以它是一张**纯披露卡**：与 P 同屏，逐档给出计数与指标，并用样本量
+    给出证据强度标签；**不进入** T/P/C/R 的任何加权。
+
+    标签（冷启动值）：
+      * `formal`     观测事件 ≥ 30
+      * `low_conf`   10 ≤ 观测事件 < 30
+      * `untested`   观测事件 < 10（"未充分检验"，不参与任何平均）
+    """
+    obs = np.asarray(obs_vals, dtype=float)
+    fcst = np.asarray(fcst_vals, dtype=float)
+    m = ~np.isnan(obs) & ~np.isnan(fcst)
+    n = int(m.sum())
+    lv = HEAVY_RAIN_LEVS.get(str(kind).lower(), (4, 5))
+    table = _stats.ACC_PRECIP_LEVELS
+    kind_key = "24h" if str(kind).lower() == "24h" else "1h"
+    levels: list[dict] = []
+    for lev in lv:
+        spec = table[kind_key].get(lev)
+        if spec is None:
+            continue
+        thr = float(spec["min"])
+        row = {"lev": f"+{lev}", "threshold_mm": thr,
+               "label": str(spec.get("text") or ""), "obs_events": None,
+               "ets": None, "pod": None, "far": None, "bias": None,
+               "evidence": "untested"}
+        if n < min_sample:
+            levels.append(row)
+            continue
+        ob = obs[m] >= thr
+        fb = fcst[m] >= thr
+        n_obs = int(ob.sum())
+        row["obs_events"] = n_obs
+        if n_obs >= HEAVY_RAIN_N_FORMAL:
+            row["evidence"] = "formal"
+        elif n_obs >= HEAVY_RAIN_N_LOWCONF:
+            row["evidence"] = "low_conf"
+        h = int((ob & fb).sum())
+        fa = int((~ob & fb).sum())
+        mi = int((ob & ~fb).sum())
+        hr = (h + mi) * (h + fa) / n if n > 0 else 0.0
+        den = (h + fa + mi) - hr
+        row["ets"] = _r((h - hr) / den) if den > 0 else None
+        row["pod"] = _r(100.0 * h / (h + mi)) if (h + mi) > 0 else None
+        row["far"] = _r(100.0 * fa / (h + fa)) if (h + fa) > 0 else None
+        row["bias"] = _r((h + fa) / (h + mi)) if (h + mi) > 0 else None
+        levels.append(row)
+    return {
+        "kind": kind_key,
+        "n_samples": n,
+        "levels": levels,
+        "enters_composite": False,
+        "note": ("强降水专项只披露、不并入综合分：未检验 ≠ 能力为 0，"
+                 "也 ≠ 能力良好。事件数 <10 的档位不参与任何平均。"),
+    }
+
+
 def _precip_score_cell(obs_vals, fcst_vals, threshold, min_sample,
                        n_eff: int | None = None,
                        gbounds: tuple[tuple[float, float], ...] = (),
@@ -1473,6 +1552,18 @@ def _precip_score_cell(obs_vals, fcst_vals, threshold, min_sample,
                                             min_sample)
             out["ord_skill"] = _r(v) if v is not None else None
     return out
+
+
+# skill-v6 D1 的**湿域信度收缩**系数 k（0 = 关闭）。
+# 湿域对数比的抽样方差 ∝ 1/n_wet；不收缩时块间噪声会把 ICC 压到证据门以下，
+# 使降水维对所有源退化成 50。取值见 config `eval.score_amt_wet_shrink_k`。
+SCORE_AMT_WET_SHRINK_K = 10.0
+
+
+def apply_score_amt_wet_shrink(k: float | None = None) -> None:
+    """装载湿域雨量技能的信度收缩系数（config eval.score_amt_wet_shrink_k）。"""
+    global SCORE_AMT_WET_SHRINK_K
+    SCORE_AMT_WET_SHRINK_K = 0.0 if k is None else max(0.0, float(k))
 
 
 def precip_amount_metrics(obs_vals, fcst_vals, min_sample,
@@ -1566,6 +1657,58 @@ def precip_amount_metrics(obs_vals, fcst_vals, min_sample,
     #   * 空报必罚：干样本 O=0 而 F>0 直接进分子；
     #   * 可加充分统计量（Σo / n / Σ|f−o|），bootstrap 可逐位重算。
     # 不做硬截断，交给 `_soft_skill` 渐近压缩（恢复"不硬触底"的声明）。
+    if is_v6_family() and wet_threshold is not None:
+        # skill-v6（2026-11 第一性原理复核 D1）：**湿域对数比**。
+        # 判决性理由：L1（Σ|F−O|）的最优常数预报是中位数，而小时降水 95.4%
+        # 为 0 ⇒ 中位数 = 0 ⇒ "永远报零雨"是全样本 L1 的理论最优解。于是
+        # skill-v5 的 `s=0` 锚点不是"打平朴素参照"，而是"打平最优"，任何真正
+        # 报雨的源都落在负半轴（实测 27/32 家"永不报雨"反而提分）。
+        # 域的缺陷不是权重能修的，只能换域：
+        #   W = {O ≥ wet_threshold}（**只由实况决定**，与被评预报无关）
+        #   ℓ = |ln(1+F) − ln(1+O)|（量级对称：报大一倍 = 报小一半，都是 ln2）
+        #   s = 1 − mean_W ℓ(F,O) / mean_W ℓ(q_ref,O)
+        # 三条锚点：q_ref≡F ⇒ s=0；F≡O ⇒ s=1；W 为空 ⇒ None（不伪造满分）。
+        # 与 v5 的关键差别在**符号**：F≡0 现在是 s<0（漏掉全部雨），不是 0。
+        wt = float(wet_threshold)
+        wet = o >= wt
+        n_wet = int(wet.sum())
+        out["amt_n_wet"] = n_wet
+        if n_wet <= 0:
+            return out                      # 整个桶没有湿样本 → 无定义
+        ow, fw = o[wet], f[wet]
+        lg = np.log1p
+        e_model = float(np.abs(lg(fw) - lg(ow)).mean())
+        # 参照：恒定雨量 q_ref —— 必须是**对数域** L1 损失的极小点，即
+        #   q_ref = exp(median(ln(1+O))) − 1
+        # 而不是原始值的中位数：损失建在 ln(1+·) 上时，极小点按 log 尺度取中位；
+        # 直接取 raw median 在右偏分布上会留一个系统性偏移（实测同一批样本两者
+        # 相等，但只在分布恰巧对称时成立，不能依赖）。
+        # 只用本格实况，与被评预报无关，因而仍是"同卷同题"的固定参照。
+        q_ref = float(np.expm1(np.median(np.log1p(ow))))
+        e_ref = float(np.abs(lg(np.full_like(ow, q_ref)) - lg(ow)).mean())
+        out["amt_log_err"] = round(e_model, 4)
+        out["amt_log_err_ref"] = round(e_ref, 4)
+        out["amt_q_ref"] = round(q_ref, 4)
+        if e_ref > 0:
+            raw = 1.0 - e_model / e_ref
+            # **湿域信度收缩**（D1 的方差修正，不是换口径而是控方差）：
+            # 湿域对数比的抽样方差 ∝ 1/n_wet（实测 n_wet=5 时 sd≈0.58、
+            # n_wet=19 时 0.15、n_wet=100 时 0.06）。这样的异方差会让块间
+            # 噪声（"这一周只有 3 场雨"）盖过块内模型差异，ICC 随之把整个
+            # 降水维判为不可靠（实测 rho_precip 0.39→0.21，越过 exit 门），
+            # 于是降水分对所有源都退化成 50——那不是"降水不重要"，是**噪声
+            # 冒充了信号**。
+            # 收缩方向选 **0**（= 打平 q_ref 参照）而不是向维度均值：样本薄时
+            # 我们并不知道这家比参照好还是差，诚实的先验就是"无技巧"。
+            #   s = raw · n_wet/(n_wet + k)
+            # k=0 关闭（逐位回到未收缩）。k 是**标定常量**、冻结在 config。
+            k = float(SCORE_AMT_WET_SHRINK_K)
+            if k > 0:
+                shrink = n_wet / (n_wet + k)
+                out["amt_wet_shrink"] = round(shrink, 4)
+                raw *= shrink
+            out["amt_skill"] = round(raw, 4)
+        return out
     if is_v5_family() and amt_floor is not None:
         den = max(so, float(amt_floor) * n)
         if den > 0:
@@ -2009,8 +2152,9 @@ TEMP_SKILL_FAMILIES: dict[str, tuple[str, ...]] = {
 PRECIP_SKILL_PARTS = (
     ("ets", 0.40, "晴雨 ETS 技能",
      "ETS：0=无技巧，1=完美", None),
-    ("amt_skill", 0.40, "全样本相对雨量技能",
-     "1 − Σ|F−O| / max(ΣO, κ·n)；0=参照（恒报零雨），1=完美", None),
+    ("amt_skill", 0.40, "湿域雨量技能",
+     "1 − mean_W|ln(1+F)−ln(1+O)| / mean_W|ln(1+q_ref)−ln(1+O)|，"
+     "W={实况≥阈值}；0=q_ref（恒报常数雨）参照，1=完美，<0=比参照差", None),
     ("ord_skill", 0.12, "有序雨强技能",
      "5/6 档有序列联表的距离加权技巧：0=同边际随机，1=完美", None),
     ("grade_ets", 0.08, "雨强分辨力技能",
@@ -2026,15 +2170,72 @@ PRECIP_SKILL_FAMILIES: dict[str, tuple[str, ...]] = {
 TEMP_SKILL_ATTRIBUTES = ("mbe", "mbe_bdisp", "slope", "r")
 PRECIP_SKILL_ATTRIBUTES = ("pod", "far", "bias", "amt_bias", "amt_mae")
 
+# ============================================================================
+# skill-v6 D3：降水族内的**尺度归一**（冻结常量，不是当期自适应）。
+#
+# 名义权重不等于话语权：子项对维度分的方差贡献 ∝ (w_i·sd_i)²，名义相同的两项
+# 若跨源 sd 差 4 倍，实测方差份额就差 2 倍以上。实测（2026-11，29 块 12,635 格）：
+#     名义 40:40 的 ets:amt_skill → 小时轨实际 86:10、日轨 70:21，
+#     amt_skill 的比例达 2.14× / 1.75×，越过 SCORING.md B3 自定的 1.5× 上限。
+#
+# 修法：令 `w_i ∝ **√nom_i / sd_i**`。推导（子项近似独立）：
+#     Var(S) = Σ (w_i·sd_i)²      份额_i = (w_i·sd_i)² / Σ_j (w_j·sd_j)²
+#   要 份额_i = nom_i，只需 w_i·sd_i ∝ √nom_i  ⇒  w_i ∝ √nom_i / sd_i。
+# **不是 1/sd**：那个只让 w_i·sd_i 相等，份额退化成按个数均分，ord/grade
+#   掉到名义的 0.35/0.23 倍（比不归一更越界）。
+# 这个单一指数**同时**给出正确的逐项份额与正确的族间总计（判别 .60 / 雨量
+# .40），无需再分两步——分两步（先族内 √sub/sd 再按族配权）反而会把族内
+# 的 `w·sd` 尺度拉开，实测 amt 的份额冲到 0.95、族间掉到 0.05/0.95。
+# 表里存的是**相对名义权重**的倍数，故 `Σ w_i` 仍为 1。
+#
+# 为什么按轨道分开冻结：`ets` 与 `grade_ets` 的跨源 sd 在日轨是小时轨的
+# 1.74×/2.81×，用一个池化因子会让日轨 grade_ets 越过 1.5×。因此每轨一组。
+#
+# 为什么存"相对名义的倍数"而不是直接换权重：权重表是声明（SCORING.md 与页面
+# "评分构成"表逐项对拍），倍数表是**标定证据**——两者分开，读者能看见"业务
+# 声明是多少"与"为兑现它乘了什么"，而不是把标定结果伪装成价值判断。
+#
+# 变更这张表 = 口径变更，必须升版并回算历史（`tests/test_scoring_contract.py`
+# 对拍 meta 里的冻结值）。
+PRECIP_SCALE_NORM: dict[str, dict[str, float]] = {
+    # 小时轨：sd = (ets .0656, amt .2403, ord .0802, grade .0421)，n=5,518
+    #   族间 0.60/0.40 → 最终权重 (.280, .125, .195 | .400)，乘以名义 .40/.12/.08
+    "hourly": {"ets": 1.0339759621, "amt_skill": 0.2822674006,
+               "ord_skill": 1.5441140074, "grade_ets": 3.6026106206},
+    # 日轨：sd = (ets .1139, amt .2479, ord .1048, grade .1182)，n=3,245
+    "daily": {"ets": 1.0057577019, "amt_skill": 0.4621052690,
+              "ord_skill": 1.9957007889, "grade_ets": 2.1671299494},
+}
+
 SCORE_SCHEME = "slope-v2"
 SCORE_SKILL_K = 1.535
 SCORE_SKILL_CENTER = 50.0
 #: "技能量表"家族：这些口径的分都是 50=无技巧 / 100=完美（相对 slope-v2 的
 #: 0~100 换算分）。
-SKILL_SCHEMES = ("skill-v3", "skill-v4", "skill-v5")
+SKILL_SCHEMES = ("skill-v3", "skill-v4", "skill-v5", "skill-v6")
+
+
+def is_v6_family(scheme: str | None = None) -> bool:
+    """当前口径是否是 **skill-v6**（2026-11 综合分优化）。
+
+    v6 与 v5 的差别全部是**机制**修正，不是调参：
+      · D1 雨量技能换到湿域对数比（`precip_amount_metrics`）；
+      · D2 频率阻尼只作用于正的 ETS（`_skill_value`）；
+      · D5 `acc2` 在 a_ref≥1 时返回 None（不再把"与参照相同"记成满分）；
+      · D3 降水族内按标定离散度归一（`_family_normalized`）。
+    v5 分支原样保留，供归档月报回放。
+    """
+    return (SCORE_SCHEME if scheme is None else scheme) == "skill-v6"
 
 
 def is_v5_family(scheme: str | None = None) -> bool:
+    """当前口径是否按 **skill-v5 语义**（含其修正版 v6）计算。
+
+    v6 只改"测量机制"的三处（见 `is_v6_family`），其余子项换算、证据族门、
+    软压缩、展示映射与 v5 完全一致；因此凡是判"v5 家族"的分支都必须把 v6
+    一并纳入，否则 v6 会静默退回 slope-v2 的老路径。v3/v4 仍返回 False。
+    """
+    return (SCORE_SCHEME if scheme is None else scheme) in ("skill-v5", "skill-v6")
     """当前口径是否按 **skill-v5 语义**计算。"""
     return (SCORE_SCHEME if scheme is None else scheme) == "skill-v5"
 
@@ -2090,13 +2291,83 @@ SCORE_RELIABILITY_EXIT = 0.20
 # 即"永不报雨"就是最优）；显式写出来，读者不再把 ETS 0.05 读成满分制 5%。
 SCORE_REACH_PRECIP_BEST = 0.0
 SCORE_REACH_FLOOR = 0.05
+# 名次分 R 的**冻结尺度**（skill-v6 D4）。None = 用当期参评池（旧行为）。
+# 形状约定与 `stats.rank_from_scores` 的 (m, c) 输入一致：给出 (c,) 的一维数组
+# （每列一个值），广播到该列所有家数。由 `apply_frozen_rank_scale` 装载，
+# config 可通过 `eval.score_rank_frozen_scale` 提供，或由 build_report 在
+# 标定期的首次构建后录制并随 meta 发布。
+SCORE_RANK_FROZEN_SCALE: dict | None = None
+
+
+def _frozen_scale_for(T: np.ndarray, track: str | None = None) -> dict | None:
+    """把冻结尺度取成与 `rank_from_scores` 输入同形的 (1, c) 数组。
+
+    存储格式是**按榜分轨**的逐列数组：
+
+        {"hourly": {mu_t: [...], sd_t: [...], mu_p, sd_p, phi},
+         "daily":  {...}}
+
+    为什么必须按榜存（而不是一份通用的"每列尺度"）：三张榜的列轴长度不同——
+    小时榜 `K×H`、日榜 `K×D`、**总榜 `K×(H+D)` 是两条单轨的横向拼接**。若只
+    存一份，总榜就只能靠"列数恰好相等"来误配，而那在 H≠D 时根本不成立。
+
+    `all` 榜由 hourly+daily 拼接而成，因此这里同样按段拼接（与
+    `_panel_matrices` 里 `np.hstack` 的列序严格一致：先全部小时列、再全部日列）。
+
+    列数对不上时返回 None（宁可退回当期尺度，也不静默错配到别的列上）。
+    """
+    fz = SCORE_RANK_FROZEN_SCALE or {}
+    T = np.asarray(T, dtype=float)
+    c = int(T.shape[-1])
+    keys = ("mu_t", "sd_t", "mu_p", "sd_p", "phi")
+    if track in ("hourly", "daily"):
+        src = fz.get(track)
+        if not isinstance(src, dict):
+            return None
+        per_key = {k: src.get(k) for k in keys}
+    elif track == "all":
+        hz, dl = fz.get("hourly"), fz.get("daily")
+        if not isinstance(hz, dict) or not isinstance(dl, dict):
+            return None
+        per_key = {}
+        for k in keys:
+            h, d = hz.get(k), dl.get(k)
+            if h is None or d is None:
+                per_key[k] = None
+            else:
+                per_key[k] = list(np.asarray(h, dtype=float).reshape(-1)) + \
+                    list(np.asarray(d, dtype=float).reshape(-1))
+    else:
+        return None
+    out: dict[str, np.ndarray] = {}
+    for key in keys:
+        v = per_key.get(key)
+        if v is None:
+            continue
+        arr = np.asarray(v, dtype=float).reshape(-1)
+        if arr.shape[0] != c:
+            return None
+        out[key] = arr.reshape((1, c))
+    return out if "mu_t" in out and "sd_t" in out else None
+
+
+def apply_frozen_rank_scale(scale: dict | None) -> None:
+    """装载名次分的冻结尺度（μ/σ/φ 的逐列数组）；None = 回到当期池标准化。
+
+    为什么需要它（D4）：`R = 50 + scale·√ρ_c·(α z_T+(1−α) z_P)/σ_d` 里的
+    z 分分母就是**当期参评池**的离散度。只要分母来自当期数据，增删一个源
+    就必然移动所有幸存者的分数（实测加入一个源可让幸存者 R 变 7 分）。
+    冻结到标定期后，"加入/删除任意源 ⇒ 幸存者 R 逐位不变"成为恒等式。
+    """
+    global SCORE_RANK_FROZEN_SCALE
+    SCORE_RANK_FROZEN_SCALE = None if scale is None else dict(scale)
 
 
 def apply_score_scheme(scheme: str | None) -> None:
-    """装载评分方案：`slope-v2`（归档旧报）、`skill-v3` / `skill-v4` / `skill-v5`。"""
+    """装载评分方案：`slope-v2`（归档旧报）、`skill-v3/v4/v5/v6`。"""
     global SCORE_SCHEME
     s = str(scheme or "slope-v2").strip().lower()
-    if s not in ("slope-v2", "skill-v3", "skill-v4", "skill-v5"):
+    if s not in ("slope-v2", "skill-v3", "skill-v4", "skill-v5", "skill-v6"):
         raise ValueError(f"未知 score_scheme: {scheme!r}")
     SCORE_SCHEME = s
 
@@ -2304,6 +2575,12 @@ def _skill_value(key: str, metrics: dict) -> float | None:
         a = float(a) / 100.0
         ar = float(ar) / 100.0
         if ar >= 1.0:
+            # D5（skill-v6）：参照本身 100% 命中 ⇒ 上侧分母 (1−a_ref)=0 退化。
+            # v5 走 `return 1.0 if a>=1 else None` 的捷径，把"与参照相同"记成
+            # "完美"，实测让四项全打平参照的源拿到 T=62.5（应为 50）。
+            # 该格无可比信息 ⇒ None（缺项），绝不返回 0 或 1（§10.2 纪律）。
+            if is_v6_family():
+                return None
             return 1.0 if a >= 1.0 else None
         if is_v5_family():
             # 对称命中：分段线性（上侧 /(1−a_ref)、下侧 /a_ref）。
@@ -2337,11 +2614,26 @@ def _skill_value(key: str, metrics: dict) -> float | None:
             # 频率校准阻尼（2026-11 复核 P0-1 / 综合分优化 B2）：低基率下 ETS
             # 对固定判别力的**过度报雨**（B ≈ 1.5~2.5）给出更高期望值。阻尼
             # 乘到**整个判别/分档族**（ets/ord_skill/grade_ets），用同一 B；
-            # amt_skill 不乘（它已是 proper 的相对 MAE，超报必罚）。
+            # amt_skill 不乘（它已是 proper 的相对雨量技能，超报必罚）。
             #   d(B) = exp(−γ·max(0, |ln B| − ln B_tol)²)
             # B ∈ [1/B_tol, B_tol] 时 d ≡ 1（不惩罚正常校准）；只压不抬。
-            v = float(v) * _frequency_damping(metrics.get("bias"))
-            return _soft_skill(float(v) / den)
+            #
+            # D2（skill-v6）：阻尼**只作用于正支**。d≤1 乘到负的 ETS 上会让它
+            # 更接近 0（分数**上升**），直接违反"只压不抬"。实测 ETS<0 的格中
+            # 87.9% 被抬分，并可构造 A(ETS=−0.30) > B(ETS=−0.28) 的序反转。
+            # 注意"乘到 |ETS| 再恢复符号"是**无效**修法：`_soft_skill` 对负输入
+            # 只依赖幅值，`_soft_skill(e·d)` 与 `_soft_skill(−|e|·d)` 逐位相同。
+            # 语义上也更干净：阻尼表达"超报换来的那部分技巧是虚的"，而负 ETS
+            # 本来就没有技巧可打折。
+            v = float(v)
+            if is_v6_family():
+                # D2 只在 v6 生效：v5 分支保留"乘到带符号 ETS"的原行为，
+                # 供归档月报逐位回放（历史分数不可因新版上线而漂移）。
+                if v >= 0.0:
+                    v *= _frequency_damping(metrics.get("bias"))
+            else:
+                v *= _frequency_damping(metrics.get("bias"))
+            return _soft_skill(v / den)
         return max(-1.0, min(1.0, float(v)))
     if key == "amt_skill":
         v = metrics.get("amt_skill")
@@ -2356,7 +2648,8 @@ def _skill_mean(parts, metrics: dict, require_key: str | None = None,
                 require_any: tuple[str, ...] | None = None,
                 min_weight_frac: float | None = None,
                 families: dict[str, tuple[str, ...]] | None = None,
-                absent_families: set[str] | frozenset[str] | None = None
+                absent_families: set[str] | frozenset[str] | None = None,
+                track: str = "hourly"
                 ) -> float | None:
     """技能变量加权平均（缺项按剩余权重归一）→ s；缺锚点/无证据 → None。
 
@@ -2401,15 +2694,25 @@ def _skill_mean(parts, metrics: dict, require_key: str | None = None,
             return None
 
     num = den = 0.0
+    w_map = (PRECIP_SCALE_NORM.get(str(track).lower(), {})
+             if (families is not None and is_v6_family()) else {})
     for key, w, *_rest in parts:
         s = _skill_value(key, metrics)
         if s is None:
             continue
+        # D3（skill-v6）：族内按标定期跨源离散度归一，使**方差份额 ≈ 名义权重**。
+        # 为什么必须归一：子项对维度分的方差贡献 ∝ (w_i·sd_i)²，名义权重相同
+        # 但 sd 差 4.3 倍时，实测份额会偏离名义 2 倍以上（实测 amt_skill 小时轨
+        # 2.14×、日轨 1.75×，均越过 SCORING.md B3 自定的 1.5× 上限）。
+        # `PRECIP_SCALE_NORM` 存 (标定 sd / 名义份额)，全榜冻结、不进当期数据。
+        w = w * w_map.get(key, 1.0)
         num += w * s
         den += w
     if den <= 0:
         return None
     if min_weight_frac is not None and min_weight_frac > 0:
+        # 门槛比较的是**名义份额**：归一因子只改族内话语权，不该改"证据够不够"
+        # 的判定（否则一个 sd 大的子项会顺手把门槛放松）。
         total = math.fsum(w for _k, w, *_r in parts)
         if den < min_weight_frac * total:
             return None
@@ -2941,7 +3244,8 @@ def _precip_evidence_family_ok(parts, metrics: dict,
     return False
 
 
-def precip_score(p: dict, absent_families: set[str] | None = None) -> float | None:
+def precip_score(p: dict, absent_families: set[str] | None = None,
+                 track: str = "hourly") -> float | None:
     """降水分（原始 0~100）：3 族 5 项按 PRECIP_SCORE_PARTS 权重加权，缺项按剩余
     权重归一——但整维存活权重低于 **precip_min_surviving_weight**（缺省 0.5，
     config 可调）的格判缺测（None），不重归一。
@@ -3002,7 +3306,8 @@ def precip_score(p: dict, absent_families: set[str] | None = None) -> float | No
                         require_key=("ets" if require_ets else None),
                         min_weight_frac=mfw,
                         families=PRECIP_SKILL_FAMILIES,
-                        absent_families=absent)
+                        absent_families=absent,
+                        track=track)
         return None if s is None else float(50.0 + 50.0 * s)
     gate = _stats.PRECIP_MIN_WEIGHT_FRAC
     if gate and gate > 0:
@@ -4084,6 +4389,13 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
                      DEFAULT_EVAL.get("score_freq_damp_gamma")),
         eval_cfg.get("score_freq_damp_tol",
                      DEFAULT_EVAL.get("score_freq_damp_tol")))
+    # D4：R 的冻结尺度。config 给了就用（月报/归档回放必须与主榜同尺）；
+    # 没给则置空 → 走当期池标准化（旧行为），报告的 meta 会标明未冻结。
+    apply_frozen_rank_scale(eval_cfg.get("score_rank_frozen_scale"))
+    # skill-v6 D1 的湿域信度收缩系数（0 = 关闭）
+    apply_score_amt_wet_shrink(
+        eval_cfg.get("score_amt_wet_shrink_k",
+                     DEFAULT_EVAL.get("score_amt_wet_shrink_k")))
     apply_score_ref_params(
         eval_cfg.get("score_ref_mode"),
         eval_cfg.get("score_ref_smooth_days"))
@@ -4260,9 +4572,14 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
             icell = pt.hourly_cell(mi, b) if pt is not None else None
             ne_r = (_n_eff_rain_columnar(pt, icell, thr_hourly) if icell is not None
                     else _n_eff_rain(recs, thr_hourly, "valid_iso", "lead"))
-            precip_hourly_score[m][f"{b}d"] = _precip_score_cell(
+            cell_h = _precip_score_cell(
                 ro, rf, thr_hourly, min_sample, ne_r, gb_hourly,
                 amt_floor=SCORE_AMT_FLOOR_HOURLY, grade_kind="1h")
+            # P3（skill-v6）：强降水专项卡**随行披露**，不进任何分数。
+            # 只在 v6 发布：v5 归档回放不新增字段（历史快照保持原样）。
+            if is_v6_family():
+                cell_h["heavy_rain"] = heavy_rain_card(ro, rf, "1h", min_sample)
+            precip_hourly_score[m][f"{b}d"] = cell_h
 
     # ---- 降水的评分轨道：按天累计（24h）+ rain_daily_threshold_mm 阈值 ----
     # 每模型每日偏移一份二分类指标（P0-3），入分的同时披露 acc 供明细。
@@ -4282,9 +4599,13 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
             ne_r = (_n_eff_rain_columnar(pt, dcell, thr_daily, daily=True)
                     if dcell is not None
                     else _n_eff_rain(recs, thr_daily, "valid_day", "offset"))
-            precip_score_daily[m][f"{off}d"] = _precip_score_cell(
+            cell_d = _precip_score_cell(
                 ro, rf, thr_daily, min_sample, ne_r, gb_daily,
                 amt_floor=SCORE_AMT_FLOOR_DAILY, grade_kind="24h")
+            if is_v6_family():
+                cell_d["heavy_rain"] = heavy_rain_card(ro, rf, "24h",
+                                                       min_sample)
+            precip_score_daily[m][f"{off}d"] = cell_d
 
     # ---- 逐小时逐时效曲线（1..72h）温度 RMSE / ±2°C 准确率（轻量路径）----
     temp_lead_curve: dict[str, dict] = {m: {} for m in models}
@@ -4709,6 +5030,18 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
                         "|ETS|≤0.05 的格子占比 >60% ⇒ 该维在该天桶退出 R；"
                         "单维存活格按 R=50+scale·√ρ_i·z_i 发布，另一维贡献=50"),
                     "scale": float(SCORE_RANK_SCALE),
+                    # D4（skill-v6）：R 的尺度是否**冻结**到标定期。
+                    # 只有冻结时，"加入/删除一个源不改幸存者名次"才成立；
+                    # 未冻结时页面必须标注"名次随参评池变化"。
+                    "scale_frozen": bool(SCORE_RANK_FROZEN_SCALE),
+                    "scale_frozen_note": (
+                        "μ/σ/φ 取自标定期，z 分归一化这一层与当期参评池无关："
+                        "增删源不改变任何幸存者的 z 分。注意难度基线 β 与 "
+                        "EB 的 τ²/σ² 仍按当期面板估计，因此分数可能有小幅位移，"
+                        "但名次顺序不受影响"
+                        if SCORE_RANK_FROZEN_SCALE else
+                        "μ/σ/φ 取自当期参评池（旧口径）：增删一个源会移动"
+                        "幸存者的名次分，跨期名次不可直接比较"),
                     "lead_weights": [
                         {"from_day": lo, "to_day": hi, "weight": float(w)}
                         for lo, hi, w in SCORE_LEAD_WEIGHTS],
@@ -4747,6 +5080,14 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
                 track: ((resolution_out.get("rank_diagnostics") or {})
                         .get(track, {}).get("bucket_sd_R"))
                 for track in TRACKS},
+            # D4：逐列 μ/σ/φ 的录制出口（供 freeze_rank_scale.py 固化）。
+            # 只在**未冻结**时发布：已冻结的构建里这些数就是冻结值本身，
+            # 再发一遍会让读者误以为它们是从当期数据估出来的。
+            "rank_scale_diagnostics": (
+                None if SCORE_RANK_FROZEN_SCALE else
+                {track: ((resolution_out.get("rank_diagnostics") or {})
+                         .get(track, {}).get("column_scale"))
+                 for track in TRACKS}),
             # 展示层维度分增益（当期生效值）：**只作用于展示**。名次、难度对齐、
             # CI 与显著性都在未缩放原始分上算（2026-10-31 复核 P0-3）。
             "score_index_gain": float(_stats.SCORE_INDEX_GAIN),
@@ -5553,6 +5894,7 @@ def _model_caveats(station_ids, models, *, snapshots=None) -> dict[str, str]:
 
 
 def _board_row(m: str, t: dict, p: dict, **extra) -> dict:
+    # track 只影响 v6 的降水族内尺度归一（D3），缺省 hourly 与旧调用点一致。
     """榜单行：得分（与趋势图同一套公式，榜单与曲线永不分叉）
     + 榜面直接可读的关键指标（±2°C 准确率 / RMSE / TS / ETS / 样本数）。
 
@@ -5570,7 +5912,8 @@ def _board_row(m: str, t: dict, p: dict, **extra) -> dict:
         "model": m,
         "score": overall_score(t, p),
         "temp_score": temp_score(t),
-        "precip_score": precip_score(p),
+        "precip_score": precip_score(
+            p, track=str(extra.get("track") or "hourly")),
         "acc2": t.get("acc2"), "rmse": t.get("rmse"),
         "acc1": t.get("acc1"), "mae": t.get("mae"), "mbe": t.get("mbe"),
         "r": t.get("r"), "slope": t.get("slope"), "mbe_bdisp": t.get("mbe_bdisp"),
@@ -5711,7 +6054,7 @@ def _track_lead_boards(models, track: str, src: dict, days: int) -> dict[str, li
             ts = (daily_temp_score(t, absent_families=absent[m])
                   if track == "daily"
                   else temp_score(t, absent_families=absent[m]))
-            ps = precip_score(p, absent_families=absent[m])
+            ps = precip_score(p, absent_families=absent[m], track=track)
             cells.append((m, t, p, ts, ps))
         # skill-v5：同一桶内的分数先做桶内标准化（R），名次由 R 决定；
         # 绝对技能分 S 仍以 temp_skill/precip_skill 随行发布，供 §02 对照。
@@ -5793,9 +6136,9 @@ def _combined_day_boards(models, track_sources, days: int,
             # 四个独立的完备性判定——日轨温度缺失只该判死温度维与综合分，
             # 不该连两轨都齐备的降水维一起陪葬。
             ts_h = temp_score(t_h, absent_families=absent_h[m])
-            ps_h = precip_score(p_h, absent_families=absent_h[m])
+            ps_h = precip_score(p_h, absent_families=absent_h[m], track="hourly")
             ts_d = daily_temp_score(t_d, absent_families=absent_d[m])
-            ps_d = precip_score(p_d, absent_families=absent_d[m])
+            ps_d = precip_score(p_d, absent_families=absent_d[m], track="daily")
             comp_h = _mean2(ts_h, ps_h)
             comp_d = _mean2(ts_d, ps_d)
             t_s = _track_mean(ts_h, ts_d, daily_track_weight)
@@ -6022,7 +6365,11 @@ _BLOCK_TEMP_KEYS = ("n", "n_eff", "rmse", "mae", "mbe", "acc1", "acc2", "r",
 _BLOCK_PRECIP_KEYS = ("n", "n_eff", "acc", "pod", "far", "ts", "ets", "bias",
                       "amt_mae", "amt_bias", "grade_ets", "amt_skill",
                       "ord_skill", "amt_mae_wet", "amt_mean_wet",
-                      "amt_n_wet")
+                      "amt_n_wet",
+                      # skill-v6 D1：湿域对数比的三个充分统计量必须随块缓存
+                      # 落盘，否则复算时拿不到 E_log / E_ref / q_ref，
+                      # 只能退回 v5 的全样本口径（数值与发布分不符）。
+                      "amt_log_err", "amt_log_err_ref", "amt_q_ref")
 
 
 def _seven_day_blocks(start_dt, end_dt, block_days: int = 7) -> list[dict]:
@@ -6086,6 +6433,11 @@ def _block_source_digest() -> str | None:
         _stats.grade_bounds, _stats.grade_ets_point, _stats.grade_counts,
         _stats.grade_bounds_all, _stats.ordinal_precip_skill,
         _graded.precip_graded_metrics,
+        # 2026-11 v6：**落盘裁剪白名单也是口径**。此前 `_compact_precip` 不在
+        # 指纹里，于是"往白名单里加一个字段"不会让块缓存失效——新字段被静默
+        # 丢弃，复算时拿不到充分统计量，只能退回旧口径（实测 v6 的
+        # amt_q_ref/amt_log_err 就是这样消失的，发布分与复算分对不上）。
+        _compact_precip, _compact_temp,
     )
     h = hashlib.sha256()
     try:
@@ -6101,6 +6453,7 @@ def _block_source_digest() -> str | None:
     # 配置本身已由 _block_scoring_fingerprint 的 eval 载荷覆盖，此处重复只会
     # 把"代码视图"和"配置视图"混成第三条不可复现的口径。
     for const in (TEMP_SCORE_FAMILIES, _TEMP_FAMILY_MEMBER_SHARES,
+                  _BLOCK_PRECIP_KEYS, _BLOCK_TEMP_KEYS,
                   PRECIP_SCORE_FAMILIES, _PRECIP_FAMILY_MEMBER_SHARES,
                   TEMP_SKILL_PARTS, PRECIP_SKILL_PARTS, SKILL_SCHEMES):
         h.update(repr(const).encode("utf-8"))
@@ -6143,6 +6496,9 @@ def _block_scoring_fingerprint(eval_cfg: dict, models: list[str],
         "score_skill_k", "score_slopes", "precip_min_surviving_weight",
         "score_amt_floor_hourly_mm", "score_amt_floor_daily_mm",
         "score_penalty_lambda_temp", "score_penalty_lambda_precip",
+        # v6 D1 的湿域信度收缩系数：它直接改变 amt_skill 的数值，
+        # 不进指纹的话改 k 不会让块缓存失效（新参数被静默忽略）。
+        "score_amt_wet_shrink_k",
         "graded_backend", "require_complete_snapshots", "require_frozen_samples",
         "board_block_days", "board_block_min_days",
         "board_block_min_rain_events", "board_block_min_rain_days",
@@ -6179,7 +6535,14 @@ def _compact_temp(t: dict) -> dict:
 
 
 def _compact_precip(p: dict) -> dict:
-    return {k: _cache_num(p.get(k)) for k in _BLOCK_PRECIP_KEYS}
+    out = {k: _cache_num(p.get(k)) for k in _BLOCK_PRECIP_KEYS}
+    # P3（skill-v6）：强降水专项卡是**嵌套结构**（不是标量），不能走 _cache_num。
+    # 它必须随块落盘：报告页的 `precip_hourly_score` 就是从这里重建的，
+    # 丢了它专项卡就只活在当次构建里、刷新页面即消失。
+    hr = p.get("heavy_rain")
+    if isinstance(hr, dict):
+        out["heavy_rain"] = hr
+    return out
 
 
 def _series_absent_families(temp_buckets: dict, precip_buckets: dict,
@@ -6264,7 +6627,7 @@ def _block_cell_scores(cell: dict, track: str,
         ts = temp_score(cell.get("t") or {},
                         absent_families=absent_families)
     ps = precip_score(cell.get("p") or {},
-                      absent_families=absent_families)
+                      absent_families=absent_families, track=track)
     comp = _composite_score(ts, ps) if (ts is not None and ps is not None) else None
     return (comp, ts, ps)
 
@@ -6752,7 +7115,7 @@ def _panel_matrices(models: list[str], panel: dict, blocks: list[dict],
                     if v is not None:
                         mats[key][mi, col] = v
     if is_v5_family():
-        mats = _attach_rank_matrices(mats, n_blocks=K, days=days)
+        mats = _attach_rank_matrices(mats, n_blocks=K, days=days, track=track)
     return mats
 
 
@@ -6797,7 +7160,8 @@ def _winsorize_column(X: np.ndarray, valid: np.ndarray,
 
 def _attach_rank_matrices(mats: dict[str, np.ndarray],
                           n_blocks: int | None = None,
-                          days: int | None = None) -> dict[str, np.ndarray]:
+                          days: int | None = None,
+                          track: str | None = None) -> dict[str, np.ndarray]:
     """在已算好的 T/P 矩阵上派生**桶内名次分 R** 与两维分解（唯一实现）。
 
     调用 `stats.rank_from_scores`：μ/σ 用稳健中心/尺度（Winsor 只进 μ/σ），
@@ -6850,7 +7214,11 @@ def _attach_rank_matrices(mats: dict[str, np.ndarray],
                   float(SCORE_COMPOSITE_SD_PRECIP)),
         prior_n=float(SCORE_BUCKET_SD_PRIOR_N),
         floor_frac=float(SCORE_BUCKET_SD_FLOOR_FRAC),
-        winsor_k=float(SCORE_WINSOR_K), scale=float(SCORE_RANK_SCALE))
+        winsor_k=float(SCORE_WINSOR_K), scale=float(SCORE_RANK_SCALE),
+        # D4：只在 v6 且已装载冻结尺度时启用；否则逐位回到旧行为。
+        frozen_scale=(_frozen_scale_for(T, track)
+                      if (is_v6_family() and SCORE_RANK_FROZEN_SCALE)
+                      else None))
     mats["rank_score"] = got["rank_score"]
     mats["temp_contrib"] = got["temp_contrib"]
     mats["precip_contrib"] = got["precip_contrib"]
@@ -6858,6 +7226,15 @@ def _attach_rank_matrices(mats: dict[str, np.ndarray],
     mats["_rel_temp"] = rho_t
     mats["_rel_precip"] = rho_p
     mats["_rel_temp_raw"] = rel_t_col
+    # D4 录制出口：把**当前列**的 μ/σ/φ 逐列留在矩阵里，供
+    # `_rank_scale_diagnostics` 汇总成 meta 字段，再由
+    # scripts/freeze_rank_scale.py 固化成 eval.score_rank_frozen_scale。
+    # 只披露、不回写：录制是**离线一次性**动作，生产路径绝不自我冻结。
+    mats["_rank_mu_t"] = got["mu_t"][0] if got["mu_t"].ndim == 2 else got["mu_t"]
+    mats["_rank_sd_t"] = got["sd_t"][0] if got["sd_t"].ndim == 2 else got["sd_t"]
+    mats["_rank_mu_p"] = got["mu_p"][0] if got["mu_p"].ndim == 2 else got["mu_p"]
+    mats["_rank_sd_p"] = got["sd_p"][0] if got["sd_p"].ndim == 2 else got["sd_p"]
+    mats["_rank_phi"] = got["phi"][0] if got["phi"].ndim == 2 else got["phi"]
     mats["_rel_precip_raw"] = rel_p_col
     mats["_rel_temp_imputed"] = imp_t_col
     mats["_rel_precip_imputed"] = imp_p_col
@@ -6908,6 +7285,17 @@ def _rank_diagnostics(mat: dict, K: int, days: int, track: str) -> dict:
             "gate_precip": bool(gate_p[d]),
             "no_skill_precip": bool(no_skill[d]),
         })
+    # D4 录制出口：逐**列**（块 × 天桶）的 μ/σ/φ。列数 = K × days，与
+    # `rank_from_scores` 的输入列轴一一对应；`scripts/freeze_rank_scale.py`
+    # 用它固化 `eval.score_rank_frozen_scale`。缺列时给 None（不伪造）。
+    _scale_keys = ("_rank_mu_t", "_rank_sd_t", "_rank_mu_p", "_rank_sd_p",
+                   "_rank_phi")
+    if all(k in mat for k in _scale_keys):
+        out["column_scale"] = {
+            k.replace("_rank_", ""): [
+                (None if not np.isfinite(float(x)) else round(float(x), 6))
+                for x in np.asarray(mat[k], dtype=float).reshape(-1)]
+            for k in _scale_keys}
     out["gate_counts"] = {
         "temp_exit": int((~gate_t).sum()),
         "precip_exit": int((~gate_p).sum()),
@@ -8461,7 +8849,7 @@ def _score_trend(models, track_sources, hourly_lead_days,
                 ts = (daily_temp_score(t, absent_families=absent[m])
                       if track == "daily"
                       else temp_score(t, absent_families=absent[m]))
-                ps = precip_score(p, absent_families=absent[m])
+                ps = precip_score(p, absent_families=absent[m], track=track)
                 # 趋势图是展示层：与榜单行同一套 display_* 映射，两者永不分叉。
                 block["temp"][m][bk] = display_dim_score(ts)
                 block["precip"][m][bk] = display_dim_score(ps)
@@ -8493,11 +8881,11 @@ def _score_trend(models, track_sources, hourly_lead_days,
             ts_h = temp_score(h_src["temp"][m].get(bk) or {},
                               absent_families=absent_h[m])
             ps_h = precip_score(h_src["precip"][m].get(bk) or {},
-                                absent_families=absent_h[m])
+                                absent_families=absent_h[m], track="hourly")
             ts_d = daily_temp_score(d_src["temp"][m].get(bk) or {},
                                     absent_families=absent_d[m])
             ps_d = precip_score(d_src["precip"][m].get(bk) or {},
-                                absent_families=absent_d[m])
+                                absent_families=absent_d[m], track="daily")
             block["temp"][m][bk] = display_dim_score(
                 _track_mean(ts_h, ts_d, daily_track_weight))
             block["precip"][m][bk] = display_dim_score(

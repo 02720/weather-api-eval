@@ -66,7 +66,10 @@ def test_v5_copy_and_dead_params_are_cleaned():
                 / "report.html.j2").read_text(encoding="utf-8")
     scoring = SCORING.read_text(encoding="utf-8")
     assert "±10≈1 个桶内标准差" not in template
-    assert "全样本相对雨量技能" in template
+    # skill-v6：雨量技能已从"全样本相对 MAE"换成"湿域对数比"，
+    # 模板必须跟着换——留着旧文案等于在页面上声明一个已经不存在的口径。
+    assert "全样本相对雨量技能" not in template
+    assert "湿域" in template and "q_ref" in template
     assert "判别/分档族 60%" in template
     assert "r_anom 权重已按其实测方差兑现降到 7%" not in template
     assert "s(a_ref)=0 / s(1)=1 / s(0)=−1" not in scoring

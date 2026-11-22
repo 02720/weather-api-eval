@@ -1271,8 +1271,12 @@ def composite_dimension_share(report: dict) -> dict[str, Any]:
     "名义 α 在当期数据里兑现成了多少话语权"。斜率/展示增益都是仿射，不改变份额。
     """
     from ..evaluate import (SCORE_SCHEME, SCORE_COMPOSITE_ALPHA,
-                            temp_score, daily_temp_score, precip_score)
-    if SCORE_SCHEME == "skill-v5":
+                            is_v5_family, temp_score, daily_temp_score,
+                            precip_score)
+    # 走共享的**家族判定**而不是写死 "skill-v5"：v6 是 v5 的机制修正版，
+    # 两者在"综合分 = 名次分 R、两维列是它的分解量"这一点上完全一致。
+    # 写死口径名会让 v6 的报告悄悄失去这段话语权披露。
+    if is_v5_family():
         rows = [r for r in ((report.get("leaderboards") or {}).get("all") or [])
                 if isinstance(r.get("score"), (int, float))
                 and isinstance(r.get("temp_score"), (int, float))

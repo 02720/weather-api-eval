@@ -63,6 +63,18 @@ DEFAULT_EVAL = {
     # ∈ [0.95,1.10]" 重标定。γ=0 等价于关闭（归档回放/对照）。
     "score_freq_damp_gamma": 1.2,
     "score_freq_damp_tol": 1.10,
+    # skill-v6 D4：名次分 R 的**按榜**冻结尺度。
+    # 形状：{"hourly": {mu_t,sd_t,mu_p,sd_p,phi -> [c 个值]},
+    #        "daily":  {...}}；总榜(all)是两轨的横向拼接，读取时按段组装。
+    # None = 用当期参评池（旧行为）；给了就冻结到标定期，此时 z 分归一化
+    # 这一层对参评集合严格不变（难度基线 β 与 EB 的 τ²/σ² 仍按当期估计）。
+    # 值由 `scripts/freeze_rank_scale.py --write` 在标定窗口上录制后写回。
+    "score_rank_frozen_scale": None,
+    # skill-v6 D1 的**湿域信度收缩**参数 k：见 evaluate.precip_amount_metrics。
+    # 湿样本数 n_wet 越少，湿域对数比的抽样方差越大（n_wet=5 时 sd≈0.58，
+    # 足以淹没真实的 1.5 倍超报信号）。把技能值按 n_wet/(n_wet+k) 向 0 收缩，
+    # k=0 关闭（逐位回到未收缩口径）。
+    "score_amt_wet_shrink_k": 10.0,
     "score_v5_display_gain": 1.0,
     # ---- skill-v4（2026-11）----
     # 雨量技能分母下限：MAE_ref 很小时不再让 log 比值爆炸；公式同时保留
