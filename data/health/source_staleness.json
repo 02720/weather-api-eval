@@ -1,23 +1,9 @@
 {
-  "generated_at": "2026-11-22T17:34:45",
+  "generated_at": "2026-11-22T21:14:31",
   "stale_hours": 30,
   "stale_sources": [
-    "best_match",
     "cma_gfs_ew4all",
-    "cma_grapes_global",
     "cma_ndfs",
-    "cmc_gem_gdps",
-    "dwd_aicon_global_native",
-    "dwd_icon_global_native",
-    "ecmwf_aifs025_single",
-    "ecmwf_ifs",
-    "ecmwf_ifs025",
-    "fengqing_ai",
-    "jma_gsm",
-    "meteofrance_arpege_world",
-    "ncep_aigfs025",
-    "ncep_gfs_global",
-    "ncep_hgefs025_ensemble_mean",
-    "ukmo_global_deterministic_10km"
+    "fengqing_ai"
   ]
 }
