@@ -1085,10 +1085,10 @@ def test_daily_fallback_extends_beyond_hourly_coverage(tmp_path, monkeypatch):
 
 
 def test_daily_temp_only_extension_disclosed_not_scored(tmp_path, monkeypatch):
-    """逐日产品只接温度（中科星图口径）时：温度维覆盖如实外延、综合分仍判死。
+    """逐日产品只有温度半块时：温度维覆盖如实外延、综合分仍判死。
 
-    形态与中科星图一致——逐小时产品 5 天（温度+降水），逐日产品 15 天但降水
-    为量级码不接（全 null）。两条纪律同时成立：
+    形态与任何"日产品缺累计降水"的源一致——逐小时产品 5 天（温度+降水），
+    逐日产品 15 天但降水为 null。两条纪律同时成立：
       * 覆盖时效按维披露：温度维到第 4 天（日产品补位），降水维止于第 2 天
         （逐小时聚合），总榜取最远并把拆分写进行内字段；
       * 第 3~4 天综合分仍为 None——只有温度半边，不配叫综合分（MSN 教训）。
@@ -1110,7 +1110,7 @@ def test_daily_temp_only_extension_disclosed_not_scored(tmp_path, monkeypatch):
         daily_days=[2, 3, 4],
         daily_max=[22.0, 22.0, 22.0],
         daily_min=[20.0, 20.0, 20.0],
-        daily_rain=[None, None, None],        # 逐日降水不可信 → 全 null，绝不折算
+        daily_rain=[None, None, None],        # 日产品无降水 → 全 null，绝不折算
     )
     storage.save_forecast_snapshot("s1", "geovis_v1", snap)
 

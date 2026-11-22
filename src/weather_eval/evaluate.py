@@ -1706,7 +1706,11 @@ def precip_amount_metrics(obs_vals, fcst_vals, min_sample,
             if k > 0:
                 shrink = n_wet / (n_wet + k)
                 out["amt_wet_shrink"] = round(shrink, 4)
-                raw *= shrink
+                # 满分锚点不能随样本量移动：e_model == 0 是精确零误差边界，
+                # 把它收缩到 q_ref 会凭空制造一个"小样本所以不完美"的扣分。
+                # 收缩只压缩非完美的噪声偏离（含负技巧），不惩罚完美预报。
+                if e_model > 0:
+                    raw *= shrink
             out["amt_skill"] = round(raw, 4)
         return out
     if is_v5_family() and amt_floor is not None:
@@ -8906,7 +8910,6 @@ def build_report(station_ids, models, eval_cfg, start_dt, end_dt,
     同进程并发构建（服务化、并行测试、边渲染边重算）会交错修改模块级评分参数，
     产出无法从任何一份 meta 复算的混合口径报告。
     """
-    scheme = str((eval_cfg or {}).get("score_scheme") or "").strip().lower()
     with _SCORE_PARAMS_LOCK:
         report = _build_report_unlocked(
             station_ids, models, eval_cfg, start_dt, end_dt,

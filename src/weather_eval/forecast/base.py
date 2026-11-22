@@ -41,8 +41,9 @@ class ForecastProvider(ABC):
     节省仓库体积）——provider 无需自行截断，但也不必为"多出来的天"申请评测语义。
     允许**只接温度**的半块：源若无逐日累计降水产品（只有概率/量级码/日内统计量），
     precipitation 给全 null 数组并留档原因——把概率、量级档或"日内均值×24"折算成
-    累计 mm 都是凭空造值，绝不允许（星图 pre_day/pre_night 恒 5.0 量级码、彩云
-    daily.precipitation 仅日内统计量，即为反例证据，见各自 docstring）。
+    累计 mm 都是凭空造值，绝不允许（彩云 daily.precipitation 仅日内统计量，即为
+    反例证据，见其 docstring）。若源明确把白天/夜间累计标为定量 mm（如中科星图
+    pre_day/pre_night），可以相加为日累计，但必须在 provider docstring 写明日界差异。
 
     使用边界（第一性原理，不可越界）：
     - 日产品**只用于按天评估补位**（日最高/最低温、日降水），且仅在该日逐小时覆盖

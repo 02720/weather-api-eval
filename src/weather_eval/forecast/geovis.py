@@ -30,22 +30,26 @@ chinaCity120HourForecast，入口即 meteorological/summary 页）：
 ─────────────────────────────────────────────────────────────────────
 逐日预报块（可选扩展，契约见 forecast/base.py）
 ─────────────────────────────────────────────────────────────────────
-「全国城市15天逐日预报」`GET …/forecast/day/area[/professional|/basic]`（2026-09-05
-线上实测：15 天、fc_time 为 yyyyMMdd 北京时自然日、tem_max/tem_min 为全天最高/
-最低温 ℃、pre_day/pre_night 为白天/夜间分量）。本源逐小时止于 120h（5 天），逐日
-15 天是**逐日补位产生真实时效增益**的主要源（+10 天）。
+「全国城市15天/45天/90天逐日预报」`GET …/forecast/day/area[/advanced|/professional]`
+（2026-11-22 复核官方文档：基础版 15 天 = 无后缀，进阶版 45 天 = `/advanced`，
+专业版 90 天 = `/professional`；fc_time 为 yyyyMMdd 北京时自然日，tem_max/tem_min
+为全天最高/最低温 ℃，**pre_day/pre_night 均为定量累计降水量 mm**）。本源逐小时
+止于 120h（5 天），逐日是**按天补位产生真实时效增益**的主要源（+10 天以上）。
 
-- **只接温度，降水置全 null**（实测证据，2026-09-05 梧州点对拍自家逐小时产品）：
-  ① pre_night 在全部 15 天恒为 5.0、pre_day 大多为 5.0——呈量级码/占位形态而非
-  定量累计；② 逐日 pre_day+pre_night 与自家逐小时 pre 逐日求和严重矛盾（09-06
-  逐日 18.2mm vs 逐小时 0.2mm、09-08 10.0mm vs 0.3mm）。把量级档当 mm 入库会让
-  无雨日伪装成"预报大雨"，故拒绝接入；若日后产品修复应实测核实后再接并留档。
-- 日界与量级（对拍自家逐小时，5 天样本）：tem_min 与自然日逐小时 min 3/5 天全等、
-  其余差 ±1°C；tem_max 偏高 0~1°C——日产品极值与逐小时聚合存在系统性 ±1°C 的
-  产品差，属补位口径固有差异（temp_src="daily" 样本在报告中单独披露）。
+- **降水：pre_day + pre_night**。官方响应字段表明确写的是"白天累计降水量，单位：
+  mm"/"夜间累计降水量，单位：mm"；只要任一分量为缺测/非法值，整日累计即记 null
+  （绝不把缺失分量当 0）。旧实现曾因单站点对拍看到恒 5.0 的占位值而整列拒绝；
+  现按官方字段语义接入，并保留这一历史证据供复核。
+- **口径边界**：官方未把白天/夜间分量进一步映射到 00–24 自然日（中国天气业务中
+  常为白天 08–20、夜间 20–08 次日）。本块按厂商自述把两者相加为当日 24h 累计；
+  日产品只在该日逐小时覆盖不足时补位，报告中带 `rain_src="daily"` 单独披露，
+  不与逐小时聚合样本混算。
+- 日界与量级（对拍自家逐小时，2026-09 的 5 天样本）：tem_min 与自然日逐小时 min
+  3/5 天全等、其余差 ±1°C；tem_max 偏高 0~1°C——日产品极值与逐小时聚合存在
+  系统性 ±1°C 的产品差，属补位口径固有差异（temp_src="daily" 样本单独披露）。
 - 逐日抓取失败（档位被拒/业务失败/契约漂移）只降级为不带该块的快照：逐小时是
-  主干，日产品只是延长线，绝不因它丢掉整份起报快照。档位梯子与逐小时同款
-  （professional → 进阶 → basic），成功档位进程内缓存。
+  主干，日产品只是延长线，绝不因它丢掉整份起报快照。日产品档位梯子独立于逐小时
+  （professional → advanced → 15天基础版），成功档位进程内缓存。
 """
 from __future__ import annotations
 
@@ -70,8 +74,15 @@ HEADERS = {"User-Agent": DEFAULT_UA}
 
 SOURCE = "geovis"
 MODEL_NAME = "geovis_v1"
-# 档位 → URL 后缀（专业 120h → 进阶 48h → 基础 24h）
+# 逐小时档位 → URL 后缀（专业 120h → 进阶 48h → 基础 24h）
 TIERS: list[tuple[str, str]] = [("professional", "/professional"), ("48h", ""), ("basic", "/basic")]
+# 逐日产品档位**不是**逐小时那套：专业 90 天 → 进阶 45 天 → 基础 15 天。
+# 2026-11 官方文档：/professional、/advanced、无后缀；不存在 /basic。
+DAILY_TIERS: list[tuple[str, str]] = [
+    ("professional", "/professional"),
+    ("advanced", "/advanced"),
+    ("15d", ""),
+]
 # 官方异常值 999999；对 9999/99999 等变体一并剔除（气温/降水的真实值不可能 ≥9999）
 MISSING_TOL = 9999.0
 
@@ -105,11 +116,13 @@ def parse_fc_date(s: Any) -> str | None:
 
 
 def parse_day_area_response(payload: Any) -> dict[str, Any]:
-    """解析逐日预报响应 → {"time": ["YYYY-MM-DD", ...], "temp_max": [...], "temp_min": [...]}。
+    """解析逐日预报响应 → 温度极值 + 白天/夜间累计降水之和。
 
-    status != 0 / datas 为空抛 _TierUnavailable（档位回退捕捉）；只取 tem_max/
-    tem_min（降水拒绝接入，见模块 docstring"逐日预报块"一节）；fc_time 无法解析
-    的条目跳过；同一日保留首见；时间轴升序去重（契约要求）。
+    返回 ``{"time", "temp_max", "temp_min", "precipitation"}``。``pre_day`` /
+    ``pre_night`` 按官方契约都是 mm 定量累计；只有两者都为有效值时才相加，
+    任一分量缺测则整日记 None（不把缺测当 0 造值）。status != 0 / datas 为空抛
+    _TierUnavailable（档位回退捕捉）；fc_time 无法解析的条目跳过；同一日保留首见；
+    时间轴升序去重（契约要求）。
     """
     if not isinstance(payload, dict):
         raise RuntimeError(f"星图逐日响应异常: {payload!r}"[:300])
@@ -122,15 +135,19 @@ def parse_day_area_response(payload: Any) -> dict[str, Any]:
     datas = result.get("datas")
     if not isinstance(datas, list) or not datas:
         raise _TierUnavailable("星图逐日响应 result.datas 为空（token 无权限或产品未覆盖该点）")
-    rows: dict[str, tuple[float | None, float | None]] = {}
+    rows: dict[str, tuple[float | None, float | None, float | None]] = {}
     for d in datas:
         if not isinstance(d, dict):
             continue
         day = parse_fc_date(d.get("fc_time"))
         if day is None:
             continue
+        pre_day = _num_or_none(d.get("pre_day"))
+        pre_night = _num_or_none(d.get("pre_night"))
+        day_rain = (pre_day + pre_night
+                    if pre_day is not None and pre_night is not None else None)
         rows.setdefault(day, (_num_or_none(d.get("tem_max")),
-                              _num_or_none(d.get("tem_min"))))
+                              _num_or_none(d.get("tem_min")), day_rain))
     if not rows:
         raise RuntimeError("星图逐日响应无可解析的 fc_time 条目（疑似契约漂移）")
     days = sorted(rows)
@@ -138,6 +155,7 @@ def parse_day_area_response(payload: Any) -> dict[str, Any]:
         "time": days,
         "temp_max": [rows[d][0] for d in days],
         "temp_min": [rows[d][1] for d in days],
+        "precipitation": [rows[d][2] for d in days],
     }
 
 
@@ -252,7 +270,7 @@ class GevisProvider(ForecastProvider):
 
     # ------------------------------------------------------------------ 内部
     def _fetch_daily_block(self, station: Any) -> dict | None:
-        """逐日预报块：档位梯子与逐小时同款，任何失败只降级为不带该块的快照。
+        """逐日预报块：走独立的日产品档位梯子，任何失败只降级为不带该块的快照。
 
         401/403 不向上抛（与逐小时路径不同）：此时逐小时已成功、Key 有效性已被
         证实，逐日被拒属产品权限/订阅问题，降档尝试后仍失败就放弃延长线。
@@ -260,11 +278,11 @@ class GevisProvider(ForecastProvider):
         tiers: list[str] = []
         if self._day_tier_cache is not None:
             tiers.append(self._day_tier_cache)
-        tiers += [t for t, _ in TIERS if t != self._day_tier_cache]
+        tiers += [t for t, _ in DAILY_TIERS if t != self._day_tier_cache]
         errors: list[str] = []
         for tier in tiers:
             try:
-                payload = self._request_day(station, dict(TIERS)[tier])
+                payload = self._request_day(station, dict(DAILY_TIERS)[tier])
                 parsed = parse_day_area_response(payload)
             except Exception as e:  # noqa: BLE001  逐日块失败绝不拖垮整份快照
                 errors.append(f"{tier}: {e}")
@@ -276,8 +294,8 @@ class GevisProvider(ForecastProvider):
                 MODEL_NAME: {
                     "temp_max": parsed["temp_max"],
                     "temp_min": parsed["temp_min"],
-                    # 逐日降水产品为量级码（不可信，见 docstring）：全 null，绝不折算
-                    "precipitation": [None] * len(parsed["time"]),
+                    # pre_day/pre_night 均为官方定义 mm 累计；两者都有值才相加
+                    "precipitation": parsed["precipitation"],
                 },
             }
             return {"time": parsed["time"], "data": data}
