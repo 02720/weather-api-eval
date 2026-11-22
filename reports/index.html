@@ -11,7 +11,7 @@
 <!-- 视图指纹：本页由「代码的哪个版本」渲染。数据冻结、视图随代码重建——
      月榜据此自判是否过期（见 render.view_fingerprint / __main__.refresh_monthly_archives）。
      本行属于产物契约，勿删。 -->
-<meta name="wx-render-fp" content="1ad926012c51dcff">
+<meta name="wx-render-fp" content="37e1b7f8a524aefb">
 <!-- ECharts 使用仓库内本地副本（避免 CDN 不可达）。加载失败时图表区会显示
      兜底提示，服务端渲染的榜单与结论不受影响。 -->
 <script src="./vendor/echarts.min.js"></script>
@@ -531,11 +531,16 @@
 宏观权重（温度占综合分比例）挪到两端时：
           <b>温度 30% → ECMWF AIFS 0.25° Single；温度 70% → ECMWF AIFS 0.25° Single</b>——
           两端的冠军若不同家，说明"谁最准"对这条价值判断仍敏感，当前 50:50 不是唯一答案；
-名字带 † = 差距在统计上还分不开。<a href="#board" style="color:#9fc3e8">看完整榜单 →</a>
+<b>注意：α 的方差话语权 = α²/(α²+(1−α)²)</b>，
+          所以 α=30%/70% 对应的有效话语权约 <b>15.5% / 84.5%</b>，而不是 30%/70%——
+          端点冠军读的是"温度占名义权重三成/七成"，不是"温度占方差三成/七成"。
+本期榜面兑现份额：温度 97% ·
+          降水 0% · 协方差 3%。名字带 † = 差距在统计上还分不开。<a href="#board" style="color:#9fc3e8">看完整榜单 →</a>
         </div>
       </div>
       <div class="champ-score-box">
-<div class="champ-ci">难度对齐综合分 · 0~100</div>        <div class="champ-score">57.2<small>分</small></div>
+<div class="champ-ci">难度对齐名次分 · 50=本档同台平均 · ±10 是 ρ=1 时的 1 个桶内标准差；本期实测约 5.9 分 · 绝对技能分见 §02</div>
+        <div class="champ-score">57.2<small>分</small></div>
           <div class="thermo lg">
     <span class="tube"><b style="--v:57.24%"></b></span>
 <span class="err" title="90% 置信区间 56.1 ~ 58.8"
@@ -556,13 +561,13 @@
     <h2>预报源总榜</h2>
     <p class="desc">「综合分」由温度 4 项 + 降水 4 项指标加权而成，先把每一档提前量的
       难度统一扣掉再比——能报 3 天的和能报 15 天的同榜也公平。
-<span class="only-wide">有效观测 <b>88 天</b>（2026-08-26 ~ 2026-11-21）；报告标签窗口含无观测的前置日期，参照与评分按有效窗口计算。</span><span class="only-wide">⚠ 降水技巧未检出（该桶 >60% 格 |ETS|≤0.05）：
+<b>总榜这一列是「名次分」：先把每一档的温度/降水桶内标准化（50=本档同台平均），再按声明的 α=50% 温度 + 50% 降水合成；它不随时间长短衰减。实际可达区间随窗口变化（本期约 43~57 分，±10 分≈1 个桶内标准差），不是 0~100 的绝对刻度。绝对技能分（50=打平参照、100=完美）见 §02 走势图——那是另一个构念，数值与榜面不可互相对照。</b><span class="only-wide">有效观测 <b>88 天</b>（2026-08-26 ~ 2026-11-21）；报告标签窗口含无观测的前置日期，参照与评分按有效窗口计算。</span><span class="only-wide">⚠ 降水技巧未检出（该桶 >60% 格 |ETS|≤0.05）：
 小时 9d、10d、11d、12d、13d、14d、15d。
         这些桶的降水分约在 50 附近，含义是“没有证据”，不是“表现中等”。</span>      <b>指标页签即排序口径</b>：
       「🌡️ 温度」「🌧️ 降水」展开该维的全部分数与指标，并改按该维分数排序（总综合分只在「概览」显示）；
       页签在<b>所有榜单</b>下可用——总榜的单项与综合分同一批格子、同一套难度对齐，分时效榜则是该档的原始口径。
       <span class="only-wide">点任意列名可重新排序；
-      「得分走势」是综合分随提前天数（1~16 天，小时口径）的衰减，<b>谁在右边还站得高，谁的长期预报就更可靠</b>。</span><span class="only-mobile">每个源一张卡片：名次徽章旁是源名，<b>大字就是当前排序键的分</b>（「概览」= 综合分，「温度」「降水」= 该维分），
+      「得分走势」是技能分 S（小时口径，1~16 天）随提前天数的衰减——与左列「名次分」是两个构念，量纲与 50 的锚点都不同，曲线高低只回答"掉秤快慢"，<b>谁在右边还站得高，谁的长期预报就更可靠</b>。</span><span class="only-mobile">每个源一张卡片：名次徽章旁是源名，<b>大字就是当前排序键的分</b>（「概览」= 综合分，「温度」「降水」= 该维分），
       其下按两列排开该页签的分项与指标。</span>
       想看某个具体提前量的排名，用<b>榜单下拉</b>切到「提前 N 天」分榜——同一档内直接对照、不经难度对齐。</p>
     <div class="lb-dims" id="lbDims">
@@ -580,8 +585,8 @@
           <th class="c-rk">#</th>
           <th class="l c-name">预报源</th>
           <th class="ov-only" data-key="score" data-type="num" data-dir="desc">综合分<span class="ind">▼</span></th>
-          <th class="sh-temp h-temp" data-key="temp" data-type="num">温度分<span class="ind"></span></th>
-          <th class="sh-rain h-rain" data-key="precip" data-type="num">降水分<span class="ind"></span></th>
+          <th class="sh-temp h-temp" data-key="temp" data-type="num" title="名次分的温度贡献：50=同台平均，不是绝对技能分；绝对技能分见 §02">温度贡献<span class="ind"></span></th>
+          <th class="sh-rain h-rain" data-key="precip" data-type="num" title="名次分的降水贡献：50=同台平均，不是绝对技能分；绝对技能分见 §02">降水贡献<span class="ind"></span></th>
           <th class="t-only h-temp" data-key="acc2" data-type="num" title="预报与实况相差不超过 2°C 的样本占比，越高越好">±2°C</th>
           <th class="r-only h-rain" data-key="ts" data-type="num" id="lbTsHead" title="命中 ÷（命中 + 空报 + 漏报），越高越好；总榜为两轨拼接的对齐值，分榜为该档原始口径">晴雨 TS</th>
           <th class="t-only h-temp" data-key="acc1" data-type="num" title="相差不超过 1°C 的样本占比（更严的一档），越高越好">±1°C</th>
@@ -648,11 +653,11 @@
 
             <b class="score-num">57.2</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:57.1%"></b></span>
   </div>
 </div><b class="score-num">57.1</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:50.14%"></b></span>
   </div>
 </div><b class="score-num">50.1</b></td>
@@ -723,11 +728,11 @@
 
             <b class="score-num">56.1</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:56.02%"></b></span>
   </div>
 </div><b class="score-num">56.0</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:50.11%"></b></span>
   </div>
 </div><b class="score-num">50.1</b></td>
@@ -798,11 +803,11 @@
 
             <b class="score-num">55.7</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:55.53%"></b></span>
   </div>
 </div><b class="score-num">55.5</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:50.17%"></b></span>
   </div>
 </div><b class="score-num">50.2</b></td>
@@ -873,11 +878,11 @@
 
             <b class="score-num">54.7</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:54.53%"></b></span>
   </div>
 </div><b class="score-num">54.5</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:50.16%"></b></span>
   </div>
 </div><b class="score-num">50.2</b></td>
@@ -948,11 +953,11 @@
 
             <b class="score-num">54.0</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:53.99%"></b></span>
   </div>
 </div><b class="score-num">54.0</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:50.06%"></b></span>
   </div>
 </div><b class="score-num">50.1</b></td>
@@ -1023,11 +1028,11 @@
 
             <b class="score-num">53.8</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:53.81%"></b></span>
   </div>
 </div><b class="score-num">53.8</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:50.0%"></b></span>
   </div>
 </div><b class="score-num">50.0</b></td>
@@ -1098,11 +1103,11 @@
 
             <b class="score-num">53.5</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:53.44%"></b></span>
   </div>
 </div><b class="score-num">53.4</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:50.04%"></b></span>
   </div>
 </div><b class="score-num">50.0</b></td>
@@ -1173,11 +1178,11 @@
 
             <b class="score-num">52.8</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:53.0%"></b></span>
   </div>
 </div><b class="score-num">53.0</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:49.84%"></b></span>
   </div>
 </div><b class="score-num">49.8</b></td>
@@ -1248,11 +1253,11 @@
 
             <b class="score-num">52.8</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:52.68%"></b></span>
   </div>
 </div><b class="score-num">52.7</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:50.11%"></b></span>
   </div>
 </div><b class="score-num">50.1</b></td>
@@ -1323,11 +1328,11 @@
 
             <b class="score-num">52.2</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:52.23%"></b></span>
   </div>
 </div><b class="score-num">52.2</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:49.98%"></b></span>
   </div>
 </div><b class="score-num">50.0</b></td>
@@ -1398,11 +1403,11 @@
 
             <b class="score-num">51.7</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:51.72%"></b></span>
   </div>
 </div><b class="score-num">51.7</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:49.95%"></b></span>
   </div>
 </div><b class="score-num">50.0</b></td>
@@ -1473,11 +1478,11 @@
 
             <b class="score-num">51.1</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:51.12%"></b></span>
   </div>
 </div><b class="score-num">51.1</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:50.03%"></b></span>
   </div>
 </div><b class="score-num">50.0</b></td>
@@ -1548,11 +1553,11 @@
 
             <b class="score-num">51.1</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:51.1%"></b></span>
   </div>
 </div><b class="score-num">51.1</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:50.02%"></b></span>
   </div>
 </div><b class="score-num">50.0</b></td>
@@ -1623,11 +1628,11 @@
 
             <b class="score-num">50.5</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:50.47%"></b></span>
   </div>
 </div><b class="score-num">50.5</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:50.02%"></b></span>
   </div>
 </div><b class="score-num">50.0</b></td>
@@ -1698,11 +1703,11 @@
 
             <b class="score-num">50.3</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:50.31%"></b></span>
   </div>
 </div><b class="score-num">50.3</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:50.02%"></b></span>
   </div>
 </div><b class="score-num">50.0</b></td>
@@ -1773,11 +1778,11 @@
 
             <b class="score-num">49.5</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:49.51%"></b></span>
   </div>
 </div><b class="score-num">49.5</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:50.03%"></b></span>
   </div>
 </div><b class="score-num">50.0</b></td>
@@ -1848,11 +1853,11 @@
 
             <b class="score-num">49.4</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:49.34%"></b></span>
   </div>
 </div><b class="score-num">49.3</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:50.01%"></b></span>
   </div>
 </div><b class="score-num">50.0</b></td>
@@ -1923,11 +1928,11 @@
 
             <b class="score-num">49.3</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:49.09%"></b></span>
   </div>
 </div><b class="score-num">49.1</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:50.18%"></b></span>
   </div>
 </div><b class="score-num">50.2</b></td>
@@ -1998,11 +2003,11 @@
 
             <b class="score-num">49.2</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:49.34%"></b></span>
   </div>
 </div><b class="score-num">49.3</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:49.86%"></b></span>
   </div>
 </div><b class="score-num">49.9</b></td>
@@ -2073,11 +2078,11 @@
 
             <b class="score-num">49.2</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:48.97%"></b></span>
   </div>
 </div><b class="score-num">49.0</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:50.22%"></b></span>
   </div>
 </div><b class="score-num">50.2</b></td>
@@ -2148,11 +2153,11 @@
 
             <b class="score-num">48.0</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:48.11%"></b></span>
   </div>
 </div><b class="score-num">48.1</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:49.86%"></b></span>
   </div>
 </div><b class="score-num">49.9</b></td>
@@ -2223,11 +2228,11 @@
 
             <b class="score-num">47.8</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:47.82%"></b></span>
   </div>
 </div><b class="score-num">47.8</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:49.93%"></b></span>
   </div>
 </div><b class="score-num">49.9</b></td>
@@ -2298,11 +2303,11 @@
 
             <b class="score-num">47.1</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:47.37%"></b></span>
   </div>
 </div><b class="score-num">47.4</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:49.73%"></b></span>
   </div>
 </div><b class="score-num">49.7</b></td>
@@ -2373,11 +2378,11 @@
 
             <b class="score-num">47.1</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:47.21%"></b></span>
   </div>
 </div><b class="score-num">47.2</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:49.84%"></b></span>
   </div>
 </div><b class="score-num">49.8</b></td>
@@ -2448,11 +2453,11 @@
 
             <b class="score-num">46.7</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:46.92%"></b></span>
   </div>
 </div><b class="score-num">46.9</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:49.76%"></b></span>
   </div>
 </div><b class="score-num">49.8</b></td>
@@ -2523,11 +2528,11 @@
 
             <b class="score-num">45.6</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:45.65%"></b></span>
   </div>
 </div><b class="score-num">45.6</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:49.96%"></b></span>
   </div>
 </div><b class="score-num">50.0</b></td>
@@ -2598,11 +2603,11 @@
 
             <b class="score-num">45.6</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:45.44%"></b></span>
   </div>
 </div><b class="score-num">45.4</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:50.15%"></b></span>
   </div>
 </div><b class="score-num">50.1</b></td>
@@ -2673,11 +2678,11 @@
 
             <b class="score-num">45.1</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:45.18%"></b></span>
   </div>
 </div><b class="score-num">45.2</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:49.9%"></b></span>
   </div>
 </div><b class="score-num">49.9</b></td>
@@ -2748,11 +2753,11 @@
 
             <b class="score-num">45.0</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:45.01%"></b></span>
   </div>
 </div><b class="score-num">45.0</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:50.02%"></b></span>
   </div>
 </div><b class="score-num">50.0</b></td>
@@ -2823,11 +2828,11 @@
 
             <b class="score-num">44.8</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:44.73%"></b></span>
   </div>
 </div><b class="score-num">44.7</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:50.04%"></b></span>
   </div>
 </div><b class="score-num">50.0</b></td>
@@ -2898,11 +2903,11 @@
 
             <b class="score-num">44.6</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:44.66%"></b></span>
   </div>
 </div><b class="score-num">44.7</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:49.99%"></b></span>
   </div>
 </div><b class="score-num">50.0</b></td>
@@ -2973,11 +2978,11 @@
 
             <b class="score-num">43.4</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:43.46%"></b></span>
   </div>
 </div><b class="score-num">43.5</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:49.91%"></b></span>
   </div>
 </div><b class="score-num">49.9</b></td>
@@ -3047,11 +3052,11 @@
 
             <b class="score-num">—</b>
           </div></td>
-          <td class="sh-temp" data-label="温度分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-temp" data-label="温度贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:0%"></b></span>
   </div>
 </div><b class="score-num">—</b></td>
-          <td class="sh-rain" data-label="降水分"><div class="score-bar">  <div class="thermo sm">
+          <td class="sh-rain" data-label="降水贡献"><div class="score-bar">  <div class="thermo sm">
     <span class="tube"><b style="--v:0%"></b></span>
   </div>
 </div><b class="score-num">—</b></td>
@@ -3139,13 +3144,14 @@
                 </tr>
 </tbody>
             </table>
-            <p class="why"><b>温度维按 4 族分配权重</b>：总体误差 40%（RMSE/MAE 各半）＞
-              阈值命中 25%（±2°C 60% / ±1°C 40%）＞系统偏差 20%（|MBE| 75% / 站间离散度 25%）
-              ＞形态 15%（r/slope 各半）。同族成员是同一组误差的不同侧面，不是独立证据；
-              族权重先定、族内再分，新增成员不会稀释既有族。相关 0.92 / 0.88 的两个阈值点
-              只记一遍族权重，但两处刻度都用上。<b>不入分</b>：RSS、χ²——它们
-              <b>数学上就是</b> RMSE² 与 n×RMSE²（实测残差 ≤2e−3，χ² 与 RMSE 桶内斯皮尔曼
-              ρ=1.00），入分即重复计权，且 RSS 还乘了样本量。</p>
+            <p class="why"><b>温度维是“相对共同气候参照的技能分”</b>：正向 4 项权重
+              （RMSE 40% / MAE 15% / ±2°C 25% / 异常相关 20%）。
+              <b>50 = 与固定日历气候态打平</b>（同一（站, 有效时刻）对所有源、
+              所有起报日用同一个参照；参照难度与 lead 无关）；100 = 完美。
+              命中项用分段线性（保端点），子项末端软压缩、不硬触底。
+              MBE 与回归斜率<b>只披露、不扣分</b>，与降水维（BIAS 只披露）对称。
+              证据族门按<b>源级结构性缺席</b>判定：源从不提供 r_anom 时幅度族可
+              单独撑起整维；源在别处提供、本格缺 → 半截证据，判缺测。</p>
           </div>
           <div>
             <h3>🌧️ 降水分（4 项）<span class="sub">该维占综合分 50% · 日雨量 ≥1.0mm 口径</span></h3>
@@ -3173,53 +3179,45 @@
                 </tr>
 </tbody>
             </table>
-            <p class="why"><b>降水维按 3 族分配权重</b>：晴雨判别 55%（ETS 30% / POD 12.5% /
-              FAR 12.5%）＞雨量精度 25%（amt_mae）＞雨强分辨力 20%（中雨/大雨档 ETS）。
-              <b>不入分</b>：TS、晴雨准确率、漏报率、空报频率、频率偏差 BIAS——给定
-              样本量的 2×2 列联表只有 3 个自由度，而 ETS/POD/FAR 恰好撑满，这五个<b>都是它们的函数</b>
-              （用它们反解列联表重建 acc/ts/BIAS，残差 8e−4 / 1.3e−3 / ≤3e−3，全是舍入）；
-              加进来不增加信息，只会把基率污染请回来。BIAS 还额外制造了单调性反例：
-              h=0 时把一个正确否定改成空报，FAR 恒 100%、POD/ETS 恒 0，但 BIAS 0.05→0.10
-              的"靠近 1"奖励会让降水分 +1.68 分——2026-10-31 起退出评分表，只留明细列。
-              雨量 RMSE 亦不入分：与雨量 MAE 桶内相关 0.97，且平方刻度把跨桶尺度差放大一倍。
-              <b>雨量总量比 amt_bias 只列明细、不入分</b>：它与 amt_mae 的桶内原始相关
-              实测 0.995（小时）/ 1.000（日）——两者是同一个量的两种写法；且它的子分与
-              降水分几乎不相关（-0.11 / +0.13）。雨量精度族 25% 的权重全部归 amt_mae，
-              同一份证据不说两遍。</p>
+            <p class="why"><b>降水维是“相对无技巧基准的技能分”</b>：判别/分档族 60%
+              （晴雨 ETS 40% / 有序雨强 12% / 雨强分辨力 8%）＞雨量族 40%
+              （湿域对数雨量技能）。<b>50 = ETS 0（同边际随机）</b>；100 = 完美。
+              判别项的频率校准阻尼乘到整族（ets/ord/grade），雨量项已是 proper 的
+              相对 MAE，超报必罚。<b>证据族门槛</b>：判别族与雨量族至少两族有证据，
+              或单族在源级结构性缺席时完整存活；只有 ETS 一项、或判别族半截缺项时
+              整维判缺测，<b>不把剩余权重重归一成 100%</b>。
+              BIAS、POD、FAR、amt_bias、雨量误差只列明细，不重复计罚。</p>
           </div>
         </div>
-        <p class="why">某项缺数据时按<b>剩余权重</b>折算（缺数据 ≠ 差数据）；综合分 = 温度分与降水分各半。          <b>小时榜与日榜之间按 2:1 合成</b>（<code>daily_track_weight</code>=0.50）：
+        <p class="why">某项缺数据时按<b>剩余权重</b>折算（缺数据 ≠ 差数据）；技能分 S 两维缺一即缺；名次分 R 允许单维存活（另一维贡献固定 50，且按同一合成式给分）。          <b>小时榜与日榜之间按 2:1 合成</b>（<code>daily_track_weight</code>=0.50）：
           日轨的日最高/最低、日累计降水对多数源是同一份逐小时预报重新分箱，独立证据有限，
           降为 1/3 可避免把"日极值"这一类信息计两遍；单轨榜与单维内合成不受影响。</p>
-        <p class="why"><b>综合分是排序指数</b>：换算斜率按"桶内跨源 sd=8 分"标定，
-          只保证排序，端点不统一（例如 ±2°C=100% 只给 65 分、ETS=1 给 100 分）。
-          分数的绝对值不可跨榜、跨期解读；名次由这把尺决定，CI 与显著性也在
-          同一把尺上计算。</p>
-        <p class="why"><b>分数是"技能指数"，但缩放只作用于展示</b>：13 个子分各自标定到
-          "桶内跨源 sd = 8 分"，加权平均会把维度分离散度压到 ≈2.8 分。展示时对
-          <b>维度分</b>施加 <code>g(s)=50+1.74·(s−50)</code>、
-          对<b>综合分</b>施加 <code>g(s)=50+2.86·(s−50)</code>，
-          两个增益都是<b>冻结常数、只影响屏幕上的数字</b>；名次、90% 置信区间、显著性判定
-          一律在<b>未缩放原始分</b>上计算（2026-10-31 复核 P0-3）。为什么之前不能这样说：
-          旧实现把缩放放在缺项归一、截断、维度合成与双向对齐之前，一旦 0/100 截断就不再是
-          单调映射，名次可能被展示参数改变；现在截断只发生在最终展示层。</p>
-        <p class="why"><b>换算斜率是标定值，不是随手定的</b>：一项指标的<b>局部敏感度</b> =
-          权重 × 斜率 × 该指标在本期数据里的离散度——只声明前两个，第三个（数据的偶然分布）
-          就会替你决定名次。每项斜率按"子分桶内跨源 sd ≈ 8 分"在真实存档上反解
-          （<code>scripts/calibrate_score_slopes.py</code>，值随配置季度重标定），
-          因此上表的权重是各项<b>局部敏感度</b>的近似值；"🔬 这份名次有多结实"
-          一节逐轨列出实测占比供核对。<b>局部敏感度 ≠ 方差份额</b>：加权和的方差贡献
-          ∝ w²·σ²，即使 σ 全等于 8，方差份额仍 ∝ w²（大权重项超配、小权重项欠配）。
-          要强行让方差份额也等于名义权重，需要 σ ∝ 1/√w；在 0~100 截断量表上这会让
-          低权重项（r 7.5%）的 λ 膨胀到 100~150、子分饱和率跳到 30%~77%，是拿区分度
-          换公式好看，故不做、只披露两种口径。</p>
+        <p class="why"><b>两个综合分，各自只回答一个问题</b>：<b>名次分 R</b>（总榜/分时效榜）
+          先逐列算两维标准分 z（Winsor 只进 μ/σ，标准化用原始值），再按
+          α=50%
+          温度 + 50% 降水合成；
+          信度 ρ 只作为**公共收缩因子** √ρ_c；50 = 本档同台平均。
+          <b>技能分 S</b>（§02 走势图）是两维绝对技能按同一 α 加权，
+          50 = 两维都打平同类朴素参照，100 = 完美。α 管方向、ρ 管置信、证据门管退出。</p>
+        <p class="why"><b>每一分都有证据</b>：温度参照是<b>固定日历气候态</b>
+          （fixed_trailing：目标日之前 14 天，
+          同一（站, 有效时刻）对所有源、所有起报日共用一个参照，难度不随 lead 上升）；
+          参照自身误差与命中项斜率比在下方"参照难度"折叠区发布。雨量技能改为**全样本相对 MAE**
+          （无阈值、无事件并集，评分域不依赖被评预报）；判别（ETS）与量级分离；BIAS 与
+          amt_bias 只披露、不重复计罚。证据门按（轨道 × 天桶）判定：ρ 低或无技巧的桶
+          退出该维，单维存活格按同一合成式给分。子项末端用软压缩，
+          不再把“比参照差一点”和“差十倍”压成同一个 −1。</p>
         <p class="why"><b>"名义 α"兑现成了多少话语权</b>（总榜）：
           本期名次分方差中温度贡献 <b>97%</b> ·
           降水贡献 <b>0%</b> ·
           协方差 3%（贡献列标准差
           3.72 vs 0.12 分，样本 32 行）。
-          50:50 是<b>名义</b>权重，名次上的实际话语权由两维离散度决定——
-          温度:降水的宏观权重已在冠军频率敏感性里按 U(30%,70%) 扰动（）。
+          α=50% 的**理想**方差份额是
+          α²/(α²+(1−α)²) = 50.0%，
+          只有 α=50% 时才恰好等于 α；两维原始信息量比
+          3.81、
+          降水原始分触底率 0.0%。
+          名义权重是价值判断，兑现份额是当期数据的实现——两者并列披露，不互相冒充。
 </p>
       </div>
     </details>
@@ -3520,8 +3518,12 @@
     <p class="desc">把每一档提前量的得分连成曲线。灰色地带是全体源的波动范围（虚线 = 中位），
       默认画总榜前三名；<b>选源面板</b>按源家族分组勾选，或直接点图例增删。
       <b>小时口径</b>答"某日几点准不准"，<b>日口径</b>答"这一天的极值/总量准不准"，
-      两条曲线口径不同、不能互相比斜率；<b>综合口径</b>是同一提前天数上两种口径
-      分数各半的合成（两轨缺一即缺），与榜单下拉里的「综合 · 提前 N 天」同口径。</p>
+      两条曲线口径不同、不能互相比斜率；<b>综合口径</b>是同一提前天数上两条轨道
+      按 小时:日 = 2:1 的合成（两轨缺一即缺）。
+曲线画的是<b>技能分 S</b>（50 = 打平同类朴素参照）——与榜单、
+      「综合 · 提前 N 天」分榜发布的<b>名次分 R</b>（50 = 本档同台平均）是<b>两个构念</b>：
+      同一份数据、两条评分式，所以这里的曲线值<b>本来就不会</b>等于榜面上的分，不要互相对照
+      （见「评分构成」折叠区）。</p>
     <div class="controls">
       <div class="seg" id="segTrack">
         <button class="on" data-v="hourly">⏱️ 小时口径</button>
@@ -3866,14 +3868,10 @@ MSN天气 33 份）。⑧
 本轮检出漂移：<b>AccuWeather、中国气象局公众网、中科星图、和风天气</b>。
 </p>
 
-            <h3>评分斜率的实测影响力：名义权重兑现了吗</h3>
-            <p class="why">一项指标对名次的实际影响力 = <b>名义权重 × 换算斜率 × 数据离散度</b>——
-              三者耦合，只声明前两个，第三个（数据的偶然分布）就会替你决定名次。斜率现已按
-              "子分桶内跨源 sd ≈ 8 分"标定（<code>scripts/calibrate_score_slopes.py</code>，
-              值随配置季度重标定），下表用本轮真实分桶指标<b>核验</b>标定是否兑现：
-              实际占比 / 名义权重 ≈ 1 即达标，逐轨列出。
-              单一斜率无法同时把两条轨校准（同一 λ，小时轨与日轨的离散度本就不同），
-              分轨残差由这张表逐项暴露。</p>
+            <h3>名义权重 vs 兑现份额（技能 s 尺度）</h3>
+            <p class="why">兑现份额 = 名义权重 × 子项桶内 sd ÷ Σ(同维全部项)——
+              它回答"这一维内部谁在真正说话"。名义权重是价值判断，兑现份额是当期数据的实现；
+              偏离大时应检查该项是否被缺测/证据门大量剔除（见下方"证据存活率"表）。</p>
             <table class="plain">
               <thead><tr><th>轨道·维度</th><th>指标</th><th>换算式</th><th>名义权重</th><th>子分桶内 SD</th><th>实际影响力</th><th>名义 vs 实际</th></tr></thead>
               <tbody>
@@ -4317,7 +4315,7 @@ MSN天气 33 份）。⑧
         <dl class="glossary">
           <div><dt>起报 / 起报快照</dt><dd>预报发布的那一刻叫"起报"。每次起报的"未来 16 天逐小时预报"原样存档封存，等真实天气发生后对账——预报不能事后改，检验才算数。</dd></div>
           <div><dt>时效（提前 N 天）</dt><dd>有效时刻 − 起报时刻 = "提前多久做的预报"，按日历天分桶；每个桶里同难度比较。</dd></div>
-          <div><dt>综合得分 / 温度分 / 降水分</dt><dd>多个指标压缩成 0~100：温度 8 项、降水 6 项加权（换算斜率按数据标定），综合 = 两者各半再过第二层技能指数缩放；缺项按剩余权重折算。分数只用于排序，绝对值不可跨榜、跨期解读。</dd></div>
+          <div><dt>综合得分 / 温度分 / 降水分</dt><dd><b>名次分</b>：桶内标准化后按 α=50% 温度 + 50% 降水合成，50 = 本档同台平均；两维列是该分的分解量（t_contrib + p_contrib − 50 = 名次分）。<b>技能分</b>（§02）：50 = 两维都打平起报时刻可得的同类参照，100 = 完美。缺一维即缺，不做单维综合分。</dd></div>
           <div><dt>难度对齐（总榜）</dt><dd>先把每一档提前量有多难算出来、统一扣掉再比（双向加法模型），能报 3 天的和能报 15 天的同榜也不吃亏。</dd></div>
           <div><dt>覆盖时效</dt><dd>该源实际参与计算的样本最长覆盖到提前第几天。温度维与降水维分别核计：榜上数字取两维最远值，两维不一致时括注各自的天数（逐日预报块通常只延展温度维，如中科星图温度至 16 天、降水仍止于逐小时的 5 天）。可用时效越少，总榜平均所依据的"桶"越少。</dd></div>
           <div><dt>90% 置信区间与 †</dt><dd>对评估窗口内的<b>天</b>做分块重采样 500 次重算榜单得到的波动范围。名字带 <b>†</b> = 与第一名的差距经 max-T（单步族内极值）多重比较校正后仍与 0 分不开——不宜过度解读名次先后。</dd></div>
@@ -4402,11 +4400,11 @@ MSN天气 33 份）。⑧
 </div>
 
 <footer>
-  生成时间：2026-11-22 17:13（北京时）｜ 预报源：Open-Meteo（多模型）· 彩云天气 · 和风天气 · 中科天机 · 伏羲 · 风乌 ·
+  生成时间：2026-11-22 17:27（北京时）｜ 预报源：Open-Meteo（多模型）· 彩云天气 · 和风天气 · 中科天机 · 伏羲 · 风乌 ·
   中科星图 · AccuWeather ｜ 实况：环境气象数据服务平台 eia-data.com<br>
   本页由 GitHub Actions 自动生成，每天 3 次更新；仅供学习参考，出行请以官方气象部门预报为准。
 <div class="merkle">Merkle root 3e67828fcbe996e1187682f63f10143009d8b333be39ce61bb7b18c422665ab9</div>  <div class="merkle">
-    复现凭据：code 256dea872801（无法判定工作区是否干净：git 不可用，未验证）    ｜ 依赖锁 uv.lock#c14f57bf92903d95    ｜ bootstrap 种子 20260906 ｜ Python 3.12.16
+    复现凭据：code 256dea872801（工作区有未提交改动，本轮结果不可复现）    ｜ 依赖锁 uv.lock#c14f57bf92903d95    ｜ bootstrap 种子 20260906 ｜ Python 3.12.8
     ｜ numpy 2.1.2 · pandas 2.3.3 · cyeva 0.2.3
   </div>
 </footer>

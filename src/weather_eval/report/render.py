@@ -48,7 +48,8 @@ from ..evaluate import (_DAILY_TEMP_RECON_KEYS, PRECIP_SCORE_PARTS,
                         apply_score_amt_floors, apply_score_penalty_lambdas,
                         apply_score_composite_params,
                         apply_score_slopes, daily_temp_score,
-                        display_dim_score, score_map_text, score_params_lock)
+                        display_dim_score, is_v5_family, score_map_text,
+                        score_params_lock)
 from ..timeutil import now_beijing
 
 logger = logging.getLogger(__name__)
@@ -954,11 +955,18 @@ def render_report_html(report_data: dict, title: str | None = None,
     # skill-v6 也是技能量表口径：漏掉它会让页面回落到 slope-v2 的旧权重表，
     # 于是"评分构成"表与生产权重逐项不符（single-source-of-truth 破功）。
     _skill_scheme = _scheme in ("skill-v3", "skill-v4", "skill-v5", "skill-v6")
+    # "名次分 R / 技能分 S 是两个构念"是 v5 家族语义：模板里凡是解释这套语义的
+    # 门控一律引用这里的家族判定，不得各自写死口径名（§11.8 事故类别——
+    # 写死 'skill-v5' 曾让 v6 页面静默失去全部 R/S 解释，读者拿榜面的 R 去对
+    # §02 走势图的 S，自然"对不上"）。取本报告自己的 meta 而非进程全局尺：
+    # 归档月报重渲染时全局尺可能属于另一份报告。
+    _v5_family = is_v5_family(_scheme)
     _temp_parts = TEMP_SKILL_PARTS if _skill_scheme else TEMP_SCORE_PARTS
     _precip_parts = (PRECIP_SKILL_PARTS if _skill_scheme
                      else PRECIP_SCORE_PARTS)
     return tpl.render(
         report=report_data,
+        v5_family=_v5_family,
         diag=diag,
         anchors=anchors,
         heavy_view=heavy_view,
