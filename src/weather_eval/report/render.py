@@ -49,7 +49,7 @@ from ..evaluate import (_DAILY_TEMP_RECON_KEYS, PRECIP_SCORE_PARTS,
                         apply_score_composite_params,
                         apply_score_slopes, daily_temp_score,
                         display_dim_score, is_v5_family, is_v7_family,
-                        score_map_text, score_params_lock)
+                        is_v8_family, score_map_text, score_params_lock)
 from ..timeutil import now_beijing
 
 logger = logging.getLogger(__name__)
@@ -300,10 +300,11 @@ def _slim_report(report_data: dict) -> dict:
     # 重渲染用代码缺省的 τ/σ/lead 权重去复算一份按 v6 尺度发布的分数，P2 发布
     # 不变量随即误炸（旧 bug 类别见下方注释）。
     _SKILL_SCHEMES_HERE = ("skill-v3", "skill-v4", "skill-v5", "skill-v6",
-                           "skill-v7")
+                           "skill-v7", "skill-v8")
     if scheme in _SKILL_SCHEMES_HERE:
         apply_score_skill_k(meta.get("score_skill_k"))
-        if scheme in ("skill-v4", "skill-v5", "skill-v6", "skill-v7"):
+        if scheme in ("skill-v4", "skill-v5", "skill-v6", "skill-v7",
+                      "skill-v8"):
             _floors = meta.get("score_amt_floors") or {}
             apply_score_amt_floors(_floors.get("hourly_mm"),
                                   _floors.get("daily_mm"))
@@ -311,7 +312,7 @@ def _slim_report(report_data: dict) -> dict:
             apply_score_penalty_lambdas(
                 (_pen.get("temp") or {}).get("lambda"),
                 (_pen.get("precip") or {}).get("lambda"))
-        if scheme in ("skill-v5", "skill-v6", "skill-v7"):
+        if scheme in ("skill-v5", "skill-v6", "skill-v7", "skill-v8"):
             _c = meta.get("score_composite") or {}
             _rk = _c.get("rank") or {}
             _lw = {
@@ -588,7 +589,9 @@ def _slim_report(report_data: dict) -> dict:
         "publish_min_evidence": meta.get("publish_min_evidence"),
         "bucket_sd_R": meta.get("bucket_sd_R"),
         "champion_view": meta.get("champion_view"),
-        "composite_share": (meta.get("diagnostics") or {}).get("composite_share"),
+        # 份额在 v8 由 `diagnostics` 直接写到 meta 顶层；旧口径在 diagnostics 里。
+        "composite_share": (meta.get("composite_share")
+                            or (meta.get("diagnostics") or {}).get("composite_share")),
     }
     # P3（skill-v6）：强降水专项卡。只披露、不进任何分数，因此不参与这里的
     # 任何分数回放；按（轨道, 模型, 天桶）原样搬运，缺项留空。
@@ -967,7 +970,7 @@ def render_report_html(report_data: dict, title: str | None = None,
     # skill-v6 也是技能量表口径：漏掉它会让页面回落到 slope-v2 的旧权重表，
     # 于是"评分构成"表与生产权重逐项不符（single-source-of-truth 破功）。
     _skill_scheme = _scheme in ("skill-v3", "skill-v4", "skill-v5",
-                                "skill-v6", "skill-v7")
+                                "skill-v6", "skill-v7", "skill-v8")
     # "名次分 R / 技能分 S 是两个构念"是 v5 家族语义：模板里凡是解释这套语义的
     # 门控一律引用这里的家族判定，不得各自写死口径名（§11.8 事故类别——
     # 写死 'skill-v5' 曾让 v6 页面静默失去全部 R/S 解释，读者拿榜面的 R 去对
@@ -975,6 +978,7 @@ def render_report_html(report_data: dict, title: str | None = None,
     # 归档月报重渲染时全局尺可能属于另一份报告。
     _v5_family = is_v5_family(_scheme)
     _v7_family = is_v7_family(_scheme)
+    _v8_family = is_v8_family(_scheme)
     _temp_parts = TEMP_SKILL_PARTS if _skill_scheme else TEMP_SCORE_PARTS
     _precip_parts = (PRECIP_SKILL_PARTS if _skill_scheme
                      else PRECIP_SCORE_PARTS)
@@ -982,6 +986,7 @@ def render_report_html(report_data: dict, title: str | None = None,
         report=report_data,
         v5_family=_v5_family,
         v7_family=_v7_family,
+        v8_family=_v8_family,
         diag=diag,
         anchors=anchors,
         heavy_view=heavy_view,

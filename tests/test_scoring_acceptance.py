@@ -90,13 +90,21 @@ def test_temperature_skill_and_anomaly_corr_decay_with_lead():
 
 
 def test_leaderboard_rows_are_additive_and_bucket_floor_is_respected():
-    """`R = t_contrib + p_contrib − 50` 逐行可加；2 家桶不产生名次。"""
-    boards = _load("report_baseline.json")["boards"]
+    """`R = t_contrib + p_contrib − 50` 逐行可加；旧口径 2 家桶不产生名次。
+
+    skill-v8 的分数是**绝对**技能分，1 家也有定义（不需要同台标准化），
+    因此"至少 3 家"这条相对名次门槛只对 v5/v6/v7 归档口径成立。
+    """
+    baseline = _load("report_baseline.json")
+    boards = baseline["boards"]
+    scheme = str((baseline.get("meta") or {}).get("score_scheme") or "")
     rows = boards["all"]
     for r in rows:
         if (r.get("score") is not None and r.get("temp_score") is not None
                 and r.get("precip_score") is not None):
             assert abs(r["score"] - (r["temp_score"] + r["precip_score"] - 50.0)) <= 0.02
+    if scheme == "skill-v8":
+        return
     for key, rows in boards.items():
         if ":" not in key:
             continue

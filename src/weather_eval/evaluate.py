@@ -2216,7 +2216,27 @@ SCORE_SKILL_K = 1.535
 SCORE_SKILL_CENTER = 50.0
 #: "技能量表"家族：这些口径的分都是 50=无技巧 / 100=完美（相对 slope-v2 的
 #: 0~100 换算分）。
-SKILL_SCHEMES = ("skill-v3", "skill-v4", "skill-v5", "skill-v6", "skill-v7")
+SKILL_SCHEMES = ("skill-v3", "skill-v4", "skill-v5", "skill-v6", "skill-v7",
+                 "skill-v8")
+
+
+def is_v8_family(scheme: str | None = None) -> bool:
+    """当前口径是否是 **skill-v8**（2026-11 绝对技能综合分轮）。
+
+    v8 继承 v6/v7 的全部单格评分机制（湿域对数比、阻尼只压正支、acc2 退化
+    返回缺测、族内归一、no-skill 桶清零），只改**综合分的构念**：
+      · 综合分不再是"桶内 z 分的 α 加权"（50=同台平均），而是
+        `50 + α(T−50) + (1−α)(P−50)` 的**绝对技能分**（50=气候参照，
+        100=完美）；名次只是这个绝对分的降序，不再反过来定义分数；
+      · 去掉 μ/σ 标准化、Winsor 尺度、φ 公共收缩与冻结尺度——这些参数
+        都是"参评池的函数"，而公众需要的是可跨期比较的真实实力；
+      · 可靠性不再逐格乘 √ρ_K；它在聚合层由**分块经验贝叶斯收缩**承担，
+        并新增**目标覆盖份额** q（短覆盖源向面板均值收缩），决策单位与
+        "总榜要回答的目标人口"一致；
+      · 单维证据不再产生综合分排名：综合分只在两维都有可评证据时发布，
+        其余如实标 `temp_only` / `precip_only` 并且不参与综合名次。
+    """
+    return (SCORE_SCHEME if scheme is None else scheme) == "skill-v8"
 
 
 def is_v7_family(scheme: str | None = None) -> bool:
@@ -2243,7 +2263,8 @@ def is_v6_family(scheme: str | None = None) -> bool:
       · D3 降水族内按标定离散度归一（`_family_normalized`）。
     v7 继承这四条；v5 分支原样保留，供归档月报回放。
     """
-    return (SCORE_SCHEME if scheme is None else scheme) in ("skill-v6", "skill-v7")
+    return (SCORE_SCHEME if scheme is None else scheme) in (
+        "skill-v6", "skill-v7", "skill-v8")
 
 
 def is_v5_family(scheme: str | None = None) -> bool:
@@ -2255,7 +2276,7 @@ def is_v5_family(scheme: str | None = None) -> bool:
     v3/v4 仍返回 False。
     """
     return (SCORE_SCHEME if scheme is None else scheme) in (
-        "skill-v5", "skill-v6", "skill-v7")
+        "skill-v5", "skill-v6", "skill-v7", "skill-v8")
 
 # skill-v4：雨量技能分母下限（mm；按轨分别配置）与校准扣分项的下行预算。
 SCORE_AMT_FLOOR_HOURLY = 0.05
@@ -2392,7 +2413,7 @@ def apply_score_scheme(scheme: str | None) -> None:
     global SCORE_SCHEME
     s = str(scheme or "slope-v2").strip().lower()
     if s not in ("slope-v2", "skill-v3", "skill-v4", "skill-v5", "skill-v6",
-                 "skill-v7"):
+                 "skill-v7", "skill-v8"):
         raise ValueError(f"未知 score_scheme: {scheme!r}")
     SCORE_SCHEME = s
 
@@ -3097,6 +3118,9 @@ def _bucket_rank_rows(items: list[tuple], *,
     调用唯一实现 `stats.rank_from_scores`（μ/σ 稳健、原始值标准化、两维
     至少 `SCORE_BUCKET_MIN_MODELS` 家才产生相对名次）。单维存活格（另一维
     NaN）不再被整体作废，按同一合成式的单维分支给分。
+
+    skill-v8 不走这里：绝对技能分不需要同台家数（1 家也有绝对分），
+    调用方改用 `_bucket_absolute_rows`。
     """
     if len(items) < SCORE_BUCKET_MIN_MODELS:
         return {k: (None, None, None) for k, *_ in items}
@@ -3118,6 +3142,31 @@ def _bucket_rank_rows(items: list[tuple], *,
                 got["precip_contrib"][i, 0])
         out[k] = tuple(None if not np.isfinite(float(v)) else round(float(v), 2)
                        for v in vals)
+    return out
+
+
+def _bucket_absolute_rows(items: list[tuple]) -> dict:
+    """skill-v8 的分榜合成：{key: (C, t_c, p_c, basis)}，**不依赖同台家数**。
+
+    每个源都在绝对技能尺上得到自己的分；单维源照常给出该维贡献，但
+    综合分 C 仅在两维齐备时非空（`basis != "both"` 的行走不到综合名次）。
+    """
+    n = len(items)
+    if n == 0:
+        return {}
+    T = np.array([[np.nan if t is None else float(t)] for _k, t, _p in items])
+    P = np.array([[np.nan if p is None else float(p)] for _k, _t, p in items])
+    # 单维不产生综合分：贡献列照常可见，C 为 None（页面 —），
+    # 由 `basis` 说明是哪一维。
+    got = _stats.composite_from_skill(
+        T, P, alpha=float(SCORE_COMPOSITE_ALPHA), require_both=True)
+    out: dict = {}
+    for i, (k, *_rest) in enumerate(items):
+        vals = (got["rank_score"][i, 0], got["temp_contrib"][i, 0],
+                got["precip_contrib"][i, 0])
+        nums = tuple(None if not np.isfinite(float(v)) else round(float(v), 2)
+                     for v in vals)
+        out[k] = nums + (str(got["basis"][i, 0]),)
     return out
 
 
@@ -4880,7 +4929,7 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
     # v7：页面披露必须与**实际零权重**的桶一致。v6 的页面列表来自分时效榜的
     # 聚合 ETS，面板门用的是逐格 ETS 占比——两处口径不同会让读者看到
     # "5d~8d 也有降水贡献、为什么权重是 0"的矛盾。v7 统一取面板门的逐桶结果。
-    if is_v7_family():
+    if is_v7_family() or is_v8_family():
         _rd = resolution_out.get("rank_diagnostics") or {}
         for _track in ("hourly", "daily"):
             _days = sorted({
@@ -5046,11 +5095,17 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
                             if is_v5_family() else
                             "50=ETS 0（同边际随机）且 BIAS=1；"
                             "永远报零雨因 BIAS=0 会低于 50")),
-                "composite": ("50=两维均打平同类参照的技能综合分 S（绝对尺度）"
-                              if is_v5_family() else
-                              "50=两维各半的组合零点，不对应单一预报"),
-                "rank": ("50=本档同台平均水平；σ/τ 冻结后，温度与降水按 α 贡献"
-                         "名次方差" if is_v5_family() else None),
+                "composite": (
+                    "50=两维都打平固定日历气候参照；100=完美。综合分是**绝对"
+                    "技能分** 50+α(T−50)+(1−α)(P−50)，不是同台平均"
+                    if is_v8_family() else
+                    ("50=两维均打平同类参照的技能综合分 S（绝对尺度）"
+                     if is_v5_family() else
+                     "50=两维各半的组合零点，不对应单一预报")),
+                "rank": ("名次 = 综合分降序；50 是气候参照，不再表示同台平均"
+                         if is_v8_family() else
+                         ("50=本档同台平均水平；σ/τ 冻结后，温度与降水按 α 贡献"
+                          "名次方差" if is_v5_family() else None)),
             },
             # skill-v5 双综合分定义与冻结参数：S 用于 §02 绝对曲线，R 用于
             # 总榜/分时效榜名次；两者不可互相替代（AX3 一号一义）。
@@ -5062,66 +5117,106 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
                 },
                 "rank": {
                     "definition": (
-                        "50 + scale·(α·√ρ_K,T·z_T + (1−α)·√ρ_K,P·z_P)；"
-                        "z_i=(X_i−μ_i)/σ_i（原始 X，Winsor 只进 μ/σ）"
-                        if is_v7_family() else
-                        "50 + scale·√ρ_c·(α·z_T + (1−α)·z_P)/σ_d；"
-                        "z_i=(X_i−μ_i)/σ_i（原始 X，Winsor 只进 μ/σ）"),
-                    "scale_definition": ("μ_i/σ_i = 该列两维齐备同台家数的稳健中心/"
-                                         "尺度（中位数±k·1.4826·MAD 截断后求均值与 sd，"
-                                         "再向长期尺度收缩并设下限）；"
-                                         + ("ρ_K = K·ρ(1)/(1+(K−1)·ρ(1))，"
-                                            "K 为该桶实际可用的 7 天块数"
-                                            if is_v7_family() else
-                                            "σ_d = sqrt(α²+(1−α)²+2α(1−α)φ)；"
-                                            "ρ_c = 加权合成的信度（由逐维 ρ 与 φ 合成）")),
-                    "sd_temp": float(SCORE_COMPOSITE_SD_TEMP),
-                    "sd_precip": float(SCORE_COMPOSITE_SD_PRECIP),
-                    "sd_prior_n": float(SCORE_BUCKET_SD_PRIOR_N),
-                    "sd_floor_frac": float(SCORE_BUCKET_SD_FLOOR_FRAC),
-                    "min_models_per_bucket": int(SCORE_BUCKET_MIN_MODELS),
-                    "winsor_k": float(SCORE_WINSOR_K),
+                        "C = 50 + α(T−50) + (1−α)(P−50)；T/P 为 0~100 绝对技能分"
+                        if is_v8_family() else
+                        ("50 + scale·(α·√ρ_K,T·z_T + (1−α)·√ρ_K,P·z_P)；"
+                         "z_i=(X_i−μ_i)/σ_i（原始 X，Winsor 只进 μ/σ）"
+                         if is_v7_family() else
+                         "50 + scale·√ρ_c·(α·z_T + (1−α)·z_P)/σ_d；"
+                         "z_i=(X_i−μ_i)/σ_i（原始 X，Winsor 只进 μ/σ）")),
+                    "scale_definition": (
+                        "T/P 的量表：50=各自打平固定日历气候参照，100=完美；"
+                        "C 的 1 分 = 该技能量表的 1 个百分点。聚合层用分块"
+                        "双向加法模型扣掉（块 × 天桶）难度，再用经验贝叶斯按"
+                        "块数 × 目标覆盖份额 q 向面板均值收缩。"
+                        if is_v8_family() else
+                        ("μ_i/σ_i = 该列两维齐备同台家数的稳健中心/"
+                         "尺度（中位数±k·1.4826·MAD 截断后求均值与 sd，"
+                         "再向长期尺度收缩并设下限）；"
+                         + ("ρ_K = K·ρ(1)/(1+(K−1)·ρ(1))，"
+                            "K 为该桶实际可用的 7 天块数"
+                            if is_v7_family() else
+                            "σ_d = sqrt(α²+(1−α)²+2α(1−α)φ)；"
+                            "ρ_c = 加权合成的信度（由逐维 ρ 与 φ 合成）"))),
+                    "sd_temp": (None if is_v8_family()
+                                else float(SCORE_COMPOSITE_SD_TEMP)),
+                    "sd_precip": (None if is_v8_family()
+                                  else float(SCORE_COMPOSITE_SD_PRECIP)),
+                    "sd_prior_n": (None if is_v8_family()
+                                   else float(SCORE_BUCKET_SD_PRIOR_N)),
+                    "sd_floor_frac": (None if is_v8_family()
+                                      else float(SCORE_BUCKET_SD_FLOOR_FRAC)),
+                    "min_models_per_bucket": (1 if is_v8_family()
+                                              else int(SCORE_BUCKET_MIN_MODELS)),
+                    "winsor_k": (None if is_v8_family()
+                                 else float(SCORE_WINSOR_K)),
                     "alpha_weighting": (
-                        "Var(t_c):Var(p_c) = α²·ρ_K,T : (1−α)²·ρ_K,P"
-                        "（价值权重与证据权重分开披露）"
-                        if is_v7_family() else
-                        "Var(t_c):Var(p_c) = α²:(1−α)²，"
-                        "与 ρ 无关（α 是价值权重，不是最优预测权重）"),
-                    "composite_mode": ("evidence_weighted" if is_v7_family()
-                                       else "common_shrink"),
+                        "Var(t_c):Var(p_c) = α²σ_T² : (1−α)²σ_P²，"
+                        "σ 是绝对技能分的跨源真实离散度。α 是价值权重，"
+                        "实际话语权由两维的真实差距决定——差距小的维不该被"
+                        "标准化放大成同等话语权"
+                        if is_v8_family() else
+                        ("Var(t_c):Var(p_c) = α²·ρ_K,T : (1−α)²·ρ_K,P"
+                         "（价值权重与证据权重分开披露）"
+                         if is_v7_family() else
+                         "Var(t_c):Var(p_c) = α²:(1−α)²，"
+                         "与 ρ 无关（α 是价值权重，不是最优预测权重）")),
+                    "composite_mode": ("absolute_skill" if is_v8_family() else
+                                       ("evidence_weighted" if is_v7_family()
+                                        else "common_shrink")),
                     "reliability": {
-                        "estimator": ("ICC(1)：X=μ+a_m+β_k+e，剥掉块效应后 "
-                                      "σ²_a/(σ²_a+σ²_e)" if not is_v7_family()
-                                      else "ICC(1) → ICC(K)（Spearman-Brown）；"
-                                           "打分权重用 √ICC(K)"),
+                        "estimator": (
+                            "ICC(1)/ICC(K) 仍发布，但**只作描述**，不进入点估计；"
+                            "聚合可靠性由分块经验贝叶斯收缩承担"
+                            if is_v8_family() else
+                            ("ICC(1)：X=μ+a_m+β_k+e，剥掉块效应后 "
+                             "σ²_a/(σ²_a+σ²_e)" if not is_v7_family()
+                             else "ICC(1) → ICC(K)（Spearman-Brown）；"
+                                  "打分权重用 √ICC(K)")),
                         "min_rho": float(SCORE_RELIABILITY_MIN),
                         "exit_rho": float(SCORE_RELIABILITY_EXIT),
                         "impute": "不可估 → 该维可估桶 ρ 中位数 → ρ_exit（不是 1.0）",
-                        "gate_basis": ("aggregate_icc_k" if is_v7_family()
-                                       else "icc1"),
+                        "gate_basis": ("data_availability_absolute"
+                                       if is_v8_family() else
+                                       ("aggregate_icc_k" if is_v7_family()
+                                        else "icc1")),
                     },
                     "evidence_gate": (
-                        "按（轨道 × 天桶）判定：聚合信度 ICC(K) 连续加权 "
-                        "w=√ρ_K；no-skill 桶（|ETS|≤0.05 占比>60%）w=0；"
-                        "发布层证据份额 < publish_min_evidence 的维输出 null（—）"
-                        if is_v7_family() else
-                        "按（轨道 × 天桶）判定：ρ_i,d < exit_rho 或该桶 "
-                        "|ETS|≤0.05 的格子占比 >60% ⇒ 该维在该天桶退出 R；"
-                        "单维存活格按 R=50+scale·√ρ_i·z_i 发布，另一维贡献=50"),
+                        "数据可得性：该格该维有分且不是 no-skill 桶即有证据；"
+                        "no-skill 桶（|ETS|≤0.05 占比>60%）的降水贡献中性为 50。"
+                        "聚合层按块数 × 目标覆盖份额 q 做 EB 收缩；发布层"
+                        "某维证据份额 < publish_min_evidence 输出 null（—）。"
+                        "综合分只在两维都发布时参与排名"
+                        if is_v8_family() else
+                        ("按（轨道 × 天桶）判定：聚合信度 ICC(K) 连续加权 "
+                         "w=√ρ_K；no-skill 桶（|ETS|≤0.05 占比>60%）w=0；"
+                         "发布层证据份额 < publish_min_evidence 的维输出 null（—）"
+                         if is_v7_family() else
+                         "按（轨道 × 天桶）判定：ρ_i,d < exit_rho 或该桶 "
+                         "|ETS|≤0.05 的格子占比 >60% ⇒ 该维在该天桶退出 R；"
+                         "单维存活格按 R=50+scale·√ρ_i·z_i 发布，另一维贡献=50")),
+                    "coverage_shrink": bool(is_v8_family()),
                     "publish_min_evidence": float(SCORE_PUBLISH_MIN_EVIDENCE),
-                    "scale": float(SCORE_RANK_SCALE),
+                    "scale": (1.0 if is_v8_family()
+                              else float(SCORE_RANK_SCALE)),
                     # D4（skill-v6）：R 的尺度是否**冻结**到标定期。
                     # 只有冻结时，"加入/删除一个源不改幸存者名次"才成立；
                     # 未冻结时页面必须标注"名次随参评池变化"。
-                    "scale_frozen": bool(SCORE_RANK_FROZEN_SCALE),
+                    "scale_frozen": (False if is_v8_family()
+                                     else bool(SCORE_RANK_FROZEN_SCALE)),
                     "scale_frozen_note": (
-                        "μ/σ/φ 取自标定期，z 分归一化这一层与当期参评池无关："
-                        "增删源不改变任何幸存者的 z 分。注意难度基线 β 与 "
-                        "EB 的 τ²/σ² 仍按当期面板估计，因此分数可能有小幅位移，"
-                        "但名次顺序不受影响"
-                        if SCORE_RANK_FROZEN_SCALE else
-                        "μ/σ/φ 取自当期参评池（旧口径）：增删一个源会移动"
-                        "幸存者的名次分，跨期名次不可直接比较"),
+                        "skill-v8 不使用 z 分归一化，因此没有可冻结的 μ/σ/φ；"
+                        "综合分直接是绝对技能分。难度基线 β 与 EB 的 τ²/σ² 仍"
+                        "按当期面板估计，这是分层模型本身的池依赖，不是名次尺"
+                        "随参评集合漂移。"
+                        if is_v8_family() else
+                        ("μ/σ/φ 取自标定期，z 分归一化这一层与当期参评池无关："
+                         "增删源不改变任何幸存者的 z 分。注意难度基线 β 与 "
+                         "EB 的 τ²/σ² 仍按当期面板估计，因此分数可能有小幅位移，"
+                         "但名次顺序不受影响"
+                         if SCORE_RANK_FROZEN_SCALE else
+                         "μ/σ/φ 取自当期参评池（旧口径）：增删一个源会移动"
+                         "幸存者的名次分，跨期名次不可直接比较")),
                     "lead_weights": [
                         {"from_day": lo, "to_day": hi, "weight": float(w)}
                         for lo, hi, w in SCORE_LEAD_WEIGHTS],
@@ -5167,7 +5262,7 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
             # 只在**未冻结**时发布：已冻结的构建里这些数就是冻结值本身，
             # 再发一遍会让读者误以为它们是从当期数据估出来的。
             "rank_scale_diagnostics": (
-                None if SCORE_RANK_FROZEN_SCALE else
+                None if (SCORE_RANK_FROZEN_SCALE or is_v8_family()) else
                 {track: ((resolution_out.get("rank_diagnostics") or {})
                          .get(track, {}).get("column_scale"))
                  for track in TRACKS}),
@@ -5680,7 +5775,8 @@ def _weight_sensitivity_champions_panel(
         if m not in qualified:
             t_sub[i, :, :] = np.nan
             p_sub[i, :, :] = np.nan
-    _rank_normalize = is_v5_family()
+    # skill-v8：绝对技能分不做桶内标准化；敏感性链直接重算 αT+(1−α)P。
+    _rank_normalize = is_v5_family() and not is_v8_family()
     # A1.4：敏感性链传入**基线池化 ρ**（扰动的是权重不是数据，ρ 的变化是二阶）
     rho_t_base = rho_p_base = None
     if _rank_normalize:
@@ -5725,11 +5821,14 @@ def _weight_sensitivity_champions_panel(
             adj_row=adj_row, adj_col=adj_col, adj_w=adj_w, adj_ridge=adj_ridge,
             rank_normalize=_rank_normalize,
             rho_t=rho_t_base, rho_p=rho_p_base,
-            weight_t=w_t_sens, weight_p=w_p_sens, mode=_rank_mode)
+            weight_t=w_t_sens, weight_p=w_p_sens, mode=_rank_mode,
+            raw_score=is_v8_family())
         if got is not None:
             score = got["score"]
             if _rank_normalize:
                 score = float(50.0 + float(SCORE_RANK_SCALE) * score)
+            elif is_v8_family():
+                pass      # 已经是 0~100 的绝对技能综合分
             elif SCORE_SCHEME in SKILL_SCHEMES:
                 score = float(50.0 + 50.0 * score)
             macro_endpoints.append({"alpha": alpha, "model": models[got["index"]],
@@ -6157,11 +6256,20 @@ def _track_lead_boards(models, track: str, src: dict, days: int) -> dict[str, li
             cells.append((m, t, p, ts, ps))
         # skill-v5：同一桶内的分数先做桶内标准化（R），名次由 R 决定；
         # 绝对技能分 S 仍以 temp_skill/precip_skill 随行发布，供 §02 对照。
-        rank_map = (_bucket_rank_rows([(m, ts, ps) for m, _t, _p, ts, ps in cells])
-                    if is_v5_family() else None)
+        # skill-v8：直接给出绝对综合分 C（50=气候参照），同台家数不再是前提。
+        if is_v8_family():
+            rank_map = _bucket_absolute_rows([(m, ts, ps) for m, _t, _p, ts, ps in cells])
+        else:
+            rank_map = (_bucket_rank_rows([(m, ts, ps) for m, _t, _p, ts, ps in cells])
+                        if is_v5_family() else None)
         rows = []
         for m, t, p, ts, ps in cells:
-            if rank_map is not None:
+            if rank_map is not None and is_v8_family():
+                score, tc, pc, basis = rank_map[m]
+                qualified = bool(score is not None and basis == "both")
+                extra = {"qualified": qualified, "temp_skill": ts,
+                         "precip_skill": ps, "composite_basis": basis}
+            elif rank_map is not None:
                 score, tc, pc = rank_map[m]
                 qualified = score is not None
                 extra = {"qualified": qualified,
@@ -6254,11 +6362,22 @@ def _combined_day_boards(models, track_sources, days: int,
             p_row["n"] = (p_d.get("n") or 0)
             cells.append((m, t_row, p_row, t_s, p_s,
                           _track_mean(comp_h, comp_d, daily_track_weight)))
-        rank_map = (_bucket_rank_rows([(m, t_s, p_s) for m, _tr, _pr, t_s, p_s, _c in cells])
-                    if is_v5_family() else None)
+        if is_v8_family():
+            rank_map = _bucket_absolute_rows([(m, t_s, p_s)
+                                              for m, _tr, _pr, t_s, p_s, _c in cells])
+        else:
+            rank_map = (_bucket_rank_rows([(m, t_s, p_s)
+                                           for m, _tr, _pr, t_s, p_s, _c in cells])
+                        if is_v5_family() else None)
         rows = []
         for m, t_row, p_row, t_s, p_s, comp in cells:
-            if rank_map is not None:
+            if rank_map is not None and is_v8_family():
+                score, tc, pc, basis = rank_map[m]
+                extra = {"score": score, "temp_score": tc, "precip_score": pc,
+                         "temp_skill": t_s, "precip_skill": p_s,
+                         "composite_basis": basis,
+                         "qualified": bool(score is not None and basis == "both")}
+            elif rank_map is not None:
                 score, tc, pc = rank_map[m]
                 extra = {"score": score, "temp_score": tc, "precip_score": pc,
                          "temp_skill": t_s, "precip_skill": p_s,
@@ -7351,6 +7470,43 @@ def _attach_rank_matrices(mats: dict[str, np.ndarray],
             if vals.size >= 3 and float(np.mean(np.abs(vals) <= 0.05)) >= 0.60:
                 no_skill_day[d] = True
     no_skill_col = np.tile(no_skill_day, K) if D else np.zeros(C, dtype=bool)
+    # ---- skill-v8：绝对技能综合分（不做桶内标准化/证据权重）----
+    # 这是 v8 与 v5/v6/v7 的唯一分叉点：单格贡献直接在 0~100 的绝对技能尺
+    # 上算，μ/σ/φ/ρ 都不再进入点估计。ρ 仍计算并发布，只作"这份证据有多稳"
+    # 的描述，不参与打分——把测量精度和成绩混成一个乘数正是 v5-v7 的可解释性
+    # 债务。聚合层的可靠性由分块 EB 收缩承担（见 _resolution_boards_blocks）。
+    if is_v8_family():
+        active_t = np.isfinite(T)
+        active_p = np.isfinite(P) & ~np.broadcast_to(no_skill_col[None, :], P.shape)
+        got8 = _stats.composite_from_skill(
+            T, P, alpha=float(SCORE_COMPOSITE_ALPHA),
+            active_t=active_t, active_p=active_p)
+        mats["rank_score"] = got8["rank_score"]
+        mats["temp_contrib"] = got8["temp_contrib"]
+        mats["precip_contrib"] = got8["precip_contrib"]
+        mats["_single_dim"] = got8["single_dim"]
+        mats["_rel_temp"] = rel_t_col
+        mats["_rel_precip"] = rel_p_col
+        mats["_rel_temp_raw"] = np.tile(icc_t_day, K) if D else np.ones(C)
+        mats["_rel_precip_raw"] = np.tile(icc_p_day, K) if D else np.ones(C)
+        mats["_rel_temp_agg"] = rel_t_col
+        mats["_rel_precip_agg"] = rel_p_col
+        mats["_n_blocks_temp"] = np.tile(k_t_day, K) if D else np.zeros(C)
+        mats["_n_blocks_precip"] = np.tile(k_p_day, K) if D else np.zeros(C)
+        # 证据权重是**列级**披露量（v7 同形）：该列至少一家有该维可评格即 1。
+        mats["_evidence_w_temp"] = np.where(
+            np.isfinite(T).any(axis=0), 1.0, 0.0)
+        mats["_evidence_w_precip"] = np.where(
+            (np.isfinite(P) & ~np.broadcast_to(no_skill_col[None, :], P.shape)).any(axis=0),
+            1.0, 0.0)
+        mats["_rel_temp_imputed"] = imp_t_col
+        mats["_rel_precip_imputed"] = imp_p_col
+        mats["_gate_temp"] = np.broadcast_to(active_t, T.shape)
+        mats["_gate_precip"] = np.broadcast_to(active_p, T.shape)
+        mats["_no_skill_bucket"] = no_skill_col
+        mats["_phi"] = np.zeros_like(T)
+        mats["_rho_composite"] = np.ones(C)
+        return mats
     # ---- 证据门（v7 用聚合信度；v5/v6 用单格信度）----
     # gate_* 只作**披露**：v7 的实际打分权重是连续的 √ρ_K（no-skill 桶才硬置 0），
     # 因此不会在 0.20 附近出现"0.205 存活 / 0.155 清零"的悬崖。
@@ -7446,10 +7602,18 @@ def _rank_diagnostics(mat: dict, K: int, days: int, track: str) -> dict:
                        dtype=bool)[:days]
     imp_p = np.asarray(mat.get("_rel_precip_imputed", np.zeros(days, bool)),
                        dtype=bool)[:days]
-    gate_t = np.asarray(mat.get("_gate_temp", np.ones((1, days))),
-                        dtype=bool)[0, :days]
-    gate_p = np.asarray(mat.get("_gate_precip", np.ones((1, days))),
-                        dtype=bool)[0, :days]
+    _gt = np.asarray(mat.get("_gate_temp", np.ones((1, days))), dtype=bool)
+    _gp = np.asarray(mat.get("_gate_precip", np.ones((1, days))), dtype=bool)
+    if is_v8_family() and _gt.ndim == 2:
+        # v8 的门是**逐格**数据可得性（不是列级信度门）：逐天桶披露取
+        # "该天桶的任一 7 天块里至少一家有该维可评格"。取第 0 行/第 0 块
+        # 会把第一个源或第一个块的无数据误报成整天桶退出。
+        K_eff = max(1, _gt.shape[1] // max(days, 1))
+        gate_t = _gt.any(axis=0).reshape(K_eff, days).any(axis=0)
+        gate_p = _gp.any(axis=0).reshape(K_eff, days).any(axis=0)
+    else:
+        gate_t = _gt[0, :days]
+        gate_p = _gp[0, :days]
     no_skill = np.asarray(mat.get("_no_skill_bucket", np.zeros(days, bool)),
                           dtype=bool)[:days]
     w_t = np.asarray(mat.get("_evidence_w_temp", np.ones(days)),
@@ -7514,7 +7678,8 @@ def _rank_diagnostics(mat: dict, K: int, days: int, track: str) -> dict:
         "precip_exit": int((~gate_p).sum()),
         "precip_no_skill": int(no_skill.sum()),
         "single_dim_cols": int(single.sum()),
-        "gate_basis": ("aggregate_icc_k" if is_v7_family() else "icc1"),
+        "gate_basis": ("data_availability_absolute" if is_v8_family() else
+                       ("aggregate_icc_k" if is_v7_family() else "icc1")),
         "weighted": bool(is_v7_family()) and bool(SCORE_RELIABILITY_WEIGHTING),
     }
     out["bucket_sd_R"] = None if sd_med is None else round(sd_med, 3)
@@ -8104,16 +8269,22 @@ def _resolution_boards_blocks(
             W = W_fit
         # ---- 经验贝叶斯收缩：α 按有效块数向面板均值靠拢 ----
         eb_info = None
+        cov8 = None
         if _design_ok(adj) and adj.get("mu") is not None:
             alpha = np.asarray(adj["row_effects"], dtype=float)
             beta = np.asarray(adj["col_effects"], dtype=float)
             V = np.asarray(adj["cell_valid"], dtype=bool)
+            if is_v8_family():
+                # 目标覆盖份额：只看"目标人口里的哪些桶有格子"，与样本量无关。
+                cov8 = _stats.coverage_share(
+                    V, _lead_weight_columns(name, K, H, D))
             beta0 = np.where(np.isfinite(beta), beta, 0.0)
             Wres = (W if W is not None else np.where(V, 1.0, 0.0))
             resid = np.where(V, S - alpha[:, None] - beta0[None, :], 0.0)
             rb, wb = _stats.block_residuals(resid, Wres, block_ids[name], K)
             present = np.isfinite(rb) & (wb > 0)
-            a_shrunk, eb_info = _stats.eb_shrink(alpha, rb, wb, present)
+            a_shrunk, eb_info = _stats.eb_shrink(alpha, rb, wb, present,
+                                                 n_eff=cov8)
             row_keep = np.asarray(adj["row_keep"], dtype=bool)
             adj["row_effects"] = np.where(row_keep, a_shrunk, np.nan)
             adj["scores"] = np.where(row_keep, float(adj["mu"]) + a_shrunk, np.nan)
@@ -8122,6 +8293,8 @@ def _resolution_boards_blocks(
             "gate_relaxed": gate_relaxed, "degraded": degraded,
             "row_relaxed": row_relaxed, "dropped_thin_cells": dropped_thin,
             "eb": eb_info, "block_ids": block_ids[name],
+            "coverage": cov8,
+            "lead_weight_cols": _lead_weight_columns(name, K, H, D),
             "evidence_excluded": evidence_excluded.get(name),
             "lead_weight_shares": _lead_weight_shares(W, S, name, K, H, D),
             "n_hourly": spec["n_hourly"], "n_daily": spec["n_daily"],
@@ -8236,9 +8409,11 @@ def _resolution_boards_blocks(
                 cell_valid=np.asarray(d["adj"]["cell_valid"], dtype=bool),
                 min_valid_cells=BOOTSTRAP_MIN_VALID_CELLS)
             tc_runs = _stats.block_bootstrap_scores(
-                np.asarray(mat["temp_contrib"], dtype=float), W, **common_kw)
+                np.asarray(mat["temp_contrib"], dtype=float), W,
+                coverage=d.get("coverage"), **common_kw)
             pc_runs = _stats.block_bootstrap_scores(
-                np.asarray(mat["precip_contrib"], dtype=float), W, **common_kw)
+                np.asarray(mat["precip_contrib"], dtype=float), W,
+                coverage=d.get("coverage"), **common_kw)
             runs_scores = tc_runs + pc_runs - 50.0
         else:
             runs_scores = _stats.block_bootstrap_scores(
@@ -8328,11 +8503,19 @@ def _resolution_boards_blocks(
         med_ci = float(np.median(widths)) if widths else None
         margin = float(all_rows[0]["score"] - all_rows[1]["score"])
         champ_pct = all_rows[0].get("champion_pct")
-        tier_n = 1
-        if med_ci is not None:
-            tier_n = sum(1 for r in all_rows
-                         if float(all_rows[0]["score"] - r["score"]) <= med_ci)
-        downgraded = bool((med_ci is not None and margin < med_ci)
+        tier_rows = [all_rows[0]]
+        if is_v8_family():
+            # v8 的"统计不可分辨"用**配对 max-T 检验**（sig_vs_top），
+            # 不再用边缘 CI 宽：绝对分的边缘区间含共享天气块的共同波动，
+            # 用 8 分的边缘宽去圈并列会把 30/33 家都圈成第一梯队，那不是
+            # 保守，是把"分不出"变成一个无信息的答案。配对差分的噪声小
+            # 得多，且它回答的正是"与第一名相比能不能分出高下"。
+            tier_rows += [r for r in all_rows[1:] if not r.get("sig_vs_top")]
+        elif med_ci is not None:
+            tier_rows += [r for r in all_rows[1:]
+                          if float(all_rows[0]["score"] - r["score"]) <= med_ci]
+        tier_n = len(tier_rows)
+        downgraded = bool(tier_n > 1
                           or (isinstance(champ_pct, (int, float))
                               and float(champ_pct) < 30.0))
         champion_view = {
@@ -8342,9 +8525,11 @@ def _resolution_boards_blocks(
             "median_ci_width": None if med_ci is None else round(med_ci, 2),
             "champion_pct": champ_pct,
             "downgraded": downgraded,
-            "tier_models": [r["model"] for r in all_rows[:max(1, tier_n)]],
+            "tier_models": [r["model"] for r in tier_rows],
             "note": ("领先幅度小于中位 CI 宽或权重扰动下夺冠率 <30% 时，"
-                     "主标题只报“第一梯队（统计不可分辨）”，不报单一冠军。"),
+                     "主标题只报“第一梯队（统计不可分辨）”，不报单一冠军。"
+                     + (" v8 的不可分辨集用配对 max-T 检验判定，"
+                        "不用边缘 CI 重叠。" if is_v8_family() else "")),
         }
     return {
         "boards": rows_by_board, "windows": windows, "weights": weights_out,
@@ -8693,6 +8878,8 @@ def _build_board_rows(models, name, design, *, by_model,
                     "amt_mae", "amt_bias", "grade_ets", "amt_skill",
                     "ord_skill")
     if is_v5_family():
+        # v8 也走同一组键：temp_contrib/precip_contrib 是 50 居中的绝对贡献，
+        # 综合分仍由 tc+pc−50 构造；区别只在单格贡献的算法（绝对 vs z）。
         _ALIGNED_KEYS = ("temp_contrib", "precip_contrib", "rank_score",
                          "temp_score", "precip_score", *_METRIC_COLS)
     else:
@@ -8714,12 +8901,23 @@ def _build_board_rows(models, name, design, *, by_model,
         # 两维列共享同一套设计/权重/掩膜；EB 收缩系数在 skill-v5 下**逐列**
         # 估计（综合分由 tc+pc−50 构造，不依赖列间同尺），旧口径仍共享 B
         # 以保持"综合 = 两维平均"收缩后不破。
+        # skill-v8：目标覆盖份额 q。短覆盖源（只报 1–3 天、或只覆盖少数块）
+        # 在"综合榜"这个目标人口上只有部分证据；EB 的重复数乘以 q，等价于
+        # 把它向面板均值多收缩一截，而不是让"覆盖短"本身变成排名优势。
+        cov8 = None
+        if is_v8_family():
+            tw = design.get("lead_weight_cols")
+            if tw is None:
+                tw = np.ones(cell_valid.shape[1], dtype=float)
+            cov8 = _stats.coverage_share(cell_valid, np.asarray(tw, dtype=float))
+            design["coverage"] = cov8
         beta0 = np.where(np.isfinite(beta_raw[0]), beta_raw[0], 0.0)
         resid0 = np.where(V, stack[0] - alpha_raw[0][:, None]
                           - beta0[None, :], 0.0)
         rb0, wb0 = _stats.block_residuals(resid0, Wres, block_ids, n_blocks)
         present0 = np.isfinite(rb0) & (wb0 > 0)
-        _a0, info0 = _stats.eb_shrink(alpha_raw[0], rb0, wb0, present0)
+        _a0, info0 = _stats.eb_shrink(alpha_raw[0], rb0, wb0, present0,
+                                      n_eff=cov8)
         B_shared = np.asarray(info0["shrink"], dtype=float).reshape(-1)
         alpha_shrunk = np.array(alpha_raw, dtype=float, copy=True)
         for ri in range(len(_ALIGNED_KEYS)):
@@ -8732,7 +8930,8 @@ def _build_board_rows(models, name, design, *, by_model,
                 # v5 的综合分由 tc+pc−50 构造，不依赖"各列同尺"，因此收缩
                 # 系数必须**逐列**估计：拿温度列的 τ/σ 去收缩降水列，会把
                 # 降水真实信号当成噪声压掉（实测降水贡献 sd 1.74→0.49）。
-                a_shr, _info = _stats.eb_shrink(alpha_raw[ri], rb, wb, present)
+                a_shr, _info = _stats.eb_shrink(alpha_raw[ri], rb, wb, present,
+                                                n_eff=cov8)
             else:
                 a_shr, _info = _stats.eb_shrink(
                     alpha_raw[ri], rb, wb, present, shrink_override=B_shared)
@@ -8775,7 +8974,7 @@ def _build_board_rows(models, name, design, *, by_model,
     # 只在 2 个桶里有降水数据的源，不该因为那 2 个桶的信度尚可就拿到
     # 一个和全窗口源同权的降水贡献。
     share_t = share_p = None
-    if is_v7_family():
+    if is_v7_family() or is_v8_family():
         V = np.asarray(cell_valid, dtype=bool)
         Wbase = (np.asarray(W_cell, dtype=float) if W_cell is not None
                  else np.where(V, 1.0, 0.0))
@@ -8858,6 +9057,25 @@ def _build_board_rows(models, name, design, *, by_model,
                      "precip_only" if p_ok else "none")
             if basis == "none":
                 score_raw = None
+        elif is_v8_family():
+            # v8：综合分只在**两维都有已发布证据**时成立。单维分不是综合分
+            #（MSN 教训），只作为该维的可见分数保留，不参与综合名次。
+            ev_share_t = (float(share_t[i]) if share_t is not None else 0.0)
+            ev_share_p = (float(share_p[i]) if share_p is not None else 0.0)
+            min_ev = float(SCORE_PUBLISH_MIN_EVIDENCE)
+            t_meas = bool(np.isfinite(mat["temp_score"][i]).any())
+            p_meas = bool(np.isfinite(mat["precip_score"][i]).any())
+            t_ok = t_meas and ev_share_t >= min_ev
+            p_ok = p_meas and ev_share_p >= min_ev
+            if not t_ok:
+                t_score, t_skill = None, None
+            if not p_ok:
+                p_score, p_skill = None, None
+            basis = ("both" if (t_ok and p_ok) else
+                     "temp_only" if t_ok else
+                     "precip_only" if p_ok else "none")
+            if basis != "both":
+                score_raw = None
         ev = (rain_evidence or {}).get(m) or {}
         cells_h, cells_d = (cells_in_design or {}).get(m, (None, None))
         cells_shown = [c for c in (cells_h, cells_d) if c is not None]
@@ -8876,6 +9094,10 @@ def _build_board_rows(models, name, design, *, by_model,
                 qualified = bool(gate.get("qualified")) and bool(row_keep[i]) \
                     and score_raw is not None and basis in (
                         "both", "temp_only", "precip_only")
+            elif is_v8_family():
+                # 单维可见但不参与综合名次；这是"综合分"与"单维分"的分界线。
+                qualified = bool(gate.get("qualified")) and bool(row_keep[i]) \
+                    and score_raw is not None and basis == "both"
             else:
                 qualified = bool(gate.get("qualified")) and bool(row_keep[i]) \
                     and score_raw is not None and t_score is not None \

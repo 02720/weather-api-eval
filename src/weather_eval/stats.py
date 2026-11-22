@@ -1848,7 +1848,8 @@ def two_way_adjust(S2: np.ndarray,
 # ------------------------------------------------ 分块模型的经验贝叶斯收缩
 def eb_shrink(alpha: np.ndarray, resid_block: np.ndarray, block_weight: np.ndarray,
               present: np.ndarray,
-              shrink_override: np.ndarray | None = None) -> tuple[np.ndarray, dict]:
+              shrink_override: np.ndarray | None = None,
+              n_eff: np.ndarray | None = None) -> tuple[np.ndarray, dict]:
     """把行效应 α 按**有效块数**向面板均值收缩（经验贝叶斯，2026-10-31）。
 
     第一性原理：一个只覆盖 1 个 7 天块的源，它的 α 是**一次天气抽签**的产物；
@@ -1874,6 +1875,11 @@ def eb_shrink(alpha: np.ndarray, resid_block: np.ndarray, block_weight: np.ndarr
         `综合 = (温度 + 降水)/2` 在收缩后就不再成立，页面上的三列来自三个
         估计量（2026-10-31 复核实测小时榜最大差 11.2 分）。派生列调用时传入
         综合分估计出的 B，即"同一把收缩尺"。
+      n_eff        (..., M)  可选：**目标覆盖份额**（0~1），用于 skill-v8 的
+        覆盖证据收缩。它不改 τ²/σ² 的估计（那两个量的决策单位仍是独立块），
+        只把收缩公式里的重复数换成 `n_blocks × n_eff`：只覆盖 1–3 天的源在
+        "综合榜"这个目标人口上只有部分证据，不能凭满块数拿满权重。缺省 None
+        ⇒ 与旧口径逐位相同（归档回放不受影响）。
     返回 (alpha_shrunk, info)；info 里 sigma2/tau2/n_blocks/shrink 供披露与
     bootstrap 复用。**点估计与每次重采样用同一个函数**，区间中心不会漂。
     """
@@ -1915,9 +1921,21 @@ def eb_shrink(alpha: np.ndarray, resid_block: np.ndarray, block_weight: np.ndarr
     avg_inv = np.where(swe > 0, (we * inv_n).sum(axis=1) / np.where(swe > 0, swe, 1.0),
                        0.0)
     tau2 = np.maximum(0.0, var_a - sigma2 * avg_inv)
+    # skill-v8：覆盖证据收缩。n_eff 是目标人口上的覆盖份额；缺省 None 时
+    # 逐位回到"按块数"的旧口径。
+    if n_eff is None:
+        eff_blocks = n_block
+    else:
+        ne = np.asarray(n_eff, dtype=float)
+        if ne.ndim == 1 and n_block.ndim == 2 and ne.size == n_block.shape[1]:
+            ne = np.broadcast_to(ne[None, :], n_block.shape)
+        if ne.shape != n_block.shape:
+            raise ValueError(f"n_eff 形状 {ne.shape} 与 n_blocks {n_block.shape} 不匹配")
+        ne = np.where(np.isfinite(ne) & (ne > 0), np.clip(ne, 0.0, 1.0), 0.0)
+        eff_blocks = n_block * ne
     with np.errstate(invalid="ignore", divide="ignore"):
-        denom = tau2[:, None] + sigma2[:, None] / np.maximum(n_block, 1)
-        B = np.where((n_block > 0) & (denom > 0),
+        denom = tau2[:, None] + sigma2[:, None] / np.maximum(eff_blocks, 1e-12)
+        B = np.where((n_block > 0) & (eff_blocks > 0) & (denom > 0),
                      tau2[:, None] / np.where(denom > 0, denom, 1.0), 0.0)
     # 退化保护：τ²=0（源间没有可分辨差异）→ 全部收缩到面板均值；
     # σ²=0（块间完全一致）→ 不收缩。两者都是极限情形，不能除零。
@@ -2028,12 +2046,16 @@ def block_bootstrap_parts(S3: np.ndarray, W: np.ndarray,
                           ridge: float = 0.0, max_iter: int = 50,
                           tol: float = 1e-4, chunk: int = 100,
                           cell_valid: np.ndarray | None = None,
-                          min_valid_cells: int = 0) -> np.ndarray:
+                          min_valid_cells: int = 0,
+                          coverage: np.ndarray | None = None) -> np.ndarray:
     """按 7 天块重采样 + 重拟合 + 逐分量 EB 收缩，返回 (runs, R, M)。
 
     与点估计逐位同源：同一次重采样、同一 `_fit_parts`、同一套逐分量
     `eb_shrink`。`S3` 是 (R, M, C) 的待劈分张量（总榜 CI 用
     [temp_contrib, precip_contrib]，综合分由两分量相加构造）。
+
+    coverage：skill-v8 的目标覆盖份额 (M,)。它传给 `eb_shrink(n_eff=...)`，
+    保证 bootstrap 每次重采样与点估计用同一把覆盖收缩尺；缺省 None ⇒ 旧口径。
     """
     S3 = np.asarray(S3, dtype=float)
     if S3.ndim != 3:
@@ -2097,7 +2119,8 @@ def block_bootstrap_parts(S3: np.ndarray, W: np.ndarray,
                 resid_orig = np.where(
                     den_orig > 0,
                     num_orig / np.where(den_orig > 0, den_orig, 1.0), 0.0)
-            a_shrunk, info = eb_shrink(alpha, resid_orig, den_orig, present_orig)
+            a_shrunk, info = eb_shrink(alpha, resid_orig, den_orig, present_orig,
+                                       n_eff=coverage)
             scores = mu[:, None] + a_shrunk
             scores = np.where(info["n_blocks"] > 0, scores, np.nan)
             scores[:, ~row_keep] = np.nan
@@ -2115,16 +2138,18 @@ def block_bootstrap_scores(S: np.ndarray, W: np.ndarray,
                            ridge: float = 0.0, max_iter: int = 50,
                            tol: float = 1e-4, chunk: int = 100,
                            cell_valid: np.ndarray | None = None,
-                           min_valid_cells: int = 0) -> np.ndarray:
+                           min_valid_cells: int = 0,
+                           coverage: np.ndarray | None = None) -> np.ndarray:
     """按 7 天块重采样 + 重拟合 + EB 收缩，返回 (runs, M) 行分。
 
     单分量的薄包装：与 `block_bootstrap_parts` 逐位相同（后者的 R=1 特例）。
+    coverage 语义见 `block_bootstrap_parts`。
     """
     got = block_bootstrap_parts(
         np.asarray(S, dtype=float)[None, ...], W, row_keep, col_keep,
         block_cols, runs=runs, seed=seed, ridge=ridge, max_iter=max_iter,
         tol=tol, chunk=chunk, cell_valid=cell_valid,
-        min_valid_cells=min_valid_cells)
+        min_valid_cells=min_valid_cells, coverage=coverage)
     return got[:, 0, :]
 
 
@@ -2877,6 +2902,71 @@ def composite_from_z(z_t: np.ndarray, z_p: np.ndarray, *,
             "active_t": active_t, "active_p": active_p}
 
 
+def composite_from_skill(t_score: np.ndarray, p_score: np.ndarray, *,
+                         alpha, active_t=None, active_p=None,
+                         require_both: bool = False) -> dict[str, np.ndarray]:
+    """skill-v8 的唯一综合分合成式：**绝对技能分**的 α 加权，不做桶内标准化。
+
+    为什么不再用 z 分（第一性原理）：z 分把每一档的同台离散度强行归一为 1，
+    于是"所有源都很准、只差 0.1°C"的桶与"所有源都差 5°C"的桶对最终名次
+    贡献相同；读者看到的 56 分是"比同台平均高 0.6 个桶内标准差"，不是
+    "比气候参照强多少"。前者依赖参评池，后者才是可跨期、可向公众解释的
+    实力。v8 因此直接在 0~100 的绝对技能尺上合成：
+
+        t_c = 50 + α·(T − 50)          （T: 50=气候参照，100=完美）
+        p_c = 50 + (1−α)·(P − 50)
+        C   = t_c + p_c − 50 = 50 + α(T−50) + (1−α)(P−50)
+
+    三条纪律：
+      * **50 是气候参照**，不是"本档同台平均"；低于 50 = 不如朴素气候态；
+      * 缺一维时贡献固定 50（中性），`basis` 明确说这是单维可见、不是综合分；
+      * `require_both=True` 时单维不产生综合分（总榜/分榜的排名口径）。
+    """
+    t = np.asarray(t_score, dtype=float)
+    p = np.asarray(p_score, dtype=float)
+    a = np.asarray(alpha, dtype=float)
+    at = np.isfinite(t) if active_t is None else (
+        np.asarray(active_t, dtype=bool) & np.isfinite(t))
+    ap = np.isfinite(p) if active_p is None else (
+        np.asarray(active_p, dtype=bool) & np.isfinite(p))
+    tc = np.where(at, 50.0 + a * (t - 50.0), 50.0)
+    pc = np.where(ap, 50.0 + (1.0 - a) * (p - 50.0), 50.0)
+    both = at & ap
+    any_ = at | ap
+    rank = np.where(any_, tc + pc - 50.0, np.nan)
+    single = (at ^ ap) & np.isfinite(rank)
+    if require_both:
+        rank = np.where(both, rank, np.nan)
+        single = np.zeros_like(single, dtype=bool)
+    basis = np.where(both, "both",
+                     np.where(at, "temp_only",
+                              np.where(ap, "precip_only", "none")))
+    return {"rank_score": rank, "temp_contrib": tc, "precip_contrib": pc,
+            "single_dim": single, "basis": basis,
+            "active_t": at, "active_p": ap,
+            "temp_share": np.where(both, a, np.nan)}
+
+
+def coverage_share(valid: np.ndarray, target_weight: np.ndarray,
+                   axis: int = -1) -> np.ndarray:
+    """逐源的**目标覆盖份额** q∈[0,1]（skill-v8 的覆盖证据收缩输入）。
+
+    `valid` 是 (…, M, C) 的格子可评掩膜，`target_weight` 是 (C,) 的目标人口
+    权重（lead 权重 × 赛段权重）。q = 该源在目标人口上真正有格子的权重占比。
+    它与样本量无关：一个源在一个桶里有 2,000 条样本，仍然只算"覆盖了这个桶"。
+    """
+    V = np.asarray(valid, dtype=bool)
+    w = np.asarray(target_weight, dtype=float).reshape(-1)
+    if V.shape[-1] != w.size:
+        raise ValueError(f"target_weight 长度 {w.size} 与 valid 列数 {V.shape[-1]} 不匹配")
+    w = np.where(np.isfinite(w) & (w > 0), w, 0.0)
+    den = float(w.sum())
+    if den <= 0:
+        return np.zeros(V.shape[:-1], dtype=float)
+    num = np.sum(np.where(V, w, 0.0), axis=axis)
+    return np.clip(num / den, 0.0, 1.0)
+
+
 def rank_from_scores(t_score: np.ndarray, p_score: np.ndarray, *,
                      alpha, rho_t=None, rho_p=None,
                      gate_t=None, gate_p=None,
@@ -3174,7 +3264,8 @@ def macro_champion_at_alpha(temp_sub: np.ndarray, precip_sub: np.ndarray,
                             rho_p: float | None = None,
                             weight_t: float | None = None,
                             weight_p: float | None = None,
-                            mode: str = "common_shrink") -> dict | None:
+                            mode: str = "common_shrink",
+                            raw_score: bool = False) -> dict | None:
     """固定"温度占综合分比例 α"下的冠军（P0-2 的前置披露，2026-10-25）。
 
     随机权重敏感性回答"权重一起扰动时冠军换不换"；读者真正要问的却是
@@ -3238,8 +3329,9 @@ def macro_champion_at_alpha(temp_sub: np.ndarray, precip_sub: np.ndarray,
         return {"index": best, "score": round(float(scores[best]), 6)}
     # 名次在**原始分**上定（展示增益是仿射单调，不改 argmax）；返回给披露的
     # score 才映射到展示刻度，读者才能和榜上的数字对照（否则会以为端点冠军
-    # 只有 47 分）。
-    shown = composite_gain(scores[best])
+    # 只有 47 分）。skill-v8 的分数已经是 0~100 绝对技能分，raw_score=True
+    # 时原样返回，调用方不再套 slope-v2 的 composite_gain。
+    shown = float(scores[best]) if raw_score else composite_gain(scores[best])
     return {"index": best, "score": round(float(shown), 2)}
 
 

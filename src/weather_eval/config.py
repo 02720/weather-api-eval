@@ -13,7 +13,7 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "stations
 # 评估默认参数（可被 stations.yaml 的 eval 段覆盖）
 DEFAULT_EVAL = {
     "score_scheme": "slope-v2",       # 评分口径：stations.yaml 的生产配置显式设为
-                                       # skill-v7（2026-11，证据加权/聚合信度）；
+                                       # skill-v8（2026-11，绝对技能综合分）；
                                        # 代码内缺省保留 slope-v2，供旧夹具/归档月报
                                        # 与直接调用回放。
     "score_ref_window_days": 15,      # skill-v5 气候参照：固定气候态平滑窗的

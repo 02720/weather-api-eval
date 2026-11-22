@@ -48,6 +48,16 @@ def test_scoring_doc_states_current_alpha_and_reference_mode():
     assert str(cfg.eval["score_ref_mode"]) == "fixed_trailing"
 
 
+def test_scoring_doc_states_v8_production_scheme():
+    """生产口径必须是 skill-v8，且文档写清"绝对技能分"这个构念。"""
+    text = SCORING.read_text(encoding="utf-8")
+    cfg = load_config(None)
+    assert str(cfg.eval["score_scheme"]) == "skill-v8"
+    assert "skill-v8" in text
+    assert "绝对技能分" in text
+    assert "50 + α(T−50) + (1−α)(P−50)" in text
+
+
 def test_deprecated_params_are_declared_not_active_knobs():
     cfg = load_config(None)
     declared = set(cfg.eval.get("deprecated_in_skill_v5") or [])

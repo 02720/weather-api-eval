@@ -120,7 +120,10 @@ eval:
   # skill-v7（2026-11 证据加权轮，见 SCORING.md §12）：继承 v6 的全部单格机制，
   # 只改聚合层——证据门用聚合信度 ICC(K)（Spearman-Brown）并连续加权，
   # 综合分改为逐维 α×√ρ_K 加权，无证据维度在发布层输出 null（—）。
-  score_scheme: skill-v7
+  # skill-v8（2026-11 绝对技能轮，见 SCORING.md §13）：综合分回到**绝对技能尺**
+  # `50 + α(T−50) + (1−α)(P−50)`（50=气候参照、100=完美），不再做桶内 z 标准化；
+  # 可靠性由聚合层的分块 EB 收缩 + 目标覆盖份额承担，单维不参与综合排名。
+  score_scheme: skill-v8
   # D4（skill-v6）：R 的按榜冻结尺度（hourly / daily 各一组逐列 μ/σ/φ）。
   # 由 scripts/freeze_rank_scale.py --write 录制；改了它必须重冻结基线。
   # 总榜不单独存：它是两轨的横向拼接，读取时按段组装。

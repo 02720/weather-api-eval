@@ -1316,8 +1316,11 @@ def composite_dimension_share(report: dict) -> dict[str, Any]:
             "available": True,
             "scheme": SCORE_SCHEME,
             "alpha": alpha,
-            "effective_variance_share": round(alpha ** 2 /
-                                              (alpha ** 2 + (1 - alpha) ** 2), 3),
+            # v8 的 α 是**技能分**权重，不存在"理想方差份额 α²/(...)"这个量；
+            # 实际份额由两维真实离散度决定，见 tracks.all 的 temp/precip share。
+            "effective_variance_share": (
+                None if str(SCORE_SCHEME) == "skill-v8" else
+                round(alpha ** 2 / (alpha ** 2 + (1 - alpha) ** 2), 3)),
             "tracks": {"all": {
                 "temp_share": round(t_share, 3),
                 "precip_share": round(p_share, 3),
@@ -1343,6 +1346,14 @@ def composite_dimension_share(report: dict) -> dict[str, Any]:
                                        if total_p else None),
             }},
             "note": (
+                ("skill-v8：份额 = 两维**绝对技能贡献**的方差 ÷ 综合分方差"
+                 "（含协方差），直接对榜面 score/temp_score/precip_score 复算。"
+                 "α=0.5 是价值权重；实际话语权由两维的真实跨源离散度决定，"
+                 "所以份额本来就不该钉在 50:50——降水差距小的窗口里，"
+                 "综合分主要由温度拉开，这正是『真实实力』而不是把噪声放大。"
+                 "temp_own/precip_own/covariance 是原始三个数；"
+                 "shapley_* 把协方差均分后的话语权。")
+                if str(SCORE_SCHEME) == "skill-v8" else
                 ("skill-v7：份额 = 两维**已发布**贡献列的方差 ÷ 名次分方差"
                  "（含协方差），直接对榜面 score/temp_score/precip_score 复算；"
                  "贡献列已是 α×√ρ_K×z，ρ_K 为聚合信度。"
