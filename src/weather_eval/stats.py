@@ -2765,10 +2765,32 @@ def winsorize_column(X: np.ndarray, valid: np.ndarray,
     return np.where(V, np.clip(out, lo, hi), out)
 
 
+def aggregate_reliability(rho: float, n_repeats: float) -> float:
+    """把**单次测量**信度换算成 K 次重复取均值的聚合信度（Spearman-Brown）。
+
+    `ρ_K = K·ρ / (1 + (K−1)·ρ)`。这是排行榜真正需要的量：单个 7 天块
+    的降水分数可能只有 ρ≈0.1 的信度，但 13 个块聚合后的均值信度约 0.59；
+    用 ρ(1) 判"这一维能不能进榜"等于用单次测量的精度回答聚合估计的问题。
+    """
+    r = float(rho)
+    k = float(n_repeats)
+    if not np.isfinite(r) or not np.isfinite(k) or k < 1.0:
+        return float("nan")
+    r = min(1.0, max(0.0, r))
+    if k <= 1.0:
+        return r
+    denom = 1.0 + (k - 1.0) * r
+    return float(k * r / denom) if denom > 0 else 0.0
+
+
 def composite_from_z(z_t: np.ndarray, z_p: np.ndarray, *,
                      alpha, rho_t, rho_p, phi=0.0, scale: float = 10.0,
-                     active_t=None, active_p=None) -> dict[str, np.ndarray]:
-    """唯一的名次分合成式：α 管方向、ρ 管置信、门管退出（2026-11 口径）。
+                     active_t=None, active_p=None,
+                     weight_t=None, weight_p=None,
+                     mode: str = "common_shrink") -> dict[str, np.ndarray]:
+    """唯一的名次分合成式：α 管方向、ρ 管证据、门管退出（2026-11 口径）。
+
+    **mode="common_shrink"（skill-v5/v6 归档口径，逐位保留）**：
 
     ```
     σ_d = sqrt(α² + (1−α)² + 2α(1−α)·φ)
@@ -2777,10 +2799,26 @@ def composite_from_z(z_t: np.ndarray, z_p: np.ndarray, *,
     t_c = 50 + scale·√ρ_c·α·z_T / σ_d
     p_c = 50 + scale·√ρ_c·(1−α)·z_P / σ_d
     ```
-    单维存活时不再除以存活权重和（旧实现的 1/α 放大已删除）：
-    `R = 50 + scale·√ρ_T·z_T`，另一维贡献固定 50（中性）。
+    单维存活时 `R = 50 + scale·√ρ_T·z_T`，另一维贡献固定 50（中性）。
+
+    **mode="evidence"（skill-v7）**：每个维度各自按**聚合信度**加权，
+    不再用两维公共收缩因子，也不再把单维分放大 1/α：
+
+    ```
+    w_d  = √ρ_K,d          （ρ_K = K·ρ(1)/(1+(K−1)·ρ(1))）
+    t_c  = 50 + scale·α·w_T·z_T
+    p_c  = 50 + scale·(1−α)·w_P·z_P
+    R    = t_c + p_c − 50
+    ```
+    `weight_t/weight_p` 可由调用方显式给出（用于 no-skill 桶硬置 0）；
+    缺省时取 `√ρ_K`。这样"价值权重 α"与"证据权重 w"是两个可分别披露的
+    乘子：α 是业务价值判断，w 是测量精度。单维格因此保持 α 语义，
+    不会因为另一维退出而被放大成 2 倍系数。
+
     `active_t/active_p` 为 None 时按输入有限性判定两维齐备。
     """
+    if mode not in ("common_shrink", "evidence"):
+        raise ValueError(f"未知 composite mode: {mode!r}")
     z_t = np.asarray(z_t, dtype=float)
     z_p = np.asarray(z_p, dtype=float)
     a = np.asarray(alpha, dtype=float)
@@ -2793,6 +2831,22 @@ def composite_from_z(z_t: np.ndarray, z_p: np.ndarray, *,
     rt = np.asarray(rho_t, dtype=float)
     rp = np.asarray(rho_p, dtype=float)
     ph = np.asarray(phi, dtype=float)
+    if mode == "evidence":
+        w_t = (np.sqrt(np.clip(rt, 0.0, 1.0)) if weight_t is None
+               else np.clip(np.asarray(weight_t, dtype=float), 0.0, 1.0))
+        w_p = (np.sqrt(np.clip(rp, 0.0, 1.0)) if weight_p is None
+               else np.clip(np.asarray(weight_p, dtype=float), 0.0, 1.0))
+        t_act = active_t & (w_t > 0)
+        p_act = active_p & (w_p > 0)
+        tc = np.where(t_act, 50.0 + float(scale) * a * w_t * z_t, 50.0)
+        pc = np.where(p_act, 50.0 + float(scale) * (1.0 - a) * w_p * z_p, 50.0)
+        rank = np.where(t_act | p_act, tc + pc - 50.0, np.nan)
+        single = (t_act ^ p_act) & np.isfinite(rank)
+        rho_c = a * a * rt + (1.0 - a) ** 2 * rp
+        return {"rank_score": rank, "temp_contrib": tc, "precip_contrib": pc,
+                "single_dim": single, "rho_composite": np.clip(rho_c, 0.0, 1.0),
+                "temp_share": np.where(t_act & p_act, a, np.nan),
+                "active_t": t_act, "active_p": p_act}
     with np.errstate(invalid="ignore", divide="ignore"):
         sd = np.sqrt(a * a + (1.0 - a) ** 2
                      + 2.0 * a * (1.0 - a) * ph)
@@ -2831,18 +2885,24 @@ def rank_from_scores(t_score: np.ndarray, p_score: np.ndarray, *,
                      prior_n: float = 5.0, floor_frac: float = 0.25,
                      winsor_k: float = 3.5, scale: float = 10.0,
                      reliability: bool = True,
-                     frozen_scale: dict | None = None) -> dict[str, np.ndarray]:
+                     frozen_scale: dict | None = None,
+                     weight_t=None, weight_p=None,
+                     mode: str = "common_shrink") -> dict[str, np.ndarray]:
     """桶内名次分 R 的**唯一实现**（总榜 / 分时效榜 / 敏感性三条链共用）。
 
     t_score/p_score 形状 (..., m, c)，沿模型轴（倒数第二维）做逐列标准化。
     - μ/σ 取**两维齐备**行的稳健均值与 Winsorized sd，并向长期尺度收缩/设下限；
     - 标准化用**原始 X**（截断值只进 μ/σ）；
     - φ = 该列两维齐备行上的 corr(z_T, z_P)，n<5 时取 0；
-    - ρ 只出现在公共因子 √ρ_c 上（整体收缩），不重新分配两维份额；
+    - 默认口径（mode="common_shrink"，v5/v6）下 ρ 只出现在公共因子 √ρ_c 上；
+    - v7（mode="evidence"）把 ρ 换成逐维**聚合信度**，由 `weight_t/weight_p`
+      显式给出每列的证据权重（缺省 √ρ），两维各自加权后相加；
     - 单维存活格按 `composite_from_z` 的同一合成式给分。
     返回除 rank/贡献列外，还带诊断量：`mu_t/sd_t/mu_p/sd_p/phi/
     rel_t/rel_p/reliability_imputed`（后者的 imputed 标记由调用方按桶级填充）。
     """
+    if mode not in ("common_shrink", "evidence"):
+        raise ValueError(f"未知 mode: {mode!r}")
     t = np.asarray(t_score, dtype=float)
     p = np.asarray(p_score, dtype=float)
     if t.shape != p.shape:
@@ -2959,7 +3019,8 @@ def rank_from_scores(t_score: np.ndarray, p_score: np.ndarray, *,
     active_p = has_p & (n_p >= int(min_models)) & gate_p
     out = composite_from_z(zt, zp, alpha=alpha, rho_t=rel_t, rho_p=rel_p,
                            phi=phi, scale=scale,
-                           active_t=active_t, active_p=active_p)
+                           active_t=active_t, active_p=active_p,
+                           weight_t=weight_t, weight_p=weight_p, mode=mode)
     out.update({
         "mu_t": np.broadcast_to(mu_t, t.shape), "mu_p": np.broadcast_to(mu_p, t.shape),
         "sd_t": np.broadcast_to(sd_t, t.shape), "sd_p": np.broadcast_to(sd_p, t.shape),
@@ -2980,6 +3041,8 @@ def _rank_bucket_normalize(t_score: np.ndarray, p_score: np.ndarray,
                           gate_t=None, gate_p=None,
                           winsor_k: float = 3.5,
                           scale: float = 10.0,
+                          weight_t=None, weight_p=None,
+                          mode: str = "common_shrink",
                           return_parts: bool = False):
     """敏感性链的名次分：调用**同一个** `rank_from_scores`。
 
@@ -2990,7 +3053,8 @@ def _rank_bucket_normalize(t_score: np.ndarray, p_score: np.ndarray,
         t_score, p_score, alpha=alpha, rho_t=rho_t, rho_p=rho_p,
         gate_t=gate_t, gate_p=gate_p, min_models=min_models,
         prior_sd=prior_sd, prior_n=prior_n, floor_frac=floor_frac,
-        winsor_k=winsor_k, scale=scale)
+        winsor_k=winsor_k, scale=scale,
+        weight_t=weight_t, weight_p=weight_p, mode=mode)
     if return_parts:
         return got
     # 旧接口返回 z 尺度（调用方按 50+scale·z 映射）；这里由唯一 R 核心反解。
@@ -3008,6 +3072,9 @@ def weight_champion_distribution(
     rank_normalize: bool = False,
     rho_t: float | None = None,
     rho_p: float | None = None,
+    weight_t: float | None = None,
+    weight_p: float | None = None,
+    mode: str = "common_shrink",
 ) -> list[dict]:
     """权重敏感性（P0-2.2）：把各项权重各扰动 ±40%，统计冠军分布。
 
@@ -3061,7 +3128,8 @@ def weight_champion_distribution(
     with np.errstate(invalid="ignore", divide="ignore"):
         if rank_normalize:
             bucket = _rank_bucket_normalize(
-                t_score, p_score, w_macro, rho_t=rho_t, rho_p=rho_p)
+                t_score, p_score, w_macro, rho_t=rho_t, rho_p=rho_p,
+                weight_t=weight_t, weight_p=weight_p, mode=mode)
         else:
             bucket = np.where(v_t & v_p,
                               w_macro * np.where(v_t, t_score, 0.0)
@@ -3103,7 +3171,10 @@ def macro_champion_at_alpha(temp_sub: np.ndarray, precip_sub: np.ndarray,
                             adj_ridge: float = 0.0,
                             rank_normalize: bool = False,
                             rho_t: float | None = None,
-                            rho_p: float | None = None) -> dict | None:
+                            rho_p: float | None = None,
+                            weight_t: float | None = None,
+                            weight_p: float | None = None,
+                            mode: str = "common_shrink") -> dict | None:
     """固定"温度占综合分比例 α"下的冠军（P0-2 的前置披露，2026-10-25）。
 
     随机权重敏感性回答"权重一起扰动时冠军换不换"；读者真正要问的却是
@@ -3133,7 +3204,8 @@ def macro_champion_at_alpha(temp_sub: np.ndarray, precip_sub: np.ndarray,
         # 缺一即缺：与正式综合分同纪律，缺项重归一不得进入宏观端点冠军。
         if rank_normalize:
             bucket = _rank_bucket_normalize(
-                t_score, p_score, float(alpha), rho_t=rho_t, rho_p=rho_p)
+                t_score, p_score, float(alpha), rho_t=rho_t, rho_p=rho_p,
+                weight_t=weight_t, weight_p=weight_p, mode=mode)
         else:
             bucket = np.where(vt & vp,
                               alpha * np.where(vt, t_score, 0.0)

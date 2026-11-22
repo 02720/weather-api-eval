@@ -1,6 +1,6 @@
 {
   "schema": 6,
-  "fingerprint": "d0e10447e2967ecd",
+  "fingerprint": "da4618e12d3edbc6",
   "block": {
     "start": "2026-08-24",
     "end": "2026-08-30",
@@ -2357,7 +2357,7 @@
           "r": 0.9042709390795971,
           "slope": 1.105575,
           "mbe_bdisp": 0.588,
-          "r_anom": 0.8828859066562605,
+          "r_anom": 0.8828859066562602,
           "ref": {
             "available": true,
             "ref_type": "fixed_climatology_trailing",
@@ -2373,7 +2373,7 @@
             "persist_mae": 2.2395833333333335,
             "persist_acc1": 29.791666666666668,
             "persist_acc2": 58.88888888888889,
-            "r_anom": 0.8828859066562605
+            "r_anom": 0.8828859066562602
           }
         },
         "p": {
@@ -2518,7 +2518,7 @@
           "r": 0.790812537881682,
           "slope": 0.8931750000000002,
           "mbe_bdisp": 1.073,
-          "r_anom": 0.7537503089522437,
+          "r_anom": 0.7537503089522435,
           "ref": {
             "available": true,
             "ref_type": "fixed_climatology_trailing",
@@ -2534,7 +2534,7 @@
             "persist_mae": 2.419791666666667,
             "persist_acc1": 28.645833333333332,
             "persist_acc2": 55.38194444444444,
-            "r_anom": 0.7537503089522437
+            "r_anom": 0.7537503089522435
           }
         },
         "p": {

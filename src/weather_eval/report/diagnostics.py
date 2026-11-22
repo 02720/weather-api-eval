@@ -1342,11 +1342,19 @@ def composite_dimension_share(report: dict) -> dict[str, Any]:
                 "precip_bottom_rate": (round(bottom / total_p, 3)
                                        if total_p else None),
             }},
-            "note": ("skill-v5：份额 = 两维贡献的方差 ÷ 名次分方差（含协方差），"
-                     "直接对榜面 score/temp_score/precip_score 复算；"
-                     "temp_own/precip_own/covariance 是原始三个数；"
-                     "shapley_* 把协方差均分后的话语权（A3 披露口径）。"
-                     "名义 α 的**理想**方差份额是 α²/(α²+(1−α)²)。"),
+            "note": (
+                ("skill-v7：份额 = 两维**已发布**贡献列的方差 ÷ 名次分方差"
+                 "（含协方差），直接对榜面 score/temp_score/precip_score 复算；"
+                 "贡献列已是 α×√ρ_K×z，ρ_K 为聚合信度。"
+                 "temp_own/precip_own/covariance 是原始三个数；"
+                 "shapley_* 把协方差均分后的话语权。"
+                 "名义 α 是价值权重，实际份额还受证据权重 ρ_K 影响，两者并列披露。")
+                if str(SCORE_SCHEME) == "skill-v7" else
+                ("skill-v5：份额 = 两维贡献的方差 ÷ 名次分方差（含协方差），"
+                 "直接对榜面 score/temp_score/precip_score 复算；"
+                 "temp_own/precip_own/covariance 是原始三个数；"
+                 "shapley_* 把协方差均分后的话语权（A3 披露口径）。"
+                 "名义 α 的**理想**方差份额是 α²/(α²+(1−α)²)。")),
         }
     cell_sources = {
         "hourly": (report.get("temp_hourly") or {},

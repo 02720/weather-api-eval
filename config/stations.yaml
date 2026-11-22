@@ -117,7 +117,10 @@ eval:
   # skill-v6（2026-11 综合分优化）：v5 的机制修正版，见 SCORING.md §11。
   # 与 v5 的四点差别：雨量技能换湿域对数比（D1）、频率阻尼只压正支（D2）、
   # acc2 退化锚点返回缺测（D5）、降水族内按 √nom/sd 归一（D3）。
-  score_scheme: skill-v6
+  # skill-v7（2026-11 证据加权轮，见 SCORING.md §12）：继承 v6 的全部单格机制，
+  # 只改聚合层——证据门用聚合信度 ICC(K)（Spearman-Brown）并连续加权，
+  # 综合分改为逐维 α×√ρ_K 加权，无证据维度在发布层输出 null（—）。
+  score_scheme: skill-v7
   # D4（skill-v6）：R 的按榜冻结尺度（hourly / daily 各一组逐列 μ/σ/φ）。
   # 由 scripts/freeze_rank_scale.py --write 录制；改了它必须重冻结基线。
   # 总榜不单独存：它是两轨的横向拼接，读取时按段组装。
@@ -161,6 +164,9 @@ eval:
   score_reliability_weighting: true
   score_reliability_min: 0.20
   score_reliability_exit: 0.20
+  # skill-v7：发布层证据份额门槛。逐源按"覆盖 × 可评格 × 聚合信度"计算；
+  # 低于该值的维度发布 null（页面 —），不再把中性占位 50 当成"表现中等"。
+  score_publish_min_evidence: 0.10
   # 桶内尺度的稳健化（P0-2）：中位数 ± k·1.4826·MAD 双侧 Winsorize 后再算
   # μ/σ，防止单家故障源绑架整列尺度；k<=0 关闭（旧口径逐位回放）。
   score_winsor_k: 3.5

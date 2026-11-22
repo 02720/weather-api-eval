@@ -461,9 +461,10 @@ def test_v6_is_in_every_scheme_family_gate():
     # render._slim_report 的口径回放：v6 必须与 v5 同支（否则用旧权重复算）
     src = inspect.getsource(render._slim_report)
     assert "skill-v6" in src, "render._slim_report 漏了 v6 的口径回放"
-    # 页面"评分构成"表选权重表：漏 v6 会回落到 slope-v2 的旧表
+    # 页面"评分构成"表选权重表：漏 v6 会回落到 slope-v2 的旧表。
+    # v7 是 v6 的聚合层修正版，必须与 v6 同支（名单可扩展，但不能漏掉当前口径）。
     src2 = inspect.getsource(render)
-    assert '_scheme in ("skill-v3", "skill-v4", "skill-v5", "skill-v6")' in src2
+    assert '"skill-v6"' in src2 and '"skill-v7"' in src2
     # 诊断层话语权披露：不能写死单个口径名
     src3 = inspect.getsource(diagnostics)
     assert 'SCORE_SCHEME == "skill-v5"' not in src3

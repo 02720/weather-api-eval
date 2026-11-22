@@ -2216,32 +2216,46 @@ SCORE_SKILL_K = 1.535
 SCORE_SKILL_CENTER = 50.0
 #: "技能量表"家族：这些口径的分都是 50=无技巧 / 100=完美（相对 slope-v2 的
 #: 0~100 换算分）。
-SKILL_SCHEMES = ("skill-v3", "skill-v4", "skill-v5", "skill-v6")
+SKILL_SCHEMES = ("skill-v3", "skill-v4", "skill-v5", "skill-v6", "skill-v7")
+
+
+def is_v7_family(scheme: str | None = None) -> bool:
+    """当前口径是否是 **skill-v7**（2026-11 综合分证据加权轮）。
+
+    v7 继承 v6 的全部单格评分机制（湿域对数比、阻尼只压正支、acc2 退化
+    返回缺测、族内归一），只改**聚合层的测量机制**：
+      · 证据门从单格信度 ICC(1) 换成聚合信度 ICC(K)（Spearman-Brown）；
+      · 二值退出改成按聚合信度连续加权，消除 0.2 阈值的悬崖；
+      · 综合分改为逐维 `α × √ρ_K` 加权后相加，不再用两维公共收缩因子，
+        单维格也不再被放大 1/α；
+      · "无证据"与"平均"分离：计算层仍用 50 保持可加，发布层输出 null（—）。
+    """
+    return (SCORE_SCHEME if scheme is None else scheme) == "skill-v7"
 
 
 def is_v6_family(scheme: str | None = None) -> bool:
-    """当前口径是否是 **skill-v6**（2026-11 综合分优化）。
+    """当前口径是否包含 **skill-v6** 的机制修正（v6/v7）。
 
     v6 与 v5 的差别全部是**机制**修正，不是调参：
       · D1 雨量技能换到湿域对数比（`precip_amount_metrics`）；
       · D2 频率阻尼只作用于正的 ETS（`_skill_value`）；
       · D5 `acc2` 在 a_ref≥1 时返回 None（不再把"与参照相同"记成满分）；
       · D3 降水族内按标定离散度归一（`_family_normalized`）。
-    v5 分支原样保留，供归档月报回放。
+    v7 继承这四条；v5 分支原样保留，供归档月报回放。
     """
-    return (SCORE_SCHEME if scheme is None else scheme) == "skill-v6"
+    return (SCORE_SCHEME if scheme is None else scheme) in ("skill-v6", "skill-v7")
 
 
 def is_v5_family(scheme: str | None = None) -> bool:
-    """当前口径是否按 **skill-v5 语义**（含其修正版 v6）计算。
+    """当前口径是否按 **skill-v5 语义**（含 v6 / v7 修正版）计算。
 
-    v6 只改"测量机制"的三处（见 `is_v6_family`），其余子项换算、证据族门、
-    软压缩、展示映射与 v5 完全一致；因此凡是判"v5 家族"的分支都必须把 v6
-    一并纳入，否则 v6 会静默退回 slope-v2 的老路径。v3/v4 仍返回 False。
+    v6/v7 只改测量机制（见 `is_v6_family` / `is_v7_family`），其余子项换算、
+    证据族门、软压缩、展示映射与 v5 完全一致；因此凡是判"v5 家族"的分支
+    都必须把 v6/v7 一并纳入，否则会静默退回 slope-v2 的老路径。
+    v3/v4 仍返回 False。
     """
-    return (SCORE_SCHEME if scheme is None else scheme) in ("skill-v5", "skill-v6")
-    """当前口径是否按 **skill-v5 语义**计算。"""
-    return (SCORE_SCHEME if scheme is None else scheme) == "skill-v5"
+    return (SCORE_SCHEME if scheme is None else scheme) in (
+        "skill-v5", "skill-v6", "skill-v7")
 
 # skill-v4：雨量技能分母下限（mm；按轨分别配置）与校准扣分项的下行预算。
 SCORE_AMT_FLOOR_HOURLY = 0.05
@@ -2290,7 +2304,13 @@ SCORE_RELIABILITY_WEIGHTING = True
 SCORE_RELIABILITY_MIN = 0.20
 # 证据门：ρ 低于该值（原始估计、未截断）的维在**该天桶**退出 R，只发布 S。
 # 与已发布的 rain_no_skill_buckets 用同一桶级判据做外部校验；0 = 关闭退出。
+# skill-v7 起：v7 把该阈值作用在**聚合信度 ICC(K)** 上，且不再二值清零，
+# 而是用 √ρ_K 连续加权；v5/v6 仍按 ICC(1) 二值门逐位回放。
 SCORE_RELIABILITY_EXIT = 0.20
+# skill-v7：发布层"该维是否有足够证据"的门槛。逐源按设计内格子的
+# 加权证据份额（覆盖 × 原始可评性 × 聚合信度）计算；低于该值的维发布 null
+# （页面显示 —），而不是把中性占位 50 当成"表现中等"发布。
+SCORE_PUBLISH_MIN_EVIDENCE = 0.10
 # skill-v5 的降水判别项"可达上界"：同类朴素参照的最佳 ETS（当前实测为 0，
 # 即"永不报雨"就是最优）；显式写出来，读者不再把 ETS 0.05 读成满分制 5%。
 SCORE_REACH_PRECIP_BEST = 0.0
@@ -2368,10 +2388,11 @@ def apply_frozen_rank_scale(scale: dict | None) -> None:
 
 
 def apply_score_scheme(scheme: str | None) -> None:
-    """装载评分方案：`slope-v2`（归档旧报）、`skill-v3/v4/v5/v6`。"""
+    """装载评分方案：`slope-v2`（归档旧报）、`skill-v3/v4/v5/v6/v7`。"""
     global SCORE_SCHEME
     s = str(scheme or "slope-v2").strip().lower()
-    if s not in ("slope-v2", "skill-v3", "skill-v4", "skill-v5", "skill-v6"):
+    if s not in ("slope-v2", "skill-v3", "skill-v4", "skill-v5", "skill-v6",
+                 "skill-v7"):
         raise ValueError(f"未知 score_scheme: {scheme!r}")
     SCORE_SCHEME = s
 
@@ -2396,14 +2417,17 @@ def apply_score_ref_params(mode: str | None = None,
 def apply_score_reliability(enabled: bool | None = None,
                             min_rho: float | None = None,
                             winsor_k: float | None = None,
-                            exit_rho: float | None = None) -> None:
+                            exit_rho: float | None = None,
+                            publish_min_evidence: float | None = None) -> None:
     """装载可靠性加权开关、信度下限、退出阈值与稳健尺度截断（config eval.score_*）。
 
     `winsor_k`：桶内 μ/σ 的中位数±k·1.4826·MAD 双侧截断倍数；0 = 关闭。
     `exit_rho`：桶级证据门的退出阈值（ρ < exit_rho ⇒ 该维在该天桶退出 R）。
+    `publish_min_evidence`（skill-v7）：逐源证据份额低于该值时，该维发布 null
+    （页面显示 —），不把中性占位 50 冒充当"平均"。
     """
     global SCORE_RELIABILITY_WEIGHTING, SCORE_RELIABILITY_MIN, SCORE_WINSOR_K
-    global SCORE_RELIABILITY_EXIT
+    global SCORE_RELIABILITY_EXIT, SCORE_PUBLISH_MIN_EVIDENCE
     if enabled is not None:
         SCORE_RELIABILITY_WEIGHTING = bool(enabled)
     if min_rho is not None:
@@ -2412,6 +2436,9 @@ def apply_score_reliability(enabled: bool | None = None,
         SCORE_WINSOR_K = max(0.0, float(winsor_k))
     if exit_rho is not None:
         SCORE_RELIABILITY_EXIT = max(0.0, min(1.0, float(exit_rho)))
+    if publish_min_evidence is not None:
+        SCORE_PUBLISH_MIN_EVIDENCE = max(0.0, min(1.0,
+                                                float(publish_min_evidence)))
 
 def apply_score_composite_params(alpha: float | None = None,
                                  sd_temp: float | None = None,
@@ -2993,7 +3020,8 @@ def _rank_contributions(ts: float | None, ps: float | None,
         np.array(zt), np.array(zp), alpha=a,
         rho_t=(1.0 if rho_t is None else float(rho_t)),
         rho_p=(1.0 if rho_p is None else float(rho_p)),
-        phi=float(phi), scale=float(SCORE_RANK_SCALE))
+        phi=float(phi), scale=float(SCORE_RANK_SCALE),
+        mode=("evidence" if is_v7_family() else "common_shrink"))
     vals = (got["rank_score"], got["temp_contrib"], got["precip_contrib"])
     return tuple(None if not np.isfinite(float(v)) else round(float(v), 2)
                  for v in vals)
@@ -3082,7 +3110,8 @@ def _bucket_rank_rows(items: list[tuple], *,
                   float(SCORE_COMPOSITE_SD_PRECIP)),
         prior_n=float(SCORE_BUCKET_SD_PRIOR_N),
         floor_frac=float(SCORE_BUCKET_SD_FLOOR_FRAC),
-        winsor_k=float(SCORE_WINSOR_K), scale=float(SCORE_RANK_SCALE))
+        winsor_k=float(SCORE_WINSOR_K), scale=float(SCORE_RANK_SCALE),
+        mode=("evidence" if is_v7_family() else "common_shrink"))
     out: dict = {}
     for i, (k, *_rest) in enumerate(items):
         vals = (got["rank_score"][i, 0], got["temp_contrib"][i, 0],
@@ -4408,7 +4437,9 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
         eval_cfg.get("score_reliability_min"),
         eval_cfg.get("score_winsor_k", DEFAULT_EVAL.get("score_winsor_k")),
         eval_cfg.get("score_reliability_exit",
-                     DEFAULT_EVAL.get("score_reliability_exit")))
+                     DEFAULT_EVAL.get("score_reliability_exit")),
+        eval_cfg.get("score_publish_min_evidence",
+                     DEFAULT_EVAL.get("score_publish_min_evidence")))
     require_complete = bool(eval_cfg.get("require_complete_snapshots", True))
     # 封存时点门槛（审查 P1-4）：默认开——"预报必须在实况之前封存"不该只是口号。
     # 关掉它可退回旧口径做对照，两份报告的差就是这一个开关的代价。
@@ -4846,6 +4877,28 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
                 r["rk"] = None
 
     rain_no_skill = _rain_no_skill_buckets(leaderboards)
+    # v7：页面披露必须与**实际零权重**的桶一致。v6 的页面列表来自分时效榜的
+    # 聚合 ETS，面板门用的是逐格 ETS 占比——两处口径不同会让读者看到
+    # "5d~8d 也有降水贡献、为什么权重是 0"的矛盾。v7 统一取面板门的逐桶结果。
+    if is_v7_family():
+        _rd = resolution_out.get("rank_diagnostics") or {}
+        for _track in ("hourly", "daily"):
+            _days = sorted({
+                int(b["day"]) for b in
+                ((_rd.get(_track) or {}).get("buckets") or [])
+                if b.get("no_skill_precip")})
+            if _days:
+                rain_no_skill[_track] = [f"{d}d" for d in _days]
+            else:
+                rain_no_skill.pop(_track, None)
+
+    # skill-v7：发布口径的逐行证据构成（both / temp_only / precip_only / none）。
+    # 页面用它回答"这张综合分到底由哪些维撑起来"，而不是让读者从两列小数猜。
+    basis_counts: dict[str, int] = {}
+    for _r in (leaderboards.get("all") or []):
+        _b = _r.get("composite_basis")
+        if _b:
+            basis_counts[str(_b)] = basis_counts.get(str(_b), 0) + 1
 
     # 日历跨度（日历维度）：入围源各自的验证日数差异有多大
     qdays = [r["n_days"] for r in leaderboards["all"]
@@ -4867,7 +4920,8 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
         adj_row=np.array(all_win.get("row_keep") or [], dtype=bool),
         adj_col=np.array(all_win.get("col_keep") or [], dtype=bool),
         adj_w=resolution_out["weights"].get("all"),
-        adj_ridge=ridge, macro_weight_range=macro_w)
+        adj_ridge=ridge, macro_weight_range=macro_w,
+        n_blocks=len(block_panel["blocks"]))
     logger.info("权重敏感性（分块面板）用时 %.1fs",
                 _time.perf_counter() - _t_ws)
     _ws_parts = ((TEMP_SKILL_PARTS, PRECIP_SKILL_PARTS)
@@ -5007,32 +5061,54 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
                     "scale": "50=两维均打平同类参照；100=两维完美",
                 },
                 "rank": {
-                    "definition": ("50 + scale·√ρ_c·(α·z_T + (1−α)·z_P)/σ_d；"
-                                   "z_i=(X_i−μ_i)/σ_i（原始 X，Winsor 只进 μ/σ）"),
+                    "definition": (
+                        "50 + scale·(α·√ρ_K,T·z_T + (1−α)·√ρ_K,P·z_P)；"
+                        "z_i=(X_i−μ_i)/σ_i（原始 X，Winsor 只进 μ/σ）"
+                        if is_v7_family() else
+                        "50 + scale·√ρ_c·(α·z_T + (1−α)·z_P)/σ_d；"
+                        "z_i=(X_i−μ_i)/σ_i（原始 X，Winsor 只进 μ/σ）"),
                     "scale_definition": ("μ_i/σ_i = 该列两维齐备同台家数的稳健中心/"
                                          "尺度（中位数±k·1.4826·MAD 截断后求均值与 sd，"
                                          "再向长期尺度收缩并设下限）；"
-                                         "σ_d = sqrt(α²+(1−α)²+2α(1−α)φ)；"
-                                         "ρ_c = 加权合成的信度（由逐维 ρ 与 φ 合成）"),
+                                         + ("ρ_K = K·ρ(1)/(1+(K−1)·ρ(1))，"
+                                            "K 为该桶实际可用的 7 天块数"
+                                            if is_v7_family() else
+                                            "σ_d = sqrt(α²+(1−α)²+2α(1−α)φ)；"
+                                            "ρ_c = 加权合成的信度（由逐维 ρ 与 φ 合成）")),
                     "sd_temp": float(SCORE_COMPOSITE_SD_TEMP),
                     "sd_precip": float(SCORE_COMPOSITE_SD_PRECIP),
                     "sd_prior_n": float(SCORE_BUCKET_SD_PRIOR_N),
                     "sd_floor_frac": float(SCORE_BUCKET_SD_FLOOR_FRAC),
                     "min_models_per_bucket": int(SCORE_BUCKET_MIN_MODELS),
                     "winsor_k": float(SCORE_WINSOR_K),
-                    "alpha_weighting": ("Var(t_c):Var(p_c) = α²:(1−α)²，"
-                                        "与 ρ 无关（α 是价值权重，不是最优预测权重）"),
+                    "alpha_weighting": (
+                        "Var(t_c):Var(p_c) = α²·ρ_K,T : (1−α)²·ρ_K,P"
+                        "（价值权重与证据权重分开披露）"
+                        if is_v7_family() else
+                        "Var(t_c):Var(p_c) = α²:(1−α)²，"
+                        "与 ρ 无关（α 是价值权重，不是最优预测权重）"),
+                    "composite_mode": ("evidence_weighted" if is_v7_family()
+                                       else "common_shrink"),
                     "reliability": {
-                        "estimator": "ICC(1)：X=μ+a_m+β_k+e，剥掉块效应后 "
-                                     "σ²_a/(σ²_a+σ²_e)",
+                        "estimator": ("ICC(1)：X=μ+a_m+β_k+e，剥掉块效应后 "
+                                      "σ²_a/(σ²_a+σ²_e)" if not is_v7_family()
+                                      else "ICC(1) → ICC(K)（Spearman-Brown）；"
+                                           "打分权重用 √ICC(K)"),
                         "min_rho": float(SCORE_RELIABILITY_MIN),
                         "exit_rho": float(SCORE_RELIABILITY_EXIT),
                         "impute": "不可估 → 该维可估桶 ρ 中位数 → ρ_exit（不是 1.0）",
+                        "gate_basis": ("aggregate_icc_k" if is_v7_family()
+                                       else "icc1"),
                     },
                     "evidence_gate": (
+                        "按（轨道 × 天桶）判定：聚合信度 ICC(K) 连续加权 "
+                        "w=√ρ_K；no-skill 桶（|ETS|≤0.05 占比>60%）w=0；"
+                        "发布层证据份额 < publish_min_evidence 的维输出 null（—）"
+                        if is_v7_family() else
                         "按（轨道 × 天桶）判定：ρ_i,d < exit_rho 或该桶 "
                         "|ETS|≤0.05 的格子占比 >60% ⇒ 该维在该天桶退出 R；"
                         "单维存活格按 R=50+scale·√ρ_i·z_i 发布，另一维贡献=50"),
+                    "publish_min_evidence": float(SCORE_PUBLISH_MIN_EVIDENCE),
                     "scale": float(SCORE_RANK_SCALE),
                     # D4（skill-v6）：R 的尺度是否**冻结**到标定期。
                     # 只有冻结时，"加入/删除一个源不改幸存者名次"才成立；
@@ -5080,6 +5156,9 @@ def _build_report_unlocked(station_ids, models, eval_cfg, start_dt, end_dt,
                                      .get(track, {}).get("gate_counts") or {})
                                     .get("single_dim_cols") or 0)}
                 for track in TRACKS},
+            # v7：逐行发布构成（both/temp_only/precip_only/none 的源数）。
+            "composite_basis_summary": basis_counts,
+            "publish_min_evidence": float(SCORE_PUBLISH_MIN_EVIDENCE),
             "bucket_sd_R": {
                 track: ((resolution_out.get("rank_diagnostics") or {})
                         .get(track, {}).get("bucket_sd_R"))
@@ -5571,7 +5650,7 @@ def _weight_sensitivity_champions(models, track_sources, hourly_lead_days,
 def _weight_sensitivity_champions_panel(
         models, panel, blocks, H, D, runs, qualified: set[str], *,
         adj_row=None, adj_col=None, adj_w=None, adj_ridge=0.0,
-        macro_weight_range=(0.30, 0.70)) -> tuple[list[dict], list[dict]]:
+        macro_weight_range=(0.30, 0.70), n_blocks: int | None = None) -> tuple[list[dict], list[dict]]:
     """权重敏感性（分块面板版）：与总榜同一批列、同一张设计、同一组权重。
 
     旧实现只重排全窗口的 32 列；分块榜的列是 (块×天桶)，敏感性必须回答
@@ -5618,19 +5697,35 @@ def _weight_sensitivity_champions_panel(
             rho_t_base = float(SCORE_RELIABILITY_EXIT)
         if not np.isfinite(rho_p_base):
             rho_p_base = float(SCORE_RELIABILITY_EXIT)
+    # v7：敏感性链与正式榜同式——把基线 ICC(1) 换算成 K 块的聚合信度，
+    # 再用 √ρ_K 作证据权重（K 由调用方传入的 7 天块数，而不是列数）。
+    if is_v7_family() and _rank_normalize:
+        _k_sens = int(n_blocks or t_sub.shape[1] or 1)
+        rho_t_base = _stats.aggregate_reliability(rho_t_base, _k_sens)
+        rho_p_base = _stats.aggregate_reliability(rho_p_base, _k_sens)
+        w_t_sens = (np.sqrt(max(0.0, float(rho_t_base)))
+                    if SCORE_RELIABILITY_WEIGHTING else 1.0)
+        w_p_sens = (np.sqrt(max(0.0, float(rho_p_base)))
+                    if SCORE_RELIABILITY_WEIGHTING else 1.0)
+        _rank_mode = "evidence"
+    else:
+        w_t_sens = w_p_sens = None
+        _rank_mode = "common_shrink"
     dist = weight_champion_distribution(
         t_sub, p_sub, t_parts, p_parts, runs=runs,
         adj_row=adj_row, adj_col=adj_col, adj_w=adj_w, adj_ridge=adj_ridge,
         macro_weight_range=tuple(macro_weight_range),
         rank_normalize=_rank_normalize,
-        rho_t=rho_t_base, rho_p=rho_p_base)
+        rho_t=rho_t_base, rho_p=rho_p_base,
+        weight_t=w_t_sens, weight_p=w_p_sens, mode=_rank_mode)
     macro_endpoints = []
     for alpha in (float(macro_weight_range[0]), float(macro_weight_range[1])):
         got = _stats.macro_champion_at_alpha(
             t_sub, p_sub, t_parts, p_parts, alpha,
             adj_row=adj_row, adj_col=adj_col, adj_w=adj_w, adj_ridge=adj_ridge,
             rank_normalize=_rank_normalize,
-            rho_t=rho_t_base, rho_p=rho_p_base)
+            rho_t=rho_t_base, rho_p=rho_p_base,
+            weight_t=w_t_sens, weight_p=w_p_sens, mode=_rank_mode)
         if got is not None:
             score = got["score"]
             if _rank_normalize:
@@ -6497,6 +6592,8 @@ def _block_scoring_fingerprint(eval_cfg: dict, models: list[str],
         "score_scheme", "score_ref_window_days", "score_ref_min_days",
         "score_ref_mode", "score_ref_smooth_days",
         "score_reliability_exit",
+        # v7：证据门/发布门槛直接改变格子目录里的 R，必须进指纹。
+        "score_publish_min_evidence",
         "score_skill_k", "score_slopes", "precip_min_surviving_weight",
         "score_amt_floor_hourly_mm", "score_amt_floor_daily_mm",
         "score_penalty_lambda_temp", "score_penalty_lambda_precip",
@@ -7155,6 +7252,27 @@ def _impute_reliability(base: np.ndarray, fallback: float) -> tuple[np.ndarray, 
     return np.where(finite, base, fallback_val), imputed
 
 
+def _bucket_repeat_counts(X: np.ndarray, n_blocks: int, days: int,
+                          min_per_block: int = 2) -> np.ndarray:
+    """每个天桶实际可用几个 7 天块作重复测量（Spearman-Brown 的 K）。
+
+    不能写死 K=13：某些天桶只在少数块里有数据（典型：日轨第 16 天、只在
+    部分源/部分周有逐日产品）。K 用"该桶至少有 `min_per_block` 个可评模型的
+    块数"，与 `icc1_reliability` 的组间模型集保持一致。
+    """
+    X = np.asarray(X, dtype=float)
+    out = np.zeros(max(0, int(days)), dtype=float)
+    K = int(n_blocks or 0)
+    D = int(days or 0)
+    if K <= 0 or D <= 0:
+        return out
+    for d in range(D):
+        cols = [k * D + d for k in range(K)]
+        sub = X[:, cols]
+        out[d] = float(np.sum(np.isfinite(sub).sum(axis=0) >= int(min_per_block)))
+    return out
+
+
 def _winsorize_column(X: np.ndarray, valid: np.ndarray,
                       k: float | None = None) -> np.ndarray:
     """按列做 中位数 ± k·1.4826·MAD 双侧 Winsorize（唯一实现在 stats）。"""
@@ -7176,11 +7294,36 @@ def _attach_rank_matrices(mats: dict[str, np.ndarray],
     P = np.asarray(mats["precip_score"], dtype=float)
     K = int(n_blocks or 0)
     D = int(days or 0)
-    rel_t_day = _bucket_reliability(T, K, D)
-    rel_p_day = _bucket_reliability(P, K, D)
-    rel_t_day, imp_t_day = _impute_reliability(rel_t_day, SCORE_RELIABILITY_EXIT)
-    rel_p_day, imp_p_day = _impute_reliability(rel_p_day, SCORE_RELIABILITY_EXIT)
+    # ICC(1)：单格信度（v5/v6 的收缩与门都直接用它）。v7 仍保留它作披露，
+    # 但不再拿它决定"这一维能不能进榜"——那是聚合估计的问题。
+    icc_t_day = _bucket_reliability(T, K, D)
+    icc_p_day = _bucket_reliability(P, K, D)
+    icc_t_day, imp_icc_t_day = _impute_reliability(icc_t_day,
+                                                   SCORE_RELIABILITY_EXIT)
+    icc_p_day, imp_icc_p_day = _impute_reliability(icc_p_day,
+                                                   SCORE_RELIABILITY_EXIT)
     C = T.shape[1]
+    # v7：Spearman-Brown 聚合信度 + 每个天桶真正可用的重复块数。
+    if is_v7_family():
+        k_t_day = _bucket_repeat_counts(T, K, D)
+        k_p_day = _bucket_repeat_counts(P, K, D)
+        agg_t_day = np.array([
+            _stats.aggregate_reliability(icc_t_day[d], k_t_day[d])
+            if k_t_day[d] > 0 else np.nan for d in range(max(D, 0))])
+        agg_p_day = np.array([
+            _stats.aggregate_reliability(icc_p_day[d], k_p_day[d])
+            if k_p_day[d] > 0 else np.nan for d in range(max(D, 0))])
+        agg_t_day, imp_agg_t_day = _impute_reliability(
+            agg_t_day, SCORE_RELIABILITY_EXIT)
+        agg_p_day, imp_agg_p_day = _impute_reliability(
+            agg_p_day, SCORE_RELIABILITY_EXIT)
+        rel_t_day, rel_p_day = agg_t_day, agg_p_day
+        imp_t_day, imp_p_day = imp_agg_t_day, imp_agg_p_day
+    else:
+        k_t_day = np.full(max(D, 0), float(K))
+        k_p_day = np.full(max(D, 0), float(K))
+        rel_t_day, rel_p_day = icc_t_day, icc_p_day
+        imp_t_day, imp_p_day = imp_icc_t_day, imp_icc_p_day
     rel_t_col = np.tile(rel_t_day, K) if D else np.full(C, 1.0)
     rel_p_col = np.tile(rel_p_day, K) if D else np.full(C, 1.0)
     imp_t_col = np.tile(imp_t_day, K) if D else np.ones(C, dtype=bool)
@@ -7192,11 +7335,25 @@ def _attach_rank_matrices(mats: dict[str, np.ndarray],
         ets = np.asarray(ets, dtype=float)
         for d in range(D):
             vals = ets[:, [k * D + d for k in range(K)]]
-            vals = vals[np.isfinite(vals)]
+            if is_v7_family():
+                # v7：判据的决策单位必须是**桶级聚合估计**，不是单格。
+                # 一个 7 天块里的单格 ETS 在旱季经常是 0（事件太少），
+                # 但把同一源的 K 个块聚合后，日桶 5~7 的中位 ETS 仍有
+                # 0.07~0.12——那是真实技巧，不该被"逐格 ≤0.05 占比"清零。
+                # 这里先按源跨块取均值，再看"多少比例的源聚合后仍无技巧"，
+                # 与页面 rain_no_skill_buckets 的口径一致。
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", RuntimeWarning)
+                    vals = np.nanmean(vals, axis=1)
+                vals = vals[np.isfinite(vals)]
+            else:
+                vals = vals[np.isfinite(vals)]
             if vals.size >= 3 and float(np.mean(np.abs(vals) <= 0.05)) >= 0.60:
                 no_skill_day[d] = True
     no_skill_col = np.tile(no_skill_day, K) if D else np.zeros(C, dtype=bool)
-    # ---- 门：ρ < exit ⇒ 该维在本天桶退出（用未截断的原始 ρ）；降水另加无技巧判据
+    # ---- 证据门（v7 用聚合信度；v5/v6 用单格信度）----
+    # gate_* 只作**披露**：v7 的实际打分权重是连续的 √ρ_K（no-skill 桶才硬置 0），
+    # 因此不会在 0.20 附近出现"0.205 存活 / 0.155 清零"的悬崖。
     if SCORE_RELIABILITY_EXIT > 0 and SCORE_RELIABILITY_WEIGHTING:
         gate_t = rel_t_col >= float(SCORE_RELIABILITY_EXIT)
         gate_p = (rel_p_col >= float(SCORE_RELIABILITY_EXIT)) & ~no_skill_col
@@ -7209,17 +7366,31 @@ def _attach_rank_matrices(mats: dict[str, np.ndarray],
     else:
         rho_t = np.ones(C)
         rho_p = np.ones(C)
+    if is_v7_family():
+        # 证据权重：w_d = √ρ_K,d。no-skill 桶的降水证据物理上为零 → w=0。
+        w_t = (np.sqrt(np.clip(rel_t_col, 0.0, 1.0))
+               if SCORE_RELIABILITY_WEIGHTING else np.ones(C))
+        w_p = (np.sqrt(np.clip(rel_p_col, 0.0, 1.0))
+               if SCORE_RELIABILITY_WEIGHTING else np.ones(C))
+        w_p = np.where(no_skill_col, 0.0, w_p)
+        gate_score_t, gate_score_p = w_t > 0, w_p > 0
+        mode = "evidence"
+    else:
+        w_t = w_p = None
+        gate_score_t, gate_score_p = gate_t, gate_p
+        mode = "common_shrink"
     got = _stats.rank_from_scores(
         T, P, alpha=float(SCORE_COMPOSITE_ALPHA),
         rho_t=rho_t, rho_p=rho_p,
-        gate_t=gate_t, gate_p=gate_p,
+        gate_t=gate_score_t, gate_p=gate_score_p,
         min_models=int(SCORE_BUCKET_MIN_MODELS),
         prior_sd=(float(SCORE_COMPOSITE_SD_TEMP),
                   float(SCORE_COMPOSITE_SD_PRECIP)),
         prior_n=float(SCORE_BUCKET_SD_PRIOR_N),
         floor_frac=float(SCORE_BUCKET_SD_FLOOR_FRAC),
         winsor_k=float(SCORE_WINSOR_K), scale=float(SCORE_RANK_SCALE),
-        # D4：只在 v6 且已装载冻结尺度时启用；否则逐位回到旧行为。
+        weight_t=w_t, weight_p=w_p, mode=mode,
+        # D4：只在 v6+ 且已装载冻结尺度时启用；否则逐位回到旧行为。
         frozen_scale=(_frozen_scale_for(T, track)
                       if (is_v6_family() and SCORE_RANK_FROZEN_SCALE)
                       else None))
@@ -7229,7 +7400,18 @@ def _attach_rank_matrices(mats: dict[str, np.ndarray],
     mats["_single_dim"] = got["single_dim"]
     mats["_rel_temp"] = rho_t
     mats["_rel_precip"] = rho_p
-    mats["_rel_temp_raw"] = rel_t_col
+    # `*_raw` 保持"未截断的 ICC(1)"语义（v6 及以前的页面字段不变）；
+    # v7 额外发布聚合信度与证据权重，读者能复算每个桶的贡献打折比例。
+    mats["_rel_temp_raw"] = np.tile(icc_t_day, K) if D else np.ones(C)
+    mats["_rel_precip_raw"] = np.tile(icc_p_day, K) if D else np.ones(C)
+    mats["_rel_temp_agg"] = rel_t_col
+    mats["_rel_precip_agg"] = rel_p_col
+    mats["_n_blocks_temp"] = np.tile(k_t_day, K) if D else np.zeros(C)
+    mats["_n_blocks_precip"] = np.tile(k_p_day, K) if D else np.zeros(C)
+    mats["_evidence_w_temp"] = (np.asarray(w_t, dtype=float).copy()
+                                if w_t is not None else np.ones(C))
+    mats["_evidence_w_precip"] = (np.asarray(w_p, dtype=float).copy()
+                                  if w_p is not None else np.ones(C))
     # D4 录制出口：把**当前列**的 μ/σ/φ 逐列留在矩阵里，供
     # `_rank_scale_diagnostics` 汇总成 meta 字段，再由
     # scripts/freeze_rank_scale.py 固化成 eval.score_rank_frozen_scale。
@@ -7239,7 +7421,6 @@ def _attach_rank_matrices(mats: dict[str, np.ndarray],
     mats["_rank_mu_p"] = got["mu_p"][0] if got["mu_p"].ndim == 2 else got["mu_p"]
     mats["_rank_sd_p"] = got["sd_p"][0] if got["sd_p"].ndim == 2 else got["sd_p"]
     mats["_rank_phi"] = got["phi"][0] if got["phi"].ndim == 2 else got["phi"]
-    mats["_rel_precip_raw"] = rel_p_col
     mats["_rel_temp_imputed"] = imp_t_col
     mats["_rel_precip_imputed"] = imp_p_col
     mats["_gate_temp"] = np.broadcast_to(gate_t[None, :], T.shape)
@@ -7259,6 +7440,8 @@ def _rank_diagnostics(mat: dict, K: int, days: int, track: str) -> dict:
                        dtype=float)[:days]
     rel_p = np.asarray(mat.get("_rel_precip_raw", np.full(days, np.nan)),
                        dtype=float)[:days]
+    agg_t = np.asarray(mat.get("_rel_temp_agg", rel_t), dtype=float)[:days]
+    agg_p = np.asarray(mat.get("_rel_precip_agg", rel_p), dtype=float)[:days]
     imp_t = np.asarray(mat.get("_rel_temp_imputed", np.zeros(days, bool)),
                        dtype=bool)[:days]
     imp_p = np.asarray(mat.get("_rel_precip_imputed", np.zeros(days, bool)),
@@ -7269,6 +7452,14 @@ def _rank_diagnostics(mat: dict, K: int, days: int, track: str) -> dict:
                         dtype=bool)[0, :days]
     no_skill = np.asarray(mat.get("_no_skill_bucket", np.zeros(days, bool)),
                           dtype=bool)[:days]
+    w_t = np.asarray(mat.get("_evidence_w_temp", np.ones(days)),
+                     dtype=float)[:days]
+    w_p = np.asarray(mat.get("_evidence_w_precip", np.ones(days)),
+                     dtype=float)[:days]
+    nb_t = np.asarray(mat.get("_n_blocks_temp", np.full(days, float(K))),
+                      dtype=float)[:days]
+    nb_p = np.asarray(mat.get("_n_blocks_precip", np.full(days, float(K))),
+                      dtype=float)[:days]
     single = np.asarray(mat.get("_single_dim", np.zeros((1, days))), dtype=bool)
     rank = np.asarray(mat.get("rank_score", np.full((1, days), np.nan)),
                       dtype=float)
@@ -7279,10 +7470,28 @@ def _rank_diagnostics(mat: dict, K: int, days: int, track: str) -> dict:
     for d in range(days):
         out["buckets"].append({
             "day": d + 1,
-            "rho_temp": (None if not np.isfinite(rel_t[d])
-                         else round(float(rel_t[d]), 4)),
-            "rho_precip": (None if not np.isfinite(rel_p[d])
-                           else round(float(rel_p[d]), 4)),
+            # rho_* 是**当期打分实际使用的信度**（v7=ICC(K)，v5/v6=ICC(1)）；
+            # icc1 与 aggregate 都并列发布，读者不必猜是哪一种。
+            "rho_temp": (None if not np.isfinite(agg_t[d])
+                         else round(float(agg_t[d]), 4)),
+            "rho_precip": (None if not np.isfinite(agg_p[d])
+                           else round(float(agg_p[d]), 4)),
+            "rho_temp_icc1": (None if not np.isfinite(rel_t[d])
+                              else round(float(rel_t[d]), 4)),
+            "rho_precip_icc1": (None if not np.isfinite(rel_p[d])
+                                else round(float(rel_p[d]), 4)),
+            "rho_temp_aggregate": (None if not np.isfinite(agg_t[d])
+                                   else round(float(agg_t[d]), 4)),
+            "rho_precip_aggregate": (None if not np.isfinite(agg_p[d])
+                                     else round(float(agg_p[d]), 4)),
+            "n_blocks_temp": (None if not np.isfinite(nb_t[d])
+                              else int(round(float(nb_t[d])))),
+            "n_blocks_precip": (None if not np.isfinite(nb_p[d])
+                                else int(round(float(nb_p[d])))),
+            "evidence_weight_temp": (None if not np.isfinite(w_t[d])
+                                     else round(float(w_t[d]), 4)),
+            "evidence_weight_precip": (None if not np.isfinite(w_p[d])
+                                       else round(float(w_p[d]), 4)),
             "imputed_temp": bool(imp_t[d]),
             "imputed_precip": bool(imp_p[d]),
             "gate_temp": bool(gate_t[d]),
@@ -7303,7 +7512,10 @@ def _rank_diagnostics(mat: dict, K: int, days: int, track: str) -> dict:
     out["gate_counts"] = {
         "temp_exit": int((~gate_t).sum()),
         "precip_exit": int((~gate_p).sum()),
+        "precip_no_skill": int(no_skill.sum()),
         "single_dim_cols": int(single.sum()),
+        "gate_basis": ("aggregate_icc_k" if is_v7_family() else "icc1"),
+        "weighted": bool(is_v7_family()) and bool(SCORE_RELIABILITY_WEIGHTING),
     }
     out["bucket_sd_R"] = None if sd_med is None else round(sd_med, 3)
     finite_t = rel_t[np.isfinite(rel_t)]
@@ -7744,7 +7956,9 @@ def _resolution_boards_blocks(
     # 可靠性/触底率是列级披露量（形状 (C,)），也要拼进总榜的 mat 供页面读取。
     # 可靠性/证据门是列级披露量，也要拼进总榜的 mat 供页面读取。
     _float_col = ("_rel_temp", "_rel_precip", "_rel_temp_raw",
-                  "_rel_precip_raw")
+                  "_rel_precip_raw", "_rel_temp_agg", "_rel_precip_agg",
+                  "_evidence_w_temp", "_evidence_w_precip",
+                  "_n_blocks_temp", "_n_blocks_precip")
     _bool_col = ("_rel_temp_imputed", "_rel_precip_imputed",
                  "_no_skill_bucket")
     _bool_grid = ("_gate_temp", "_gate_precip", "_single_dim")
@@ -8555,6 +8769,33 @@ def _build_board_rows(models, name, design, *, by_model,
     design["aligned"] = aligned
     design["point_scores"] = np.asarray(aligned["composite"], dtype=float)
 
+    # ---- skill-v7：逐源证据份额（覆盖 × 可评格 × 聚合信度）----
+    # 计算层用中性 50 保证 R 可加；发布层必须知道"这一维到底有多少证据"。
+    # 份额的分母是**该源在设计内的全部格子**（不是只看该维有数的格子）：
+    # 只在 2 个桶里有降水数据的源，不该因为那 2 个桶的信度尚可就拿到
+    # 一个和全窗口源同权的降水贡献。
+    share_t = share_p = None
+    if is_v7_family():
+        V = np.asarray(cell_valid, dtype=bool)
+        Wbase = (np.asarray(W_cell, dtype=float) if W_cell is not None
+                 else np.where(V, 1.0, 0.0))
+        Wbase = np.where(V & np.isfinite(Wbase) & (Wbase > 0), Wbase, 0.0)
+        den = Wbase.sum(axis=1)
+
+        def _evidence_share(score_key: str, weight_key: str) -> np.ndarray:
+            sc = np.asarray(mat.get(score_key), dtype=float)
+            ww = np.asarray(mat.get(weight_key, np.ones(sc.shape[1])),
+                            dtype=float)
+            if ww.ndim == 1:
+                ww = np.broadcast_to(ww[None, :], sc.shape)
+            ok = np.isfinite(sc) & np.isfinite(ww) & (ww > 0)
+            num = np.sum(np.where(ok, Wbase * ww, 0.0), axis=1)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                return np.where(den > 0, num / np.where(den > 0, den, 1.0), 0.0)
+
+        share_t = _evidence_share("temp_score", "_evidence_w_temp")
+        share_p = _evidence_share("precip_score", "_evidence_w_precip")
+
     rows: list[dict] = []
     for i, m in enumerate(models):
         # 行级派生量的跨榜共享（性能轮）：下面这批计数、验证日集合与按维覆盖时效
@@ -8597,6 +8838,26 @@ def _build_board_rows(models, name, design, *, by_model,
             t_score = _fin(aligned["temp_score"][i], 2)
             p_score = _fin(aligned["precip_score"][i], 2)
             t_skill = p_skill = None
+        # ---- skill-v7 发布语义：无证据 ≠ 平均 ----
+        # 计算层的 50 是中性占位（保证 R = t + p − 50 可加）；发布层若该维
+        # 证据份额不足，就发布 null（页面 —），绝不把占位 50 当成"表现中等"。
+        basis = None
+        ev_share_t = ev_share_p = None
+        if is_v7_family():
+            ev_share_t = (float(share_t[i]) if share_t is not None else 0.0)
+            ev_share_p = (float(share_p[i]) if share_p is not None else 0.0)
+            min_ev = float(SCORE_PUBLISH_MIN_EVIDENCE)
+            t_ok = t_score is not None and ev_share_t >= min_ev
+            p_ok = p_score is not None and ev_share_p >= min_ev
+            if t_score is not None and not t_ok:
+                t_score, t_skill = None, None
+            if p_score is not None and not p_ok:
+                p_score, p_skill = None, None
+            basis = ("both" if (t_ok and p_ok) else
+                     "temp_only" if t_ok else
+                     "precip_only" if p_ok else "none")
+            if basis == "none":
+                score_raw = None
         ev = (rain_evidence or {}).get(m) or {}
         cells_h, cells_d = (cells_in_design or {}).get(m, (None, None))
         cells_shown = [c for c in (cells_h, cells_d) if c is not None]
@@ -8609,9 +8870,16 @@ def _build_board_rows(models, name, design, *, by_model,
             need_rain_days = int((gate_limits or {}).get("need_rain_days", 3))
             # 方案 A：达标源拿正式分数/名次/CI；未达标源**不发布分数**
             #（不设参考分通道）。设计外（row_keep=False）的源同样不可比。
-            qualified = bool(gate.get("qualified")) and bool(row_keep[i]) \
-                and score_raw is not None and t_score is not None \
-                and p_score is not None
+            # v7：两维证据份额都够才要求两列齐备；只有一维有证据时按
+            # composite_basis 显式标注（不再静默把单维分冒充综合分）。
+            if is_v7_family():
+                qualified = bool(gate.get("qualified")) and bool(row_keep[i]) \
+                    and score_raw is not None and basis in (
+                        "both", "temp_only", "precip_only")
+            else:
+                qualified = bool(gate.get("qualified")) and bool(row_keep[i]) \
+                    and score_raw is not None and t_score is not None \
+                    and p_score is not None
             score = score_raw if qualified else None
             rain_short = bool(gate.get("rain_short")) and not qualified
             ev_note = str(gate.get("note") or "样本积累中")
@@ -8687,6 +8955,17 @@ def _build_board_rows(models, name, design, *, by_model,
             score=score,
             temp_score=t_score, precip_score=p_score,
             temp_skill=t_skill, precip_skill=p_skill,
+            # v7 证据发布语义：null 的含义是"本期没有足够证据"，
+            # 不是"表现中等"；页面据此显示 — 与原因。
+            temp_basis=("measured" if t_score is not None else
+                        ("no_evidence" if is_v7_family() else None)),
+            precip_basis=("measured" if p_score is not None else
+                          ("no_evidence" if is_v7_family() else None)),
+            temp_evidence_share=(None if ev_share_t is None
+                                 else round(float(ev_share_t), 3)),
+            precip_evidence_share=(None if ev_share_p is None
+                                   else round(float(ev_share_p), 3)),
+            composite_basis=basis,
             n=n_temp, n_precip=n_rain, n_eff=neff, n_eff_rain=neff_rain,
             # 日榜那半截的样本数（总榜才有，与 n 分开披露，单位不同不相加）
             n_daily_days=n_daily,

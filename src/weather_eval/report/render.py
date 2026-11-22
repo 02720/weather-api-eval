@@ -48,8 +48,8 @@ from ..evaluate import (_DAILY_TEMP_RECON_KEYS, PRECIP_SCORE_PARTS,
                         apply_score_amt_floors, apply_score_penalty_lambdas,
                         apply_score_composite_params,
                         apply_score_slopes, daily_temp_score,
-                        display_dim_score, is_v5_family, score_map_text,
-                        score_params_lock)
+                        display_dim_score, is_v5_family, is_v7_family,
+                        score_map_text, score_params_lock)
 from ..timeutil import now_beijing
 
 logger = logging.getLogger(__name__)
@@ -299,10 +299,11 @@ def _slim_report(report_data: dict) -> dict:
     # 口径家族判定**必须与 evaluate.is_v5_family 同源**：这里漏掉 v6 会让归档页
     # 重渲染用代码缺省的 τ/σ/lead 权重去复算一份按 v6 尺度发布的分数，P2 发布
     # 不变量随即误炸（旧 bug 类别见下方注释）。
-    _SKILL_SCHEMES_HERE = ("skill-v3", "skill-v4", "skill-v5", "skill-v6")
+    _SKILL_SCHEMES_HERE = ("skill-v3", "skill-v4", "skill-v5", "skill-v6",
+                           "skill-v7")
     if scheme in _SKILL_SCHEMES_HERE:
         apply_score_skill_k(meta.get("score_skill_k"))
-        if scheme in ("skill-v4", "skill-v5", "skill-v6"):
+        if scheme in ("skill-v4", "skill-v5", "skill-v6", "skill-v7"):
             _floors = meta.get("score_amt_floors") or {}
             apply_score_amt_floors(_floors.get("hourly_mm"),
                                   _floors.get("daily_mm"))
@@ -310,7 +311,7 @@ def _slim_report(report_data: dict) -> dict:
             apply_score_penalty_lambdas(
                 (_pen.get("temp") or {}).get("lambda"),
                 (_pen.get("precip") or {}).get("lambda"))
-        if scheme in ("skill-v5", "skill-v6"):
+        if scheme in ("skill-v5", "skill-v6", "skill-v7"):
             _c = meta.get("score_composite") or {}
             _rk = _c.get("rank") or {}
             _lw = {
@@ -346,6 +347,14 @@ def _slim_report(report_data: dict) -> dict:
             "ci_degenerate": row.get("ci_degenerate"),
             "ci_degenerate_reason": row.get("ci_degenerate_reason"),
             "ci_unstable": row.get("ci_unstable"),
+            # skill-v7：绝对技能分与证据披露。p 为 null 时页面显示 —，
+            # 而不是把"没有证据"渲染成 50。
+            "ps": _r(row.get("precip_skill")),
+            "pbs": row.get("precip_basis"),
+            "pes": row.get("precip_evidence_share"),
+            "tbs": row.get("temp_basis"),
+            "tes": row.get("temp_evidence_share"),
+            "cb": row.get("composite_basis"),
         })
 
     def _curve(track: dict) -> dict:
@@ -574,6 +583,9 @@ def _slim_report(report_data: dict) -> dict:
         "rank_reliability": meta.get("rank_reliability"),
         "gate_counts": meta.get("gate_counts"),
         "single_dim_summary": meta.get("single_dim_summary"),
+        # skill-v7：逐行发布构成与证据门槛（页面首屏据此说明"谁在撑综合分"）
+        "composite_basis_summary": meta.get("composite_basis_summary"),
+        "publish_min_evidence": meta.get("publish_min_evidence"),
         "bucket_sd_R": meta.get("bucket_sd_R"),
         "champion_view": meta.get("champion_view"),
         "composite_share": (meta.get("diagnostics") or {}).get("composite_share"),
@@ -954,19 +966,22 @@ def render_report_html(report_data: dict, title: str | None = None,
                   or "slope-v2")
     # skill-v6 也是技能量表口径：漏掉它会让页面回落到 slope-v2 的旧权重表，
     # 于是"评分构成"表与生产权重逐项不符（single-source-of-truth 破功）。
-    _skill_scheme = _scheme in ("skill-v3", "skill-v4", "skill-v5", "skill-v6")
+    _skill_scheme = _scheme in ("skill-v3", "skill-v4", "skill-v5",
+                                "skill-v6", "skill-v7")
     # "名次分 R / 技能分 S 是两个构念"是 v5 家族语义：模板里凡是解释这套语义的
     # 门控一律引用这里的家族判定，不得各自写死口径名（§11.8 事故类别——
     # 写死 'skill-v5' 曾让 v6 页面静默失去全部 R/S 解释，读者拿榜面的 R 去对
     # §02 走势图的 S，自然"对不上"）。取本报告自己的 meta 而非进程全局尺：
     # 归档月报重渲染时全局尺可能属于另一份报告。
     _v5_family = is_v5_family(_scheme)
+    _v7_family = is_v7_family(_scheme)
     _temp_parts = TEMP_SKILL_PARTS if _skill_scheme else TEMP_SCORE_PARTS
     _precip_parts = (PRECIP_SKILL_PARTS if _skill_scheme
                      else PRECIP_SCORE_PARTS)
     return tpl.render(
         report=report_data,
         v5_family=_v5_family,
+        v7_family=_v7_family,
         diag=diag,
         anchors=anchors,
         heavy_view=heavy_view,

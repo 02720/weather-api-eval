@@ -13,7 +13,7 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "stations
 # 评估默认参数（可被 stations.yaml 的 eval 段覆盖）
 DEFAULT_EVAL = {
     "score_scheme": "slope-v2",       # 评分口径：stations.yaml 的生产配置显式设为
-                                       # skill-v5（2026-11，名次分/技能分双口径）；
+                                       # skill-v7（2026-11，证据加权/聚合信度）；
                                        # 代码内缺省保留 slope-v2，供旧夹具/归档月报
                                        # 与直接调用回放。
     "score_ref_window_days": 15,      # skill-v5 气候参照：固定气候态平滑窗的
@@ -33,10 +33,15 @@ DEFAULT_EVAL = {
         "score_slopes",
     ],
     # 可靠性加权（2026-11 复核 P0-2）：z̃ = √ρ·z（ρ=该维跨期信度）。
-    # ρ 低于 exit 的维在该天桶退出 R（只发布 S）；门按（轨道 × 天桶）判定。
+    # v5/v6：ρ 低于 exit 的维在该天桶退出 R（只发布 S）；门按（轨道 × 天桶）判定。
+    # v7：exit 作用在**聚合信度 ICC(K)** 上，且不再二值清零——逐桶用 √ρ_K
+    #     连续加权；只有 no-skill 桶（物理上无技巧）权重为 0。
     "score_reliability_weighting": True,
     "score_reliability_min": 0.20,
     "score_reliability_exit": 0.20,
+    # v7 发布门槛：逐源证据份额 < 该值的维度发布 null（页面 —），
+    # 把"没有证据"与"表现中等（50）"彻底分开。
+    "score_publish_min_evidence": 0.10,
     "score_skill_k": 1.535,           # skill 下半段指数压缩参数（50→0 的衰减）
     # ---- skill-v5（2026-11）综合分口径 ----
     # 温度:降水的**声明业务价值** α；综合分与敏感性分析都以它为唯一宏观权重。
