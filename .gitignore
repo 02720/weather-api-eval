@@ -15,10 +15,5 @@ data/**/*.lock
 reports/.baseline/
 # 浏览器工具的本地截图留档（对拍报告版面用），不是项目产物
 .openchamber/
-# 全量评测数据导出（reports/eval_all.json）不入 git：约 8 MB/轮 × 每天 3 轮，
-# 若随 reports/ 提交，git 历史一年涨 ~8 GB，体量看门狗（400 MB）两周内必红。
-# 它与 index.html 同为可从快照重算的派生视图；外部程序走 Pages 取最新版
-# （https://<owner>.github.io/<repo>/eval_all.json），每轮部署自动更新。
-reports/eval_all.json
 # Trae IDE 的 HTML 分享产物（把 reports/*.html 打成 zip），不是项目产物
 .trae-html-share-packages/

@@ -55,6 +55,7 @@ import argparse
 import calendar
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -497,47 +498,87 @@ def refresh_monthly_archives(cfg) -> int:
 
 
 
-def write_eval_data_export(data: dict) -> Path:
-    """把本次报告的**全部**评测数据导出为 reports/eval_all.json（机器可读单文件）。
+# ---- 全量评测结果导出（reports/eval_all.json）的瘦身口径 ----
+# 结果层白名单：榜单/评分卡/分站/曲线/来源构成/覆盖度 + meta 口径参数。
+# 评测的**全部指标列**都在 leaderboards 的行里（榜单即由明细表聚合而来），
+# 外部程序拿它即可复现页面上的每一个数字；不进导出的是三类重算原料——
+#   · timeseries / heatmap：图表逐样本原料（§04/§05 的画图数据）
+#   · temp_*/precip_* 六张逐桶明细表：指标列与榜单重复，独有部分只有逐格
+#     显著性诊断（chi2/pvalue/rss 等统计审计中间量）
+#   · meta.difficulty_window：逐桶气候参照窗口的内部计算原料（2.3 MB，
+#     窗口级曲线已在 meta.reference_profile）
+# 这三类都可从 data/ 快照重算（与 index.html 同级，是派生视图而非证据）。
+_EVAL_EXPORT_RESULT_KEYS = (
+    "coverage", "scorecard", "leaderboards", "per_station",
+    "temp_lead_curve", "score_trend", "daily_source_mix",
+)
+_EVAL_EXPORT_META_DROP_KEYS = ("difficulty_window",)
+# 结果表浮点统一 3 位小数：页面展示精度本就是 2~3 位（score 71.26 / rmse
+# 1.173），17 位有效数字纯为浮点运算残留；只 round 结果表，meta 里的标定
+# 参数（斜率/λ/门槛）保持原精度——那是复算分数的输入，不能失真。
+_EVAL_EXPORT_ROUND_DIGITS = 3
 
-    第一性原理：外部程序要的从来不是 HTML，而是"评测算出了什么"这件事本身。
-    而这份答案在内存里已经完整存在——渲染 index.html 的正是同一个 ``data``
-    字典（build_report 的全量产物：meta/口径/覆盖度/榜单/评分卡/诊断/逐样本
-    明细）。因此导出不做任何二次计算，直接把这个字典序列化：
+
+def _export_round_floats(obj: Any, ndigits: int) -> Any:
+    """递归把结果表里的浮点收敛到展示精度（返回纯 Python 值，可直接序列化）。"""
+    if isinstance(obj, float):
+        return round(obj, ndigits) if math.isfinite(obj) else obj
+    if isinstance(obj, dict):
+        return {k: _export_round_floats(v, ndigits) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_export_round_floats(v, ndigits) for v in obj]
+    return obj
+
+
+def write_eval_data_export(data: dict) -> Path:
+    """把**实时累计评测结果**（全部指标）导出为 reports/eval_all.json。
+
+    第一性原理：外部程序要的不是 HTML，也不是重算原料，而是"评测算出了
+    什么"这一层**结果**——而它在内存里已经完整存在：渲染 index.html 的正是
+    同一个 build_report 字典。导出按白名单取其结果层：
 
     * **单一事实源**：页面与 JSON 永远同一次 build_report 的产物，不存在
-      "HTML 说了 A、JSON 说了 B"的分叉可能；口径参数（阈值、斜率、scheme）
-      都在 meta 里，外部程序可自行复核每个分数怎么来的。
+      "HTML 说了 A、JSON 说了 B"的分叉；meta 带全套口径参数（阈值/斜率/
+      scheme/门槛），外部程序可自行复核每个分数怎么来的。
+    * **所有指标都在**：51 张榜（总榜/小时榜/日榜 × 全部 lead 档）每行含
+      全部指标列（score/temp/precip/acc/rmse/mae/mbe/r/slope/TS/ETS/POD/
+      FAR/BIAS/amt_*/skill*/bootstrap CI/资格门槛...），另有 scorecard、
+      per_station（分站×分模型）、衰减曲线、score_trend、覆盖度与来源构成。
+    * **体积（结果 ≠ 原料）**：全量字典约 8 MB，其中逐样本图表原料与逐桶
+      明细/参照窗口占 2/3 且可从快照重算——只导出结果层 + 浮点收敛到展示
+      精度后约 1.5 MB。它随 reports/ 入库（外部程序亦可直接取仓库文件），
+      每天三轮的 git 增量由现有体积治理（compact/footprint 看门狗）监控；
+      若长期涨势需要回收，属人工决策（见 README「历史体积的人工回收」）。
     * **随 action 自动更新**：挂在 _update_live_report 尾部——all / report /
-      monthly 每一轮都会顺带重写本文件，eval.yml 无需任何改动。外部调用入口
-      是 Pages（reports/ 即部署根目录），每轮部署自动带上本文件，稳定 URL 形如
-      ``https://<owner>.github.io/<repo>/eval_all.json``。
-    * **不入 git 历史（体积治理的硬约束）**：全量导出约 8 MB/轮、每天三轮，
-      若随 reports/ 提交，git 历史一年涨 ~8 GB——仓库体量看门狗（400 MB 告警）
-      两周内就会变红，且逐样本明细与 index.html 一样是**可从快照重算的派生
-      视图**，不是需要永久留痕的证据（证据在 data/ 的快照与月度摘要里）。
-      故本文件列入 .gitignore：Pages 每轮照常部署最新版，仓库零历史增长。
-    * **schema 版本化**：顶层带 schema 字段与导出时间戳（北京时），外部程序
-      据此做兼容判断；months_available 列出已归档月份——逐月冻结结论随仓库
-      存放在 data/metrics/{m}/summary.json（月度视图 reports/monthly/{m}.html），
-      本文件只承载跨月累计窗口（起点=数据起点，已覆盖全部月份的累计口径），
-      两份产物分工互不复制，一份入口即知"所有"在哪。
+      monthly 每一轮都会顺带重写本文件。外部调用入口是 Pages（reports/ 即
+      部署根目录），稳定 URL 形如 ``https://<owner>.github.io/<repo>/eval_all.json``。
+    * **schema 版本化**：``weather-eval/export@v2``（v1 曾为全量字典，已被
+      结果层白名单取代）；exported_at 为北京时。months_available 指向逐月
+      冻结结论 data/metrics/{m}/summary.json——本文件只承载跨月累计窗口
+      （起点=数据起点，已覆盖全部月份的累计口径），两份产物分工互不复制。
 
     序列化沿用 _atomic_write_json（原子 + _json_safe 把 inf 折成 None），
     与 monthly summary.json 同一条写入纪律。
     """
     from .report.render import _reports_root
     path = _reports_root() / "eval_all.json"
+    nd = _EVAL_EXPORT_ROUND_DIGITS
+    report = {
+        "meta": {k: v for k, v in data["meta"].items()
+                 if k not in _EVAL_EXPORT_META_DROP_KEYS},
+        **{k: _export_round_floats(data[k], nd)
+           for k in _EVAL_EXPORT_RESULT_KEYS},
+    }
     payload = {
-        "schema": "weather-eval/export@v1",
+        "schema": "weather-eval/export@v2",
         "exported_at": now_beijing().strftime("%Y-%m-%dT%H:%M:%S"),
         "timezone": "Asia/Shanghai",
         "months_available": sorted(available_months()),
-        "report": data,
+        "report": report,
     }
     _atomic_write_json(path, payload, indent=None)
     size = path.stat().st_size
-    log.info("全量评测数据已导出（外部调用入口）：%s（%.0f KB）", path, size / 1024)
+    log.info("评测结果数据已导出（外部调用入口）：%s（%.0f KB）", path, size / 1024)
     return path
 
 
