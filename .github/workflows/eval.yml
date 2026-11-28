@@ -176,17 +176,23 @@ jobs:
           TZ: Asia/Shanghai
         run: python -m weather_eval fetch-forecast --source msn
 
-      - name: 抓取 EW4ALL（CMA-NDFS / 风清AI模式 / CMA-GFS）预报（网页接口抓取，无需凭据）
+      - name: 抓取 EW4ALL（CMA-NDFS / 风清AI模式 / CMA-GFS）预报（网页接口抓取，需 WAF 令牌）
         # 抓取 ew4all.wmc-bj.net/EW4ALL 模式预报页背后的公开接口（前端 bundle 逆向，
-        # 契约与口径见 src/weather_eval/forecast/ew4all.py docstring）。
+        # 契约与口径见 src/weather_eval/forecast/ew4all.py docstring，WAF 见第 10 条）。
         # 每站每模型 2~3 次请求（温度 + 1 小时降水[仅 CMA-NDFS] + 兜底累计降水）
         # + 每模型一次起报轮次探测，4 站 3 模型实测约 30 次/轮。
+        # 2026-11-24 起该站 WAF 只放行携带 http_ew4all_tk 令牌的请求。provider 按序
+        # 尝试：会话已有令牌 → 环境变量注入 → 导航形态引导 → 无头浏览器（playwright
+        # 已进 requirements-dev.txt，用 runner 预装的 Google Chrome 启动，免浏览器下载）。
+        # 可选配置 EW4ALL_WAF_TK Secret（浏览器访问预报页后从 Cookie 复制
+        # http_ew4all_tk 的值；令牌不绑 IP，可跨机使用）作为保底通道。
         # 接口无官方契约：失效形态是"返回空 data"而非报错，代码按"空数据不建快照"
         # 守卫（空快照会被幂等键锁死），且起报轮次必须温度与兜底降水都有非缺测值
         # 才采纳（该源一轮内分要素先后出数）；失败只影响该源，不阻断主流程。
         continue-on-error: true
         env:
           TZ: Asia/Shanghai
+          WEATHER_EVAL_EW4ALL_TK: ${{ secrets.EW4ALL_WAF_TK }}
         run: python -m weather_eval fetch-forecast --source ew4all
 
       - name: 抓取中国气象局公众网预报（公开 JSON 接口，无需凭据）

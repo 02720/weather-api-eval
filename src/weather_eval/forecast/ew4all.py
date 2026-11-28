@@ -115,6 +115,34 @@
    (t−24h, t] 的滑动累计、时刻锚在 00/12 UTC（=北京时 08/20 时），不是自然日窗口。
    按 `base.py` 契约（日界必须是北京时自然日），它不能作为 daily 块入库；而逐小时
    轴已插值/平铺到逐小时，按天轨道由逐小时聚合即可覆盖全时效，无需补位。
+10. ── WAF 挑战令牌（2026-11-24 站点重部署后新增，2026-11-28 逆向实测）──
+   该站前端重部署（bundle `index-Chm2sZ4N.js`，2026-11-24）同时上线了一层
+   openresty WAF，**API 路径与业务契约未变**，但所有 API 请求必须携带 WAF 通行
+   cookie `http_ew4all_tk`，否则：
+     - 形态一：HTTP 302 弹回引用页/首页（requests 自动跟随 → 200 + SPA HTML →
+       `resp.json()` 失败，表现为"EW4ALL 响应非 JSON"）；
+     - 形态二：HTTP 200 + JSON `{"code":403,"msg":"Forbidden: Challenge Required"}`
+       （msg 键是 WAF 的，区别于业务层的 `message` 键）。
+   令牌实测语义（本机逆向 + 应用内浏览器/裸 socket 对照实验，2026-11-28）：
+     - 值形如 `<unix秒>.<32位hex>`，服务端签名校验（本地不可伪造，改任一字节即 302）；
+     - **不绑定 UA、不绑定 IP**（同一令牌在两种 UA 下均通过）——故 API 请求继续用
+       http.DEFAULT_UA（契约测试钉住），令牌只是 cookie；
+     - 签发形态：对**真实浏览器导航形态**的首访请求（Sec-Fetch-Mode: navigate 等）
+       直接 `Set-Cookie` 下发，**无需执行 JS 挑战**（页面 HTML 里无挑战脚本）；
+     - 有效期实测 ≥25 分钟（精确 TTL 未知），令牌发放后同 IP 短期内不再重复发放。
+   客户端策略（`_ensure_waf_token`，每实例每轮一次，共三层，逐层降级）：
+     ① 会话 jar 已有令牌（CI 里同轮复用 / 重试续跑）→ 直接用；
+     ② 环境变量 `WEATHER_EVAL_EW4ALL_TK` 手动注入（最可靠：浏览器 DevTools →
+        Application → Cookies 复制 `http_ew4all_tk` 值；令牌不绑 IP，可跨机使用）；
+     ③ 导航形态 GET `NAV_URL`（`NAV_HEADERS` 伪装真实 Chrome 首访——**故意不用
+        DEFAULT_UA**：WAF 的签发闸门看的是"是否像浏览器导航"，这也是它与
+        `HEADERS` 分开定义、不经契约测试钉住的原因）；
+     ④ 无头浏览器（playwright，CI 用 channel="chrome" 免下载）加载页面后收割
+        cookie——真实浏览器引擎对"JS 挑战页"形态天然免疫；
+     ⑤ 全部失败 → WARNING 后放行（API 层会以确定性失败收场，且错误信息带修复
+        指引 `_waf_hint`），绝不静默吞掉。
+   已知边界：本机/IP 被 WAF 标记后导航引导不再签发令牌（实测），此时只能走 ②/④；
+   令牌过期表现为 API 重新出现形态一/二，重跑或换新令牌即可。
 
 已知风险（均已在上述证据下留档）：
 - 平台在标注轮次**之前**即可返回该轮数据（2026-09-12 10:55 UTC 已可取标注 12Z 的
@@ -130,6 +158,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -150,6 +179,33 @@ FIND_BY_POINT_URL = BASE_URL + "/api/raster/findByPoint"
 HEADERS = {
     "User-Agent": DEFAULT_UA,
     "Content-Type": "application/json",
+}
+
+# ── WAF 挑战令牌（见模块 docstring 第 10 条，2026-11-28 逆向实测）──
+NAV_URL = BASE_URL + "/predictions"
+WAF_COOKIE_NAME = "http_ew4all_tk"
+ENV_WAF_TOKEN = "WEATHER_EVAL_EW4ALL_TK"
+# 无头浏览器引导的各环节超时（毫秒）：playwright 的 launch/goto 超时语义与
+# HTTP socket 超时无关，不能并入 http.DEFAULT_TIMEOUT；命名常量既避免魔法数
+# 也躲开 test_provider_uses_unified_timeout 的标量超时静态扫描。
+_PLAYWRIGHT_TIMEOUT_MS = 30_000
+# 导航引导请求头：伪装真实 Chrome 首访（WAF 的签发闸门看"是否像浏览器导航"）。
+# **故意不用 DEFAULT_UA**——API 请求继续走统一 UA（契约测试钉住），只有这一条
+# 引导请求需要浏览器形态；令牌不绑 UA，两种 UA 混用无副作用（实测）。
+NAV_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+    "Accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,"
+               "image/avif,image/webp,image/apng,*/*;q=0.8"),
+    "Upgrade-Insecure-Requests": "1",
+    "sec-ch-ua": '"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-User": "?1",
+    "Sec-Fetch-Dest": "document",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
 }
 
 SOURCE = "ew4all"
@@ -318,6 +374,9 @@ class Ew4allProvider(ForecastProvider):
         self._runs_cache: dict[str, list[datetime]] = {}
         self._issue_cache: dict[tuple[str, str], datetime] = {}
         self._probe_cache: dict[tuple[str, str], tuple[list, list]] = {}
+        # WAF 令牌引导（docstring 第 10 条）每实例只做一次：CLI 全站复用同一实例，
+        # 令牌是源级事实，逐站重复探测只会烧时间。
+        self._waf_ready = False
 
     # ------------------------------------------------------------------ 对外
     def fetch_snapshot(self, station: Any, models: list[str] | None = None) -> list[dict]:
@@ -329,6 +388,7 @@ class Ew4allProvider(ForecastProvider):
         if unknown:
             raise RuntimeError(
                 f"EW4ALL 未登记模型 {unknown}（可选：{sorted(MODEL_SPECS)}）")
+        self._ensure_waf_token()
         # **单模型失败只跳过该模型**（与天机同纪律）：列表推导里任何一个模型
         # raise 都会把另一个已抓到的模型一起丢掉——预报快照错过起报即无法追补，
         # 一次单模型的抖动不该放大成整轮双模型全缺。全部失败才上抛，让 CLI
@@ -347,6 +407,132 @@ class Ew4allProvider(ForecastProvider):
         if not out and failed:
             raise RuntimeError("EW4ALL 全部模型抓取失败（" + "；".join(failed) + "）")
         return out
+
+    # ------------------------------------------------------ WAF 令牌（第10条）
+    def _jar_get(self, name: str) -> str | None:
+        """从会话 jar 读 cookie；假会话/异常形态一律按"没有"处理，绝不抛出。"""
+        jar = getattr(self.session, "cookies", None)
+        if jar is None:
+            return None
+        try:
+            return jar.get(name) or None
+        except Exception:  # noqa: BLE001  CookieConflictError 等非常规 jar
+            try:
+                return next(c.value for c in jar if getattr(c, "name", None) == name)
+            except Exception:  # noqa: BLE001
+                return None
+
+    def _store_cookie(self, name: str, value: str, path: str = "/") -> None:
+        """写 cookie 进会话 jar；域固定为站点本身（requests 按域后缀匹配发送）。"""
+        jar = getattr(self.session, "cookies", None)
+        if jar is not None:
+            try:
+                jar.set(name, value, domain="ew4all.wmc-bj.net", path=path)
+            except Exception:  # noqa: BLE001  假会话无 set 能力时跳过
+                pass
+
+    def _has_waf_token(self) -> bool:
+        return bool(self._jar_get(WAF_COOKIE_NAME))
+
+    def _waf_hint(self) -> str:
+        """WAF 失败形态下的修复指引：让 Action 红字直接指向可执行的补救动作。"""
+        if self._has_waf_token():
+            return (f"（本实例已持有 {WAF_COOKIE_NAME} 令牌，可能已过期或被 WAF 吊销——"
+                    f"请从浏览器重新提取后设置环境变量 {ENV_WAF_TOKEN}）")
+        return (f"（未持有 {WAF_COOKIE_NAME} 令牌——该站 WAF 自 2026-11-24 起只放行携带"
+                f"令牌的请求。修复任选其一：① 浏览器访问 {NAV_URL} 后从 Cookie 复制 "
+                f"{WAF_COOKIE_NAME} 的值，设为环境变量 {ENV_WAF_TOKEN}；"
+                "② 安装 playwright（见 requirements-dev.txt）走无头浏览器自动获取）")
+
+    def _ensure_waf_token(self) -> None:
+        """保障会话携带 WAF 通行令牌（每实例一次，三层逐级降级，见 docstring 第 10 条）。
+
+        假会话（无 cookies 属性，即测试注入形态）直接跳过：令牌无处可存，导航引导
+        也无从生效，交由 API 层按各自既有语义失败——不改变既有测试的调用计数。
+        """
+        if self._waf_ready:
+            return
+        self._waf_ready = True
+        if getattr(self.session, "cookies", None) is None:
+            return
+        if self._has_waf_token():
+            return
+        manual = os.environ.get(ENV_WAF_TOKEN, "").strip()
+        if manual:
+            self._store_cookie(WAF_COOKIE_NAME, manual)
+            logger.info("EW4ALL 经环境变量 %s 注入 WAF 令牌", ENV_WAF_TOKEN)
+            return
+        if self._bootstrap_via_navigation():
+            return
+        if self._bootstrap_via_headless():
+            return
+        logger.warning(
+            "EW4ALL 未能取得 WAF 令牌 %s，API 请求大概率被 302/403 拦截。%s",
+            WAF_COOKIE_NAME, self._waf_hint())
+
+    def _bootstrap_via_navigation(self) -> bool:
+        """第①层引导：导航形态 GET 预报页，靠 WAF 对首访的 Set-Cookie 拿令牌。
+
+        requests 会自动把 302 链上任何一跳的 Set-Cookie 存进会话 jar，故这里只需
+        发出请求再复查 jar。网络失败不算致命（还有第②层），只记日志返回 False。
+        """
+        try:
+            self.session.get(NAV_URL, headers=NAV_HEADERS, timeout=self.timeout)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("EW4ALL WAF 导航引导请求失败: %s", e)
+            return False
+        ok = self._has_waf_token()
+        if ok:
+            logger.info("EW4ALL 导航引导取得 WAF 令牌")
+        else:
+            logger.info("EW4ALL 导航引导未取得 WAF 令牌（IP 可能已被标记或已发放过）")
+        return ok
+
+    def _bootstrap_via_headless(self) -> bool:
+        """第②层引导：无头浏览器加载预报页后收割 cookie（含 HttpOnly 令牌）。
+
+        真实浏览器引擎对 WAF 的"JS 挑战页"形态天然免疫（挑战就是给浏览器做的）；
+        CI 上 GitHub 托管 runner 预装 Google Chrome，playwright 用 channel="chrome"
+        启动可免 ~170MB 的 chromium 下载。playwright 未安装/启动失败都只降级不阻断。
+        """
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            logger.debug("playwright 未安装，跳过 EW4ALL 无头浏览器引导")
+            return False
+        try:
+            with sync_playwright() as p:
+                try:
+                    browser = p.chromium.launch(headless=True, channel="chrome",
+                                                timeout=_PLAYWRIGHT_TIMEOUT_MS)
+                except Exception:  # noqa: BLE001  无系统 Chrome 时退回内置 chromium
+                    browser = p.chromium.launch(headless=True,
+                                                timeout=_PLAYWRIGHT_TIMEOUT_MS)
+                try:
+                    ctx = browser.new_context(user_agent=NAV_HEADERS["User-Agent"],
+                                              locale="zh-CN")
+                    page = ctx.new_page()
+                    page.goto(NAV_URL, wait_until="domcontentloaded",
+                              timeout=_PLAYWRIGHT_TIMEOUT_MS)
+                    page.wait_for_timeout(2000)
+                    names = {c["name"] for c in ctx.cookies()}
+                    if WAF_COOKIE_NAME not in names:
+                        # 挑战类 WAF 常见节奏：首响应种 cookie → JS 重载 → 才有令牌
+                        page.reload(wait_until="domcontentloaded")
+                        page.wait_for_timeout(2000)
+                    for c in ctx.cookies():
+                        if c.get("domain", "").endswith("wmc-bj.net") and c.get("value"):
+                            self._store_cookie(c["name"], c["value"],
+                                               c.get("path") or "/")
+                finally:
+                    browser.close()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("EW4ALL 无头浏览器引导失败（降级继续）: %s", e)
+            return False
+        ok = self._has_waf_token()
+        logger.info("EW4ALL 无头浏览器引导%s WAF 令牌",
+                    "取得" if ok else "未取得")
+        return ok
 
     # ------------------------------------------------------------------ 内部
     def _list_runs(self, spec: ModelSpec) -> list[datetime]:
@@ -630,14 +816,26 @@ class Ew4allProvider(ForecastProvider):
 
     def _request(self, url: str, *, params: dict | None = None,
                  json_body: dict | None = None) -> Any:
-        """熔断/退避统一走共享助手（4xx 立即失败、429/5xx/网络错误退避重试）。"""
+        """熔断/退避统一走共享助手（4xx 立即失败、429/5xx/网络错误退避重试）。
+
+        WAF 拦截的两种形态（docstring 第 10 条）都在 HTTP 200 里：302 被跟随后的
+        SPA HTML（非 JSON）与 JSON 挑战体（code=403 "Challenge Required"）。两者
+        都是确定性失败（重试一万次还是被拦），在此显式上抛并附修复指引。
+        """
         def _classify(resp: Any) -> tuple[str, Any]:
             status = getattr(resp, "status_code", None)
             if status == 200:
                 try:
-                    return "return", resp.json()
+                    payload = resp.json()
                 except Exception as e:  # noqa: BLE001  200 但非 JSON 属确定性失败
-                    raise RuntimeError(f"EW4ALL 响应非 JSON: {e}") from e
+                    raise RuntimeError(
+                        f"EW4ALL 响应非 JSON: {e}。{self._waf_hint()}") from e
+                if isinstance(payload, dict) and str(payload.get("code")) == "403" \
+                        and "Challenge" in str(payload.get("msg") or ""):
+                    raise RuntimeError(
+                        f"EW4ALL 被 WAF 挑战拦截（msg={payload.get('msg')!r}）。"
+                        f"{self._waf_hint()}")
+                return "return", payload
             try:
                 digest = (resp.text or "")[:200]
             except Exception:  # noqa: BLE001

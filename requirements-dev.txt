@@ -12,3 +12,9 @@ pytest>=8.0,<9
 pytest-xdist>=3,<4
 # ci.yml 有一步 `python -m ruff check src scripts tests`
 ruff>=0.8,<0.9
+# EW4ALL 源的 WAF 无头浏览器引导（forecast/ew4all.py `_bootstrap_via_headless`）：
+# 2026-11-24 起该站 WAF 只放行携带 http_ew4all_tk 令牌的请求，导航引导拿不到令牌时
+# 由无头浏览器加载页面收割 cookie。GitHub 托管 runner 预装 Google Chrome，provider
+# 用 channel="chrome" 启动（免 ~170MB chromium 下载）；仅 eval.yml 运行时真正使用，
+# 放入本文件是因 CI 工具必须集中于此（防两份清单漂移，见顶部说明）。
+playwright>=1.49,<2

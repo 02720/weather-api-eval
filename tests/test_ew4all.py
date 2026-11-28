@@ -19,9 +19,12 @@ import pytest
 from conftest import FakeResp
 
 from weather_eval.forecast.ew4all import (
+    ENV_WAF_TOKEN,
     FIND_BY_POINT_URL,
     MODEL_SPECS,
     MODEL_TIME_LIST_URL,
+    NAV_URL,
+    WAF_COOKIE_NAME,
     Ew4allProvider,
     build_series,
     hourly_axis,
@@ -52,6 +55,36 @@ class RoutingSession:
 
     def request(self, method, url, **kw):
         return self._dispatch(method, url, **kw)
+
+
+class FakeJar:
+    """RequestsCookieJar 形态的最小假实现（get/set 签名一致）。"""
+
+    def __init__(self):
+        self._d: dict[str, str] = {}
+
+    def set(self, name, value, domain=None, path=None):
+        self._d[name] = value
+
+    def get(self, name, default=None):
+        return self._d.get(name, default)
+
+
+class CookieSession(RoutingSession):
+    """带 cookie jar 的假会话：命中导航 URL 时模拟 WAF 的 Set-Cookie 签发。
+
+    真实 requests.Session 会把任何一跳的 Set-Cookie 自动存入 jar；本假类用
+    "GET 到 NAV_URL 即种下令牌"来模拟同一效果，其余行为与 RoutingSession 一致。
+    """
+
+    def __init__(self, routes):
+        super().__init__(routes)
+        self.cookies = FakeJar()
+
+    def get(self, url, **kw):
+        if url == NAV_URL:
+            self.cookies.set(WAF_COOKIE_NAME, "issued-by-waf")
+        return super().get(url, **kw)
 
 
 class Station:
@@ -532,6 +565,73 @@ def test_health_warns_when_one_hour_coverage_shrinks(caplog):
     with caplog.at_level(logging.WARNING):
         Ew4allProvider._warn_health(Station, spec, tem, acc, [], axis, temps, precips)
     assert "无有效值" in caplog.text        # 完全没有 1 小时产品时另有一条告警
+
+
+# ------------------------------------------------------------------ WAF 令牌
+# 2026-11-24 起该站上线 openresty WAF：无 http_ew4all_tk cookie 的 API 请求一律
+# 302 弹回或 403 Challenge JSON（契约证据见 ew4all.py docstring 第 10 条）。
+def test_waf_token_from_env_is_injected_before_any_request(monkeypatch):
+    """环境变量令牌是最可靠的通道：注入后不再发导航引导请求。"""
+    monkeypatch.setenv(ENV_WAF_TOKEN, "manual-token-value")
+    prov = Ew4allProvider(session=CookieSession(_routes()))
+    prov.fetch_snapshot(Station, ["cma_ndfs"])
+    assert prov._jar_get(WAF_COOKIE_NAME) == "manual-token-value"
+    assert prov.session.calls[0][1] == MODEL_TIME_LIST_URL      # 无导航 GET
+
+
+def test_waf_navigation_bootstrap_issues_token_before_api(monkeypatch):
+    """无令牌时先做导航引导（WAF 经 Set-Cookie 签发），API 调用排在其后。"""
+    monkeypatch.delenv(ENV_WAF_TOKEN, raising=False)
+    prov = Ew4allProvider(session=CookieSession(_routes()))
+    prov.fetch_snapshot(Station, ["cma_ndfs"])
+    urls = [c[1] for c in prov.session.calls]
+    assert urls[0] == NAV_URL
+    assert MODEL_TIME_LIST_URL in urls
+    assert prov._jar_get(WAF_COOKIE_NAME) == "issued-by-waf"
+
+
+def test_waf_token_already_present_skips_bootstrap(monkeypatch):
+    """会话已带令牌（重试续跑/同轮复用）时不做任何引导请求。"""
+    monkeypatch.delenv(ENV_WAF_TOKEN, raising=False)
+    prov = Ew4allProvider(session=CookieSession(_routes()))
+    prov.session.cookies.set(WAF_COOKIE_NAME, "pre-existing")
+    prov.fetch_snapshot(Station, ["cma_ndfs"])
+    assert prov.session.calls[0][1] == MODEL_TIME_LIST_URL
+    assert all(c[1] != NAV_URL for c in prov.session.calls)
+
+
+def test_waf_session_without_cookiejar_skips_bootstrap_quietly(monkeypatch):
+    """无 jar 的假会话（既有测试注入形态）直接跳过引导：不引导、不注入、不报错。"""
+    monkeypatch.setenv(ENV_WAF_TOKEN, "unused")          # 注入也须安全跳过
+    prov = Ew4allProvider(session=RoutingSession(_routes()))
+    prov.fetch_snapshot(Station, ["cma_ndfs"])           # 正常完成，无额外请求
+    assert prov.session.calls[0][1] == MODEL_TIME_LIST_URL
+
+
+def test_waf_challenge_json_error_carries_remediation(monkeypatch):
+    """403 Challenge JSON 必须指明缺令牌与两条修复途径，而不是让 Action 红字无解。"""
+    monkeypatch.delenv(ENV_WAF_TOKEN, raising=False)
+
+    def routes(method, url, params, body):
+        return 200, json.dumps({"code": 403, "msg": "Forbidden: Challenge Required"})
+
+    prov = Ew4allProvider(session=RoutingSession(routes), retries=1)
+    with pytest.raises(RuntimeError) as ei:
+        prov.fetch_snapshot(Station, ["cma_ndfs"])
+    msg = str(ei.value)
+    assert "Challenge" in msg
+    assert ENV_WAF_TOKEN in msg and WAF_COOKIE_NAME in msg
+
+
+def test_waf_non_json_html_error_carries_remediation(monkeypatch):
+    """302 被跟随后的 SPA HTML（"响应非 JSON"形态）同样要给出修复指引。"""
+    monkeypatch.delenv(ENV_WAF_TOKEN, raising=False)
+    prov = Ew4allProvider(session=RoutingSession(
+        lambda *a, **k: (200, "<!doctype html><html>…</html>")), retries=1)
+    with pytest.raises(RuntimeError) as ei:
+        prov.fetch_snapshot(Station, ["cma_ndfs"])
+    assert "非 JSON" in str(ei.value)
+    assert ENV_WAF_TOKEN in str(ei.value)
 
 
 # ------------------------------------------------------------------ CLI 端到端
