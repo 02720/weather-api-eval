@@ -497,11 +497,58 @@ def refresh_monthly_archives(cfg) -> int:
 
 
 
+def write_eval_data_export(data: dict) -> Path:
+    """把本次报告的**全部**评测数据导出为 reports/eval_all.json（机器可读单文件）。
+
+    第一性原理：外部程序要的从来不是 HTML，而是"评测算出了什么"这件事本身。
+    而这份答案在内存里已经完整存在——渲染 index.html 的正是同一个 ``data``
+    字典（build_report 的全量产物：meta/口径/覆盖度/榜单/评分卡/诊断/逐样本
+    明细）。因此导出不做任何二次计算，直接把这个字典序列化：
+
+    * **单一事实源**：页面与 JSON 永远同一次 build_report 的产物，不存在
+      "HTML 说了 A、JSON 说了 B"的分叉可能；口径参数（阈值、斜率、scheme）
+      都在 meta 里，外部程序可自行复核每个分数怎么来的。
+    * **随 action 自动更新**：挂在 _update_live_report 尾部——all / report /
+      monthly 每一轮都会顺带重写本文件，eval.yml 无需任何改动。外部调用入口
+      是 Pages（reports/ 即部署根目录），每轮部署自动带上本文件，稳定 URL 形如
+      ``https://<owner>.github.io/<repo>/eval_all.json``。
+    * **不入 git 历史（体积治理的硬约束）**：全量导出约 8 MB/轮、每天三轮，
+      若随 reports/ 提交，git 历史一年涨 ~8 GB——仓库体量看门狗（400 MB 告警）
+      两周内就会变红，且逐样本明细与 index.html 一样是**可从快照重算的派生
+      视图**，不是需要永久留痕的证据（证据在 data/ 的快照与月度摘要里）。
+      故本文件列入 .gitignore：Pages 每轮照常部署最新版，仓库零历史增长。
+    * **schema 版本化**：顶层带 schema 字段与导出时间戳（北京时），外部程序
+      据此做兼容判断；months_available 列出已归档月份——逐月冻结结论随仓库
+      存放在 data/metrics/{m}/summary.json（月度视图 reports/monthly/{m}.html），
+      本文件只承载跨月累计窗口（起点=数据起点，已覆盖全部月份的累计口径），
+      两份产物分工互不复制，一份入口即知"所有"在哪。
+
+    序列化沿用 _atomic_write_json（原子 + _json_safe 把 inf 折成 None），
+    与 monthly summary.json 同一条写入纪律。
+    """
+    from .report.render import _reports_root
+    path = _reports_root() / "eval_all.json"
+    payload = {
+        "schema": "weather-eval/export@v1",
+        "exported_at": now_beijing().strftime("%Y-%m-%dT%H:%M:%S"),
+        "timezone": "Asia/Shanghai",
+        "months_available": sorted(available_months()),
+        "report": data,
+    }
+    _atomic_write_json(path, payload, indent=None)
+    size = path.stat().st_size
+    log.info("全量评测数据已导出（外部调用入口）：%s（%.0f KB）", path, size / 1024)
+    return path
+
+
 def _update_live_report(cfg):
     """用跨月累计窗口（数据起点 → 现在）重建主报告 reports/index.html（覆盖写）。
 
     月度归档（monthly 命令）不受影响：它用自然月窗口 + is_monthly 语义回答
     "那个月谁最准"，与总榜分工（见模块 docstring 的报告体系说明）。
+
+    同一轮顺带导出全量评测数据 reports/eval_all.json（write_eval_data_export）：
+    外部程序消费的唯一数据入口，与 HTML 同源同轮更新。
     """
     start, end, label = _live_window(cfg)
     month = ym(end)  # 哈希链清单的期号：manifest 审计的是"快照封存完整性"，
@@ -509,6 +556,7 @@ def _update_live_report(cfg):
     data = build_report(cfg.station_ids, cfg.models, cfg.eval, start, end,
                         period_label=label)
     out = write_live_report(data, station_labels={s.id: s.name for s in cfg.stations})
+    write_eval_data_export(data)
     # 哈希链清单（§7.1）：把当轮全部快照的 Merkle 根落盘，供 verify 与月度归档公示
     from .storage import save_manifest
     save_manifest(month, {

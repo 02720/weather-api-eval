@@ -180,14 +180,16 @@ def _json_safe(obj: Any) -> Any:
     if isinstance(obj, (list, tuple)):
         return [_json_safe(v) for v in obj]
     return obj
-def _atomic_write_json(path: Path, obj: Any) -> None:
+def _atomic_write_json(path: Path, obj: Any, indent: int | None = 2) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             # _json_safe 已把非有限值折成 None；allow_nan=False 是第二道闸：
             # 万一将来有人绕过它写入 inf，这里会**立刻报错**而不是产出非法 JSON。
-            json.dump(_json_safe(obj), f, ensure_ascii=False, indent=2,
+            # indent=None（紧凑输出）留给机器消费的大文件：面向人的留痕数据
+            # 保持 indent=2，diff 可读；导出件只被程序整读，紧凑省 30%+ 体积。
+            json.dump(_json_safe(obj), f, ensure_ascii=False, indent=indent,
                       allow_nan=False)
             f.flush()
             os.fsync(f.fileno())   # 断电/panic 后"名字对、内容全零"比半截更毒

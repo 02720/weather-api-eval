@@ -169,7 +169,7 @@ python -m pytest -m "not golden and not slow" -n auto
 |---|---|
 | `fetch-obs [--source auto\|eia_data\|cma_data]` | 抓取各站近 24h 观测并归档。默认 `auto` = 多源编排：主源可用时不惊动备用源，主源失败/陈旧/截断时自动降级补位 |
 | `fetch-forecast [--source X]` | 抓取预报起报快照并归档（默认 Open-Meteo，其余源见 [第 9 节](#9-按源口径与已知坑位)） |
-| `report` | 用**跨月累计**窗口（最早可用数据 → 现在，受保留期约束默认滚动 13 个月）覆盖更新主报告 `reports/index.html`；样本只增不减，月初不清零 |
+| `report` | 用**跨月累计**窗口（最早可用数据 → 现在，受保留期约束默认滚动 13 个月）覆盖更新主报告 `reports/index.html`；样本只增不减，月初不清零。同时把同一份报告数据导出为机器可读的 `reports/eval_all.json`（外部程序数据入口，见「自动运行」第 8 条） |
 | `monthly [--month YYYY-MM] [--force]` | 把某月冻结为月度归档 `reports/monthly/YYYY-MM.html`（默认上一自然月）。已存在的归档拒绝重写，`--force` 才允许重建；同时把该月**结论**固化为 `data/metrics/YYYY-MM/summary.json`（体积治理的前提），随后重建主报告。注意：归档被冻结的是**数据**，其 HTML 视图会随代码变化在 `report`/`all`/`monthly` 运行时自动重建（见上文「月榜」） |
 | `compact [--grace-days 2] [--retain-months 13] [--apply] [--force]` | **体积治理主线**：把已结束的自然月的逐份快照合并成一份 `{YYYY-MM}.json.gz`（实测 21× 压缩、文件数降两个数量级），并把超过保留期的冷层出仓。默认 dry-run、幂等；出仓前必须已固化该月结论摘要，否则拒绝删除 |
 | `archive [--days 60] [--apply]` | 逐份快照 gzip 归档（`.json` → `.json.gz`，压缩比约 8~12×）。**已被 `compact` 取代**（月度合并的收益是它的 2.8 倍且文件数少两个数量级），保留用于旧流程兼容 |
@@ -231,6 +231,7 @@ python -m pytest -m "not golden and not slow" -n auto
 5. 各商业源的凭据配置为同名 Secret（`CAIYUN_TOKEN` 等）；**未配置的源自动跳过**，已配置但抓取失败只标注该步骤、不阻断主流程。
 6. 观测抓取（`all` 步骤内的 `fetch-obs`）走多源编排：主源可用时不惊动备用源，降级时逐轮留痕——不需要任何额外 Secret。
 7. 每轮附带**仓库体量看门狗**（`footprint`）：`.git` 超过 900 MB 即让作业变红并自动开 Issue，把"某天起 clone 变慢"这种事后才被发现的静默劣化变成当场可见的信号。
+8. 每轮同时导出**全量评测数据** `reports/eval_all.json`（与 `index.html` 同一次 `build_report` 的产物原样序列化，含 meta/口径/榜单/评分卡/诊断/逐样本明细）：**外部程序消费的唯一数据入口**，稳定 URL 形如 `https://<owner>.github.io/<repo>/eval_all.json`，随每轮 Pages 部署自动更新。该文件约 8 MB/轮，若入 git 历史一年涨 ~8 GB，故列入 `.gitignore`（它与主报告同为可从快照重算的派生视图，审计证据在 `data/`）；顶层带 `schema`（`weather-eval/export@v1`）、`exported_at`（北京时）与 `months_available`（逐月冻结结论指向 `data/metrics/{m}/summary.json`），供外部程序做兼容判断与寻档。
 
 ---
 
@@ -720,7 +721,8 @@ scripts/                  一次性标定脚本（降水阈值扫描等，结论
 data/                     观测档案 / 预报起报快照（热层逐份 + 冷层月度 bundle，git 跟踪）
   metrics/{period}/       月度结论摘要（永久保留：原始快照出仓后它是唯一的复核来源）
   manifest/{period}/      Merkle 清单（哈希链证据）
-reports/                  index.html 主报告 / monthly/ 归档 / vendor/ ECharts 本地副本
+reports/                  index.html 主报告 / monthly/ 归档 / eval_all.json 全量评测数据导出
+                          （机器可读，不入 git，随每轮 Pages 部署更新）/ vendor/ ECharts 本地副本
 tests/                    pytest（含 cyeva 手算对拍、算法性质、bootstrap↔点估计不变量）
 ```
 
